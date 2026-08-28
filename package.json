@@ -1,11 +1,32 @@
 {
-  "name": "desktop-tools",
-  "private": true,
-  "scripts": {
-    "prototype:tauri:build": "pwsh -NoProfile -File prototypes/tauri-desktop-host/build.ps1",
-    "prototype:tauri:run": "pwsh -NoProfile -File prototypes/tauri-desktop-host/run.ps1"
-  },
-  "devDependencies": {
-    "@tauri-apps/cli": "^2.11.4"
-  }
+    "name": "desktop-tools",
+    "private": true,
+    "version": "0.1.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite --host 127.0.0.1 --port 1420",
+        "build": "npm run typecheck && vite build --outDir build/frontend",
+        "typecheck": "tsc --noEmit",
+        "test": "npm run test:frontend && npm run test:rust",
+        "test:frontend": "node --test src/contracts/application.test.ts",
+        "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --all-targets",
+        "format": "prettier --write index.html package.json tsconfig.json src && cargo fmt --manifest-path src-tauri/Cargo.toml",
+        "tauri:dev": "tauri dev",
+        "tauri:build": "tauri build --no-bundle",
+        "prototype:tauri:build": "pwsh -NoProfile -File prototypes/tauri-desktop-host/build.ps1",
+        "prototype:tauri:run": "pwsh -NoProfile -File prototypes/tauri-desktop-host/run.ps1"
+    },
+    "devDependencies": {
+        "@tauri-apps/cli": "^2.11.4",
+        "@types/react": "^19.2.18",
+        "@types/react-dom": "^19.2.5",
+        "prettier": "^3.9.6",
+        "typescript": "^7.0.2",
+        "vite": "^8.2.2"
+    },
+    "dependencies": {
+        "@tauri-apps/api": "^2.11.1",
+        "react": "^19.2.8",
+        "react-dom": "^19.2.8"
+    }
 }

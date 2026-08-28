@@ -22,13 +22,9 @@ dist-ssr
 *.test.*
 *.spec.*
 temp/
-docs/
-!docs/control-id/*
-!docs/adr/*
 
 # Editor directories and files
 .vscode/
-!.vscode/extensions.json
 .idea
 .DS_Store
 *.suo

@@ -1,0 +1,61 @@
+/* 全局主题变量。 */
+:root {
+    color-scheme: light dark;
+    font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+    font-synthesis: none;
+    --color-background: #eef1f4;
+    --color-surface: #ffffff;
+    --color-subtle: #f7f8fa;
+    --color-border: #d7dce2;
+    --color-text: #17202a;
+    --color-muted: #687481;
+    --color-ready: #2563eb;
+    --color-active: #059669;
+    --color-action: #1f2937;
+    --color-action-hover: #111827;
+    --color-action-text: #ffffff;
+    --color-focus: #2563eb;
+    --color-error: #b42318;
+    --color-error-surface: #fff1f0;
+}
+
+/* 全局盒模型。 */
+* {
+    box-sizing: border-box;
+}
+
+/* 页面基础尺寸与边距。 */
+html,
+body,
+#root {
+    min-width: 320px;
+    min-height: 100%;
+    margin: 0;
+}
+
+/* 页面基础背景。 */
+body {
+    min-height: 100vh;
+    background: var(--color-background);
+}
+
+/* 深色主题变量。 */
+@media (prefers-color-scheme: dark) {
+    /* 深色主题根变量。 */
+    :root {
+        --color-background: #15191d;
+        --color-surface: #20252a;
+        --color-subtle: #272d33;
+        --color-border: #394149;
+        --color-text: #f2f5f7;
+        --color-muted: #a9b2bb;
+        --color-ready: #60a5fa;
+        --color-active: #34d399;
+        --color-action: #e5e7eb;
+        --color-action-hover: #ffffff;
+        --color-action-text: #111827;
+        --color-focus: #60a5fa;
+        --color-error: #fda29b;
+        --color-error-surface: #3b2020;
+    }
+}

@@ -1,0 +1,30 @@
+{
+    "$schema": "https://schema.tauri.app/config/2",
+    "productName": "Desktop Tools",
+    "version": "0.1.0",
+    "identifier": "io.github.tiamo1208.desktop-tools",
+    "build": {
+        "beforeDevCommand": "npm run dev",
+        "devUrl": "http://127.0.0.1:1420",
+        "beforeBuildCommand": "npm run build",
+        "frontendDist": "../build/frontend"
+    },
+    "app": {
+        "windows": [
+            {
+                "label": "main",
+                "title": "Desktop Tools",
+                "width": 960,
+                "height": 640,
+                "minWidth": 720,
+                "minHeight": 480
+            }
+        ],
+        "security": {
+            "csp": "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+        }
+    },
+    "bundle": {
+        "active": false
+    }
+}

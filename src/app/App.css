@@ -1,0 +1,176 @@
+/* 正式应用根布局。 */
+.application-shell {
+    display: grid;
+    grid-template-rows: 56px minmax(0, 1fr);
+    min-height: 100vh;
+    color: var(--color-text);
+    background: var(--color-background);
+}
+
+/* 正式应用顶部栏。 */
+.application-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface);
+}
+
+/* 产品名称。 */
+.application-brand {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 650;
+}
+
+/* 当前应用版本。 */
+.application-version {
+    color: var(--color-muted);
+    font-size: 12px;
+}
+
+/* 应用状态工作区。 */
+.status-workspace {
+    align-self: center;
+    width: min(560px, calc(100% - 48px));
+    margin: 0 auto;
+    padding: 28px;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-surface);
+    box-shadow: 0 12px 36px rgb(15 23 42 / 10%);
+}
+
+/* 状态标题与指示器布局。 */
+.status-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+}
+
+/* 状态标题辅助文本。 */
+.status-eyebrow {
+    margin: 0 0 6px;
+    color: var(--color-muted);
+    font-size: 12px;
+}
+
+/* 当前应用状态标题。 */
+.status-heading h1 {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 680;
+}
+
+/* 应用状态指示器。 */
+.status-indicator {
+    width: 12px;
+    height: 12px;
+    flex: 0 0 12px;
+    border-radius: 50%;
+    background: var(--color-muted);
+    box-shadow: 0 0 0 5px rgb(100 116 139 / 14%);
+}
+
+/* 就绪状态指示器。 */
+.status-indicator--ready {
+    background: var(--color-ready);
+    box-shadow: 0 0 0 5px rgb(37 99 235 / 14%);
+}
+
+/* 活动状态指示器。 */
+.status-indicator--active {
+    background: var(--color-active);
+    box-shadow: 0 0 0 5px rgb(5 150 105 / 14%);
+}
+
+/* 应用状态明细。 */
+.status-details {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1px;
+    margin: 28px 0;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: var(--color-border);
+}
+
+/* 单项应用状态明细。 */
+.status-details div {
+    min-width: 0;
+    padding: 14px 16px;
+    background: var(--color-subtle);
+}
+
+/* 应用状态明细标签。 */
+.status-details dt {
+    margin-bottom: 6px;
+    color: var(--color-muted);
+    font-size: 12px;
+}
+
+/* 应用状态明细内容。 */
+.status-details dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+/* 应用状态错误。 */
+.status-error {
+    margin: 0 0 16px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--color-error);
+    color: var(--color-error);
+    background: var(--color-error-surface);
+    font-size: 13px;
+}
+
+/* 应用状态切换命令。 */
+.status-action {
+    min-height: 38px;
+    padding: 0 16px;
+    border: 1px solid var(--color-action);
+    border-radius: 4px;
+    color: var(--color-action-text);
+    background: var(--color-action);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 650;
+    cursor: pointer;
+}
+
+/* 应用状态命令悬停。 */
+.status-action:hover:enabled {
+    background: var(--color-action-hover);
+}
+
+/* 应用状态命令键盘焦点。 */
+.status-action:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
+/* 应用状态命令禁用状态。 */
+.status-action:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+/* 窄窗口状态布局。 */
+@media (max-width: 540px) {
+    /* 窄窗口应用状态工作区。 */
+    .status-workspace {
+        width: calc(100% - 32px);
+        padding: 20px;
+    }
+
+    /* 窄窗口应用状态明细。 */
+    .status-details {
+        grid-template-columns: 1fr;
+    }
+}

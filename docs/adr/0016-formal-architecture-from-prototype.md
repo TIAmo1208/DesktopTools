@@ -29,6 +29,53 @@ Desktop Tools 已通过 `native-windowed-adapter` 原型验证透明桌面宿主
 5. 独立 Rust guardian 负责接管前的状态登记、运行期间观察和异常恢复；业务状态、布局和 Shell 操作结果由主进程持有。
 6. 原型目录保持冻结，原型中的宿主行为、状态门槛和日志事件作为正式实现的迁移参考。
 
+## 当前文件结构
+
+```text
+DesktopTools/
+├─ src/                                  # React 前端
+│  ├─ app/                               # 应用启动、根布局、全局状态装配
+│  ├─ features/
+│  │  ├─ workspace/                      # 桌面内容工作区
+│  │  │  ├─ surface/                     # 透明桌面表面、显示器工作区呈现
+│  │  │  ├─ interaction/                 # 命中、焦点、选择、框选、拖动
+│  │  │  ├─ state/                       # 前端交互状态与临时编辑状态
+│  │  │  └─ view-models/                 # 后端数据到展示模型的转换
+│  │  ├─ desktop-items/                  # 桌面项目图标、名称、选中、打开
+│  │  ├─ fences/                         # 围栏标题、成员、滚动、折叠、布局
+│  │  ├─ folder-portals/                 # 文件夹门户展示
+│  │  ├─ components/                     # Desktop Tools 组件展示
+│  │  ├─ settings/                       # 设置界面
+│  │  └─ system-menu/                    # 桌面菜单和产品命令入口
+│  ├─ bridge/                            # Tauri invoke/listen 调用封装
+│  ├─ contracts/                         # 前端 DTO 与事件类型
+│  ├─ shared/                            # 通用 UI、主题、格式化工具
+│  └─ styles/                            # 全局主题与窗口基础样式
+│
+├─ src-tauri/
+│  └─ src/                               # Rust 后端
+│     ├─ main.rs                         # 进程入口
+│     ├─ lib.rs                          # Tauri 应用装配
+│     ├─ app/                            # 生命周期、运行时状态、退出流程
+│     ├─ commands/                       # 前端命令边界
+│     ├─ workspace/                      # 桌面布局领域
+│     ├─ shell/                          # Windows Shell 操作代理
+│     ├─ host/                           # 透明桌面宿主
+│     ├─ persistence/                    # 布局快照与备份
+│     ├─ component_runtime/              # 组件清单、能力和运行时
+│     ├─ recovery/                       # guardian、健康状态、重启恢复
+│     ├─ platform/windows/               # Windows API 适配
+│     ├─ contracts/                      # Rust 命令、事件、快照 DTO
+│     └─ bin/guardian.rs                 # 独立恢复进程
+│
+├─ resources/                            # 图标、安装资源、静态资产
+├─ docs/                                 # 领域文档、ADR、接口说明
+├─ .scratch/                             # 需求、规格、工单、验证证据
+└─ prototypes/tauri-desktop-host/       # 冻结的宿主行为参考
+```
+
+前端只通过 `bridge/` 访问 Tauri 能力；Rust 通过 `commands/` 暴露受控命令；Workspace、Shell、Host、Persistence、Component Runtime 和 Recovery 按功能职责维护后端行为；`prototypes/tauri-desktop-host` 继续作为冻结的宿主行为参考。
+
 正式项目的功能数据流为：
 
 ```text

@@ -1,0 +1,7 @@
+{
+    "$schema": "../gen/schemas/desktop-schema.json",
+    "identifier": "default",
+    "description": "Desktop Tools main window capability",
+    "windows": ["main"],
+    "permissions": ["core:default"]
+}
