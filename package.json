@@ -1,0 +1,11 @@
+{
+  "name": "desktop-tools",
+  "private": true,
+  "scripts": {
+    "prototype:tauri:build": "pwsh -NoProfile -File prototypes/tauri-desktop-host/build.ps1",
+    "prototype:tauri:run": "pwsh -NoProfile -File prototypes/tauri-desktop-host/run.ps1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}
