@@ -7,6 +7,12 @@
     background: var(--color-background);
 }
 
+/* 应用状态与功能内容布局。 */
+.application-content {
+    min-width: 0;
+    overflow: auto;
+}
+
 /* 正式应用顶部栏。 */
 .application-header {
     display: flex;
@@ -32,9 +38,8 @@
 
 /* 应用状态工作区。 */
 .status-workspace {
-    align-self: center;
     width: min(560px, calc(100% - 48px));
-    margin: 0 auto;
+    margin: 32px auto;
     padding: 28px;
     border: 1px solid var(--color-border);
     border-radius: 6px;
@@ -166,6 +171,7 @@
     /* 窄窗口应用状态工作区。 */
     .status-workspace {
         width: calc(100% - 32px);
+        margin: 20px auto;
         padding: 20px;
     }
 

@@ -1,5 +1,5 @@
 # Logs
-logs
+log/
 .electron-builder-cache/
 *.log
 npm-debug.log*

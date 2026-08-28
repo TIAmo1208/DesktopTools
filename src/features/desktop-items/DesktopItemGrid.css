@@ -1,0 +1,124 @@
+/* 桌面项目功能区域。 */
+.desktop-items {
+    min-width: 0;
+    padding: 24px;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-background);
+}
+
+/* 桌面项目标题与统计布局。 */
+.desktop-items__header {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 20px;
+}
+
+/* 桌面项目标题辅助文本。 */
+.desktop-items__eyebrow {
+    margin: 0 0 4px;
+    color: var(--color-muted);
+    font-size: 12px;
+}
+
+/* 桌面项目标题。 */
+.desktop-items__header h2 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 680;
+}
+
+/* 桌面项目数量与修订信息。 */
+.desktop-items__summary {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: 12px;
+}
+
+/* Shell 枚举错误说明。 */
+.desktop-items__error {
+    margin: 0 0 16px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--color-error);
+    color: var(--color-error);
+    background: var(--color-error-surface);
+    font-size: 13px;
+}
+
+/* 空桌面项目说明。 */
+.desktop-items__empty {
+    margin: 32px 0;
+    color: var(--color-muted);
+    text-align: center;
+}
+
+/* 桌面项目响应式网格。 */
+.desktop-items__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+    gap: 18px 12px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+/* 单个桌面项目。 */
+.desktop-item {
+    display: grid;
+    grid-template-rows: 52px minmax(34px, auto) 16px;
+    justify-items: center;
+    min-width: 0;
+    padding: 8px 4px;
+    color: var(--color-text);
+    text-align: center;
+}
+
+/* 暂时不可用桌面项目。 */
+.desktop-item[data-availability="unavailable"] {
+    opacity: 0.58;
+}
+
+/* 桌面项目系统图像容器。 */
+.desktop-item__image {
+    width: 48px;
+    height: 48px;
+}
+
+/* 桌面项目系统图像。 */
+.desktop-item__image img {
+    display: block;
+    width: 48px;
+    height: 48px;
+}
+
+/* 桌面项目系统显示名称。 */
+.desktop-item__label {
+    max-width: 100%;
+    overflow: hidden;
+    font-size: 12px;
+    line-height: 17px;
+    overflow-wrap: anywhere;
+    text-overflow: ellipsis;
+}
+
+/* 桌面项目恢复状态。 */
+.desktop-item__status {
+    color: var(--color-muted);
+    font-size: 10px;
+}
+
+/* 窄窗口桌面项目标题布局。 */
+@media (max-width: 540px) {
+    /* 窄窗口桌面项目功能区域。 */
+    .desktop-items {
+        padding: 20px 16px;
+    }
+
+    /* 窄窗口桌面项目标题与统计布局。 */
+    .desktop-items__header {
+        align-items: start;
+        flex-direction: column;
+        gap: 8px;
+    }
+}
