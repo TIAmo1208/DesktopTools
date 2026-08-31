@@ -5,6 +5,7 @@ import { getDesktopItemSnapshot, listenDesktopItemSnapshots } from "../bridge/de
 import type { ApplicationSnapshot, ApplicationStatus } from "../contracts/application";
 import type { DesktopItemSnapshot } from "../contracts/desktopItem";
 import { DesktopItemGrid } from "../features/desktop-items/DesktopItemGrid";
+import { useDesktopHostSurface } from "../features/workspace/surface/useDesktopHostSurface";
 import "./App.css";
 
 // 应用状态对应的用户可见文本。
@@ -18,6 +19,7 @@ const errorMessage = (error: unknown): string => (error instanceof Error ? error
 
 /** 呈现正式应用状态并验证 command/event 纵向链路。 */
 export const App = () => {
+    const isDesktopHost = new URLSearchParams(window.location.search).get("desktop-host") === "1"; // 正式透明宿主页面标记。
     // 当前已发布的应用状态快照。
     const [snapshot, setSnapshot] = useState<ApplicationSnapshot>();
     // 当前应用状态错误说明。
@@ -28,8 +30,11 @@ export const App = () => {
     const [desktopItemSnapshot, setDesktopItemSnapshot] = useState<DesktopItemSnapshot>();
     // 当前 Shell 枚举或桌面项目契约错误说明。
     const [desktopItemFailure, setDesktopItemFailure] = useState<string>();
+    // 正式透明宿主门槛与最小输入处理器。
+    const desktopHost = useDesktopHostSurface(isDesktopHost, desktopItemSnapshot);
 
     useEffect(() => {
+        if (isDesktopHost) return;
         // 当前状态页面挂载标记。
         let isMounted = true;
 
@@ -56,7 +61,7 @@ export const App = () => {
             isMounted = false;
             void subscription.then((unlisten) => unlisten()).catch(() => undefined);
         };
-    }, []);
+    }, [isDesktopHost]);
 
     useEffect(() => {
         // 当前桌面项目页面挂载标记。
@@ -102,6 +107,19 @@ export const App = () => {
             setIsUpdating(false);
         }
     };
+
+    if (isDesktopHost) {
+        return (
+            <main className="application-shell application-shell--desktop-host">
+                <DesktopItemGrid
+                    snapshot={desktopItemSnapshot}
+                    failure={desktopItemFailure ?? desktopHost.failure}
+                    desktopHost
+                    onItemInput={desktopHost.handleItemInput}
+                />
+            </main>
+        );
+    }
 
     return (
         <main className="application-shell">

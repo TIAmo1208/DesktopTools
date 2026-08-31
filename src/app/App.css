@@ -7,6 +7,13 @@
     background: var(--color-background);
 }
 
+/* 正式透明桌面宿主根布局。 */
+.application-shell--desktop-host {
+    display: block;
+    min-height: 100vh;
+    background: transparent;
+}
+
 /* 应用状态与功能内容布局。 */
 .application-content {
     min-width: 0;

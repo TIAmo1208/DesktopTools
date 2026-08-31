@@ -6,6 +6,34 @@
     background: var(--color-background);
 }
 
+/* 正式透明宿主中的桌面项目区域。 */
+.desktop-items--desktop-host {
+    min-height: 100vh;
+    padding: 20px;
+    border: 0;
+    background: transparent;
+}
+
+/* 正式透明宿主隐藏产品状态标题。 */
+.desktop-items--desktop-host .desktop-items__header {
+    display: none;
+}
+
+/* 正式透明宿主使用稳定项目轨道。 */
+.desktop-items--desktop-host .desktop-items__grid {
+    grid-template-columns: repeat(auto-fill, 92px);
+    align-content: start;
+}
+
+/* 正式透明宿主项目名称保持壁纸可读性。 */
+.desktop-items--desktop-host .desktop-item {
+    color: #ffffff;
+    cursor: default;
+    text-shadow:
+        0 1px 2px rgb(0 0 0 / 90%),
+        0 0 3px rgb(0 0 0 / 80%);
+}
+
 /* 桌面项目标题与统计布局。 */
 .desktop-items__header {
     display: flex;

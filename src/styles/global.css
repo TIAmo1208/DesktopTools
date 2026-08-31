@@ -39,6 +39,14 @@ body {
     background: var(--color-background);
 }
 
+/* 正式透明宿主页面透出 Windows 壁纸。 */
+html[data-desktop-host="true"],
+html[data-desktop-host="true"] body,
+html[data-desktop-host="true"] #root {
+    overflow: hidden;
+    background: transparent;
+}
+
 /* 深色主题变量。 */
 @media (prefers-color-scheme: dark) {
     /* 深色主题根变量。 */

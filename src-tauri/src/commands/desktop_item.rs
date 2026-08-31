@@ -12,7 +12,7 @@ pub fn get_desktop_item_snapshot(
     state: State<'_, DesktopItemState>,
 ) -> Result<DesktopItemSnapshot, DesktopItemError> {
     // 已发布到内存状态的桌面项目快照。
-    let snapshot = state.refresh()?;
+    let snapshot = refresh_desktop_item_snapshot(&state)?;
     app.emit(DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, &snapshot)
         .map_err(|error| {
             crate::log_error!("Shell：桌面项目快照事件发布失败，错误：{error}");
@@ -20,4 +20,18 @@ pub fn get_desktop_item_snapshot(
         })?;
 
     Ok(snapshot)
+}
+
+/// 枚举 transport 共享的桌面项目快照。
+pub(crate) fn refresh_desktop_item_snapshot(
+    state: &DesktopItemState,
+) -> Result<DesktopItemSnapshot, DesktopItemError> {
+    state.refresh()
+}
+
+/// 返回本地事件轮询使用的当前桌面项目快照。
+pub(crate) fn read_desktop_item_snapshot(
+    state: &DesktopItemState,
+) -> Result<DesktopItemSnapshot, DesktopItemError> {
+    state.snapshot()
 }

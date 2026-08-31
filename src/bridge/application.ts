@@ -1,7 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import { parseApplicationCommandError, parseApplicationSnapshot, type ApplicationSnapshot, type ApplicationStatus } from "../contracts/application";
+import { invokeRuntime, listenRuntime } from "./runtime";
 
 // Rust 发布的应用快照事件名称。
 export const APPLICATION_SNAPSHOT_CHANGED_EVENT = "application-snapshot-changed";
@@ -9,7 +9,7 @@ export const APPLICATION_SNAPSHOT_CHANGED_EVENT = "application-snapshot-changed"
 /** 获取 Rust 持有的当前应用快照。 */
 export const getApplicationSnapshot = async (): Promise<ApplicationSnapshot> => {
     // 等待契约校验的 command 返回值。
-    const response = await invoke<unknown>("get_application_snapshot").catch((error: unknown) => {
+    const response = await invokeRuntime<unknown>("get_application_snapshot").catch((error: unknown) => {
         throw parseApplicationCommandError(error);
     });
 
@@ -19,7 +19,7 @@ export const getApplicationSnapshot = async (): Promise<ApplicationSnapshot> => 
 /** 提交应用状态并校验 command 返回值。 */
 export const setApplicationStatus = async (status: ApplicationStatus): Promise<ApplicationSnapshot> => {
     // 等待契约校验的 command 返回值。
-    const response = await invoke<unknown>("set_application_status", { status }).catch((error: unknown) => {
+    const response = await invokeRuntime<unknown>("set_application_status", { status }).catch((error: unknown) => {
         throw parseApplicationCommandError(error);
     });
 
@@ -28,9 +28,9 @@ export const setApplicationStatus = async (status: ApplicationStatus): Promise<A
 
 /** 订阅 Rust 发布的应用快照并校验 event 载荷。 */
 export const listenApplicationSnapshots = (onSnapshot: (snapshot: ApplicationSnapshot) => void, onError: (error: unknown) => void): Promise<UnlistenFn> =>
-    listen<unknown>(APPLICATION_SNAPSHOT_CHANGED_EVENT, (event) => {
+    listenRuntime<unknown>(APPLICATION_SNAPSHOT_CHANGED_EVENT, (payload) => {
         try {
-            onSnapshot(parseApplicationSnapshot(event.payload));
+            onSnapshot(parseApplicationSnapshot(payload));
         } catch (error: unknown) {
             onError(error);
         }

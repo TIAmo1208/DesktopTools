@@ -6,15 +6,17 @@ import "./DesktopItemGrid.css";
 interface DesktopItemGridProps {
     snapshot?: DesktopItemSnapshot;
     failure?: string;
+    desktopHost?: boolean;
+    onItemInput?: (itemId: string) => void;
 }
 
 /** 呈现 Windows Shell 提供的真实桌面项目集合。 */
-export const DesktopItemGrid = ({ snapshot, failure }: DesktopItemGridProps) => {
+export const DesktopItemGrid = ({ snapshot, failure, desktopHost = false, onItemInput }: DesktopItemGridProps) => {
     // 当前快照对应的页面展示模型。
     const items = snapshot ? projectDesktopItems(snapshot) : [];
 
     return (
-        <section className="desktop-items" aria-labelledby="desktop-items-title">
+        <section className={`desktop-items${desktopHost ? " desktop-items--desktop-host" : ""}`} aria-labelledby="desktop-items-title">
             <header className="desktop-items__header">
                 <div>
                     <p className="desktop-items__eyebrow">Windows Shell</p>
@@ -35,7 +37,15 @@ export const DesktopItemGrid = ({ snapshot, failure }: DesktopItemGridProps) => 
 
             <ul className="desktop-items__grid">
                 {items.map((item) => (
-                    <li className="desktop-item" data-availability={item.isAvailable ? "available" : "unavailable"} key={item.key}>
+                    <li
+                        className="desktop-item"
+                        data-availability={item.isAvailable ? "available" : "unavailable"}
+                        data-hit-id={desktopHost ? item.key : undefined}
+                        data-hit-kind={desktopHost ? "desktop-item" : undefined}
+                        data-hit-priority={desktopHost ? "70" : undefined}
+                        key={item.key}
+                        onPointerDown={() => onItemInput?.(item.key)}
+                    >
                         <div className="desktop-item__image" aria-hidden="true">
                             {item.imageSource && <img src={item.imageSource} alt="" />}
                         </div>

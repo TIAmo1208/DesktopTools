@@ -135,6 +135,11 @@ impl DesktopItemState {
 
         Ok(snapshot)
     }
+
+    /// 返回最近一次有效桌面项目快照。
+    pub fn snapshot(&self) -> Result<DesktopItemSnapshot, DesktopItemError> {
+        Ok(lock_snapshot(&self.snapshot)?.clone())
+    }
 }
 
 /// 获取桌面项目快照锁。
