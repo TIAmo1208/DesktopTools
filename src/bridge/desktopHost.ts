@@ -34,6 +34,24 @@ export const updateDesktopHostHitMap = async (hitRegions: HitRegion[]): Promise<
     return parseDesktopHostSnapshot(response);
 };
 
+/** 暂停正式宿主命中裁剪以承接连续指针拖动。 */
+export const beginDesktopHostInputDrag = async (): Promise<DesktopHostSnapshot> => {
+    // 等待契约校验的拖动开始 command 返回值。
+    const response = await invokeRuntime<unknown>("begin_desktop_host_input_drag").catch((error: unknown) => {
+        throw parseApplicationCommandError(error);
+    });
+    return parseDesktopHostSnapshot(response);
+};
+
+/** 结束连续指针拖动并恢复完整命中图。 */
+export const endDesktopHostInputDrag = async (): Promise<DesktopHostSnapshot> => {
+    // 等待契约校验的拖动结束 command 返回值。
+    const response = await invokeRuntime<unknown>("end_desktop_host_input_drag").catch((error: unknown) => {
+        throw parseApplicationCommandError(error);
+    });
+    return parseDesktopHostSnapshot(response);
+};
+
 /** 通过桌面项目点击处理器回传最小输入探针。 */
 export const recordDesktopHostInputProbe = async (itemId: string): Promise<DesktopHostSnapshot> => {
     // 等待契约校验的输入探针 command 返回值。

@@ -1,0 +1,289 @@
+/* 正式透明宿主中的完整围栏工作区。 */
+.fence-workspace {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    color: #ffffff;
+    background: transparent;
+}
+
+/* 工作区围栏创建命令栏。 */
+.fence-workspace__toolbar {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 34px;
+    padding: 4px 6px;
+    border: 1px solid rgb(255 255 255 / 32%);
+    border-radius: 6px;
+    color: #ffffff;
+    background: rgb(18 24 31 / 78%);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 22%);
+    font-size: 11px;
+}
+
+/* 工作区命令栏按钮。 */
+.fence-workspace__toolbar button {
+    min-height: 26px;
+    padding: 0 9px;
+    border: 1px solid rgb(255 255 255 / 24%);
+    border-radius: 4px;
+    color: #ffffff;
+    background: rgb(255 255 255 / 10%);
+    font: inherit;
+    cursor: pointer;
+}
+
+/* 工作区命令栏按钮悬停状态。 */
+.fence-workspace__toolbar button:hover:enabled {
+    background: rgb(255 255 255 / 18%);
+}
+
+/* 工作区命令栏按钮键盘焦点。 */
+.fence-workspace__toolbar button:focus-visible {
+    outline: 2px solid #ffffff;
+    outline-offset: 2px;
+}
+
+/* 工作区命令栏禁用按钮。 */
+.fence-workspace__toolbar button:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+/* 工作区命令或持久化错误。 */
+.fence-workspace__error {
+    position: absolute;
+    top: 56px;
+    right: 14px;
+    z-index: 10000;
+    max-width: 360px;
+    margin: 0;
+    padding: 8px 10px;
+    border-left: 3px solid #fda29b;
+    color: #ffffff;
+    background: rgb(76 26 26 / 92%);
+    font-size: 12px;
+}
+
+/* 未归类桌面项目定位表面。 */
+.fence-workspace__unclassified {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+/* 单个围栏表面。 */
+.fence {
+    position: absolute;
+    display: grid;
+    grid-template-rows: 44px minmax(0, 1fr);
+    overflow: visible;
+    border: 1px solid rgb(255 255 255 / 32%);
+    border-radius: 6px;
+    color: #ffffff;
+    background: rgb(22 29 37 / 76%);
+    box-shadow: 0 10px 28px rgb(0 0 0 / 24%);
+    backdrop-filter: blur(16px);
+}
+
+/* 围栏折叠状态只呈现标题栏。 */
+.fence--collapsed {
+    grid-template-rows: 42px;
+    overflow: hidden;
+}
+
+/* 围栏接收项目时的投放状态。 */
+.fence--drop-target {
+    border-color: #ffffff;
+    box-shadow:
+        0 0 0 2px rgb(255 255 255 / 28%),
+        0 10px 28px rgb(0 0 0 / 24%);
+}
+
+/* 围栏标题、成员数量与命令布局。 */
+.fence__header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 0 8px 0 12px;
+    border-bottom: 1px solid rgb(255 255 255 / 16%);
+    background: rgb(255 255 255 / 7%);
+    cursor: move;
+    touch-action: none;
+}
+
+/* 围栏标题。 */
+.fence__header h2 {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    font-size: 13px;
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 围栏成员计数。 */
+.fence__count {
+    min-width: 20px;
+    color: rgb(255 255 255 / 68%);
+    font-size: 11px;
+    text-align: center;
+}
+
+/* 围栏标题栏命令集合。 */
+.fence__commands {
+    display: flex;
+    gap: 3px;
+}
+
+/* 围栏标题栏命令。 */
+.fence__commands button {
+    min-width: 34px;
+    height: 26px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 3px;
+    color: #ffffff;
+    background: transparent;
+    font: inherit;
+    font-size: 10px;
+    cursor: pointer;
+}
+
+/* 围栏标题栏命令悬停状态。 */
+.fence__commands button:hover {
+    background: rgb(255 255 255 / 14%);
+}
+
+/* 围栏标题栏命令键盘焦点。 */
+.fence__commands button:focus-visible {
+    outline: 2px solid #ffffff;
+    outline-offset: 1px;
+}
+
+/* 围栏滚动成员区。 */
+.fence__items {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+    align-content: start;
+    gap: 8px;
+    min-height: 0;
+    margin: 0;
+    padding: 10px;
+    overflow: auto;
+    scrollbar-width: thin;
+    list-style: none;
+}
+
+/* 列表布局围栏成员区。 */
+.fence[data-layout-mode="list"] .fence__items {
+    grid-template-columns: 1fr;
+}
+
+/* 空围栏持续提供可见投放目标。 */
+.fence__empty {
+    display: grid;
+    min-height: 92px;
+    place-items: center;
+    color: rgb(255 255 255 / 58%);
+    font-size: 12px;
+}
+
+/* 围栏缩放命中边框。 */
+.fence__resize {
+    position: absolute;
+    z-index: 2;
+    touch-action: none;
+}
+
+/* 围栏北侧缩放边框。 */
+.fence__resize--n {
+    top: -4px;
+    right: 8px;
+    left: 8px;
+    height: 8px;
+    cursor: ns-resize;
+}
+
+/* 围栏东北缩放边框。 */
+.fence__resize--ne {
+    top: -5px;
+    right: -5px;
+    width: 12px;
+    height: 12px;
+    cursor: nesw-resize;
+}
+
+/* 围栏东侧缩放边框。 */
+.fence__resize--e {
+    top: 8px;
+    right: -4px;
+    bottom: 8px;
+    width: 8px;
+    cursor: ew-resize;
+}
+
+/* 围栏东南缩放边框。 */
+.fence__resize--se {
+    right: -5px;
+    bottom: -5px;
+    width: 12px;
+    height: 12px;
+    cursor: nwse-resize;
+}
+
+/* 围栏南侧缩放边框。 */
+.fence__resize--s {
+    right: 8px;
+    bottom: -4px;
+    left: 8px;
+    height: 8px;
+    cursor: ns-resize;
+}
+
+/* 围栏西南缩放边框。 */
+.fence__resize--sw {
+    bottom: -5px;
+    left: -5px;
+    width: 12px;
+    height: 12px;
+    cursor: nesw-resize;
+}
+
+/* 围栏西侧缩放边框。 */
+.fence__resize--w {
+    top: 8px;
+    bottom: 8px;
+    left: -4px;
+    width: 8px;
+    cursor: ew-resize;
+}
+
+/* 围栏西北缩放边框。 */
+.fence__resize--nw {
+    top: -5px;
+    left: -5px;
+    width: 12px;
+    height: 12px;
+    cursor: nwse-resize;
+}
+
+/* 深色系统主题下保持透明围栏表面对比度。 */
+@media (prefers-color-scheme: dark) {
+    /* 深色主题围栏表面。 */
+    .fence {
+        background: rgb(12 17 23 / 82%);
+    }
+}

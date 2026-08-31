@@ -14,7 +14,7 @@ use crate::platform::windows::{
     NativeCommandHandler, NativeDesktopHost, ShellDesktopState, apply_host_hit_regions,
     create_primary_desktop_host, destroy_primary_desktop_host, discover_shell_desktop,
     load_primary_desktop_host, probe_host_pixels, redraw_shell_desktop, set_desktop_items_visible,
-    set_host_visible,
+    set_host_visible, suspend_host_hit_regions,
 };
 use crate::recovery::GuardianProcess;
 
@@ -318,6 +318,38 @@ impl DesktopHostRuntime {
         Ok(snapshot_from(&data))
     }
 
+    /// 在连续拖动期间暂停语义命中区域裁剪。
+    pub fn begin_input_drag(&self) -> Result<DesktopHostSnapshot, DesktopHostError> {
+        // 当前拖动所属的正式宿主记录。
+        let host = self
+            .data
+            .lock()
+            .map_err(|_| DesktopHostError::state_unavailable())?
+            .host
+            .clone();
+        suspend_host_hit_regions(&host)
+            .map_err(|error| DesktopHostError::platform_failed(&error))?;
+        crate::log_debug!("宿主：连续拖动命中区域已暂停，窗口句柄={:#x}", host.hwnd);
+        self.snapshot()
+    }
+
+    /// 结束连续拖动并恢复最近一份完整语义命中图。
+    pub fn end_input_drag(&self) -> Result<DesktopHostSnapshot, DesktopHostError> {
+        // 等待恢复的正式宿主和最近命中图。
+        let (host, hit_regions) = {
+            // 当前受锁保护的正式宿主状态。
+            let data = self
+                .data
+                .lock()
+                .map_err(|_| DesktopHostError::state_unavailable())?;
+            (data.host.clone(), data.hit_regions.clone())
+        };
+        apply_host_hit_regions(&host, hit_regions)
+            .map_err(|error| DesktopHostError::platform_failed(&error))?;
+        crate::log_debug!("宿主：连续拖动命中区域已恢复，窗口句柄={:#x}", host.hwnd);
+        self.snapshot()
+    }
+
     /// 记录 React 项目点击回传并在全部门槛满足时提交接管。
     pub fn record_input_probe(
         &self,
@@ -516,9 +548,10 @@ fn validate_frontend_readiness(
         ));
     }
     if report.loaded_system_images != report.total_system_images {
-        return Err(DesktopHostError::invalid_readiness(
-            "系统图像仍在加载或包含失败项",
-        ));
+        return Err(DesktopHostError::invalid_readiness(format!(
+            "系统图像仍在加载或包含失败项: {}/{}",
+            report.loaded_system_images, report.total_system_images
+        )));
     }
     validate_hit_regions(&report.hit_regions, expected_width, expected_height)
 }
@@ -545,9 +578,10 @@ fn validate_hit_regions(
             || region.left + region.width > viewport_width + 1.0
             || region.top + region.height > viewport_height + 1.0
         {
-            return Err(DesktopHostError::invalid_readiness(
-                "交互命中图包含越界或无效区域",
-            ));
+            return Err(DesktopHostError::invalid_readiness(format!(
+                "交互命中图包含越界或无效区域: {} [{:.1}, {:.1}, {:.1}, {:.1}]",
+                region.id, region.left, region.top, region.width, region.height
+            )));
         }
     }
     Ok(())

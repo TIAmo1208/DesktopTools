@@ -139,6 +139,7 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
   const eventCommands = {
     "desktop-item-snapshot-changed": "get_current_desktop_item_snapshot",
     "desktop-host-snapshot-changed": "get_desktop_host_snapshot",
+    "workspace-snapshot-changed": "get_current_workspace_snapshot",
   };
 
   // 通过只读快照轮询模拟正式宿主事件订阅。
@@ -503,7 +504,10 @@ fn handle_protocol_request(
         // 正式宿主命令处理结果。
         let payload = match command_handler(command, arguments) {
             Ok(result) => json!({ "ok": true, "result": result }),
-            Err(error) => json!({ "ok": false, "error": error }),
+            Err(error) => {
+                crate::log_error!("宿主：本地命令执行失败，命令={command}，错误={error}");
+                json!({ "ok": false, "error": error })
+            }
         };
         return protocol_response(
             StatusCode::OK,
@@ -728,6 +732,14 @@ pub fn apply_host_hit_regions(
         .read()
         .map_err(|error| error.to_string())?
         .len())
+}
+
+/// 在连续拖动期间临时恢复正式宿主完整窗口区域。
+pub fn suspend_host_hit_regions(host: &NativeDesktopHost) -> Result<(), String> {
+    if unsafe { SetWindowRgn(raw_hwnd(host.hwnd), None, true) } == 0 {
+        return Err("暂停正式宿主命中区域失败".to_string());
+    }
+    Ok(())
 }
 
 /// 捕获正式宿主窗口并确认命中区域内存在真实像素。

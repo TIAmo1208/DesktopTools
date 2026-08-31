@@ -2,23 +2,27 @@ mod app;
 mod commands;
 pub mod contracts;
 mod host;
+mod persistence;
 mod platform;
 pub mod recovery;
 mod shell;
 /// 提供 Rust 后端共享基础工具。
 pub mod tools;
+mod workspace;
 
 use app::ApplicationState;
 use commands::{
+    apply_workspace_command, begin_desktop_host_input_drag, end_desktop_host_input_drag,
     get_application_snapshot, get_desktop_host_snapshot, get_desktop_item_snapshot,
-    publish_desktop_host_readiness, record_desktop_host_input_probe, set_application_status,
-    update_desktop_host_hit_map,
+    get_workspace_snapshot, publish_desktop_host_readiness, record_desktop_host_input_probe,
+    set_application_status, update_desktop_host_hit_map,
 };
 use host::DesktopHostRuntime;
 use shell::DesktopItemState;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 use tauri::{Manager, RunEvent};
+use workspace::WorkspaceState;
 
 /// 创建并运行 Desktop Tools 正式应用。
 pub fn run() {
@@ -46,12 +50,22 @@ pub fn run() {
             get_application_snapshot,
             get_desktop_host_snapshot,
             get_desktop_item_snapshot,
+            get_workspace_snapshot,
+            apply_workspace_command,
+            begin_desktop_host_input_drag,
+            end_desktop_host_input_drag,
             publish_desktop_host_readiness,
             record_desktop_host_input_probe,
             set_application_status,
             update_desktop_host_hit_map,
         ])
         .setup(|app| {
+            // 当前 Windows 用户独占的正式工作区快照路径。
+            let workspace_path = app.path().app_data_dir()?.join("workspace-layout.json");
+            // 启动前完成恢复的权威工作区状态。
+            let workspace = WorkspaceState::load(workspace_path)?;
+            app.manage(workspace);
+
             // 正式单显示器宿主运行时。
             let desktop_host = DesktopHostRuntime::start(app.handle())?;
             app.manage(Arc::clone(&desktop_host));

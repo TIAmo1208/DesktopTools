@@ -1,21 +1,24 @@
 mod application;
 mod desktop_host;
 mod desktop_item;
+mod workspace;
 
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Manager};
 
-use crate::contracts::{DesktopHostError, FrontendHostReadiness, HitRegion};
+use crate::contracts::{DesktopHostError, FrontendHostReadiness, HitRegion, WorkspaceCommand};
 use crate::host::DesktopHostRuntime;
 use crate::shell::DesktopItemState;
+use crate::workspace::WorkspaceState;
 
 pub use application::{get_application_snapshot, set_application_status};
 pub use desktop_host::{
-    get_desktop_host_snapshot, publish_desktop_host_readiness, record_desktop_host_input_probe,
-    update_desktop_host_hit_map,
+    begin_desktop_host_input_drag, end_desktop_host_input_drag, get_desktop_host_snapshot,
+    publish_desktop_host_readiness, record_desktop_host_input_probe, update_desktop_host_hit_map,
 };
 pub use desktop_item::get_desktop_item_snapshot;
+pub use workspace::{apply_workspace_command, get_workspace_snapshot};
 
 /// 路由独立 Windowed WebView2 transport 到正式应用命令边界。
 pub(crate) fn dispatch_native_command(
@@ -29,7 +32,15 @@ pub(crate) fn dispatch_native_command(
         "get_desktop_item_snapshot" => {
             desktop_item::refresh_desktop_item_snapshot(&app.state::<DesktopItemState>())
                 .map_err(serialize_error)
-                .and_then(serialize_result)
+                .and_then(|snapshot| {
+                    workspace::reconcile_workspace_items(
+                        &app.state::<WorkspaceState>(),
+                        runtime,
+                        &snapshot,
+                    )
+                    .map_err(serialize_error)?;
+                    serialize_result(snapshot)
+                })
         }
         "get_current_desktop_item_snapshot" => {
             desktop_item::read_desktop_item_snapshot(&app.state::<DesktopItemState>())
@@ -38,6 +49,18 @@ pub(crate) fn dispatch_native_command(
         }
         "get_desktop_host_snapshot" => desktop_host::read_desktop_host_snapshot(runtime)
             .map_err(serialize_error)
+            .and_then(serialize_result),
+        "get_workspace_snapshot" | "get_current_workspace_snapshot" => {
+            workspace::read_workspace_snapshot(&app.state::<WorkspaceState>())
+                .map_err(serialize_error)
+                .and_then(serialize_result)
+        }
+        "apply_workspace_command" => command_argument(&arguments, "command", "工作区命令参数无效")
+            .map_err(serialize_error)
+            .and_then(|command: WorkspaceCommand| {
+                workspace::apply_workspace_state_command(&app.state::<WorkspaceState>(), command)
+                    .map_err(serialize_error)
+            })
             .and_then(serialize_result),
         "publish_desktop_host_readiness" => {
             command_argument(&arguments, "report", "页面准备参数无效")
@@ -58,6 +81,12 @@ pub(crate) fn dispatch_native_command(
             .and_then(Value::as_str)
             .ok_or_else(|| DesktopHostError::invalid_readiness("缺少 itemId"))
             .and_then(|item_id| desktop_host::record_input_probe(runtime, item_id))
+            .map_err(serialize_error)
+            .and_then(serialize_result),
+        "begin_desktop_host_input_drag" => desktop_host::begin_input_drag(runtime)
+            .map_err(serialize_error)
+            .and_then(serialize_result),
+        "end_desktop_host_input_drag" => desktop_host::end_input_drag(runtime)
             .map_err(serialize_error)
             .and_then(serialize_result),
         _ => Err(serialize_error(DesktopHostError::invalid_readiness(

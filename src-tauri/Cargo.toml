@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Windows desktop content workspace"
 edition = "2024"
 build = "build.rs"
+default-run = "desktop-tools"
 
 [lib]
 name = "desktop_tools_lib"

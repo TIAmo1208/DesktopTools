@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
+    beginDesktopHostInputDrag,
+    endDesktopHostInputDrag,
     getDesktopHostSnapshot,
     listenDesktopHostSnapshots,
     publishDesktopHostReadiness,
@@ -34,27 +36,23 @@ const collectHitRegions = (): HitRegion[] =>
         };
     });
 
-/** 等待当前系统图像完成加载并返回成功数量。 */
-const waitForSystemImages = async (): Promise<{ total: number; loaded: number }> => {
-    const images = [...document.querySelectorAll<HTMLImageElement>(".desktop-item__image img")]; // 当前真实系统图像节点。
-    await Promise.all(
-        images.map(
-            (image) =>
-                new Promise<void>((resolve) => {
-                    if (image.complete) {
-                        resolve();
-                        return;
-                    }
-                    image.addEventListener("load", () => resolve(), { once: true });
-                    image.addEventListener("error", () => resolve(), { once: true });
-                }),
-        ),
-    );
+/** 等待当前系统图像节点与 Shell 快照数量一致并完成解码。 */
+const waitForSystemImages = async (expectedTotal: number): Promise<{ total: number; loaded: number }> => {
+    // 当前系统图像解码的轮询次数。
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        const images = [...document.querySelectorAll<HTMLImageElement>(".desktop-item__image img")]; // 当前真实系统图像节点。
+        await Promise.all(images.map((image) => image.decode().catch(() => undefined)));
+        const loaded = images.filter((image) => image.naturalWidth > 0).length; // 当前实际解码成功的系统图像数量。
+        if (images.length === expectedTotal && loaded === expectedTotal) return { total: images.length, loaded };
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+    }
+
+    const images = [...document.querySelectorAll<HTMLImageElement>(".desktop-item__image img")]; // 超时后最终核对的系统图像节点。
     return { total: images.length, loaded: images.filter((image) => image.naturalWidth > 0).length };
 };
 
 /** 驱动正式桌面宿主页面门槛、命中图和最小输入探针。 */
-export const useDesktopHostSurface = (enabled: boolean, items?: DesktopItemSnapshot) => {
+export const useDesktopHostSurface = (enabled: boolean, items?: DesktopItemSnapshot, layoutRevision = 0) => {
     const [snapshot, setSnapshot] = useState<DesktopHostSnapshot>(); // 当前正式宿主快照。
     const [failure, setFailure] = useState<string>(); // 当前正式宿主错误说明。
 
@@ -85,7 +83,7 @@ export const useDesktopHostSurface = (enabled: boolean, items?: DesktopItemSnaps
         let cancelled = false; // 当前页面准备任务取消标记。
         void (async () => {
             await waitForTwoFrames();
-            const imageProbe = await waitForSystemImages(); // 当前系统图像实际加载结果。
+            const imageProbe = await waitForSystemImages(items.items.length); // 当前系统图像实际加载结果。
             if (cancelled) return;
             const hitRegions = collectHitRegions(); // 首份完整交互命中图。
             // 已发布全部前端门槛的正式宿主快照。
@@ -110,19 +108,22 @@ export const useDesktopHostSurface = (enabled: boolean, items?: DesktopItemSnaps
     useEffect(() => {
         if (!enabled || !items) return;
         let frame = 0; // 合并页面布局变化的动画帧标识。
-        // 监视页面布局变化并发布最新完整命中图。
-        const observer = new ResizeObserver(() => {
+        // 发布当前页面完整命中图。
+        const publishHitMap = () => {
             cancelAnimationFrame(frame);
             frame = requestAnimationFrame(() => {
                 void updateDesktopHostHitMap(collectHitRegions()).catch((error: unknown) => setFailure(hostErrorMessage(error)));
             });
-        });
+        };
+        // 监视页面布局变化并发布最新完整命中图。
+        const observer = new ResizeObserver(publishHitMap);
         observer.observe(document.documentElement);
+        publishHitMap();
         return () => {
             cancelAnimationFrame(frame);
             observer.disconnect();
         };
-    }, [enabled, items]);
+    }, [enabled, items, layoutRevision]);
 
     // 将真实桌面项目指针输入回传正式宿主。
     const handleItemInput = useCallback(
@@ -135,5 +136,27 @@ export const useDesktopHostSurface = (enabled: boolean, items?: DesktopItemSnaps
         [enabled],
     );
 
-    return { snapshot, failure, handleItemInput };
+    // 暂停命中裁剪并进入连续拖动输入状态。
+    const beginInputDrag = useCallback(async () => {
+        try {
+            setSnapshot(await beginDesktopHostInputDrag());
+            setFailure(undefined);
+        } catch (error: unknown) {
+            setFailure(hostErrorMessage(error));
+            throw error;
+        }
+    }, []);
+
+    // 恢复最近完整命中图并结束连续拖动输入状态。
+    const endInputDrag = useCallback(async () => {
+        try {
+            setSnapshot(await endDesktopHostInputDrag());
+            setFailure(undefined);
+        } catch (error: unknown) {
+            setFailure(hostErrorMessage(error));
+            throw error;
+        }
+    }, []);
+
+    return { snapshot, failure, handleItemInput, beginInputDrag, endInputDrag };
 };

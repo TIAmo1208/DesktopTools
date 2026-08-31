@@ -136,6 +136,61 @@
     font-size: 10px;
 }
 
+/* 未归类区域中的绝对定位桌面项目。 */
+.desktop-item--unclassified {
+    position: absolute;
+    width: 84px;
+    height: 100px;
+    min-height: 100px;
+    grid-template-rows: 48px 34px 14px;
+    padding: 2px 4px;
+    overflow: hidden;
+    cursor: move;
+    touch-action: none;
+}
+
+/* 连续指针拖动期间跟随指针的桌面项目预览。 */
+.desktop-item--drag-preview {
+    position: fixed;
+    z-index: 20000;
+    margin: 0;
+    pointer-events: none;
+    opacity: 0.82;
+}
+
+/* 围栏内桌面项目。 */
+.desktop-item--fence {
+    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-rows: minmax(34px, auto) 14px;
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+    padding: 5px 3px;
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgb(0 0 0 / 90%);
+    cursor: move;
+    touch-action: none;
+}
+
+/* 平铺围栏中的桌面项目。 */
+.fence[data-layout-mode="tile"] .desktop-item--fence {
+    grid-template-columns: 1fr;
+    grid-template-rows: 44px minmax(32px, auto) 14px;
+}
+
+/* 列表围栏中的桌面项目图像容器。 */
+.fence[data-layout-mode="list"] .desktop-item--fence .desktop-item__image {
+    grid-row: 1 / span 2;
+    width: 36px;
+    height: 36px;
+}
+
+/* 列表围栏中的桌面项目系统图像。 */
+.fence[data-layout-mode="list"] .desktop-item--fence .desktop-item__image img {
+    width: 36px;
+    height: 36px;
+}
+
 /* 窄窗口桌面项目标题布局。 */
 @media (max-width: 540px) {
     /* 窄窗口桌面项目功能区域。 */

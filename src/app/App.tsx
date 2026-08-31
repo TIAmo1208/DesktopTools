@@ -5,6 +5,8 @@ import { getDesktopItemSnapshot, listenDesktopItemSnapshots } from "../bridge/de
 import type { ApplicationSnapshot, ApplicationStatus } from "../contracts/application";
 import type { DesktopItemSnapshot } from "../contracts/desktopItem";
 import { DesktopItemGrid } from "../features/desktop-items/DesktopItemGrid";
+import { FenceWorkspace } from "../features/fences/FenceWorkspace";
+import { useWorkspace } from "../features/workspace/state/useWorkspace";
 import { useDesktopHostSurface } from "../features/workspace/surface/useDesktopHostSurface";
 import "./App.css";
 
@@ -30,8 +32,10 @@ export const App = () => {
     const [desktopItemSnapshot, setDesktopItemSnapshot] = useState<DesktopItemSnapshot>();
     // 当前 Shell 枚举或桌面项目契约错误说明。
     const [desktopItemFailure, setDesktopItemFailure] = useState<string>();
+    // 当前透明宿主使用的权威工作区状态。
+    const workspace = useWorkspace(isDesktopHost);
     // 正式透明宿主门槛与最小输入处理器。
-    const desktopHost = useDesktopHostSurface(isDesktopHost, desktopItemSnapshot);
+    const desktopHost = useDesktopHostSurface(isDesktopHost, desktopItemSnapshot, workspace.snapshot?.revision);
 
     useEffect(() => {
         if (isDesktopHost) return;
@@ -111,11 +115,14 @@ export const App = () => {
     if (isDesktopHost) {
         return (
             <main className="application-shell application-shell--desktop-host">
-                <DesktopItemGrid
-                    snapshot={desktopItemSnapshot}
-                    failure={desktopItemFailure ?? desktopHost.failure}
-                    desktopHost
+                <FenceWorkspace
+                    desktopItems={desktopItemSnapshot}
+                    workspace={workspace.snapshot}
+                    failure={desktopItemFailure ?? workspace.failure ?? desktopHost.failure}
+                    onCommand={workspace.applyCommand}
                     onItemInput={desktopHost.handleItemInput}
+                    onBeginInputDrag={desktopHost.beginInputDrag}
+                    onEndInputDrag={desktopHost.endInputDrag}
                 />
             </main>
         );

@@ -69,6 +69,14 @@ impl DesktopItemError {
             message: format!("桌面项目事件发布失败: {error}"),
         }
     }
+
+    /// 创建桌面项目与工作区位置协调错误。
+    pub fn workspace_reconciliation_failed(error: &impl std::fmt::Display) -> Self {
+        Self {
+            code: "desktop-item-workspace-reconciliation-failed".to_string(),
+            message: format!("桌面项目位置协调失败: {error}"),
+        }
+    }
 }
 
 /// 桌面项目快照变化事件名称。

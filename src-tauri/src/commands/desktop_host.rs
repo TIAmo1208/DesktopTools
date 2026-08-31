@@ -57,12 +57,50 @@ pub fn update_desktop_host_hit_map(
     Ok(snapshot)
 }
 
+/// 暂停正式宿主命中裁剪以承接连续指针拖动。
+#[tauri::command]
+pub fn begin_desktop_host_input_drag(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopHostRuntime>>,
+) -> Result<DesktopHostSnapshot, DesktopHostError> {
+    // 已暂停命中裁剪的正式宿主快照。
+    let snapshot = begin_input_drag(&state)?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+/// 恢复正式宿主最近一份完整语义命中图。
+#[tauri::command]
+pub fn end_desktop_host_input_drag(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopHostRuntime>>,
+) -> Result<DesktopHostSnapshot, DesktopHostError> {
+    // 已恢复命中图的正式宿主快照。
+    let snapshot = end_input_drag(&state)?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
 /// 替换命中图并发布 transport 共享的正式宿主快照。
 pub(crate) fn replace_hit_map(
     runtime: &DesktopHostRuntime,
     hit_regions: Vec<HitRegion>,
 ) -> Result<DesktopHostSnapshot, DesktopHostError> {
     runtime.update_hit_map(hit_regions)
+}
+
+/// 暂停 transport 共享的正式宿主命中裁剪。
+pub(crate) fn begin_input_drag(
+    runtime: &DesktopHostRuntime,
+) -> Result<DesktopHostSnapshot, DesktopHostError> {
+    runtime.begin_input_drag()
+}
+
+/// 恢复 transport 共享的正式宿主命中图。
+pub(crate) fn end_input_drag(
+    runtime: &DesktopHostRuntime,
+) -> Result<DesktopHostSnapshot, DesktopHostError> {
+    runtime.end_input_drag()
 }
 
 /// 记录最小桌面项目输入回传并尝试提交接管。

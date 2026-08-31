@@ -1,5 +1,7 @@
+import type { CSSProperties, PointerEventHandler } from "react";
+
 import type { DesktopItemSnapshot } from "../../contracts/desktopItem";
-import { projectDesktopItems } from "./desktopItemViewModel";
+import { projectDesktopItems, type DesktopItemViewModel } from "./desktopItemViewModel";
 import "./DesktopItemGrid.css";
 
 /** 定义桌面项目网格接收的快照与错误状态。 */
@@ -9,6 +11,42 @@ interface DesktopItemGridProps {
     desktopHost?: boolean;
     onItemInput?: (itemId: string) => void;
 }
+
+/** 定义可在未归类区域和围栏中复用的桌面项目单元。 */
+interface DesktopItemTileProps {
+    item: DesktopItemViewModel;
+    desktopHost?: boolean;
+    className?: string;
+    style?: CSSProperties;
+    onItemInput?: (itemId: string) => void;
+    onItemPointerDown?: PointerEventHandler<HTMLLIElement>;
+    fenceMemberId?: string;
+}
+
+/** 呈现一个由 Windows Shell 提供身份与系统图像的桌面项目。 */
+export const DesktopItemTile = ({ item, desktopHost = false, className, style, onItemInput, onItemPointerDown, fenceMemberId }: DesktopItemTileProps) => (
+    <li
+        className={`desktop-item${className ? ` ${className}` : ""}`}
+        data-availability={item.isAvailable ? "available" : "unavailable"}
+        data-hit-id={desktopHost ? item.key : undefined}
+        data-hit-kind={desktopHost ? "desktop-item" : undefined}
+        data-hit-priority={desktopHost ? "70" : undefined}
+        data-fence-member-id={fenceMemberId}
+        style={style}
+        onPointerDown={(event) => {
+            onItemInput?.(item.key);
+            onItemPointerDown?.(event);
+        }}
+    >
+        <div className="desktop-item__image" aria-hidden="true">
+            {item.imageSource && <img src={item.imageSource} alt="" draggable={false} />}
+        </div>
+        <span className="desktop-item__label" title={item.label}>
+            {item.label}
+        </span>
+        {!item.isAvailable && <span className="desktop-item__status">等待恢复</span>}
+    </li>
+);
 
 /** 呈现 Windows Shell 提供的真实桌面项目集合。 */
 export const DesktopItemGrid = ({ snapshot, failure, desktopHost = false, onItemInput }: DesktopItemGridProps) => {
@@ -37,23 +75,7 @@ export const DesktopItemGrid = ({ snapshot, failure, desktopHost = false, onItem
 
             <ul className="desktop-items__grid">
                 {items.map((item) => (
-                    <li
-                        className="desktop-item"
-                        data-availability={item.isAvailable ? "available" : "unavailable"}
-                        data-hit-id={desktopHost ? item.key : undefined}
-                        data-hit-kind={desktopHost ? "desktop-item" : undefined}
-                        data-hit-priority={desktopHost ? "70" : undefined}
-                        key={item.key}
-                        onPointerDown={() => onItemInput?.(item.key)}
-                    >
-                        <div className="desktop-item__image" aria-hidden="true">
-                            {item.imageSource && <img src={item.imageSource} alt="" />}
-                        </div>
-                        <span className="desktop-item__label" title={item.label}>
-                            {item.label}
-                        </span>
-                        {!item.isAvailable && <span className="desktop-item__status">等待恢复</span>}
-                    </li>
+                    <DesktopItemTile key={item.key} item={item} desktopHost={desktopHost} onItemInput={onItemInput} />
                 ))}
             </ul>
         </section>
