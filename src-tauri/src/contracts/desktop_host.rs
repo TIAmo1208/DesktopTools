@@ -35,10 +35,24 @@ pub enum TakeoverPhase {
     Restored,
 }
 
-/// 单显示器正式宿主使用的物理工作区。
+/// 一台正式宿主使用的显示器身份、物理边界、工作区与 DPI。
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopHostMonitor {
+    /// Windows 显示设备提供的稳定身份。
+    pub id: String,
+    /// Windows 显示设备的用户可见名称。
+    pub name: String,
+    /// 当前显示器是否为主显示器。
+    pub primary: bool,
+    /// 完整显示器物理横坐标。
+    pub x: i32,
+    /// 完整显示器物理纵坐标。
+    pub y: i32,
+    /// 完整显示器物理像素宽度。
+    pub width: u32,
+    /// 完整显示器物理像素高度。
+    pub height: u32,
     /// 工作区物理横坐标。
     pub work_x: i32,
     /// 工作区物理纵坐标。
@@ -51,6 +65,16 @@ pub struct DesktopHostMonitor {
     pub scale_factor: f64,
     /// 当前显示器有效 DPI。
     pub dpi: u32,
+}
+
+/// 一台显示器宿主的独立上下文快照。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopHostContextSnapshot {
+    /// 当前宿主对应的显示器状态。
+    pub monitor: DesktopHostMonitor,
+    /// 当前宿主独立的六项启动门槛。
+    pub readiness: DesktopHostReadiness,
 }
 
 /// 正式桌面接管的六项门槛状态。
@@ -79,10 +103,8 @@ pub struct DesktopHostSnapshot {
     pub phase: TakeoverPhase,
     /// Explorer 桌面项目接管是否已经提交。
     pub committed: bool,
-    /// 正式宿主使用的单显示器工作区。
-    pub monitor: DesktopHostMonitor,
-    /// 当前六项启动门槛状态。
-    pub readiness: DesktopHostReadiness,
+    /// 当前每台显示器对应的独立宿主上下文。
+    pub hosts: Vec<DesktopHostContextSnapshot>,
 }
 
 /// React 发布的一个语义交互命中区域。
@@ -109,6 +131,8 @@ pub struct HitRegion {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrontendHostReadiness {
+    /// 当前页面所属的显示器稳定身份。
+    pub monitor_id: String,
     /// 当前页面视口宽度。
     pub viewport_width: f64,
     /// 当前页面视口高度。

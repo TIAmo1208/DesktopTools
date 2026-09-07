@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DesktopItemContractError, parseDesktopItemSnapshot } from "./desktopItem.ts";
+import { DesktopItemContractError, parseDesktopItemSnapshot, parseShellOperationResult } from "./desktopItem.ts";
 
 // 验证 Shell 快照保留可用项目与暂时解析失败项目。
 test("accepts available and recoverable desktop items", () => {
@@ -46,4 +46,32 @@ test("rejects an unknown desktop item availability", () => {
             }),
         (error: unknown) => error instanceof DesktopItemContractError && error.code === "invalid-desktop-item-snapshot",
     );
+});
+
+// 验证 Shell 操作结果保留实际项目状态与不可逆属性。
+test("accepts an actual permanent Shell operation result", () => {
+    const result = parseShellOperationResult({
+        operationId: 8,
+        completedAtUnixMicros: 1_788_198_400_000_000,
+        kind: "permanent-delete",
+        aborted: false,
+        reversible: false,
+        permanent: true,
+        effect: null,
+        items: [
+            {
+                sourceReference: "C:\\Users\\User\\Desktop\\obsolete.txt",
+                resultReference: null,
+                succeeded: true,
+                resultCode: 0,
+            },
+        ],
+        message: "永久删除完成：1 项",
+    });
+
+    assert.equal(result.operationId, 8);
+    assert.equal(result.completedAtUnixMicros, 1_788_198_400_000_000);
+    assert.equal(result.kind, "permanent-delete");
+    assert.equal(result.permanent, true);
+    assert.equal(result.items[0].succeeded, true);
 });

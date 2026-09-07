@@ -16,6 +16,20 @@ export const getDesktopHostSnapshot = async (): Promise<DesktopHostSnapshot> => 
     return parseDesktopHostSnapshot(response);
 };
 
+/** 从右上角测试面板请求应用正常退出。 */
+export const exitDesktopTools = async (): Promise<void> => {
+    await invokeRuntime("exit_desktop_tools").catch((error: unknown) => {
+        throw parseApplicationCommandError(error);
+    });
+};
+
+/** 上报逐屏 Renderer 存活心跳。 */
+export const recordDesktopHostRendererHeartbeat = async (monitorId: string): Promise<void> => {
+    await invokeRuntime("record_desktop_host_renderer_heartbeat", { monitorId }).catch((error: unknown) => {
+        throw parseApplicationCommandError(error);
+    });
+};
+
 /** 发布页面、系统图像和完整命中图准备证据。 */
 export const publishDesktopHostReadiness = async (report: FrontendHostReadiness): Promise<DesktopHostSnapshot> => {
     // 等待契约校验的前端准备 command 返回值。
@@ -26,36 +40,36 @@ export const publishDesktopHostReadiness = async (report: FrontendHostReadiness)
 };
 
 /** 原子替换页面布局变化后的完整语义命中图。 */
-export const updateDesktopHostHitMap = async (hitRegions: HitRegion[]): Promise<DesktopHostSnapshot> => {
+export const updateDesktopHostHitMap = async (monitorId: string, hitRegions: HitRegion[]): Promise<DesktopHostSnapshot> => {
     // 等待契约校验的命中图 command 返回值。
-    const response = await invokeRuntime<unknown>("update_desktop_host_hit_map", { hitRegions }).catch((error: unknown) => {
+    const response = await invokeRuntime<unknown>("update_desktop_host_hit_map", { monitorId, hitRegions }).catch((error: unknown) => {
         throw parseApplicationCommandError(error);
     });
     return parseDesktopHostSnapshot(response);
 };
 
 /** 暂停正式宿主命中裁剪以承接连续指针拖动。 */
-export const beginDesktopHostInputDrag = async (): Promise<DesktopHostSnapshot> => {
+export const beginDesktopHostInputDrag = async (monitorId: string): Promise<DesktopHostSnapshot> => {
     // 等待契约校验的拖动开始 command 返回值。
-    const response = await invokeRuntime<unknown>("begin_desktop_host_input_drag").catch((error: unknown) => {
+    const response = await invokeRuntime<unknown>("begin_desktop_host_input_drag", { monitorId }).catch((error: unknown) => {
         throw parseApplicationCommandError(error);
     });
     return parseDesktopHostSnapshot(response);
 };
 
 /** 结束连续指针拖动并恢复完整命中图。 */
-export const endDesktopHostInputDrag = async (): Promise<DesktopHostSnapshot> => {
+export const endDesktopHostInputDrag = async (monitorId: string): Promise<DesktopHostSnapshot> => {
     // 等待契约校验的拖动结束 command 返回值。
-    const response = await invokeRuntime<unknown>("end_desktop_host_input_drag").catch((error: unknown) => {
+    const response = await invokeRuntime<unknown>("end_desktop_host_input_drag", { monitorId }).catch((error: unknown) => {
         throw parseApplicationCommandError(error);
     });
     return parseDesktopHostSnapshot(response);
 };
 
 /** 通过桌面项目点击处理器回传最小输入探针。 */
-export const recordDesktopHostInputProbe = async (itemId: string): Promise<DesktopHostSnapshot> => {
+export const recordDesktopHostInputProbe = async (monitorId: string, itemId: string): Promise<DesktopHostSnapshot> => {
     // 等待契约校验的输入探针 command 返回值。
-    const response = await invokeRuntime<unknown>("record_desktop_host_input_probe", { itemId }).catch((error: unknown) => {
+    const response = await invokeRuntime<unknown>("record_desktop_host_input_probe", { monitorId, itemId }).catch((error: unknown) => {
         throw parseApplicationCommandError(error);
     });
     return parseDesktopHostSnapshot(response);

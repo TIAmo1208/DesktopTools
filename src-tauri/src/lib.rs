@@ -1,5 +1,6 @@
 mod app;
 mod commands;
+mod component_runtime;
 pub mod contracts;
 mod host;
 mod persistence;
@@ -8,20 +9,30 @@ pub mod recovery;
 mod shell;
 /// 提供 Rust 后端共享基础工具。
 pub mod tools;
+mod virtual_desktop;
 mod workspace;
 
 use app::ApplicationState;
 use commands::{
-    apply_workspace_command, begin_desktop_host_input_drag, end_desktop_host_input_drag,
-    get_application_snapshot, get_desktop_host_snapshot, get_desktop_item_snapshot,
-    get_workspace_snapshot, publish_desktop_host_readiness, record_desktop_host_input_probe,
-    set_application_status, update_desktop_host_hit_map,
+    apply_workspace_command, apply_workspace_interaction, begin_desktop_host_input_drag,
+    create_virtual_desktop, delete_desktop_items, delete_virtual_desktop,
+    end_desktop_host_input_drag, exit_desktop_tools, get_application_snapshot,
+    get_component_runtime_snapshot, get_desktop_host_snapshot, get_desktop_item_snapshot,
+    get_virtual_desktop_snapshot, get_workspace_snapshot, inspect_workspace_backup,
+    invoke_component_capability, list_workspace_auto_snapshots, open_desktop_items,
+    paste_desktop_items, publish_desktop_host_readiness, record_desktop_host_input_probe,
+    record_desktop_host_renderer_heartbeat, redo_workspace, rename_desktop_item,
+    restore_virtual_desktop_archive, restore_workspace_backup, set_application_status,
+    set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor,
+    start_desktop_item_drag, undo_workspace, update_desktop_host_hit_map, write_workspace_backup,
 };
+use component_runtime::ComponentRuntimeState;
 use host::DesktopHostRuntime;
 use shell::DesktopItemState;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 use tauri::{Manager, RunEvent};
+use virtual_desktop::VirtualDesktopState;
 use workspace::WorkspaceState;
 
 /// 创建并运行 Desktop Tools 正式应用。
@@ -42,34 +53,82 @@ pub fn run() {
         let _ = tools::log::shutdown();
         panic!("FATAL Shell STA 运行时启动失败: {}", error.message);
     });
+    let component_runtime = ComponentRuntimeState::new(); // 已隔离加载失败的官方组件注册表。
+    let default_components = component_runtime.default_instances(); // 新虚拟桌面使用的官方默认组件集合。
     // Tauri 应用构建结果。
     let app = tauri::Builder::default()
         .manage(ApplicationState::default())
         .manage(desktop_items)
+        .manage(component_runtime)
         .invoke_handler(tauri::generate_handler![
             get_application_snapshot,
             get_desktop_host_snapshot,
             get_desktop_item_snapshot,
+            get_component_runtime_snapshot,
+            invoke_component_capability,
+            open_desktop_items,
+            rename_desktop_item,
+            delete_desktop_items,
+            set_desktop_item_clipboard,
+            paste_desktop_items,
+            start_desktop_item_drag,
+            show_workspace_context_menu,
             get_workspace_snapshot,
+            get_virtual_desktop_snapshot,
+            create_virtual_desktop,
+            delete_virtual_desktop,
+            restore_virtual_desktop_archive,
+            write_workspace_backup,
+            inspect_workspace_backup,
+            list_workspace_auto_snapshots,
+            restore_workspace_backup,
+            undo_workspace,
+            redo_workspace,
             apply_workspace_command,
+            apply_workspace_interaction,
             begin_desktop_host_input_drag,
             end_desktop_host_input_drag,
+            exit_desktop_tools,
             publish_desktop_host_readiness,
             record_desktop_host_input_probe,
+            record_desktop_host_renderer_heartbeat,
             set_application_status,
             update_desktop_host_hit_map,
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            let (virtual_desktops, virtual_desktop_changes) = VirtualDesktopState::new()?; // 当前 Windows 版本隔离适配器与生命周期接收端。
+            let virtual_desktop_environment = virtual_desktops.environment()?; // 启动时完整虚拟桌面身份集合。
             // 当前 Windows 用户独占的正式工作区快照路径。
             let workspace_path = app.path().app_data_dir()?.join("workspace-layout.json");
             // 启动前完成恢复的权威工作区状态。
-            let workspace = WorkspaceState::load(workspace_path)?;
+            let workspace = WorkspaceState::load_for_virtual_desktops_with_components(
+                workspace_path,
+                &virtual_desktop_environment.current_id,
+                &virtual_desktop_environment.desktop_ids,
+                &default_components,
+            )?;
             app.manage(workspace);
+            app.manage(virtual_desktops);
 
-            // 正式单显示器宿主运行时。
+            // 正式逐屏宿主运行时。
             let desktop_host = DesktopHostRuntime::start(app.handle())?;
             app.manage(Arc::clone(&desktop_host));
-            DesktopHostRuntime::start_watchdog(app.handle().clone(), desktop_host);
+            // Shell 变化通知由唯一协调线程消费。
+            let changes = app
+                .state::<DesktopItemState>()
+                .take_change_receiver()
+                .map_err(|error| error.message)?;
+            start_desktop_item_change_monitor(app.handle().clone(), changes);
+            DesktopHostRuntime::start_environment_watchdog(
+                app.handle().clone(),
+                Arc::clone(&app.state::<Arc<DesktopHostRuntime>>()),
+            );
+            DesktopHostRuntime::start_renderer_watchdog(
+                app.handle().clone(),
+                Arc::clone(&app.state::<Arc<DesktopHostRuntime>>()),
+            );
+            VirtualDesktopState::start_monitor(app.handle().clone(), virtual_desktop_changes);
+            ComponentRuntimeState::start_host_events(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!());

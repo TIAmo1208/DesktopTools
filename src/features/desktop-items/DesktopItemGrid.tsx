@@ -1,4 +1,4 @@
-import type { CSSProperties, PointerEventHandler } from "react";
+import type { CSSProperties, MouseEventHandler, PointerEventHandler } from "react";
 
 import type { DesktopItemSnapshot } from "../../contracts/desktopItem";
 import { projectDesktopItems, type DesktopItemViewModel } from "./desktopItemViewModel";
@@ -20,14 +20,43 @@ interface DesktopItemTileProps {
     style?: CSSProperties;
     onItemInput?: (itemId: string) => void;
     onItemPointerDown?: PointerEventHandler<HTMLLIElement>;
+    onItemDoubleClick?: MouseEventHandler<HTMLLIElement>;
+    onItemContextMenu?: MouseEventHandler<HTMLLIElement>;
     fenceMemberId?: string;
+    selected?: boolean;
+    keyboardFocused?: boolean;
+    renaming?: boolean;
+    renameValue?: string;
+    onRenameValueChange?: (value: string) => void;
+    onRenameCommit?: () => void;
+    onRenameCancel?: () => void;
 }
 
 /** 呈现一个由 Windows Shell 提供身份与系统图像的桌面项目。 */
-export const DesktopItemTile = ({ item, desktopHost = false, className, style, onItemInput, onItemPointerDown, fenceMemberId }: DesktopItemTileProps) => (
+export const DesktopItemTile = ({
+    item,
+    desktopHost = false,
+    className,
+    style,
+    onItemInput,
+    onItemPointerDown,
+    onItemDoubleClick,
+    onItemContextMenu,
+    fenceMemberId,
+    selected = false,
+    keyboardFocused = false,
+    renaming = false,
+    renameValue = "",
+    onRenameValueChange,
+    onRenameCommit,
+    onRenameCancel,
+}: DesktopItemTileProps) => (
     <li
         className={`desktop-item${className ? ` ${className}` : ""}`}
         data-availability={item.isAvailable ? "available" : "unavailable"}
+        data-item-id={item.key}
+        data-selected={selected ? "true" : undefined}
+        data-keyboard-focus={keyboardFocused ? "true" : undefined}
         data-hit-id={desktopHost ? item.key : undefined}
         data-hit-kind={desktopHost ? "desktop-item" : undefined}
         data-hit-priority={desktopHost ? "70" : undefined}
@@ -37,13 +66,41 @@ export const DesktopItemTile = ({ item, desktopHost = false, className, style, o
             onItemInput?.(item.key);
             onItemPointerDown?.(event);
         }}
+        onDoubleClick={onItemDoubleClick}
+        onContextMenu={onItemContextMenu}
     >
         <div className="desktop-item__image" aria-hidden="true">
             {item.imageSource && <img src={item.imageSource} alt="" draggable={false} />}
         </div>
-        <span className="desktop-item__label" title={item.label}>
-            {item.label}
-        </span>
+        {renaming ? (
+            <input
+                className="desktop-item__rename"
+                value={renameValue}
+                aria-label={`重命名 ${item.label}`}
+                autoFocus
+                onFocus={(event) => event.currentTarget.select()}
+                onChange={(event) => onRenameValueChange?.(event.currentTarget.value)}
+                onPointerDown={(event) => event.stopPropagation()}
+                onBlur={(event) => {
+                    if (event.currentTarget.dataset.cancelled !== "true") onRenameCommit?.();
+                }}
+                onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                        event.preventDefault();
+                        event.currentTarget.blur();
+                    } else if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.currentTarget.dataset.cancelled = "true";
+                        onRenameCancel?.();
+                        event.currentTarget.blur();
+                    }
+                }}
+            />
+        ) : (
+            <span className="desktop-item__label" title={item.label}>
+                {item.label}
+            </span>
+        )}
         {!item.isAvailable && <span className="desktop-item__status">等待恢复</span>}
     </li>
 );

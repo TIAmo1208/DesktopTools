@@ -11,9 +11,9 @@ Desktop Tools 自绘桌面项目的产品方向具备公开 API 基础。Windows
 
 公开 Shell API 直接提供项目身份、文件操作、真实菜单、系统剪贴板和 OLE 拖放语义。公开契约未提供 Explorer 桌面视图的选择与焦点状态机；选择模型、框选规则、键盘导航、围栏布局、项目排序、内部滚动、折叠状态、跨显示器归属和拖动反馈由 Desktop Tools 产品层实现，并以 Windows 系统交互作为强制验收基线。
 
-严格桌面接管当前仍受宿主层阻塞。Microsoft 公开契约覆盖 WebView2 的应用自有 HWND 和合成视觉树；Explorer `WorkerW`、`Progman + 0x052C`、`SHELLDLL_DefView` 的第三方宿主语义属于私有兼容层。当前 Windows 10 人工结果已经判定“创建后 `SetParent` 到 WorkerW”路径失败。
+Microsoft 公开契约覆盖 WebView2 的应用自有 HWND 和合成视觉树；Explorer `WorkerW`、`Progman + 0x052C`、`SHELLDLL_DefView` 的第三方宿主语义属于私有兼容层。当前 Windows 10 人工结果判定“创建后 `SetParent` 到 WorkerW”路径失败，正式实现已改用独立 Win32/WebView2 Windowed 宿主并聚焦当前平台运行结果。
 
-`Tauri WindowBuilder::parent_raw` 创建期实验到独立 Win32/WebView2 适配器的顺序正确。创建期实验只验证 Tauri 生命周期是否造成当前失败；它保持一次、短周期和明确退出条件。实验失败后，独立适配器直接持有最终 HWND、WebView2 controller、OLE drop target 与消息循环。独立适配器在任一目标系统仍无法稳定产生桌面层像素时，严格桌面接管进入产品阻塞状态。
+`Tauri WindowBuilder::parent_raw` 创建期实验到独立 Win32/WebView2 适配器的顺序正确。创建期实验只验证 Tauri 生命周期是否造成当前失败；它保持一次、短周期和明确退出条件。实验失败后，独立适配器直接持有最终 HWND、WebView2 controller、OLE drop target 与消息循环。其他 Windows 版本保留兼容入口，但不再阻塞当前 Windows 10 平台实现。
 
 ## 能力对齐矩阵
 
@@ -91,6 +91,14 @@ Rust broker 的操作顺序应为：
 [`IFileOperation::SetOperationFlags`](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ifileoperation-setoperationflags) 的 `FOFX_ADDUNDORECORD` 表示用户触发的操作应加入 Shell 撤销记录；`FOF_ALLOWUNDO` 请求 Shell 尽可能保存撤销信息。公共 `IFileOperation` 接口的能力边界止于写入撤销记录，读取、定位和执行 Explorer 会话撤销栈位于接口范围之外。
 
 [`IFileOperationProgressSink`](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-ifileoperationprogresssink) 在操作完成后返回实际源项目、目标项目、最终名称、结果项目和 `HRESULT`。Desktop Tools 在当前应用会话中使用这些公开结果建立自有可逆操作日志，并通过新的 `IFileOperation` 提交重命名、移动、复制和移入回收站的补偿操作或重做，同时为原始操作与补偿操作分别请求写入 Explorer 会话撤销记录；永久删除保持不可撤销。补偿操作继续使用原生 Shell 确认与错误界面，部分成功和用户选择按实际结果更新日志。Shell 变化通知对账 Explorer 外部撤销或重做；明确匹配时更新对应记录，结果存在歧义时终止对应记录及后续重做链。当前虚拟桌面的布局历史与共享 Shell 操作日志按完成时间组成统一时间线；文本控件获得焦点时处理自身撤销，桌面内容工作区获得焦点时 `Ctrl+Z/Y` 作用于最近一项。
+
+截至 2026-09-01，正式实现会在 `Pre*` 回调保存源项目父级和编辑名称，并在 `Post*` 回调保存 Shell 实际结果引用；只有结果引用和补偿元数据完整的成功项目进入可执行历史。移入回收站后若 Shell 没有返回可重新解析的结果引用，该项目明确保持不可补偿，而不是猜测回收站内容。统一时间线使用完成时间选择当前虚拟桌面的最近布局单元或共享 Shell 单元，部分补偿只把实际成功且仍有结果引用的项目带入相反方向。该链路的 Windows 10/11 实机行为仍属于最终验收范围，不能由冻结原型或静态检查替代。
+
+### 工作区备份契约
+
+冻结的 `tauri-desktop-host` 原型没有实现自动快照、手动备份、Schema 迁移、完整性校验或统一还原，因此这些能力不能声称来自原型运行验证。正式工作区文件使用 Schema 3：版本、创建时间和完整性字段包裹全部活动虚拟桌面布局、删除布局归档、显示器身份、围栏状态和桌面项目引用。完整性字段使用固定 FNV-1a 64 位值发现意外损坏，不承担签名或跨用户真实性证明。
+
+主工作区文件、手动备份和自动快照共用 UTF-8 JSON 与同目录原子替换路径。每个虚拟桌面在最后一次持久变化空闲 2 秒后写入完整工作区快照，并按桌面身份保留最近 20 份；还原前同步写入的完整快照计入发起还原时当前桌面的同一配额。读取先在临时副本中识别 Schema 3、迁移 Ticket 10 的 Schema 2 或旧单布局格式，再校验完整性和每份布局。完整还原先构造候选状态，必要时为备份中缺失的布局创建新 Windows 虚拟桌面，然后执行“还原前快照、原子文件替换、内存替换”；较新版本、损坏、迁移失败或保存失败不修改当前工作区，新建桌面在失败路径回滚。
 
 ## 4. 真实 Shell 上下文菜单
 
@@ -175,7 +183,7 @@ Tauri 2.11.5 的 [`WindowBuilder::parent_raw`](https://docs.rs/tauri/2.11.5/taur
 3. **一次 Tauri 创建期实验**：发现最终 render host 后，使用 `WindowBuilder::parent_raw(render_host)` 创建外层窗口，再调用 `Window::add_child`；删除创建后的样式改写和 `SetParent`。本阶段只验证宿主，不扩展 Shell broker 功能。
 4. **独立 Win32/WebView2 windowed 适配器**：创建期实验失败后，由 Rust 原生模块直接创建最终 child HWND 和 controller，持有 Bounds、visibility、position notification、WndProc、STA/OLE 消息循环和恢复状态。Tauri 保留设置窗口、控制面与应用级 IPC。
 5. **独立 Visual hosting 实验**：windowed 适配器仍出现透明合成问题时，使用 `ICoreWebView2CompositionController` 建立 DirectComposition tree，并实现输入转发。
-6. **严格接管判定**：任一目标系统无法满足桌面层像素、输入、Win+D、Explorer 重启与恢复门槛时，严格桌面接管保持阻塞。
+6. **当前平台接管判定**：Windows 10 当前环境验证桌面层像素、输入、Win+D、Explorer 重启与恢复；其他 Windows 版本不再作为当前实现阻塞。
 
 `parent_raw` 验证创建时机与 Tauri 管理路径。它接收的目标宿主来自 Explorer 私有桌面层能力，集成契约等级继续属于私有兼容。独立原生适配器可以提升可观测性和 controller 控制力，也继续承担 Explorer 私有宿主兼容风险。
 
@@ -219,28 +227,42 @@ Microsoft [`GetShellWindow`](https://learn.microsoft.com/en-us/windows/win32/api
 | 创建后改样式并 `SetParent` | Windows 10 视觉失败 | 执行一次创建期 `parent_raw` 实验 |
 | `WorkerW/0x052C/DefView` 直接散布在平台代码 | 私有兼容路径 | 收敛到单一宿主适配器 |
 
-## 12. 严格桌面接管的阻塞门槛
+## 12. 当前平台自动桌面接管门槛
 
 接管提交必须等待以下条件全部成立：
 
 1. 每台显示器的宿主 HWND、WebView2 controller 和前端 snapshot 就绪。
 2. 每台显示器通过真实截图或像素探针确认 Desktop Tools 产生可见像素。
 3. 每台显示器的透明区域继续显示壁纸，工作区边界停在任务栏上方。
-4. pointer、keyboard、native menu 和 OLE drop target 完成最小交互探针。
+4. 首份 pointer、keyboard、native menu 和 OLE drop target 语义命中图已发布。
 5. guardian 已保存 Explorer 原始图标状态并完成独立进程握手。
-6. 以上条件成立后执行隐藏 Explorer 图标与 `takeover.committed`。
+6. 以上条件成立后自动隐藏 Explorer 图标并提交 `takeover.committed`，不等待人工输入且不设置启动自动退出。
 
-Windows 10 22H2 和 Windows 11 25H2 使用同一套强制验收。矩阵覆盖启动闪烁、双显示器与混合 DPI、任务栏工作区、Win+D、Explorer 重启、锁屏恢复、正常退出、`Ctrl+C`、主进程崩溃和 guardian 恢复。日志属于诊断证据；实际像素、输入和恢复结果构成验收证据。
+当前 Windows 10 22H2 平台执行强制验收。矩阵覆盖启动闪烁、双显示器与混合 DPI、任务栏工作区、Win+D、Explorer 重启、锁屏恢复、正常退出、`Ctrl+C`、主进程崩溃和 guardian 恢复。日志属于诊断证据；实际像素、输入和恢复结果构成验收证据。
 
 ## 13. Windows 虚拟桌面契约
 
 Microsoft 公开 [`IVirtualDesktopManager`](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-ivirtualdesktopmanager) 提供三项顶层窗口能力：判断窗口是否位于当前虚拟桌面、读取窗口所属桌面 GUID，以及把窗口移动到已知桌面 GUID。该公开契约覆盖窗口归属查询与迁移。
 
-Desktop Tools 的每虚拟桌面独立布局还需要枚举虚拟桌面、读取当前桌面身份、监听创建、删除和切换，以及验证身份跨 Explorer 生命周期的稳定性。这些能力由版本相关的私有 COM 服务提供，并集中在独立 `VirtualDesktopAdapter` 中。适配器在 Windows 10 22H2 与 Windows 11 25H2 执行相同强制验收；任一目标系统无法稳定映射独立布局时，Milestone 1 进入阻塞状态。
+Desktop Tools 的每虚拟桌面独立布局还需要枚举虚拟桌面、读取当前桌面身份、监听创建、删除和切换，以及验证身份跨 Explorer 生命周期的稳定性。这些能力由版本相关的私有 COM 服务提供，并集中在独立 `VirtualDesktopAdapter` 中。当前 Windows 10 22H2 平台验证完整能力；其他 Windows 版本保留隔离兼容定义但不再阻塞当前实现。
+
+冻结的 `tauri-desktop-host` 原型没有实现虚拟桌面枚举、创建、删除或生命周期通知，因此这部分不能声称来自原型运行验证。正式兼容层通过 `ImmersiveShell` 的 `IServiceProvider` 查询 `VirtualDesktopManagerInternal` 服务，并按目标系统隔离私有 ABI：Windows 10 22H2 使用对应的 Manager IID、Desktop IID 与创建、删除、查找 vtable；Windows 11 24H2+/25H2 使用 Microsoft TypeAgent [`WindowsVirtualDesktopService`](https://github.com/microsoft/TypeAgent/blob/main/dotnet/autoShell/Services/WindowsVirtualDesktopService.cs) 当前采用的 Manager IID、Desktop IID 与包含 `SwitchDesktopAndMoveForegroundView` 的 vtable。Desktop Tools 将服务 CLSID、接口 IID 和 vtable 定义限制在 `platform/windows/virtual_desktop.rs`，上层只接收稳定身份、环境快照和生命周期事实。
 
 每个虚拟桌面呈现同一完整 Shell 桌面项目集合，并分别保存围栏归属、位置、组件和滚动状态。虚拟桌面划分 Desktop Tools 布局状态，Windows Shell 桌面命名空间继续作为共享项目来源。
 
-## 14. 当前项目交叉引用
+## 14. 官方组件原型与正式实现边界
+
+冻结原型在 `ui/index.html` 中直接声明“本地时间”静态组件，在 `ui/app.js` 中通过 `renderClock`、`makeDraggable` 和刷新按钮完成时间呈现、拖动、刷新及命中图更新，视觉规则位于 `ui/styles.css`。原型没有组件清单、能力授权、实例注册、版本化状态或工作区持久化，因此这些能力不能声称经过原型验证。
+
+正式实现保留原型已经验证的透明表面、组件命中区域、标题拖动和刷新路径，并由 Component Runtime 增加官方清单校验、宿主能力授权、实例隔离失败状态、宿主事件、逐虚拟桌面组件快照以及跨显示器临时投射。公开 Component SDK、第三方分发、市场和沙箱策略仍属于后续里程碑，不进入 Milestone 1。
+
+## 15. 生命周期恢复的原型与正式实现边界
+
+冻结原型通过 `reload_renderer` 对当前 WebView 执行 `window.location.reload()`，因此验证的是“保留原生宿主和命中图的人工轻量重载”，没有自动 Renderer 失效检测。原型的 Shell monitor 会在 Explorer 宿主或显示器变化后重建 Windowed WebView2，并重新等待首帧、图像、输入和命中图门槛；guardian 在主进程异常退出后重新发现 Explorer，但只恢复启动时记录的项目可见状态。
+
+正式实现沿用相同的轻量重载和整组重建路径，并增加逐屏 Renderer 心跳、重载重试、连续适配器失败恢复、恢复后窗口状态检查，以及通过 `SHGetSettings(SSF_HIDEICONS)` 持续观察用户“显示桌面图标”设置。正常退出、主进程异常和 `Ctrl+C` 最终均恢复最近观察到的用户设置；正常启动不再设置自动退出，当前平台的实际信号、崩溃、Explorer 重启和 WebView2 进程失效结果继续以实机行为为准。
+
+## 16. 当前项目交叉引用
 
 - Milestone 1 验收边界：ADR 0005。
 - 自绘桌面项目接管：ADR 0006；ADR 0010 保留为被取代的历史记录。

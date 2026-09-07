@@ -1,4 +1,4 @@
-# native-windowed-adapter 混合 DPI API 核对
+# 原生窗口适配器混合 DPI 接口核对
 
 日期：2026-08-27
 

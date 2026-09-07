@@ -1,0 +1,7 @@
+{
+  "id": "official.local-clock",
+  "name": "本地时间",
+  "entry": "official:local-clock",
+  "requiredCapabilities": ["read-host-time"],
+  "persistenceVersion": 1
+}

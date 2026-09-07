@@ -15,6 +15,75 @@ interface WorkspaceSize {
     height: number;
 }
 
+/** 当前围栏边缘参与吸附的方向。 */
+type FenceSnapEdges = Partial<Record<"left" | "right" | "top" | "bottom", boolean>>;
+
+/** 将围栏边缘吸附到工作区或其他围栏边缘。 */
+export const snapFenceEdges = (
+    rect: WorkspaceRect,
+    targets: WorkspaceRect[],
+    workspace: WorkspaceSize,
+    threshold = 8,
+    edges?: FenceSnapEdges,
+): WorkspaceRect => {
+    const result = { ...rect };
+    const xTargets = [0, workspace.width, ...targets.flatMap((target) => [target.left, target.left + target.width])];
+    const yTargets = [0, workspace.height, ...targets.flatMap((target) => [target.top, target.top + target.height])];
+    const nearest = (value: number, candidates: number[]) =>
+        candidates.reduce<{ value: number; distance: number } | undefined>((best, candidate) => {
+            const distance = Math.abs(candidate - value);
+            return distance <= threshold && (!best || distance < best.distance) ? { value: candidate, distance } : best;
+        }, undefined);
+
+    if (edges) {
+        const right = rect.left + rect.width;
+        const bottom = rect.top + rect.height;
+        const leftSnap = edges.left ? nearest(rect.left, xTargets) : undefined;
+        const rightSnap = edges.right ? nearest(right, xTargets) : undefined;
+        const topSnap = edges.top ? nearest(rect.top, yTargets) : undefined;
+        const bottomSnap = edges.bottom ? nearest(bottom, yTargets) : undefined;
+        if (leftSnap) {
+            result.left = Math.min(leftSnap.value, right - FENCE_MIN_WIDTH);
+            result.width = right - result.left;
+        }
+        if (rightSnap) result.width = Math.max(FENCE_MIN_WIDTH, rightSnap.value - result.left);
+        if (topSnap) {
+            result.top = Math.min(topSnap.value, bottom - FENCE_MIN_HEIGHT);
+            result.height = bottom - result.top;
+        }
+        if (bottomSnap) result.height = Math.max(FENCE_MIN_HEIGHT, bottomSnap.value - result.top);
+        return result;
+    }
+
+    const leftSnap = nearest(rect.left, xTargets);
+    const rightSnap = nearest(rect.left + rect.width, xTargets);
+    const topSnap = nearest(rect.top, yTargets);
+    const bottomSnap = nearest(rect.top + rect.height, yTargets);
+    const xDelta =
+        leftSnap && rightSnap
+            ? leftSnap.distance <= rightSnap.distance
+                ? leftSnap.value - rect.left
+                : rightSnap.value - (rect.left + rect.width)
+            : leftSnap
+              ? leftSnap.value - rect.left
+              : rightSnap
+                ? rightSnap.value - (rect.left + rect.width)
+                : 0;
+    const yDelta =
+        topSnap && bottomSnap
+            ? topSnap.distance <= bottomSnap.distance
+                ? topSnap.value - rect.top
+                : bottomSnap.value - (rect.top + rect.height)
+            : topSnap
+              ? topSnap.value - rect.top
+              : bottomSnap
+                ? bottomSnap.value - (rect.top + rect.height)
+                : 0;
+    result.left = Math.max(0, Math.min(workspace.width - result.width, result.left + xDelta));
+    result.top = Math.max(0, Math.min(workspace.height - result.height, result.top + yDelta));
+    return result;
+};
+
 /** 将移动后的围栏完整约束在当前工作区。 */
 export const moveFence = (start: WorkspaceRect, delta: PointerDelta, workspace: WorkspaceSize): WorkspaceRect => ({
     ...start,

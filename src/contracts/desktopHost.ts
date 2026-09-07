@@ -14,6 +14,7 @@ export interface HitRegion {
 
 /** React 双帧完成后发布的宿主准备证据。 */
 export interface FrontendHostReadiness {
+    monitorId: string;
     viewportWidth: number;
     viewportHeight: number;
     devicePixelRatio: number;
@@ -22,8 +23,15 @@ export interface FrontendHostReadiness {
     hitRegions: HitRegion[];
 }
 
-/** 单显示器正式宿主使用的物理工作区。 */
+/** 一台正式宿主使用的显示器身份、物理边界、工作区与 DPI。 */
 export interface DesktopHostMonitor {
+    id: string;
+    name: string;
+    primary: boolean;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
     workX: number;
     workY: number;
     workWidth: number;
@@ -32,7 +40,13 @@ export interface DesktopHostMonitor {
     dpi: number;
 }
 
-/** 正式桌面接管的六项门槛状态。 */
+/** 一台显示器宿主的独立上下文快照。 */
+export interface DesktopHostContextSnapshot {
+    monitor: DesktopHostMonitor;
+    readiness: DesktopHostReadiness;
+}
+
+/** 正式桌面接管准备状态与输入诊断状态。 */
 export interface DesktopHostReadiness {
     guardian: boolean;
     page: boolean;
@@ -46,8 +60,7 @@ export interface DesktopHostReadiness {
 export interface DesktopHostSnapshot {
     phase: TakeoverPhase;
     committed: boolean;
-    monitor: DesktopHostMonitor;
-    readiness: DesktopHostReadiness;
+    hosts: DesktopHostContextSnapshot[];
 }
 
 /** 标识正式宿主契约边界的载荷错误。 */
@@ -69,18 +82,23 @@ export const parseDesktopHostSnapshot = (value: unknown): DesktopHostSnapshot =>
     const candidate = value as Record<string, unknown>;
     if (!["starting", "ready", "committing", "committed", "failed", "restored"].includes(candidate.phase as string)) throw new DesktopHostContractError();
     if (typeof candidate.committed !== "boolean") throw new DesktopHostContractError();
-    if (typeof candidate.monitor !== "object" || candidate.monitor === null) throw new DesktopHostContractError();
-    if (typeof candidate.readiness !== "object" || candidate.readiness === null) throw new DesktopHostContractError();
+    if (!Array.isArray(candidate.hosts) || candidate.hosts.length === 0) throw new DesktopHostContractError();
+    const hosts = candidate.hosts.map((host) => {
+        if (typeof host !== "object" || host === null) throw new DesktopHostContractError();
+        const hostCandidate = host as Record<string, unknown>; // 等待字段校验的逐屏宿主上下文。
+        if (typeof hostCandidate.monitor !== "object" || hostCandidate.monitor === null) throw new DesktopHostContractError();
+        if (typeof hostCandidate.readiness !== "object" || hostCandidate.readiness === null) throw new DesktopHostContractError();
+        const monitor = hostCandidate.monitor as Record<string, unknown>; // 等待字段校验的显示器物理状态。
+        if (typeof monitor.id !== "string" || monitor.id.length === 0 || typeof monitor.name !== "string" || monitor.name.length === 0)
+            throw new DesktopHostContractError();
+        if (typeof monitor.primary !== "boolean") throw new DesktopHostContractError();
+        for (const field of ["x", "y", "width", "height", "workX", "workY", "workWidth", "workHeight", "scaleFactor", "dpi"])
+            if (typeof monitor[field] !== "number" || !Number.isFinite(monitor[field])) throw new DesktopHostContractError();
+        const readiness = hostCandidate.readiness as Record<string, unknown>; // 等待字段校验的逐屏六项门槛。
+        for (const field of ["guardian", "page", "systemImages", "pixels", "input", "hitMap"])
+            if (typeof readiness[field] !== "boolean") throw new DesktopHostContractError();
+        return hostCandidate as unknown as DesktopHostContextSnapshot;
+    }); // 已完成契约校验的逐屏宿主集合。
 
-    // 等待字段校验的物理工作区载荷。
-    const monitor = candidate.monitor as Record<string, unknown>;
-    for (const field of ["workX", "workY", "workWidth", "workHeight", "scaleFactor", "dpi"])
-        if (typeof monitor[field] !== "number" || !Number.isFinite(monitor[field])) throw new DesktopHostContractError();
-
-    // 等待字段校验的六项门槛载荷。
-    const readiness = candidate.readiness as Record<string, unknown>;
-    for (const field of ["guardian", "page", "systemImages", "pixels", "input", "hitMap"])
-        if (typeof readiness[field] !== "boolean") throw new DesktopHostContractError();
-
-    return candidate as unknown as DesktopHostSnapshot;
+    return { phase: candidate.phase as TakeoverPhase, committed: candidate.committed, hosts };
 };

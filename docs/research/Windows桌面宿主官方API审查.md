@@ -121,7 +121,7 @@ Windows 提供 `GetShellWindow` 获取 Shell 桌面窗口 HWND。该 API没有�
 
 ### 判定
 
-当前桌面层方案由正式 Win32 原语和私有 Explorer 拓扑共同组成。正式原语保证每次 API 调用的基础行为；Explorer 类名、兄弟顺序、消息参数、绘制层级及跨版本兼容性没有公共保证。Windows 10 22H2 与 Windows 11 25H2 必须分别通过真实像素和交互验收，日志门槛只能作为诊断证据。
+当前桌面层方案由正式 Win32 原语和私有 Explorer 拓扑共同组成。正式原语保证每次 API 调用的基础行为；Explorer 类名、兄弟顺序、消息参数和绘制层级没有公共保证。当前 Windows 10 22H2 平台通过真实像素和交互验收，日志门槛只作为诊断证据；其他 Windows 版本不再阻塞当前实现。
 
 ## 4. Windows Shell 项目与图标可见性
 
@@ -188,20 +188,20 @@ Microsoft 对 `IsWindowVisible` 的定义是：目标及祖先拥有 `WS_VISIBLE
 
 ### 原型判定
 
-当前 Tauri/WorkerW 原型按 Milestone 1 强制验收矩阵记为 Windows 10 22H2 失败。Windows 11 25H2 仍需独立记录；Windows 10 的失败已经足以阻止该实现直接进入正式代码。
+当前 Tauri/WorkerW 原型按 Milestone 1 强制验收矩阵记为 Windows 10 22H2 失败，因此该后置重挂载路径不能进入正式代码；正式实现采用已验证的独立 Windowed 宿主路径。
 
 ### 推荐实施边界
 
 1. **保留产品栈**：Rust、Tauri、WebView2、React 继续承担当前项目职责。
 2. **建立公开宿主基线**：依次验证 Windowed 与 Window-to-Visual 自有 HWND 的透明像素、工作区和输入。
-3. **执行一次创建期宿主实验**：在最终父 HWND 下创建 Tauri 宿主与子 WebView，并以双系统真实像素作为通过条件。
+3. **执行一次创建期宿主实验**：在最终父 HWND 下创建 Tauri 宿主与子 WebView，并以当前平台真实像素作为通过条件。
 4. **验证独立原生宿主**：创建期实验失败后，由原生桌面宿主持有 HWND、WebView2 Controller、WndProc、OLE target 与恢复状态；Tauri 保留控制面、设置和应用生命周期。
 5. **验证组合宿主**：独立 Windowed 合成失败时，由原生桌面宿主验证 CompositionController Visual hosting。
-6. **锁定严格阻塞门槛**：全部宿主路线仍有强制失败时，Milestone 1 进入阻塞状态。
+6. **锁定当前平台路径**：当前平台使用已验证的独立 Windowed 宿主，其他版本的兼容验证不阻塞本轮实现。
 
 ### 当前项目架构结论
 
-Desktop Tools 自绘并接管完整桌面项目，Explorer 提供桌面命名空间、Shell 操作和恢复兜底。Explorer 私有桌面层能力集中在可替换的兼容适配器中，宿主失败进入严格阻塞状态。
+Desktop Tools 自绘并接管完整桌面项目，Explorer 提供桌面命名空间、Shell 操作和恢复兜底。Explorer 私有桌面层能力集中在可替换的兼容适配器中，当前平台宿主失败时恢复 Explorer、保留布局并记录错误。
 
 ## 8. 当前项目交叉引用
 

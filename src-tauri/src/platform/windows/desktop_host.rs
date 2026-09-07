@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::num::NonZeroIsize;
@@ -16,23 +17,37 @@ use windows::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, POINT, RECT,
 };
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CombineRgn, CreateCompatibleDC, CreateDIBSection,
-    CreateRectRgn, DIB_RGB_COLORS, DeleteDC, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW,
-    HDC, HGDIOBJ, HMONITOR, MONITORINFO, MONITORINFOEXW, RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME,
-    RDW_INVALIDATE, RDW_UPDATENOW, RGN_OR, RedrawWindow, ScreenToClient, SelectObject,
-    SetWindowRgn,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, ClientToScreen, CombineRgn, CreateCompatibleDC,
+    CreateDIBSection, CreateRectRgn, DIB_RGB_COLORS, DeleteDC, DeleteObject, EnumDisplayMonitors,
+    GetMonitorInfoW, HDC, HGDIOBJ, HMONITOR, MONITORINFO, MONITORINFOEXW, RDW_ALLCHILDREN,
+    RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW, RGN_OR, RedrawWindow, ScreenToClient,
+    SelectObject, SetWindowRgn,
 };
 use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
+use windows::Win32::System::Com::{
+    CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+    IServiceProvider,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Ole::{
+    IDropTarget, OleInitialize, OleUninitialize, RegisterDragDrop, RevokeDragDrop,
+};
+use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::Shell::{
+    IFolderView, IShellBrowser, IShellFolder, IShellItem, IShellWindows, SHCreateItemWithParent,
+    SHELLFLAGSTATE, SHGetDesktopFolder, SHGetSettings, SID_STopLevelBrowser,
+    SIGDN_DESKTOPABSOLUTEPARSING, SSF_HIDEICONS, SVGIO_ALLVIEW, SWC_DESKTOP, SWFO_NEEDDISPATCH,
+    ShellWindows,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows,
-    FindWindowExW, FindWindowW, GWL_STYLE, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId,
-    HWND_TOP, IsWindow, IsWindowVisible, MONITORINFOF_PRIMARY, PW_RENDERFULLCONTENT,
-    RegisterClassExW, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOOWNERZORDER, SWP_NOSIZE, SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    ShowWindowAsync, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
-    WS_POPUP, WS_VISIBLE,
+    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumChildWindows,
+    EnumWindows, FindWindowExW, FindWindowW, GWL_STYLE, GetParent, GetWindowLongPtrW,
+    GetWindowThreadProcessId, HWND_TOP, IsWindow, IsWindowVisible, MONITORINFOF_PRIMARY,
+    PW_RENDERFULLCONTENT, RegisterClassExW, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetParent, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, ShowWindowAsync, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN,
+    WS_CLIPSIBLINGS, WS_POPUP, WS_VISIBLE,
 };
 use windows::core::{BOOL, Interface, PCWSTR, w};
 use wry::http::{Request, Response, StatusCode};
@@ -41,7 +56,7 @@ use wry::raw_window_handle::{
 };
 use wry::{PageLoadEvent, Rect as WryRect, WebView, WebViewBuilder, WebViewExtWindows, dpi};
 
-use crate::contracts::{DesktopHostMonitor, HitRegion};
+use crate::contracts::{DesktopHostMonitor, DesktopItem, HitRegion};
 
 /// 独立页面向正式应用共享状态发送命令的桥接接口。
 pub type NativeCommandHandler =
@@ -54,6 +69,8 @@ pub struct ShellDesktopState {
     pub def_view: isize,
     /// 当前承载 SHELLDLL_DefView 的 Explorer 窗口。
     pub explorer_host: isize,
+    /// 当前 Explorer 桌面 SysListView32 句柄。
+    pub list_view: isize,
     /// 接管前 Explorer 桌面项目可见状态。
     pub original_items_visible: bool,
 }
@@ -69,10 +86,18 @@ pub struct NativeDesktopHost {
 
 /// UI 线程持有的 Windowed WebView2 与宿主 HWND。
 struct NativeHostResources {
+    /// 当前宿主对应的显示器稳定身份。
+    monitor_id: String,
     /// Rust 持有的外层 HWND。
     hwnd: isize,
     /// Windowed WebView2 Controller。
     webview: WebView,
+    /// 当前宿主页面的独立本地协议 URL。
+    page_url: String,
+    /// 外层窗口与 WebView2 子窗口注册的 Shell 桌面投放目标。
+    drop_targets: Vec<(isize, IDropTarget)>,
+    /// 当前 UI 线程是否需要配对释放一次 OleInitialize。
+    ole_initialized: bool,
 }
 
 /// 为 Wry 暴露当前线程创建的 Win32 HWND。
@@ -101,22 +126,19 @@ struct DefViewSearch {
     explorer_host: HWND,
 }
 
-/// Windows 返回的主显示器物理状态。
-struct PrimaryMonitor {
-    /// 主显示器工作区。
-    monitor: DesktopHostMonitor,
-}
-
 thread_local! {
-    /// UI 线程持续持有的正式 Windowed WebView2 宿主。
-    static NATIVE_HOST: RefCell<Option<NativeHostResources>> = const { RefCell::new(None) };
+    /// UI 线程持续持有的全部正式 Windowed WebView2 宿主。
+    static NATIVE_HOSTS: RefCell<Vec<NativeHostResources>> = const { RefCell::new(Vec::new()) };
 }
 
 /// 最近一次前端发布的完整语义命中图。
-static HIT_REGIONS: OnceLock<RwLock<Vec<HitRegion>>> = OnceLock::new();
+static HIT_REGIONS: OnceLock<RwLock<HashMap<String, Vec<HitRegion>>>> = OnceLock::new();
 
 /// 正式宿主窗口类名称。
 const HOST_WINDOW_CLASS: windows::core::PCWSTR = w!("DesktopToolsFormalDesktopHost");
+
+/// `SHELLFLAGSTATE` 中 `fHideIcons` 对应的位。
+const SHELL_HIDE_ICONS_BIT: i32 = 1 << 12;
 
 /// 独立宿主页面命令桥初始化脚本。
 const NATIVE_BRIDGE_SCRIPT: &str = r#"
@@ -140,6 +162,8 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
     "desktop-item-snapshot-changed": "get_current_desktop_item_snapshot",
     "desktop-host-snapshot-changed": "get_desktop_host_snapshot",
     "workspace-snapshot-changed": "get_current_workspace_snapshot",
+    "component-runtime-snapshot-changed": "get_component_runtime_snapshot",
+    "component-host-event": "get_current_component_host_event",
   };
 
   // 通过只读快照轮询模拟正式宿主事件订阅。
@@ -157,6 +181,7 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
       try {
         // 当前轮次返回的类型化快照载荷。
         const payload = await invoke(command);
+        if (payload == null) return;
         // 用于变化比较的稳定 JSON 文本。
         const serialized = JSON.stringify(payload);
         if (serialized !== previous) {
@@ -178,6 +203,63 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
 /// 将保存的原始整数恢复为 HWND。
 fn raw_hwnd(raw: isize) -> HWND {
     HWND(raw as *mut c_void)
+}
+
+/// 为正式宿主和 WebView2 子窗口注册 Shell 桌面 IDropTarget。
+fn register_shell_drop_targets(hwnd: HWND) -> Result<(Vec<(isize, IDropTarget)>, bool), String> {
+    unsafe { OleInitialize(None) }.map_err(|error| format!("初始化宿主 OLE 拖放失败: {error}"))?;
+    let mut windows = vec![hwnd]; // 等待替换为 Shell 桌面投放目标的窗口集合。
+    unsafe extern "system" fn collect_child(window: HWND, parameter: LPARAM) -> BOOL {
+        let windows = unsafe { &mut *(parameter.0 as *mut Vec<HWND>) }; // 调用方持有的窗口集合。
+        windows.push(window);
+        BOOL(1)
+    }
+    let _ = unsafe {
+        EnumChildWindows(
+            Some(hwnd),
+            Some(collect_child),
+            LPARAM((&mut windows as *mut Vec<HWND>) as isize),
+        )
+    };
+    let desktop = match unsafe { SHGetDesktopFolder() } {
+        Ok(desktop) => desktop,
+        Err(error) => {
+            unsafe { OleUninitialize() };
+            return Err(format!("创建宿主 Shell 投放目标失败: {error}"));
+        }
+    }; // 提供桌面命名空间 IDropTarget 的 Shell folder。
+    let mut targets = Vec::new(); // 必须保持到宿主销毁的已注册 COM 投放目标。
+    for target_window in windows {
+        let target: IDropTarget = match unsafe { desktop.CreateViewObject(target_window) } {
+            Ok(target) => target,
+            Err(error) => {
+                crate::log_warn!(
+                    "Shell：跳过不支持桌面投放的宿主窗口，窗口句柄={:#x}，错误：{}",
+                    target_window.0 as isize,
+                    error
+                );
+                continue;
+            }
+        }; // 当前窗口对应的系统桌面投放目标。
+        let _ = unsafe { RevokeDragDrop(target_window) };
+        match unsafe { RegisterDragDrop(target_window, &target) } {
+            Ok(()) => targets.push((target_window.0 as isize, target)),
+            Err(error) => crate::log_warn!(
+                "Shell：宿主窗口投放注册失败，窗口句柄={:#x}，错误：{}",
+                target_window.0 as isize,
+                error
+            ),
+        }
+    }
+    if targets.is_empty() {
+        unsafe { OleUninitialize() };
+        return Err("正式宿主没有可用的 Shell 桌面投放目标".to_string());
+    }
+    crate::log_info!(
+        "Shell：宿主 OLE 投放目标已注册，窗口数量：{}",
+        targets.len()
+    );
+    Ok((targets, true))
 }
 
 /// 判断两个 HWND 是否属于同一个 Explorer 进程。
@@ -249,11 +331,33 @@ pub fn discover_shell_desktop() -> Result<ShellDesktopState, String> {
         return Err("未发现完整 Explorer 桌面层级".to_string());
     }
 
+    let list_view = unsafe {
+        FindWindowExW(Some(def_view), None, w!("SysListView32"), PCWSTR::null()).unwrap_or_default()
+    }; // Explorer 桌面项目原始坐标所属的列表视图。
+    if list_view.is_invalid() {
+        return Err("未发现 Explorer 桌面项目列表".to_string());
+    }
+
     Ok(ShellDesktopState {
         def_view: def_view.0 as isize,
         explorer_host: explorer_host.0 as isize,
-        original_items_visible: desktop_items_visible(def_view.0 as isize),
+        list_view: list_view.0 as isize,
+        original_items_visible: desktop_items_setting_visible(),
     })
+}
+
+/// 读取 Explorer“显示桌面图标”用户设置，不受 Desktop Tools 临时隐藏窗口影响。
+pub fn desktop_items_setting_visible() -> bool {
+    let mut state = SHELLFLAGSTATE::default(); // Shell 返回的桌面图标设置位。
+    unsafe {
+        SHGetSettings(&mut state, SSF_HIDEICONS.0);
+    }
+    shell_flag_state_icons_visible(state._bitfield)
+}
+
+/// 将 Shell `fHideIcons` 位转换为用户可见性语义。
+fn shell_flag_state_icons_visible(bitfield: i32) -> bool {
+    bitfield & SHELL_HIDE_ICONS_BIT == 0
 }
 
 /// 设置 Explorer 桌面项目列表可见性并等待状态稳定。
@@ -315,8 +419,8 @@ pub fn redraw_shell_desktop(shell: ShellDesktopState) {
     }
 }
 
-/// 枚举主显示器并返回物理工作区与有效 DPI。
-unsafe extern "system" fn find_primary_monitor(
+/// 枚举一台显示器并保存物理边界、工作区与有效 DPI。
+unsafe extern "system" fn collect_monitor(
     monitor: HMONITOR,
     _device_context: HDC,
     _monitor_rect: *mut RECT,
@@ -331,8 +435,7 @@ unsafe extern "system" fn find_primary_monitor(
             (&mut info as *mut MONITORINFOEXW).cast::<MONITORINFO>(),
         )
         .as_bool()
-    } || info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY == 0
-    {
+    } {
         return BOOL(1);
     }
 
@@ -343,38 +446,183 @@ unsafe extern "system" fn find_primary_monitor(
     unsafe {
         let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
     }
-    // 调用方持有的主显示器结果。
-    let result = unsafe { &mut *(parameter.0 as *mut Option<PrimaryMonitor>) };
-    *result = Some(PrimaryMonitor {
-        monitor: DesktopHostMonitor {
-            work_x: info.monitorInfo.rcWork.left,
-            work_y: info.monitorInfo.rcWork.top,
-            work_width: (info.monitorInfo.rcWork.right - info.monitorInfo.rcWork.left).max(0)
-                as u32,
-            work_height: (info.monitorInfo.rcWork.bottom - info.monitorInfo.rcWork.top).max(0)
-                as u32,
-            scale_factor: dpi_x as f64 / 96.0,
-            dpi: dpi_x,
-        },
+    let name_length = info
+        .szDevice
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(info.szDevice.len()); // Windows 显示设备名称的 UTF-16 有效长度。
+    let name = String::from_utf16_lossy(&info.szDevice[..name_length]); // 显示器稳定设备名称。
+    // 调用方持有的显示器结果集合。
+    let result = unsafe { &mut *(parameter.0 as *mut Vec<DesktopHostMonitor>) };
+    result.push(DesktopHostMonitor {
+        id: name.clone(),
+        name,
+        primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+        x: info.monitorInfo.rcMonitor.left,
+        y: info.monitorInfo.rcMonitor.top,
+        width: (info.monitorInfo.rcMonitor.right - info.monitorInfo.rcMonitor.left).max(0) as u32,
+        height: (info.monitorInfo.rcMonitor.bottom - info.monitorInfo.rcMonitor.top).max(0) as u32,
+        work_x: info.monitorInfo.rcWork.left,
+        work_y: info.monitorInfo.rcWork.top,
+        work_width: (info.monitorInfo.rcWork.right - info.monitorInfo.rcWork.left).max(0) as u32,
+        work_height: (info.monitorInfo.rcWork.bottom - info.monitorInfo.rcWork.top).max(0) as u32,
+        scale_factor: dpi_x as f64 / 96.0,
+        dpi: dpi_x,
     });
-    BOOL(0)
+    BOOL(1)
 }
 
-/// 返回当前主显示器物理工作区。
-fn primary_monitor() -> Result<DesktopHostMonitor, String> {
-    // Windows 主显示器枚举结果。
-    let mut primary: Option<PrimaryMonitor> = None;
+/// 返回当前全部显示器身份、物理边界、工作区与有效 DPI。
+pub fn enumerate_desktop_monitors() -> Result<Vec<DesktopHostMonitor>, String> {
+    let mut monitors: Vec<DesktopHostMonitor> = Vec::new(); // Windows 显示器枚举结果。
     unsafe {
         let _ = EnumDisplayMonitors(
             None,
             None,
-            Some(find_primary_monitor),
-            LPARAM((&mut primary as *mut Option<PrimaryMonitor>) as isize),
+            Some(collect_monitor),
+            LPARAM((&mut monitors as *mut Vec<DesktopHostMonitor>) as isize),
         );
     }
-    primary
-        .map(|value| value.monitor)
-        .ok_or_else(|| "Windows 未返回主显示器".to_string())
+    if monitors.is_empty() {
+        return Err("Windows 未返回显示器".to_string());
+    }
+    monitors.sort_by_key(|monitor| (!monitor.primary, monitor.x, monitor.y));
+    Ok(monitors)
+}
+
+/// 返回包含指定虚拟桌面物理坐标的显示器稳定身份。
+fn monitor_id_at_point(monitors: &[DesktopHostMonitor], point: POINT) -> Option<&str> {
+    monitors
+        .iter()
+        .find(|monitor| {
+            let right = i64::from(monitor.x) + i64::from(monitor.width);
+            let bottom = i64::from(monitor.y) + i64::from(monitor.height);
+            i64::from(point.x) >= i64::from(monitor.x)
+                && i64::from(point.x) < right
+                && i64::from(point.y) >= i64::from(monitor.y)
+                && i64::from(point.y) < bottom
+        })
+        .map(|monitor| monitor.id.as_str())
+}
+
+/// 按原型公开 Shell 路径读取 Explorer 桌面项目解析名称和物理屏幕坐标。
+fn explorer_desktop_item_positions(list_view_raw: isize) -> Result<HashMap<String, POINT>, String> {
+    if list_view_raw == 0 {
+        return Err("Explorer SysListView32 句柄为空".to_string());
+    }
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+    let shell_windows: IShellWindows = unsafe {
+        CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER)
+            .map_err(|error| format!("创建 IShellWindows 失败: {error}"))?
+    }; // Explorer Shell 窗口集合。
+    let location = VARIANT::default(); // FindWindowSW 使用的空位置参数。
+    let mut desktop_hwnd = 0; // Explorer 桌面自动化窗口句柄。
+    let desktop_dispatch = unsafe {
+        shell_windows
+            .FindWindowSW(
+                &location,
+                &location,
+                SWC_DESKTOP,
+                &mut desktop_hwnd,
+                SWFO_NEEDDISPATCH,
+            )
+            .map_err(|error| format!("查找 Explorer 桌面窗口失败: {error}"))?
+    }; // Explorer 桌面窗口自动化接口。
+    let service_provider = desktop_dispatch
+        .cast::<IServiceProvider>()
+        .map_err(|error| format!("获取 IServiceProvider 失败: {error}"))?; // 桌面窗口服务查询接口。
+    let shell_browser: IShellBrowser = unsafe {
+        service_provider
+            .QueryService(&SID_STopLevelBrowser)
+            .map_err(|error| format!("获取 IShellBrowser 失败: {error}"))?
+    }; // 桌面顶层浏览器接口。
+    let folder_view = unsafe {
+        shell_browser
+            .QueryActiveShellView()
+            .and_then(|view| view.cast::<IFolderView>())
+            .map_err(|error| format!("获取 IFolderView 失败: {error}"))?
+    }; // 当前 Explorer 桌面文件夹视图。
+    let folder: IShellFolder = unsafe {
+        folder_view
+            .GetFolder()
+            .map_err(|error| format!("获取 IShellFolder 失败: {error}"))?
+    }; // 当前桌面文件夹接口。
+    let item_count = unsafe {
+        folder_view
+            .ItemCount(SVGIO_ALLVIEW)
+            .map_err(|error| format!("读取 Explorer 桌面项目数量失败: {error}"))?
+    }; // Explorer 当前显示的桌面项目数量。
+    let mut positions = HashMap::new(); // 解析名称到物理坐标的映射。
+    for item_index in 0..item_count {
+        let pidl = unsafe {
+            folder_view
+                .Item(item_index)
+                .map_err(|error| format!("读取 Explorer 桌面项目 PIDL 失败: {error}"))?
+        }; // Explorer 分配的桌面子项目 PIDL。
+        let item_result = unsafe {
+            (|| -> windows::core::Result<(String, POINT)> {
+                let shell_item: IShellItem = SHCreateItemWithParent(None, &folder, pidl)?; // 当前子项目的 ShellItem。
+                let name_pointer = shell_item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)?; // Shell 分配的绝对解析名称。
+                let parsing_name = name_pointer.to_string(); // UTF-16 解析名称转换结果。
+                CoTaskMemFree(Some(name_pointer.0.cast()));
+                let mut point = folder_view.GetItemPosition(pidl)?; // Explorer 视图中的项目坐标。
+                if !ClientToScreen(raw_hwnd(list_view_raw), &mut point).as_bool() {
+                    return Err(windows::core::Error::from_win32());
+                }
+                Ok((parsing_name?, point))
+            })()
+        };
+        unsafe { CoTaskMemFree(Some(pidl.cast())) };
+        if let Ok((parsing_name, point)) = item_result {
+            positions.insert(parsing_name.to_lowercase(), point);
+        }
+    }
+    Ok(positions)
+}
+
+/// 按 Explorer 原始图标坐标返回首次导入使用的项目显示器归属。
+pub fn desktop_item_monitor_assignments(
+    items: &[DesktopItem],
+    monitors: &[DesktopHostMonitor],
+    shell: ShellDesktopState,
+) -> Vec<(String, String)> {
+    let positions = match explorer_desktop_item_positions(shell.list_view) {
+        Ok(positions) => positions,
+        Err(error) => {
+            crate::log_warn!(
+                "工作区：读取 Explorer 项目显示器归属失败，项目={}，显示器={}，错误={error}",
+                items.len(),
+                monitors.len()
+            );
+            return Vec::new();
+        }
+    }; // Explorer 当前项目物理坐标。
+    let assignments = match_desktop_item_monitor_assignments(items, monitors, &positions); // Explorer 坐标与当前显示器边界的匹配结果。
+    crate::log_info!(
+        "工作区：Explorer 项目显示器归属已读取，项目={}，匹配={}，显示器={}",
+        items.len(),
+        assignments.len(),
+        monitors.len()
+    );
+    assignments
+}
+
+/// 将 Explorer 解析名称坐标映射为 Workspace 使用的稳定显示器归属。
+fn match_desktop_item_monitor_assignments(
+    items: &[DesktopItem],
+    monitors: &[DesktopHostMonitor],
+    positions: &HashMap<String, POINT>,
+) -> Vec<(String, String)> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let point = positions.get(&item.stable_reference.to_lowercase())?; // 当前项目的 Explorer 物理坐标。
+            let monitor_id = monitor_id_at_point(monitors, *point)?; // 当前物理坐标所属显示器。
+            Some((item.stable_reference.clone(), monitor_id.to_string()))
+        })
+        .collect()
 }
 
 /// 正式宿主窗口过程。
@@ -546,15 +794,14 @@ fn handle_protocol_request(
     )
 }
 
-/// 创建主显示器对应的正式透明 Windowed WebView2 宿主。
-pub fn create_primary_desktop_host(
+/// 创建一台显示器对应的正式透明 Windowed WebView2 宿主。
+fn create_desktop_host(
     app: &AppHandle,
     shell: ShellDesktopState,
     command_handler: NativeCommandHandler,
+    monitor: &DesktopHostMonitor,
+    index: usize,
 ) -> Result<NativeDesktopHost, String> {
-    // 当前主显示器物理工作区。
-    let monitor = primary_monitor()?;
-    register_host_class()?;
     // 当前模块句柄。
     let module = unsafe { GetModuleHandleW(PCWSTR::null()) }
         .map_err(|error| format!("读取正式宿主模块句柄失败: {error}"))?;
@@ -584,9 +831,12 @@ pub fn create_primary_desktop_host(
     let protocol_app = app.clone();
     // 本地协议使用的命令处理器。
     let protocol_handler = Arc::clone(&command_handler);
+    let label = format!("desktop-host-{index}"); // Wry 内部使用的逐屏宿主标识。
+    let protocol = format!("desktop-tools-host-{index}"); // 避免多 WebView 协议处理器冲突的逐屏 scheme。
+    let page_url = format!("http://{protocol}.localhost/index.html?desktop-host=1&monitor={index}"); // 当前宿主页面携带的显示器枚举索引。
     // 正式 Windowed WebView2。
     let webview = WebViewBuilder::new()
-        .with_id("desktop-host-primary")
+        .with_id(&label)
         .with_transparent(true)
         .with_visible(true)
         .with_bounds(WryRect {
@@ -594,7 +844,7 @@ pub fn create_primary_desktop_host(
             size: dpi::PhysicalSize::new(monitor.work_width, monitor.work_height).into(),
         })
         .with_initialization_script(NATIVE_BRIDGE_SCRIPT)
-        .with_custom_protocol("desktop-tools-host".to_string(), move |_id, request| {
+        .with_custom_protocol(protocol, move |_id, request| {
             handle_protocol_request(request, &protocol_app, &protocol_handler)
         })
         .with_on_page_load_handler(|event, url| {
@@ -611,15 +861,18 @@ pub fn create_primary_desktop_host(
 
     // 正式 WebView2 的原生 Controller。
     let controller = webview.controller();
-    attach_host(hwnd.0 as isize, shell, &monitor)?;
-    configure_controller(&controller, &monitor)?;
+    attach_host(hwnd.0 as isize, shell, monitor)?;
+    configure_controller(&controller, monitor)?;
     unsafe {
         controller
             .NotifyParentWindowPositionChanged()
             .map_err(|error| format!("通知 WebView2 宿主位置变化失败: {error}"))?;
     }
+    let (drop_targets, ole_initialized) = register_shell_drop_targets(hwnd)?; // Desktop Tools 接收外部 Shell IDataObject 的窗口注册。
     crate::log_info!(
-        "宿主：主显示器透明宿主已创建，工作区：[{}, {}, {}, {}]，DPI：{}，栅格化比例：{}，BoundsMode：USE_RAW_PIXELS",
+        "宿主：逐屏透明宿主已创建，显示器={}，主显示器={}，工作区：[{}, {}, {}, {}]，DPI：{}，栅格化比例：{}，BoundsMode：USE_RAW_PIXELS",
+        monitor.id,
+        u8::from(monitor.primary),
         monitor.work_x,
         monitor.work_y,
         monitor.work_width,
@@ -628,27 +881,79 @@ pub fn create_primary_desktop_host(
         monitor.scale_factor
     );
 
-    NATIVE_HOST.with(|host| {
-        *host.borrow_mut() = Some(NativeHostResources {
+    NATIVE_HOSTS.with(|hosts| {
+        hosts.borrow_mut().push(NativeHostResources {
+            monitor_id: monitor.id.clone(),
             hwnd: hwnd.0 as isize,
             webview,
+            page_url,
+            drop_targets,
+            ole_initialized,
         });
     });
     Ok(NativeDesktopHost {
         hwnd: hwnd.0 as isize,
-        monitor,
+        monitor: monitor.clone(),
     })
 }
 
-/// 导航正式宿主到 Tauri 内嵌 React 页面。
-pub fn load_primary_desktop_host() -> Result<(), String> {
-    NATIVE_HOST.with(|host| {
-        host.borrow()
-            .as_ref()
-            .ok_or_else(|| "正式宿主尚未创建".to_string())?
+/// 为每台显示器创建独立正式宿主。
+pub fn create_desktop_hosts(
+    app: &AppHandle,
+    shell: ShellDesktopState,
+    command_handler: NativeCommandHandler,
+    monitors: &[DesktopHostMonitor],
+) -> Result<Vec<NativeDesktopHost>, String> {
+    if monitors.is_empty() {
+        return Err("正式宿主缺少显示器".to_string());
+    }
+    register_host_class()?;
+    let mut hosts = Vec::with_capacity(monitors.len()); // 已完整创建的逐屏原生宿主记录。
+    for (index, monitor) in monitors.iter().enumerate() {
+        match create_desktop_host(app, shell, Arc::clone(&command_handler), monitor, index) {
+            Ok(host) => hosts.push(host),
+            Err(error) => {
+                destroy_desktop_hosts();
+                return Err(error);
+            }
+        }
+    }
+    Ok(hosts)
+}
+
+/// 导航全部正式宿主到 Tauri 内嵌 React 页面。
+pub fn load_desktop_hosts() -> Result<(), String> {
+    NATIVE_HOSTS.with(|hosts| {
+        for host in hosts.borrow().iter() {
+            host.webview.load_url(&host.page_url).map_err(|error| {
+                format!(
+                    "加载正式宿主 React 页面失败，显示器={}，错误={error}",
+                    host.monitor_id
+                )
+            })?;
+        }
+        Ok(())
+    })
+}
+
+/// 按原型轻量重载路径刷新一个 Renderer，并保留外层 HWND 与命中区域。
+pub fn reload_desktop_host(monitor_id: &str) -> Result<(), String> {
+    NATIVE_HOSTS.with(|hosts| {
+        let hosts = hosts.borrow(); // 当前 UI 线程持有的全部正式 WebView2 宿主。
+        let host = hosts
+            .iter()
+            .find(|host| host.monitor_id == monitor_id)
+            .ok_or_else(|| format!("Renderer 重载目标不存在，显示器={monitor_id}"))?;
+        if host
             .webview
-            .load_url("http://desktop-tools-host.localhost/index.html?desktop-host=1")
-            .map_err(|error| format!("加载正式宿主 React 页面失败: {error}"))
+            .evaluate_script("window.location.reload()")
+            .is_ok()
+        {
+            return Ok(());
+        }
+        host.webview
+            .load_url(&host.page_url)
+            .map_err(|error| format!("Renderer 轻量重载失败，显示器={monitor_id}，错误={error}"))
     })
 }
 
@@ -722,16 +1027,19 @@ pub fn apply_host_hit_regions(
         )
         .map_err(|error| format!("提升正式宿主输入层级失败: {error}"))?;
     }
-    *HIT_REGIONS
-        .get_or_init(|| RwLock::new(Vec::new()))
+    HIT_REGIONS
+        .get_or_init(|| RwLock::new(HashMap::new()))
         .write()
-        .map_err(|error| error.to_string())? = regions;
+        .map_err(|error| error.to_string())?
+        .insert(host.monitor.id.clone(), regions);
     Ok(HIT_REGIONS
         .get()
         .expect("命中图已初始化")
         .read()
         .map_err(|error| error.to_string())?
-        .len())
+        .get(&host.monitor.id)
+        .map(Vec::len)
+        .unwrap_or(0))
 }
 
 /// 在连续拖动期间临时恢复正式宿主完整窗口区域。
@@ -740,6 +1048,11 @@ pub fn suspend_host_hit_regions(host: &NativeDesktopHost) -> Result<(), String> 
         return Err("暂停正式宿主命中区域失败".to_string());
     }
     Ok(())
+}
+
+/// 判断语义区域是否提供正式宿主自身的可见像素证据。
+fn is_pixel_probe_region(region: &HitRegion) -> bool {
+    region.kind != "workspace-background"
 }
 
 /// 捕获正式宿主窗口并确认命中区域内存在真实像素。
@@ -754,7 +1067,12 @@ pub fn probe_host_pixels(host: &NativeDesktopHost) -> Result<usize, String> {
         .ok_or_else(|| "正式宿主命中图尚未发布".to_string())?
         .read()
         .map_err(|error| error.to_string())?
-        .clone();
+        .get(&host.monitor.id)
+        .cloned()
+        .ok_or_else(|| format!("显示器 {} 的正式宿主命中图尚未发布", host.monitor.id))?
+        .into_iter()
+        .filter(is_pixel_probe_region)
+        .collect::<Vec<_>>();
     // 用于接收 PrintWindow 内容的内存设备上下文。
     let device_context = unsafe { CreateCompatibleDC(None) };
     if device_context.is_invalid() {
@@ -842,10 +1160,17 @@ pub fn probe_host_pixels(host: &NativeDesktopHost) -> Result<usize, String> {
         .ok_or_else(|| "正式宿主像素探针未检测到渲染内容".to_string())
 }
 
-/// 销毁正式 Windowed WebView2 与外层 HWND。
-pub fn destroy_primary_desktop_host() {
-    NATIVE_HOST.with(|host| {
-        if let Some(host) = host.borrow_mut().take() {
+/// 销毁全部正式 Windowed WebView2 与外层 HWND。
+pub fn destroy_desktop_hosts() {
+    NATIVE_HOSTS.with(|hosts| {
+        for host in hosts.borrow_mut().drain(..) {
+            for (hwnd, _) in &host.drop_targets {
+                let _ = unsafe { RevokeDragDrop(raw_hwnd(*hwnd)) };
+            }
+            drop(host.drop_targets);
+            if host.ole_initialized {
+                unsafe { OleUninitialize() };
+            }
             // Controller 释放后销毁的正式宿主 HWND。
             let hwnd = host.hwnd;
             drop(host.webview);
@@ -854,4 +1179,90 @@ pub fn destroy_primary_desktop_host() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        SHELL_HIDE_ICONS_BIT, is_pixel_probe_region, match_desktop_item_monitor_assignments,
+        shell_flag_state_icons_visible,
+    };
+    use crate::contracts::{DesktopHostMonitor, DesktopItem, DesktopItemAvailability, HitRegion};
+    use std::collections::HashMap;
+    use windows::Win32::Foundation::POINT;
+
+    /// 验证透明桌面背景保留输入能力且不参与渲染像素门槛。
+    #[test]
+    fn pixel_probe_excludes_the_workspace_background() {
+        let region = HitRegion {
+            id: "workspace-background".to_string(),
+            kind: "workspace-background".to_string(),
+            left: 0.0,
+            top: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+            priority: 1,
+        };
+
+        assert!(!is_pixel_probe_region(&region));
+    }
+
+    /// 验证 Shell `fHideIcons` 用户设置与恢复可见性语义相反。
+    #[test]
+    fn shell_hide_icons_setting_maps_to_restore_visibility() {
+        assert!(shell_flag_state_icons_visible(0));
+        assert!(!shell_flag_state_icons_visible(SHELL_HIDE_ICONS_BIT));
+    }
+
+    /// 验证 Explorer 物理图标坐标按显示器边界匹配稳定项目引用。
+    #[test]
+    fn explorer_positions_assign_items_to_monitors() {
+        let monitors = [
+            DesktopHostMonitor {
+                id: "DISPLAY1".to_string(),
+                name: "DISPLAY1".to_string(),
+                primary: true,
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                work_x: 0,
+                work_y: 0,
+                work_width: 1920,
+                work_height: 1040,
+                scale_factor: 1.0,
+                dpi: 96,
+            },
+            DesktopHostMonitor {
+                id: "DISPLAY2".to_string(),
+                name: "DISPLAY2".to_string(),
+                primary: false,
+                x: -1280,
+                y: 0,
+                width: 1280,
+                height: 1024,
+                work_x: -1280,
+                work_y: 0,
+                work_width: 1280,
+                work_height: 984,
+                scale_factor: 1.25,
+                dpi: 120,
+            },
+        ]; // 当前测试的负坐标混合 DPI 显示器集合。
+        let items = [DesktopItem {
+            stable_reference: r"C:\Users\User\Desktop\Project".to_string(),
+            display_name: "Project".to_string(),
+            system_image: None,
+            availability: DesktopItemAvailability::Available,
+        }]; // 当前等待 Explorer 坐标匹配的项目。
+        let positions = HashMap::from([(
+            r"c:\users\user\desktop\project".to_string(),
+            POINT { x: -400, y: 120 },
+        )]); // Explorer 返回的绝对解析名称和物理坐标。
+
+        assert_eq!(
+            match_desktop_item_monitor_assignments(&items, &monitors, &positions),
+            [(items[0].stable_reference.clone(), "DISPLAY2".to_string())]
+        );
+    }
 }

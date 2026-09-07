@@ -75,7 +75,7 @@ React Feature
 
 ## 参考文档
 
-- [正式架构规格](docs/adr/0016-formal-architecture-from-prototype.md)
+- [正式架构规格](docs/adr/0016-从原型验证结果演进正式项目架构.md)
 - [领域词汇](CONTEXT.md)
 - [宿主原型说明](prototypes/tauri-desktop-host/README.md)
 

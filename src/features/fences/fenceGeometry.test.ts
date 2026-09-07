@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { moveFence, resizeFence } from "./fenceGeometry.ts";
+import { moveFence, resizeFence, snapFenceEdges } from "./fenceGeometry.ts";
 
 // 验证围栏移动保持完整边界位于当前工作区。
 test("moves a fence within workspace bounds", () => {
@@ -33,5 +33,32 @@ test("clamps a fence to the minimum contract size", () => {
     assert.deepEqual(
         resizeFence("se", { left: 100, top: 80, width: 320, height: 240 }, { x: -1000, y: -1000 }, { width: 1280, height: 720 }),
         { left: 100, top: 80, width: 164, height: 154 },
+    );
+});
+
+// 验证围栏移动会吸附到工作区和相邻围栏边缘。
+test("snaps a moved fence to nearby edges", () => {
+    assert.deepEqual(
+        snapFenceEdges(
+            { left: 103, top: 202, width: 164, height: 154 },
+            [{ left: 100, top: 200, width: 200, height: 154 }],
+            { width: 1280, height: 720 },
+            8,
+        ),
+        { left: 100, top: 200, width: 164, height: 154 },
+    );
+});
+
+// 验证围栏缩放会将受控边缘吸附到相邻围栏边缘。
+test("snaps a resized fence edge without moving the fixed edge", () => {
+    assert.deepEqual(
+        snapFenceEdges(
+            { left: 100, top: 80, width: 197, height: 154 },
+            [{ left: 300, top: 80, width: 200, height: 154 }],
+            { width: 1280, height: 720 },
+            8,
+            { right: true },
+        ),
+        { left: 100, top: 80, width: 200, height: 154 },
     );
 });

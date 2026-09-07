@@ -9,7 +9,7 @@
 /* 正式透明宿主中的桌面项目区域。 */
 .desktop-items--desktop-host {
     min-height: 100vh;
-    padding: 20px;
+    padding: 0;
     border: 0;
     background: transparent;
 }
@@ -21,7 +21,7 @@
 
 /* 正式透明宿主使用稳定项目轨道。 */
 .desktop-items--desktop-host .desktop-items__grid {
-    grid-template-columns: repeat(auto-fill, 92px);
+    grid-template-columns: repeat(auto-fill, 78px);
     align-content: start;
 }
 
@@ -94,12 +94,25 @@
 /* 单个桌面项目。 */
 .desktop-item {
     display: grid;
-    grid-template-rows: 52px minmax(34px, auto) 16px;
+    grid-template-rows: 52px auto;
     justify-items: center;
     min-width: 0;
     padding: 8px 4px;
+    border: 1px solid transparent;
     color: var(--color-text);
     text-align: center;
+}
+
+/* 当前选择集合中的桌面项目。 */
+.desktop-item[data-selected="true"] {
+    border-color: rgb(185 230 241 / 86%);
+    background: rgb(47 115 137 / 58%);
+}
+
+/* 桌面项目悬停状态。 */
+.desktop-item:hover {
+    border-color: rgb(220 240 244 / 34%);
+    background: rgb(57 102 117 / 38%);
 }
 
 /* 暂时不可用桌面项目。 */
@@ -111,6 +124,7 @@
 .desktop-item__image {
     width: 48px;
     height: 48px;
+    pointer-events: none;
 }
 
 /* 桌面项目系统图像。 */
@@ -118,34 +132,55 @@
     display: block;
     width: 48px;
     height: 48px;
+    pointer-events: none;
 }
 
 /* 桌面项目系统显示名称。 */
 .desktop-item__label {
+    display: -webkit-box;
     max-width: 100%;
+    max-height: 34px;
     overflow: hidden;
     font-size: 12px;
-    line-height: 17px;
+    line-height: 16px;
     overflow-wrap: anywhere;
     text-overflow: ellipsis;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    pointer-events: none;
+}
+
+/* F2 原位重命名编辑框。 */
+.desktop-item__rename {
+    box-sizing: border-box;
+    width: max(72px, 100%);
+    min-width: 0;
+    padding: 1px 3px;
+    border: 1px solid #0078d4;
+    border-radius: 0;
+    outline: 1px solid #ffffff;
+    color: #111111;
+    background: #ffffff;
+    font: inherit;
+    line-height: 16px;
+    text-align: center;
+    text-shadow: none;
 }
 
 /* 桌面项目恢复状态。 */
 .desktop-item__status {
     color: var(--color-muted);
     font-size: 10px;
+    pointer-events: none;
 }
 
 /* 未归类区域中的绝对定位桌面项目。 */
 .desktop-item--unclassified {
     position: absolute;
-    width: 84px;
-    height: 100px;
-    min-height: 100px;
-    grid-template-rows: 48px 34px 14px;
-    padding: 2px 4px;
-    overflow: hidden;
-    cursor: move;
+    width: 64px;
+    min-height: 60px;
+    padding: 4px;
+    cursor: default;
     touch-action: none;
 }
 
@@ -158,24 +193,38 @@
     opacity: 0.82;
 }
 
+/* 连续拖动期间原位置中的桌面项目。 */
+.desktop-item--dragging {
+    opacity: 0.34;
+}
+
 /* 围栏内桌面项目。 */
 .desktop-item--fence {
-    grid-template-columns: 40px minmax(0, 1fr);
-    grid-template-rows: minmax(34px, auto) 14px;
-    align-items: center;
-    width: 100%;
-    min-width: 0;
-    padding: 5px 3px;
+    position: relative;
+    grid-template-rows: 52px auto;
+    width: 64px;
+    min-height: 76px;
+    padding: 4px;
     color: #ffffff;
     text-shadow: 0 1px 2px rgb(0 0 0 / 90%);
-    cursor: move;
+    cursor: default;
     touch-action: none;
 }
 
 /* 平铺围栏中的桌面项目。 */
 .fence[data-layout-mode="tile"] .desktop-item--fence {
     grid-template-columns: 1fr;
-    grid-template-rows: 44px minmax(32px, auto) 14px;
+}
+
+/* 列表围栏中的桌面项目布局。 */
+.fence[data-layout-mode="list"] .desktop-item--fence {
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr);
+    grid-template-rows: auto;
+    justify-items: start;
+    width: 100%;
+    min-height: 46px;
 }
 
 /* 列表围栏中的桌面项目图像容器。 */

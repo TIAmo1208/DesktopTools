@@ -5,16 +5,17 @@ use std::process::{Child, Command};
 use std::thread;
 use std::time::Duration;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CreateEventW, EVENT_MODIFY_STATE, INFINITE, OpenEventW, OpenProcess,
+    CREATE_NEW_PROCESS_GROUP, CreateEventW, EVENT_MODIFY_STATE, OpenEventW, OpenProcess,
     PROCESS_SYNCHRONIZE, SYNCHRONIZATION_ACCESS_RIGHTS, SetEvent, WaitForMultipleObjects,
     WaitForSingleObject,
 };
 use windows::core::PCWSTR;
 
 use crate::platform::windows::{
-    ShellDesktopState, discover_shell_desktop, redraw_shell_desktop, set_desktop_items_visible,
+    ShellDesktopState, desktop_items_setting_visible, desktop_items_visible,
+    discover_shell_desktop, redraw_shell_desktop, set_desktop_items_visible,
 };
 
 /// 独立 guardian 子进程与正常停止事件。
@@ -222,9 +223,23 @@ fn monitor_main_process(arguments: &[String]) -> Result<(), String> {
     }
     crate::log_info!("恢复：guardian 开始监视，主进程标识：{main_process_id}");
 
-    // 主进程结束与正常停止事件的竞态等待结果。
-    let wait_result =
-        unsafe { WaitForMultipleObjects(&[main_process, shutdown_event], false, INFINITE) };
+    let mut restore_visibility = original_visibility; // guardian 最近观察到的用户桌面图标设置。
+    // 主进程结束、正常停止事件与用户设置观察的竞态等待结果。
+    let wait_result = loop {
+        let result = unsafe { WaitForMultipleObjects(&[main_process, shutdown_event], false, 500) }; // 本轮主进程、停止事件或观察超时结果。
+        if result == WAIT_TIMEOUT {
+            let observed = desktop_items_setting_visible(); // 不受临时 ShowWindow 隐藏影响的 Shell 用户设置。
+            if observed != restore_visibility {
+                restore_visibility = observed;
+                crate::log_info!(
+                    "恢复：guardian 已更新 Explorer 桌面项目恢复设置，可见：{}",
+                    u8::from(observed)
+                );
+            }
+            continue;
+        }
+        break result;
+    };
     unsafe {
         let _ = CloseHandle(main_process);
         let _ = CloseHandle(shutdown_event);
@@ -234,16 +249,21 @@ fn monitor_main_process(arguments: &[String]) -> Result<(), String> {
         let shell = discover_shell_desktop().unwrap_or(ShellDesktopState {
             def_view: original_def_view,
             explorer_host: original_def_view,
+            list_view: 0,
             original_items_visible: original_visibility,
         });
         // 优先恢复当前 DefView。
-        let restored = set_desktop_items_visible(shell.def_view, original_visibility);
+        let restored = set_desktop_items_visible(shell.def_view, restore_visibility);
         redraw_shell_desktop(shell);
+        let verified = discover_shell_desktop()
+            .is_ok_and(|current| desktop_items_visible(current.def_view) == restore_visibility); // 恢复后的 Explorer 实际窗口状态检查。
         crate::log_info!(
-            "恢复：guardian 已恢复 Explorer，成功：{}",
-            u8::from(restored)
+            "恢复：guardian 已恢复 Explorer，目标可见：{}，调用成功：{}，环境检查：{}",
+            u8::from(restore_visibility),
+            u8::from(restored),
+            u8::from(verified)
         );
-        if !restored {
+        if !restored || !verified {
             return Err("guardian 恢复 Explorer 桌面项目失败".to_string());
         }
     } else if wait_result.0 == WAIT_OBJECT_0.0 + 1 {

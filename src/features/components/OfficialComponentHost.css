@@ -1,0 +1,90 @@
+/* 官方组件实例表面。 */
+.official-component {
+    position: absolute;
+    z-index: 7000;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-content: start;
+    gap: 10px 14px;
+    box-sizing: border-box;
+    padding: 12px;
+    border: 1px solid rgb(239 196 108 / 64%);
+    border-radius: 6px;
+    color: #ffffff;
+    background: rgb(40 36 27 / 80%);
+    box-shadow: 0 8px 22px rgb(0 0 0 / 24%);
+    backdrop-filter: blur(10px);
+}
+
+/* 官方组件键盘焦点状态。 */
+.official-component:focus-visible {
+    outline: 2px solid #ffffff;
+    outline-offset: 2px;
+}
+
+/* 官方组件拖动标题。 */
+.official-component__header {
+    grid-column: 1 / -1;
+    color: #f5e2b9;
+    cursor: move;
+    touch-action: none;
+}
+
+/* 官方本地时间文本。 */
+.official-component__clock {
+    align-self: center;
+    font-size: 24px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 官方组件动作按钮。 */
+.official-component__action {
+    min-width: 58px;
+    border: 1px solid rgb(255 255 255 / 28%);
+    border-radius: 4px;
+    color: #ffffff;
+    background: rgb(255 255 255 / 10%);
+    cursor: pointer;
+}
+
+/* 官方组件动作按钮悬停状态。 */
+.official-component__action:hover {
+    background: rgb(255 255 255 / 18%);
+}
+
+/* 单个组件隔离失败表面。 */
+.official-component--failed {
+    border-color: rgb(255 132 132 / 76%);
+    background: rgb(58 27 27 / 88%);
+}
+
+/* 组件实例内部错误说明。 */
+.official-component__error {
+    grid-column: 1 / -1;
+    margin: 0;
+    color: #ffd1d1;
+    font-size: 12px;
+}
+
+/* 组件实例首次同步状态。 */
+.official-component__status {
+    grid-column: 1 / -1;
+    margin: 0;
+    color: #f5e2b9;
+    font-size: 12px;
+}
+
+/* 官方清单或运行时失败汇总。 */
+.component-runtime-failure {
+    position: absolute;
+    top: 58px;
+    right: 14px;
+    z-index: 18000;
+    max-width: min(420px, calc(100vw - 28px));
+    padding: 8px 10px;
+    border: 1px solid rgb(255 132 132 / 72%);
+    border-radius: 5px;
+    color: #ffd1d1;
+    background: rgb(58 27 27 / 92%);
+    font-size: 12px;
+}

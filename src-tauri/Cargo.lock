@@ -582,6 +582,7 @@ dependencies = [
  "tauri-build",
  "webview2-com",
  "windows",
+ "windows-core 0.61.2",
  "wry",
 ]
 

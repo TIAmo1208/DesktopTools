@@ -7,6 +7,7 @@ import {
     listenDesktopHostSnapshots,
     publishDesktopHostReadiness,
     recordDesktopHostInputProbe,
+    recordDesktopHostRendererHeartbeat,
     updateDesktopHostHitMap,
 } from "../../../bridge/desktopHost";
 import type { DesktopHostSnapshot, HitRegion } from "../../../contracts/desktopHost";
@@ -37,13 +38,13 @@ const collectHitRegions = (): HitRegion[] =>
     });
 
 /** 等待当前系统图像节点与 Shell 快照数量一致并完成解码。 */
-const waitForSystemImages = async (expectedTotal: number): Promise<{ total: number; loaded: number }> => {
+const waitForSystemImages = async (): Promise<{ total: number; loaded: number }> => {
     // 当前系统图像解码的轮询次数。
     for (let attempt = 0; attempt < 20; attempt += 1) {
         const images = [...document.querySelectorAll<HTMLImageElement>(".desktop-item__image img")]; // 当前真实系统图像节点。
         await Promise.all(images.map((image) => image.decode().catch(() => undefined)));
         const loaded = images.filter((image) => image.naturalWidth > 0).length; // 当前实际解码成功的系统图像数量。
-        if (images.length === expectedTotal && loaded === expectedTotal) return { total: images.length, loaded };
+        if (loaded === images.length) return { total: images.length, loaded };
         await new Promise((resolve) => window.setTimeout(resolve, 100));
     }
 
@@ -52,9 +53,10 @@ const waitForSystemImages = async (expectedTotal: number): Promise<{ total: numb
 };
 
 /** 驱动正式桌面宿主页面门槛、命中图和最小输入探针。 */
-export const useDesktopHostSurface = (enabled: boolean, items?: DesktopItemSnapshot, layoutRevision = 0) => {
+export const useDesktopHostSurface = (enabled: boolean, monitorIndex: number, items?: DesktopItemSnapshot, layoutRevision = 0) => {
     const [snapshot, setSnapshot] = useState<DesktopHostSnapshot>(); // 当前正式宿主快照。
     const [failure, setFailure] = useState<string>(); // 当前正式宿主错误说明。
+    const host = snapshot?.hosts[monitorIndex]; // 当前页面枚举索引对应的逐屏宿主上下文。
 
     useEffect(() => {
         if (!enabled) return;
@@ -79,15 +81,16 @@ export const useDesktopHostSurface = (enabled: boolean, items?: DesktopItemSnaps
     }, [enabled]);
 
     useEffect(() => {
-        if (!enabled || !items || items.items.length === 0) return;
+        if (!enabled || !host || !items) return;
         let cancelled = false; // 当前页面准备任务取消标记。
         void (async () => {
             await waitForTwoFrames();
-            const imageProbe = await waitForSystemImages(items.items.length); // 当前系统图像实际加载结果。
+            const imageProbe = await waitForSystemImages(); // 当前逐屏页面实际存在的系统图像加载结果。
             if (cancelled) return;
             const hitRegions = collectHitRegions(); // 首份完整交互命中图。
             // 已发布全部前端门槛的正式宿主快照。
             const nextSnapshot = await publishDesktopHostReadiness({
+                monitorId: host.monitor.id,
                 viewportWidth: window.innerWidth,
                 viewportHeight: window.innerHeight,
                 devicePixelRatio: window.devicePixelRatio,
@@ -103,16 +106,16 @@ export const useDesktopHostSurface = (enabled: boolean, items?: DesktopItemSnaps
         return () => {
             cancelled = true;
         };
-    }, [enabled, items]);
+    }, [enabled, host?.monitor.id, items]);
 
     useEffect(() => {
-        if (!enabled || !items) return;
+        if (!enabled || !host || !items) return;
         let frame = 0; // 合并页面布局变化的动画帧标识。
         // 发布当前页面完整命中图。
         const publishHitMap = () => {
             cancelAnimationFrame(frame);
             frame = requestAnimationFrame(() => {
-                void updateDesktopHostHitMap(collectHitRegions()).catch((error: unknown) => setFailure(hostErrorMessage(error)));
+                void updateDesktopHostHitMap(host.monitor.id, collectHitRegions()).catch((error: unknown) => setFailure(hostErrorMessage(error)));
             });
         };
         // 监视页面布局变化并发布最新完整命中图。
@@ -123,40 +126,52 @@ export const useDesktopHostSurface = (enabled: boolean, items?: DesktopItemSnaps
             cancelAnimationFrame(frame);
             observer.disconnect();
         };
-    }, [enabled, items, layoutRevision]);
+    }, [enabled, host?.monitor.id, items, layoutRevision]);
+
+    useEffect(() => {
+        if (!enabled || !host) return;
+        const publishHeartbeat = () => {
+            void recordDesktopHostRendererHeartbeat(host.monitor.id).catch((error: unknown) => setFailure(hostErrorMessage(error)));
+        }; // 当前逐屏 Renderer 心跳上报。
+        publishHeartbeat();
+        const timer = window.setInterval(publishHeartbeat, 1000); // 宿主 watchdog 使用的一秒心跳。
+        return () => window.clearInterval(timer);
+    }, [enabled, host?.monitor.id]);
 
     // 将真实桌面项目指针输入回传正式宿主。
     const handleItemInput = useCallback(
         (itemId: string) => {
-            if (!enabled) return;
-            void recordDesktopHostInputProbe(itemId)
+            if (!enabled || !host) return;
+            void recordDesktopHostInputProbe(host.monitor.id, itemId)
                 .then(setSnapshot)
                 .catch((error: unknown) => setFailure(hostErrorMessage(error)));
         },
-        [enabled],
+        [enabled, host],
     );
 
     // 暂停命中裁剪并进入连续拖动输入状态。
     const beginInputDrag = useCallback(async () => {
         try {
-            setSnapshot(await beginDesktopHostInputDrag());
+            if (!host) throw new Error("当前显示器宿主尚未就绪");
+            setSnapshot(await beginDesktopHostInputDrag(host.monitor.id));
             setFailure(undefined);
         } catch (error: unknown) {
             setFailure(hostErrorMessage(error));
             throw error;
         }
-    }, []);
+    }, [host]);
 
     // 恢复最近完整命中图并结束连续拖动输入状态。
     const endInputDrag = useCallback(async () => {
         try {
-            setSnapshot(await endDesktopHostInputDrag());
+            if (!host) throw new Error("当前显示器宿主尚未就绪");
+            setSnapshot(await endDesktopHostInputDrag(host.monitor.id));
             setFailure(undefined);
         } catch (error: unknown) {
             setFailure(hostErrorMessage(error));
             throw error;
         }
-    }, []);
+    }, [host]);
 
-    return { snapshot, failure, handleItemInput, beginInputDrag, endInputDrag };
+    return { snapshot, host, failure, handleItemInput, beginInputDrag, endInputDrag };
 };
