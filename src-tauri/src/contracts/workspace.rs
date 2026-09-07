@@ -110,6 +110,26 @@ pub enum FenceLayoutMode {
     List,
 }
 
+/// 围栏名称排序状态，旧数据默认保留手动顺序。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FenceSortMode {
+    /// 保留手动成员顺序。
+    #[default]
+    None,
+    /// 按名称升序排列。
+    NameAscending,
+    /// 按名称降序排列。
+    NameDescending,
+}
+
+impl FenceSortMode {
+    /// 省略默认字段以保持旧备份的规范化校验值。
+    fn is_none(&self) -> bool {
+        *self == Self::None
+    }
+}
+
 /// 工作区持久化的完整围栏状态。
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,6 +153,9 @@ pub struct FenceSnapshot {
     pub members: Vec<String>,
     /// 当前成员布局方式。
     pub layout_mode: FenceLayoutMode,
+    /// 自动排序方式；无排序沿用当前成员顺序。
+    #[serde(default, skip_serializing_if = "FenceSortMode::is_none")]
+    pub sort_mode: FenceSortMode,
     /// 围栏内容区滚动位置。
     pub scroll_top: f64,
     /// 围栏当前折叠状态。
@@ -436,6 +459,14 @@ pub enum WorkspaceCommand {
         /// 下一布局方式。
         layout_mode: FenceLayoutMode,
     },
+    /// 提交围栏排序状态。
+    #[serde(rename = "set-fence-sort")]
+    SetFenceSort {
+        /// 目标围栏标识。
+        fence_id: String,
+        /// 需要持久保存的排序方式。
+        sort_mode: FenceSortMode,
+    },
     /// 提交围栏内容滚动位置。
     #[serde(rename = "set-fence-scroll")]
     SetFenceScroll {
@@ -577,6 +608,24 @@ mod tests {
         WorkspaceCommand, WorkspaceContextMenuTarget, WorkspaceFocusTarget,
         WorkspaceInteractionCommand,
     };
+
+    /// 验证排序与滚动 transport 名称独立，并拒绝非法排序状态。
+    #[test]
+    fn sorting_command_decodes_without_shadowing_scroll() {
+        for mode in ["none", "name-ascending", "name-descending"] {
+            let command: WorkspaceCommand = serde_json::from_value(serde_json::json!({ "type": "set-fence-sort", "fenceId": "fence-1", "sortMode": mode })).unwrap(); // 模拟 React 的真实命令载荷。
+            assert!(matches!(command, WorkspaceCommand::SetFenceSort { .. }));
+        }
+        let scroll: WorkspaceCommand = serde_json::from_value(serde_json::json!({ "type": "set-fence-scroll", "fenceId": "fence-1", "scrollTop": 12 })).unwrap(); // 原有滚动命令必须继续可用。
+        assert!(matches!(
+            scroll,
+            WorkspaceCommand::SetFenceScroll {
+                scroll_top: 12.0,
+                ..
+            }
+        ));
+        assert!(serde_json::from_value::<WorkspaceCommand>(serde_json::json!({ "type": "set-fence-sort", "fenceId": "fence-1", "sortMode": "unknown" })).is_err());
+    }
 
     /// 验证前端多选项目菜单目标通过公开 Rust 契约反序列化。
     #[test]

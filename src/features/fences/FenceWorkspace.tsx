@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEven
 import type { DesktopItemSnapshot } from "../../contracts/desktopItem";
 import fenceLayoutListIcon from "../../../resources/fence-layout-list.svg?raw";
 import fenceLayoutTileIcon from "../../../resources/fence-layout-tile.svg?raw";
+import fenceSortIcon from "../../../resources/fence-sort.svg?raw";
 import fenceToggleCollapseIcon from "../../../resources/fence-toggle-collapse.svg?raw";
 import fenceToggleExpandIcon from "../../../resources/fence-toggle-expand.svg?raw";
 import { exitDesktopTools } from "../../bridge/desktopHost";
@@ -59,6 +60,8 @@ interface FencePanelProps {
     onCommand: (command: WorkspaceCommand, monitorId?: string) => Promise<WorkspaceSnapshot>;
     onInteraction: (command: WorkspaceInteractionCommand) => Promise<WorkspaceSnapshot>;
     onFenceContextMenu: (event: MouseEvent<HTMLElement>, fenceId: string) => void;
+    onSortMenu: (event: MouseEvent<HTMLButtonElement>, fenceId: string) => void; // 打开围栏排序菜单。
+    sortMenuOpen: boolean; // 当前围栏排序菜单是否展开。
     onItemContextMenu: (event: MouseEvent<HTMLLIElement>, itemId: string) => void;
     onOpenItems: (itemIds: string[]) => Promise<void>;
     onItemPointerDown: (event: PointerEvent<HTMLLIElement>, item: DesktopItemViewModel) => void;
@@ -96,6 +99,8 @@ const FencePanel = ({
     onCommand,
     onInteraction,
     onFenceContextMenu,
+    onSortMenu,
+    sortMenuOpen,
     onItemContextMenu,
     onOpenItems,
     onItemPointerDown,
@@ -330,6 +335,19 @@ const FencePanel = ({
                 <div className="fence__commands">
                     <button
                         type="button"
+                        className="fence__sort"
+                        data-sort-active={Boolean(fence.sortMode && fence.sortMode !== "none")}
+                        title="排序方式"
+                        aria-label="排序方式"
+                        aria-haspopup="menu"
+                        aria-expanded={sortMenuOpen}
+                        aria-controls={sortMenuOpen ? "fence-sort-menu" : undefined}
+                        onClick={(event) => onSortMenu(event, fence.id)}
+                    >
+                        <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: fenceSortIcon }} />
+                    </button>
+                    <button
+                        type="button"
                         title={fence.layoutMode === "tile" ? "切换为列表" : "切换为平铺"}
                         onClick={() =>
                             void onCommand({
@@ -462,7 +480,14 @@ export const FenceWorkspace = ({
     const contextMenuOpenRef = useRef(false); // 原生 owner HWND 打开期间阻止窗口失焦清空选择。
     const [dragFailure, setDragFailure] = useState<string>(); // 当前项目拖动取消或容量错误说明。
     const [interactionStatus, setInteractionStatus] = useState<string>(); // 当前无需调用 Shell 的键盘操作提示。
-    const [fenceMenu, setFenceMenu] = useState<{ fenceId: string; left: number; top: number }>(); // 当前原型围栏对象菜单。
+    const [fenceMenu, setFenceMenu] = useState<{ fenceId: string; left: number; top: number; sorting?: boolean }>(); // 当前围栏对象或排序菜单。
+    const menuRef = useRef<HTMLMenuElement>(null); // 当前排序菜单焦点容器。
+    const sortTriggerRef = useRef<HTMLButtonElement | null>(null); // 关闭排序菜单后恢复焦点的按钮。
+    const menuFence = workspace?.fences.find((fence) => fence.id === fenceMenu?.fenceId); // 当前菜单对应的最新围栏状态。
+
+    useEffect(() => {
+        if (fenceMenu?.sorting) menuRef.current?.querySelector<HTMLButtonElement>("[aria-checked='true']")?.focus();
+    }, [fenceMenu]);
     const [renameItemId, setRenameItemId] = useState<string>(); // 当前 F2 原位编辑的单一项目引用。
     const [renameValue, setRenameValue] = useState(""); // 当前重命名输入框中的用户文本。
     // 当前 Shell 项目对应的页面展示模型。
@@ -519,12 +544,14 @@ export const FenceWorkspace = ({
     useEffect(() => {
         /** 在菜单外部发生指针输入时关闭围栏菜单。 */
         const handleDocumentPointerDown = (event: globalThis.PointerEvent) => {
-            if (event.target instanceof Element && event.target.closest(".fence-object-menu")) return;
+            if (event.target instanceof Element && event.target.closest(".fence-object-menu,.fence__sort")) return;
             setFenceMenu(undefined);
         };
         /** 使用 Escape 关闭当前围栏菜单。 */
         const handleDocumentKeyDown = (event: globalThis.KeyboardEvent) => {
-            if (event.key === "Escape") setFenceMenu(undefined);
+            if (event.key !== "Escape") return;
+            if (event.target instanceof Element && event.target.closest("#fence-sort-menu")) return;
+            setFenceMenu(undefined);
         };
         /** 窗口失去焦点时关闭当前围栏菜单。 */
         const handleWindowBlur = () => setFenceMenu(undefined);
@@ -587,9 +614,31 @@ export const FenceWorkspace = ({
     const handleFenceContextMenu = (event: MouseEvent<HTMLElement>, fenceId: string) => {
         event.preventDefault();
         event.stopPropagation();
+        sortTriggerRef.current = null;
         workspaceRef.current?.focus({ preventScroll: true });
         void onInteraction({ type: "focus-surface", focus: { type: "fence", fenceId } }).catch(() => undefined);
         setFenceMenu({ fenceId, left: event.clientX, top: event.clientY });
+    };
+
+    /** 在标题栏按钮下方打开排序菜单，再次点击同一按钮关闭。 */
+    const handleSortMenu = (event: MouseEvent<HTMLButtonElement>, fenceId: string) => {
+        const bounds = event.currentTarget.getBoundingClientRect(); // 菜单的按钮锚点。
+        sortTriggerRef.current = event.currentTarget;
+        setFenceMenu((current) =>
+            current?.sorting && current.fenceId === fenceId ? undefined : { fenceId, left: bounds.right - 164, top: bounds.bottom, sorting: true },
+        );
+    };
+
+    /** 将排序状态与成员顺序交给同一个 Rust 布局事务。 */
+    const handleSortChange = (byName: boolean) => {
+        if (!menuFence) return;
+        void onCommand({
+            type: "set-fence-sort",
+            fenceId: menuFence.id,
+            sortMode: byName ? (menuFence.sortMode === "name-ascending" ? "name-descending" : "name-ascending") : "none",
+        }).catch(() => undefined);
+        setFenceMenu(undefined);
+        (sortTriggerRef.current ?? workspaceRef.current)?.focus();
     };
 
     return (
@@ -702,49 +751,113 @@ export const FenceWorkspace = ({
 
             {fenceMenu && workspace?.fences.find((fence) => fence.id === fenceMenu.fenceId) && (
                 <menu
-                    className="fence-object-menu"
-                    style={{ left: Math.min(fenceMenu.left, window.innerWidth - 172), top: Math.min(fenceMenu.top, window.innerHeight - 180) }}
+                    ref={menuRef}
+                    id={fenceMenu.sorting ? "fence-sort-menu" : undefined}
+                    role={fenceMenu.sorting ? "menu" : undefined}
+                    aria-label={fenceMenu.sorting ? "排序方式" : undefined}
+                    data-hit-id="fence-menu"
+                    data-hit-kind="component"
+                    data-hit-priority="100"
+                    className={`fence-object-menu${fenceMenu.sorting ? " fence-object-menu--sort" : ""}`}
+                    style={{
+                        left: Math.max(0, Math.min(fenceMenu.left, window.innerWidth - 172)),
+                        top: Math.max(0, Math.min(fenceMenu.top, window.innerHeight - (fenceMenu.sorting ? 76 : 180))),
+                    }}
                     onPointerDown={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => {
+                        event.stopPropagation();
+                        if (event.key === "Escape" || event.key === "Tab") {
+                            setFenceMenu(undefined);
+                            if (event.key === "Escape") {
+                                event.preventDefault();
+                                (sortTriggerRef.current ?? workspaceRef.current)?.focus();
+                            }
+                        }
+                        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+                        event.preventDefault();
+                        const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")]; // 当前菜单可用命令。
+                        const index = buttons.indexOf(document.activeElement as HTMLButtonElement); // 当前焦点命令位置。
+                        buttons[
+                            event.key === "Home"
+                                ? 0
+                                : event.key === "End"
+                                  ? buttons.length - 1
+                                  : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length
+                        ]?.focus();
+                    }}
                 >
-                    <li>
-                        <button type="button" disabled title="正式领域暂未提供围栏重命名命令">
-                            重命名
-                        </button>
-                    </li>
-                    <li>
-                        <button
-                            type="button"
-                            onClick={() => {
-                                const fence = workspace?.fences.find((item) => item.id === fenceMenu.fenceId);
-                                if (fence)
-                                    void onCommand({ type: "set-fence-collapsed", fenceId: fence.id, collapsed: !fence.collapsed }).catch(() => undefined);
-                                setFenceMenu(undefined);
-                            }}
-                        >
-                            {workspace?.fences.find((fence) => fence.id === fenceMenu.fenceId)?.collapsed ? "展开" : "折叠"}
-                        </button>
-                    </li>
-                    <li>
-                        <button type="button" disabled title="正式领域暂未提供围栏排序命令">
-                            排序方式
-                        </button>
-                    </li>
-                    <li>
-                        <button type="button" disabled title="正式领域暂未提供布局编辑命令">
-                            编辑布局
-                        </button>
-                    </li>
-                    <li>
-                        <button
-                            type="button"
-                            onClick={() => {
-                                void onCommand({ type: "dissolve-fence", fenceId: fenceMenu.fenceId }).catch(() => undefined);
-                                setFenceMenu(undefined);
-                            }}
-                        >
-                            删除围栏
-                        </button>
-                    </li>
+                    {fenceMenu.sorting ? (
+                        <>
+                            <li role="none">
+                                <button
+                                    type="button"
+                                    role="menuitemradio"
+                                    aria-checked={Boolean(menuFence?.sortMode && menuFence.sortMode !== "none")}
+                                    onClick={() => handleSortChange(true)}
+                                >
+                                    按名称排序
+                                    <span className="fence-object-menu__direction">
+                                        {menuFence?.sortMode === "name-ascending" ? "升序" : menuFence?.sortMode === "name-descending" ? "降序" : ""}
+                                    </span>
+                                </button>
+                            </li>
+                            <li role="none">
+                                <button
+                                    type="button"
+                                    role="menuitemradio"
+                                    aria-checked={!menuFence?.sortMode || menuFence.sortMode === "none"}
+                                    onClick={() => handleSortChange(false)}
+                                >
+                                    无排序
+                                </button>
+                            </li>
+                        </>
+                    ) : (
+                        <>
+                            <li>
+                                <button type="button" disabled title="正式领域暂未提供围栏重命名命令">
+                                    重命名
+                                </button>
+                            </li>
+                            <li>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const fence = workspace?.fences.find((item) => item.id === fenceMenu.fenceId);
+                                        if (fence)
+                                            void onCommand({ type: "set-fence-collapsed", fenceId: fence.id, collapsed: !fence.collapsed }).catch(
+                                                () => undefined,
+                                            );
+                                        setFenceMenu(undefined);
+                                    }}
+                                >
+                                    {workspace?.fences.find((fence) => fence.id === fenceMenu.fenceId)?.collapsed ? "展开" : "折叠"}
+                                </button>
+                            </li>
+                            <li>
+                                <button type="button" onClick={() => setFenceMenu({ ...fenceMenu, sorting: true })}>
+                                    <span className="fence-object-menu__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: fenceSortIcon }} />
+                                    排序方式
+                                </button>
+                            </li>
+                            <li>
+                                <button type="button" disabled title="正式领域暂未提供布局编辑命令">
+                                    编辑布局
+                                </button>
+                            </li>
+                            <li>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        void onCommand({ type: "dissolve-fence", fenceId: fenceMenu.fenceId }).catch(() => undefined);
+                                        setFenceMenu(undefined);
+                                    }}
+                                >
+                                    删除围栏
+                                </button>
+                            </li>
+                        </>
+                    )}
                 </menu>
             )}
 
@@ -760,6 +873,8 @@ export const FenceWorkspace = ({
                     onCommand={onCommand}
                     onInteraction={onInteraction}
                     onFenceContextMenu={handleFenceContextMenu}
+                    onSortMenu={handleSortMenu}
+                    sortMenuOpen={Boolean(fenceMenu?.sorting && fenceMenu.fenceId === fence.id)}
                     onItemContextMenu={handleItemContextMenu}
                     onOpenItems={onOpenItems}
                     onItemPointerDown={(event, item) => void handleItemPointerDown(event, item.key)}

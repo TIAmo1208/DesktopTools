@@ -29,12 +29,13 @@ pub use virtual_desktop::{
     VirtualDesktopSnapshot,
 };
 pub use workspace::{
-    FENCE_MIN_HEIGHT, FENCE_MIN_WIDTH, FenceLayoutMode, FenceSnapshot, UnclassifiedItemSnapshot,
-    WORKSPACE_BACKUP_SCHEMA_VERSION, WORKSPACE_GRID_BOTTOM_MARGIN, WORKSPACE_GRID_COLUMN_WIDTH,
-    WORKSPACE_GRID_LEFT, WORKSPACE_GRID_ROW_HEIGHT, WORKSPACE_GRID_TOP, WORKSPACE_SCHEMA_VERSION,
-    WORKSPACE_SNAPSHOT_CHANGED_EVENT, WorkspaceBackupSummary, WorkspaceCommand,
-    WorkspaceContextMenuTarget, WorkspaceError, WorkspaceFenceScroll, WorkspaceFocusTarget,
-    WorkspaceGrid, WorkspaceHistoryKind, WorkspaceHistoryResult, WorkspaceInteractionCommand,
-    WorkspaceInteractionSnapshot, WorkspaceItemPlacement, WorkspaceMonitorGrid, WorkspacePoint,
-    WorkspaceRect, WorkspaceRestoreResult, WorkspaceSelectionMode, WorkspaceSnapshot,
+    FENCE_MIN_HEIGHT, FENCE_MIN_WIDTH, FenceLayoutMode, FenceSnapshot, FenceSortMode,
+    UnclassifiedItemSnapshot, WORKSPACE_BACKUP_SCHEMA_VERSION, WORKSPACE_GRID_BOTTOM_MARGIN,
+    WORKSPACE_GRID_COLUMN_WIDTH, WORKSPACE_GRID_LEFT, WORKSPACE_GRID_ROW_HEIGHT,
+    WORKSPACE_GRID_TOP, WORKSPACE_SCHEMA_VERSION, WORKSPACE_SNAPSHOT_CHANGED_EVENT,
+    WorkspaceBackupSummary, WorkspaceCommand, WorkspaceContextMenuTarget, WorkspaceError,
+    WorkspaceFenceScroll, WorkspaceFocusTarget, WorkspaceGrid, WorkspaceHistoryKind,
+    WorkspaceHistoryResult, WorkspaceInteractionCommand, WorkspaceInteractionSnapshot,
+    WorkspaceItemPlacement, WorkspaceMonitorGrid, WorkspacePoint, WorkspaceRect,
+    WorkspaceRestoreResult, WorkspaceSelectionMode, WorkspaceSnapshot,
 };

@@ -313,5 +313,6 @@ pub(crate) fn reconcile_workspace_environment(
     } else {
         Vec::new()
     }; // 初始导入、拓扑或 Explorer 变化时使用的原始项目归属。
+    state.update_item_names(&desktop_items.items)?;
     state.reconcile_host_monitors(&monitors, &item_ids, &assignments, renames)
 }

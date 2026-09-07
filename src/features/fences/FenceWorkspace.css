@@ -161,8 +161,42 @@
     cursor: default;
 }
 
+/* 排序菜单图标继承命令色调和禁用状态。 */
+.fence-object-menu__icon svg {
+    width: 16px;
+    height: 16px;
+    margin-right: 4px;
+    vertical-align: text-bottom;
+}
+
+/* 排序菜单沿用围栏主题并提高表面不透明度。 */
+.fence-object-menu--sort {
+    color: var(--fence-text);
+    border-color: var(--fence-border);
+    background: var(--fence-menu-surface, rgb(32 38 41 / 96%));
+}
+
+/* 排序选项在同一行保留方向标签空间。 */
+.fence-object-menu--sort button {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+/* 当前排序选项与键盘焦点。 */
+.fence-object-menu--sort button[aria-checked="true"],
+.fence-object-menu--sort button:hover,
+.fence-object-menu--sort button:focus-visible {
+    background: var(--fence-border);
+}
+
+/* 排序方向标签弱化但保留可读性。 */
+.fence-object-menu__direction {
+    opacity: 0.7;
+}
+
 /* 原型围栏对象菜单悬停状态。 */
-.fence-object-menu button:hover:enabled {
+.fence-object-menu:not(.fence-object-menu--sort) button:hover:enabled {
     background: rgb(75 101 108 / 72%);
 }
 
@@ -301,6 +335,11 @@
     font: inherit;
     line-height: 0;
     cursor: default;
+}
+
+/* 无排序时只弱化图标，不改变按钮命中尺寸。 */
+.fence__sort[data-sort-active="false"] span {
+    opacity: 0.48;
 }
 
 /* 围栏标题栏 SVG 图标。 */
@@ -508,6 +547,7 @@
         --fence-border: rgb(55 66 69 / 42%);
         --fence-surface: rgb(245 248 249 / 58%);
         --fence-text: #202526;
+        --fence-menu-surface: rgb(245 248 249 / 96%);
     }
 }
 

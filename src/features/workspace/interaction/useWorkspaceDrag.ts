@@ -227,6 +227,11 @@ export const useWorkspaceDrag = ({
                 });
             }
 
+            if (fence.sortMode && fence.sortMode !== "none") {
+                marker.hidden = true;
+                return true;
+            }
+
             const target = document
                 .elementsFromPoint(pointer.x, pointer.y)
                 .map((element) => element.closest<HTMLElement>("[data-fence-member-id]"))

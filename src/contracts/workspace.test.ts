@@ -19,6 +19,25 @@ const emptyWorkspace = {
     },
 };
 
+// 验证旧排序字段默认值、完整状态和非法输入边界。
+test("validates fence sorting modes and defaults legacy snapshots to none", () => {
+    const fence = {
+        id: "fence-1",
+        title: "排序",
+        bounds: { left: 0, top: 0, width: 320, height: 240 },
+        members: [],
+        layoutMode: "tile",
+        scrollTop: 0,
+        collapsed: false,
+        lastExpandedHeight: 240,
+        zIndex: 1,
+    }; // 旧围栏快照不包含排序字段。
+    assert.equal(parseWorkspaceSnapshot({ ...emptyWorkspace, fences: [fence] }).fences[0].sortMode, "none");
+    for (const sortMode of ["none", "name-ascending", "name-descending"])
+        assert.equal(parseWorkspaceSnapshot({ ...emptyWorkspace, fences: [{ ...fence, sortMode }] }).fences[0].sortMode, sortMode);
+    for (const sortMode of [null, "unknown", 1, {}]) assert.throws(() => parseWorkspaceSnapshot({ ...emptyWorkspace, fences: [{ ...fence, sortMode }] }));
+});
+
 // 验证围栏完整状态通过前后端公开快照恢复。
 test("parses the complete persisted fence snapshot", () => {
     // 模拟 Rust command 与 event 发布的工作区快照。

@@ -120,11 +120,29 @@ export const useDesktopHostSurface = (enabled: boolean, monitorIndex: number, it
         };
         // 监视页面布局变化并发布最新完整命中图。
         const observer = new ResizeObserver(publishHitMap);
+        // 只响应菜单挂载、移除和内部布局变化，避免拖动预览触发额外命中图发布。
+        const menuObserver = new MutationObserver((records) => {
+            if (
+                records.some(
+                    (record) =>
+                        (record.target instanceof Element && record.target.closest(".fence-object-menu")) ||
+                        [...record.addedNodes, ...record.removedNodes].some((node) => node instanceof Element && node.matches(".fence-object-menu")),
+                )
+            )
+                publishHitMap();
+        });
+        menuObserver.observe(document.querySelector(".fence-workspace") ?? document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ["style"],
+        });
         observer.observe(document.documentElement);
         publishHitMap();
         return () => {
             cancelAnimationFrame(frame);
             observer.disconnect();
+            menuObserver.disconnect();
         };
     }, [enabled, host?.monitor.id, items, layoutRevision]);
 

@@ -38,6 +38,9 @@ export interface WorkspaceMonitorGrid {
 /** 围栏成员的排列方式。 */
 export type FenceLayoutMode = "tile" | "list";
 
+/** 围栏自动排序方式。 */
+export type FenceSortMode = "none" | "name-ascending" | "name-descending";
+
 /** 工作区持久化的完整围栏状态。 */
 export interface FenceSnapshot {
     id: string;
@@ -48,6 +51,7 @@ export interface FenceSnapshot {
     bounds: WorkspaceRect;
     members: string[];
     layoutMode: FenceLayoutMode;
+    sortMode?: FenceSortMode; // 旧快照省略时使用无排序。
     scrollTop: number;
     collapsed: boolean;
     lastExpandedHeight: number;
@@ -147,6 +151,7 @@ export type WorkspaceCommand =
     | { type: "update-fence-bounds"; fenceId: string; bounds: WorkspaceRect }
     | { type: "set-fence-collapsed"; fenceId: string; collapsed: boolean }
     | { type: "set-fence-layout"; fenceId: string; layoutMode: FenceLayoutMode }
+    | { type: "set-fence-sort"; fenceId: string; sortMode: FenceSortMode }
     | { type: "set-fence-scroll"; fenceId: string; scrollTop: number }
     | { type: "move-item-to-fence"; itemId: string; fenceId: string; beforeItemId: string | null }
     | { type: "remove-item-from-fence"; itemId: string }
@@ -275,6 +280,13 @@ export const parseWorkspaceSnapshot = (value: unknown): WorkspaceSnapshot => {
         if (!Array.isArray(fenceCandidate.members) || fenceCandidate.members.some((member) => typeof member !== "string" || member.length === 0))
             throw new WorkspaceContractError();
         if (fenceCandidate.layoutMode !== "tile" && fenceCandidate.layoutMode !== "list") throw new WorkspaceContractError();
+        if (
+            fenceCandidate.sortMode !== undefined &&
+            fenceCandidate.sortMode !== "none" &&
+            fenceCandidate.sortMode !== "name-ascending" &&
+            fenceCandidate.sortMode !== "name-descending"
+        )
+            throw new WorkspaceContractError();
         if (!isFiniteNumber(fenceCandidate.scrollTop) || fenceCandidate.scrollTop < 0) throw new WorkspaceContractError();
         if (typeof fenceCandidate.collapsed !== "boolean") throw new WorkspaceContractError();
         if (!isFiniteNumber(fenceCandidate.lastExpandedHeight) || fenceCandidate.lastExpandedHeight <= 0) throw new WorkspaceContractError();
@@ -292,6 +304,7 @@ export const parseWorkspaceSnapshot = (value: unknown): WorkspaceSnapshot => {
             bounds: parseRect(fenceCandidate.bounds),
             members: [...fenceCandidate.members] as string[],
             layoutMode,
+            sortMode: (fenceCandidate.sortMode ?? "none") as FenceSortMode,
             scrollTop: fenceCandidate.scrollTop,
             collapsed: fenceCandidate.collapsed,
             lastExpandedHeight: fenceCandidate.lastExpandedHeight,

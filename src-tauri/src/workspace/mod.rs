@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::contracts::{
     ComponentInstanceSnapshot, DesktopHostMonitor, FENCE_MIN_HEIGHT, FENCE_MIN_WIDTH,
-    FenceLayoutMode, FenceSnapshot, UnclassifiedItemSnapshot, WORKSPACE_BACKUP_SCHEMA_VERSION,
-    WORKSPACE_GRID_BOTTOM_MARGIN, WORKSPACE_GRID_COLUMN_WIDTH, WORKSPACE_GRID_LEFT,
-    WORKSPACE_GRID_ROW_HEIGHT, WORKSPACE_GRID_TOP, WORKSPACE_SCHEMA_VERSION,
+    FenceLayoutMode, FenceSnapshot, FenceSortMode, UnclassifiedItemSnapshot,
+    WORKSPACE_BACKUP_SCHEMA_VERSION, WORKSPACE_GRID_BOTTOM_MARGIN, WORKSPACE_GRID_COLUMN_WIDTH,
+    WORKSPACE_GRID_LEFT, WORKSPACE_GRID_ROW_HEIGHT, WORKSPACE_GRID_TOP, WORKSPACE_SCHEMA_VERSION,
     WorkspaceBackupSummary, WorkspaceCommand, WorkspaceError, WorkspaceFenceScroll,
     WorkspaceFocusTarget, WorkspaceGrid, WorkspaceInteractionCommand, WorkspaceInteractionSnapshot,
     WorkspaceItemPlacement, WorkspaceMonitorGrid, WorkspacePoint, WorkspaceRect,
@@ -39,6 +39,8 @@ const LAYOUT_ARCHIVE_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 /// 持有正式桌面内容工作区的权威布局和持久化位置。
 pub struct WorkspaceState {
+    /// Shell 最近发布的显示名称，仅供排序，不写入布局文件。
+    item_names: Mutex<HashMap<String, String>>,
     /// command 共享的当前工作区快照。
     snapshot: Mutex<WorkspaceSnapshot>,
     /// 当前活动身份、其他活动布局与 30 天删除归档。
@@ -238,6 +240,7 @@ impl WorkspaceState {
                 .map_err(|error| WorkspaceError::persistence_failed(&error))?; // 2 秒合并写入线程。
 
         Ok(Self {
+            item_names: Mutex::new(HashMap::new()),
             snapshot: Mutex::new(snapshot),
             virtual_desktops: Mutex::new(virtual_desktops),
             history: Mutex::new(HashMap::new()),
@@ -247,6 +250,55 @@ impl WorkspaceState {
             auto_snapshot_directory,
             default_components: default_components.to_vec(),
         })
+    }
+
+    /// 更新 Shell 权威显示名称供后续布局事务排序。
+    pub fn update_item_names(
+        &self,
+        items: &[crate::contracts::DesktopItem],
+    ) -> Result<(), WorkspaceError> {
+        let mut names = self
+            .item_names
+            .lock()
+            .map_err(|_| WorkspaceError::state_unavailable())?; // 当前运行期名称表。
+        *names = items
+            .iter()
+            .map(|item| {
+                (
+                    item.stable_reference.clone(),
+                    item.display_name.to_lowercase(),
+                )
+            })
+            .collect();
+        Ok(())
+    }
+
+    /// 使用最新 Shell 名称统一排序，返回成员顺序是否变化。
+    fn sort_fences(&self, snapshot: &mut WorkspaceSnapshot) -> Result<bool, WorkspaceError> {
+        let names = self
+            .item_names
+            .lock()
+            .map_err(|_| WorkspaceError::state_unavailable())?; // 当前 Shell 名称索引。
+        let mut changed = false; // 本次排序是否改变权威成员顺序。
+        for fence in &mut snapshot.fences {
+            if fence.sort_mode == FenceSortMode::None {
+                continue;
+            }
+            let previous = fence.members.clone(); // 检测真实顺序变化的原始成员集合。
+            fence.members.sort_by(|first, second| {
+                let order = names
+                    .get(first)
+                    .unwrap_or(first)
+                    .cmp(names.get(second).unwrap_or(second)); // 同名保留原始顺序。
+                if fence.sort_mode == FenceSortMode::NameDescending {
+                    order.reverse()
+                } else {
+                    order
+                }
+            });
+            changed |= previous != fence.members;
+        }
+        Ok(changed)
     }
 
     /// 返回当前不可变工作区快照。
@@ -462,6 +514,7 @@ impl WorkspaceState {
                 &[],
                 &primary_monitor_id,
             )?;
+            self.sort_fences(layout)?;
         }
         let mut candidate_current = restored_layouts
             .remove(current_virtual_desktop_id)
@@ -644,6 +697,9 @@ impl WorkspaceState {
             &[],
             &primary_monitor_id,
         )?;
+        if self.sort_fences(&mut next_current)? {
+            next_current.revision += 1;
+        }
         for layout in next_virtual_desktops.layouts.values_mut() {
             reconcile_layout_snapshot(
                 layout,
@@ -655,6 +711,9 @@ impl WorkspaceState {
                 &[],
                 &primary_monitor_id,
             )?;
+            if self.sort_fences(layout)? {
+                layout.revision += 1;
+            }
         }
         let store = save_workspace_store(
             &self.persistence_path,
@@ -731,6 +790,7 @@ impl WorkspaceState {
             &[],
             &primary_monitor_id,
         )?;
+        self.sort_fences(&mut layout)?;
         if next_virtual_desktops.current_id == new_virtual_desktop_id {
             next_current = layout;
         } else {
@@ -847,6 +907,10 @@ impl WorkspaceState {
             renames,
             &primary_monitor_id,
         )?; // 当前活动虚拟桌面的 Shell 与显示器协调结果。
+        if self.sort_fences(&mut next)? {
+            next.revision += 1;
+            changed = true;
+        }
         for layout in next_virtual_desktops.layouts.values_mut() {
             changed |= reconcile_layout_snapshot(
                 layout,
@@ -858,6 +922,10 @@ impl WorkspaceState {
                 renames,
                 &primary_monitor_id,
             )?;
+            if self.sort_fences(layout)? {
+                layout.revision += 1;
+                changed = true;
+            }
         }
         if !next_virtual_desktops.explorer_layout_imported {
             next_virtual_desktops.explorer_layout_imported = true;
@@ -936,6 +1004,7 @@ impl WorkspaceState {
         let interaction = next.interaction.clone();
         // 当前命令用于中文日志的稳定名称。
         let command_name = next.apply(command, monitor_id)?;
+        self.sort_fences(&mut next)?;
         if next == *current {
             crate::log_debug!("工作区：布局事务保持当前状态，命令={command_name}");
             return Ok(current.clone());
@@ -1026,6 +1095,7 @@ impl WorkspaceState {
         }
         next.revision = current.revision.saturating_add(1);
         next.interaction = current.interaction.clone();
+        self.sort_fences(&mut next)?;
         next.normalize_interaction();
         if next.interaction != current.interaction {
             next.interaction.revision = current.interaction.revision.saturating_add(1);
@@ -2288,6 +2358,7 @@ impl WorkspaceSnapshot {
                     bounds,
                     members: Vec::new(),
                     layout_mode: FenceLayoutMode::Tile,
+                    sort_mode: FenceSortMode::None,
                     scroll_top: 0.0,
                     collapsed: false,
                     last_expanded_height: bounds.height,
@@ -2346,6 +2417,13 @@ impl WorkspaceSnapshot {
                 fence.layout_mode = layout_mode;
                 Ok("更新围栏布局")
             }
+            WorkspaceCommand::SetFenceSort {
+                fence_id,
+                sort_mode,
+            } => {
+                self.fence_mut(&fence_id)?.sort_mode = sort_mode;
+                Ok("更新围栏排序")
+            }
             WorkspaceCommand::SetFenceScroll {
                 fence_id,
                 scroll_top,
@@ -2396,6 +2474,7 @@ impl WorkspaceSnapshot {
                 // 指定后继成员对应的手动插入位置。
                 let insertion_index = before_item_id
                     .as_ref()
+                    .filter(|_| fence.sort_mode == FenceSortMode::None)
                     .and_then(|target| fence.members.iter().position(|member| member == target))
                     .unwrap_or(fence.members.len());
                 fence.members.insert(insertion_index, item_id);
@@ -2483,7 +2562,9 @@ impl WorkspaceSnapshot {
                     // 等待组成员插入的目标围栏。
                     let fence = self.fence_mut(&fence_id)?;
                     // 可选后继成员在移除拖动集合后的插入位置。
-                    let insertion_index = match before_item_id {
+                    let insertion_index = match before_item_id
+                        .filter(|_| fence.sort_mode == FenceSortMode::None)
+                    {
                         Some(before_item_id) => fence
                             .members
                             .iter()
@@ -3232,6 +3313,146 @@ mod tests {
         if snapshot_directory.exists() {
             std::fs::remove_dir_all(snapshot_directory).expect("组件测试自动快照目录应可清理");
         }
+    }
+
+    /// 验证排序事务覆盖归属、拖动、重命名、历史和持久化边界。
+    #[test]
+    fn fence_sorting_is_persisted_and_applies_to_every_membership_path() {
+        use crate::contracts::{DesktopItem, DesktopItemAvailability, FenceSortMode};
+        let path = snapshot_path("fence-sorting"); // 本测试独占的持久化文件。
+        let state = workspace_state(path.clone()); // 使用真实布局事务和原子持久化的工作区。
+        let mut items = [
+            ("a", "Zulu"),
+            ("b", "alpha"),
+            ("c", "Bravo"),
+            ("d", "ALPHA"),
+        ]
+        .map(|(id, name)| DesktopItem {
+            stable_reference: id.to_string(),
+            display_name: name.to_string(),
+            system_image: None,
+            availability: DesktopItemAvailability::Available,
+        }); // 显示名称与引用顺序故意不同，并包含忽略大小写的同名项目。
+        let ids = items
+            .iter()
+            .map(|item| item.stable_reference.clone())
+            .collect::<Vec<_>>(); // 当前完整 Shell 引用集合。
+        state.update_item_names(&items).unwrap();
+        state.reconcile_items(1280.0, 720.0, &ids).unwrap();
+        let fence_id = state
+            .apply(WorkspaceCommand::CreateFence {
+                title: "排序验收".to_string(),
+                bounds: WorkspaceRect {
+                    left: 100.0,
+                    top: 80.0,
+                    width: 320.0,
+                    height: 240.0,
+                },
+            })
+            .unwrap()
+            .fences[0]
+            .id
+            .clone(); // 本测试目标围栏。
+        for id in ["a", "b"] {
+            state
+                .apply(WorkspaceCommand::MoveItemToFence {
+                    item_id: id.to_string(),
+                    fence_id: fence_id.clone(),
+                    before_item_id: None,
+                })
+                .unwrap();
+        }
+        let ascending = state
+            .apply(WorkspaceCommand::SetFenceSort {
+                fence_id: fence_id.clone(),
+                sort_mode: FenceSortMode::NameAscending,
+            })
+            .unwrap(); // 首次名称排序结果。
+        assert_eq!(ascending.fences[0].members, ["b", "a"]);
+        let grouped = state
+            .apply(WorkspaceCommand::CommitItemDrag {
+                anchor_item_id: "c".to_string(),
+                item_ids: vec!["c".to_string(), "d".to_string()],
+                placements: vec![],
+                target_fence_id: Some(fence_id.clone()),
+                before_item_id: Some("stale-target".to_string()),
+                fence_scrolls: vec![],
+            })
+            .unwrap(); // 排序模式忽略手动插入位置，包括旧前端快照中的失效目标。
+        assert_eq!(grouped.fences[0].members, ["b", "d", "c", "a"]);
+        assert_eq!(
+            state.apply(WorkspaceCommand::UndoLayout).unwrap().fences[0].members,
+            ["b", "a"]
+        );
+        assert_eq!(
+            state.apply(WorkspaceCommand::RedoLayout).unwrap().fences[0].members,
+            ["b", "d", "c", "a"]
+        );
+        let descending = state
+            .apply(WorkspaceCommand::SetFenceSort {
+                fence_id: fence_id.clone(),
+                sort_mode: FenceSortMode::NameDescending,
+            })
+            .unwrap(); // 再次名称排序结果。
+        assert_eq!(descending.fences[0].members, ["a", "c", "b", "d"]);
+        let disabled = state
+            .apply(WorkspaceCommand::SetFenceSort {
+                fence_id: fence_id.clone(),
+                sort_mode: FenceSortMode::None,
+            })
+            .unwrap(); // 关闭自动排序保留已有排列。
+        assert_eq!(disabled.fences[0].members, descending.fences[0].members);
+        let manual = state
+            .apply(WorkspaceCommand::MoveItemToFence {
+                item_id: "d".to_string(),
+                fence_id: fence_id.clone(),
+                before_item_id: Some("a".to_string()),
+            })
+            .unwrap(); // 手动插入继续生效。
+        assert_eq!(manual.fences[0].members, ["d", "a", "c", "b"]);
+        state
+            .apply(WorkspaceCommand::SetFenceSort {
+                fence_id: fence_id.clone(),
+                sort_mode: FenceSortMode::NameAscending,
+            })
+            .unwrap();
+        items[0].display_name = "Aardvark".to_string();
+        state.update_item_names(&items).unwrap();
+        let renamed = state.reconcile_items(1280.0, 720.0, &ids).unwrap(); // 名称变化但引用不变也应重新排序。
+        assert_eq!(renamed.fences[0].members, ["a", "d", "b", "c"]);
+        drop(state);
+        let restored = workspace_state(path.clone()); // 验证重启后保留排序状态及成员顺序。
+        assert_eq!(restored.snapshot().unwrap().fences, renamed.fences);
+        drop(restored);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// 验证默认排序字段省略后旧备份仍然通过规范化校验。
+    #[test]
+    fn legacy_fence_sorting_keeps_backup_checksum_compatible() {
+        let path = snapshot_path("legacy-fence-sort"); // 本测试独占的旧格式备份。
+        let state = workspace_state(path.clone()); // 创建默认无排序围栏的工作区。
+        state
+            .apply(WorkspaceCommand::CreateFence {
+                title: "旧围栏".to_string(),
+                bounds: WorkspaceRect {
+                    left: 0.0,
+                    top: 0.0,
+                    width: 320.0,
+                    height: 240.0,
+                },
+            })
+            .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(); // 当前规范化备份载荷。
+        assert!(!serde_json::to_string(&value).unwrap().contains("sortMode"));
+        let store = decode_workspace_store(value, "desktop-a").unwrap(); // 模拟缺少新增字段的旧备份校验入口。
+        assert_eq!(
+            store.payload.layouts[0].layout.fences[0].sort_mode,
+            crate::contracts::FenceSortMode::None
+        );
+        drop(state);
+        std::fs::remove_file(path).unwrap();
     }
 
     /// 验证创建围栏命令持久化完整初始状态并可在重启后恢复。
