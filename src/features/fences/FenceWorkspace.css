@@ -123,6 +123,21 @@
     opacity: 0.48;
 }
 
+/* 跨屏拖入目标复用现有焦点强调色。 */
+.fence--remote-drop-target {
+    outline: 2px solid var(--color-focus);
+}
+
+/* 围栏标题原位编辑，沿用标题文本和主题表面。 */
+.fence__title-editor {
+    min-width: 0;
+    width: 100%;
+    color: inherit;
+    background: transparent;
+    border: 1px solid var(--color-focus);
+    font: inherit;
+}
+
 /* 工作区命令或持久化错误。 */
 .fence-workspace__error {
     position: absolute;

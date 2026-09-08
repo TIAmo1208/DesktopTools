@@ -40,6 +40,14 @@ pub fn run() {
     if let Err(error) = tools::log::init(tools::log::LogConfig::default()) {
         eprintln!("日志系统初始化失败：{error}");
     }
+    let (initial_menu_action, _instance_guard) = match app::desktop_menu::prepare_startup() {
+        Ok(app::desktop_menu::Startup::Exit) => return,
+        Ok(app::desktop_menu::Startup::Run(action, guard)) => (action, guard),
+        Err(error) => {
+            crate::log_error!("桌面菜单：启动命令失败，错误：{error}");
+            std::process::exit(1);
+        }
+    }; // 菜单辅助进程在启动 Shell 和 guardian 前退出。
     crate::log_info!("应用：Desktop Tools 正式应用启动");
 
     // WebView2 Controller 创建前生效的透明默认背景。
@@ -152,6 +160,7 @@ pub fn run() {
             );
             VirtualDesktopState::start_monitor(app.handle().clone(), virtual_desktop_changes);
             ComponentRuntimeState::start_host_events(app.handle().clone());
+            app::desktop_menu::install(app.handle(), initial_menu_action)?;
             Ok(())
         })
         .build(tauri::generate_context!());
@@ -180,6 +189,7 @@ pub fn run() {
             }
         }
         RunEvent::Exit => {
+            app::desktop_menu::shutdown();
             if let Some(monitor) =
                 app.try_state::<crate::platform::windows::settings::WindowsAccentMonitor>()
             {

@@ -5,6 +5,7 @@ import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspacePoint, Wor
 import { listenVirtualDesktopSwitching } from "../../../bridge/virtualDesktop";
 import { selectionModeForPointer, shouldOpenItemOnPointerRelease } from "./workspaceInteraction";
 import { usePreferences } from "../../settings/PreferencesProvider";
+import { publishCrossMonitorDrag, resolveCrossMonitorDrop, type CrossMonitorDrag } from "./crossMonitorDrag";
 import {
     beforeItemIdForFenceDrop,
     clientPointToPhysical,
@@ -101,6 +102,8 @@ export const useWorkspaceDrag = ({
         const startScrolls = new Map(Array.from(fenceContents, ([fenceId, element]) => [fenceId, element.scrollTop])); // 拖动开始时冻结的围栏滚动位置。
         const anchorPosition = startPositions.get(anchorItemId); // 当前拖动锚点的来源网格位置。
         const startPointer = { x: event.clientX, y: event.clientY }; // 当前连续拖动开始时的指针位置。
+        let crossDrag: CrossMonitorDrag | undefined; // 本次跨宿主短会话。
+        const dragSession = crypto.randomUUID(); // 排除其他源窗口旧消息。
         const anchorBounds = dragElements.get(anchorItemId)?.getBoundingClientRect(); // 拖动锚点初始客户区边界。
         const pointerOffset = anchorBounds ? { x: event.clientX - anchorBounds.left, y: event.clientY - anchorBounds.top } : { x: 0, y: 0 }; // 指针在拖动锚点内部保持的 DIP 偏移。
 
@@ -314,6 +317,27 @@ export const useWorkspaceDrag = ({
                 preview.style.top = bounds.top + delta.y + "px";
             });
             if (!moved) return;
+            if (currentMonitor) {
+                const physical = clientPointToPhysical(latestClientPointer, currentMonitor); // 指针统一到物理屏幕空间。
+                const target = monitorAtPhysicalPoint(physical, monitors); // 当前目标屏。
+                if (target) {
+                    crossDrag = {
+                        session: dragSession,
+                        source: currentMonitor.id,
+                        target: target.id,
+                        pointer: physicalPointToMonitorDip(physical, target),
+                        origin: { left: startPointer.x, top: startPointer.y },
+                        delta: { left: delta.x, top: delta.y },
+                        kind: "items",
+                        itemIds: dragItemIds,
+                        visuals: previews.map(({ itemId, bounds }) => ({
+                            itemId,
+                            bounds: { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height },
+                        })),
+                    };
+                    void publishCrossMonitorDrag(crossDrag, "move").catch(() => undefined);
+                }
+            }
             restoreGridPreview();
             if (previewFenceDrop({ x: moveEvent.clientX, y: moveEvent.clientY })) return;
             previewGridDrop({ x: moveEvent.clientX, y: moveEvent.clientY });
@@ -330,6 +354,7 @@ export const useWorkspaceDrag = ({
 
         /** 清理连续拖动产生的临时 DOM 和宿主状态。 */
         const cleanupDrag = async () => {
+            if (crossDrag) void publishCrossMonitorDrag(crossDrag, "end").catch(() => undefined);
             stopAutoScroll();
             clearFencePreview();
             marker.remove();
@@ -368,9 +393,24 @@ export const useWorkspaceDrag = ({
             const fenceScrolls = Array.from(fenceContents, ([fenceId, content]) => ({ fenceId, scrollTop: content.scrollTop })); // 拖动完成时的围栏滚动位置。
             let placements: { itemId: string; position: WorkspacePoint }[] = []; // 未归类投放提交的完整网格位置。
             let beforeItemId: string | null = null; // 围栏投放在移除拖动集合后的后继成员。
+            let remoteDrop = false; // 跨屏落点必须以目标 DOM 的最终答复为准。
+            if (crossDrag && crossDrag.target !== crossDrag.source) {
+                try {
+                    const drop = await resolveCrossMonitorDrop(crossDrag); // 释放点的目标围栏与插入位置。
+                    targetFenceId = drop.fenceId;
+                    beforeItemId = drop.beforeItemId ?? null;
+                    if (drop.fenceId && drop.scrollTop !== undefined) fenceScrolls.push({ fenceId: drop.fenceId, scrollTop: drop.scrollTop });
+                    remoteDrop = true;
+                } catch (error: unknown) {
+                    restoreStartLayout();
+                    onFailure(error instanceof Error ? error.message : "目标屏拖动失败");
+                    await cleanupDrag();
+                    return;
+                }
+            }
             if (targetFenceId) {
                 const targetFence = workspace.fences.find((fence) => fence.id === targetFenceId); // 当前目标围栏权威快照。
-                beforeItemId = targetFence ? beforeItemIdForFenceDrop(targetFence.members, dragItemIds, targetItemId, targetPlacement) : null;
+                if (!remoteDrop) beforeItemId = targetFence ? beforeItemIdForFenceDrop(targetFence.members, dragItemIds, targetItemId, targetPlacement) : null;
             } else {
                 const physicalPointer = currentMonitor ? clientPointToPhysical(latestClientPointer, currentMonitor) : undefined; // 当前释放点的虚拟桌面物理坐标。
                 const targetMonitor = physicalPointer ? monitorAtPhysicalPoint(physicalPointer, monitors) : currentMonitor; // 当前释放点最终所属显示器。
@@ -430,8 +470,9 @@ export const useWorkspaceDrag = ({
                         beforeItemId,
                         fenceScrolls,
                     },
-                    targetFenceId ? undefined : targetMonitorId,
+                    targetMonitorId,
                 );
+                if (crossDrag) crossDrag.committed = true;
             } catch {
                 restoreStartLayout();
             }
@@ -440,6 +481,12 @@ export const useWorkspaceDrag = ({
 
         /** 将原生指针结束事件转入单一拖动收尾路径。 */
         const finishPointerDrag = (finishEvent: globalThis.PointerEvent) => {
+            if (finishEvent.type === "pointerup" && currentMonitor && crossDrag) {
+                latestClientPointer = { x: finishEvent.clientX, y: finishEvent.clientY };
+                const physical = clientPointToPhysical(latestClientPointer, currentMonitor); // 释放事件可能晚于最后一帧移动。
+                const target = monitorAtPhysicalPoint(physical, monitors); // 实际释放屏幕。
+                if (target) crossDrag = { ...crossDrag, target: target.id, pointer: physicalPointToMonitorDip(physical, target) };
+            }
             void finishDrag(finishEvent.type, finishEvent.pointerId);
         };
 

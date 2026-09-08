@@ -184,14 +184,34 @@ pub(crate) fn apply_workspace_history(
             .restore_shell_history(redo)
             .map_err(|error| WorkspaceError::history_failed(&error.message))?;
         if let Some(shell_operation) = shell_operation {
+            let renames = if shell_operation.kind == crate::contracts::ShellOperationKind::Rename {
+                shell_operation
+                    .items
+                    .iter()
+                    .filter(|item| item.succeeded)
+                    .filter_map(|item| {
+                        item.result_reference
+                            .as_ref()
+                            .filter(|reference| *reference != &item.source_reference)
+                            .map(|reference| (item.source_reference.clone(), reference.clone()))
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }; // 仅使用已确认的重命名事实，不把复制或回收站还原误认为同一引用迁移。
             let item_snapshot = desktop_items
                 .refresh()
                 .map_err(|error| WorkspaceError::history_failed(&error.message))?; // 补偿后重新枚举的 Shell 最终事实。
             desktop_items
-                .reconcile_operation_history(&item_snapshot, &[])
+                .reconcile_operation_history(&item_snapshot, &renames)
                 .map_err(|error| WorkspaceError::history_failed(&error.message))?;
-            let snapshot =
-                reconcile_workspace_environment(workspace, runtime, &item_snapshot, false, &[])?; // Shell 补偿结果协调后的当前布局。
+            let snapshot = reconcile_workspace_environment(
+                workspace,
+                runtime,
+                &item_snapshot,
+                false,
+                &renames,
+            )?; // Shell 补偿结果协调后的当前布局与历史引用。
             app.emit(DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, &item_snapshot)
                 .map_err(|error| WorkspaceError::history_failed(&error))?;
             app.emit(WORKSPACE_SNAPSHOT_CHANGED_EVENT, &snapshot)

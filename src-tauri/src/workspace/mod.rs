@@ -2455,9 +2455,12 @@ impl WorkspaceSnapshot {
             let monitor_occupied = occupied
                 .get_mut(monitor_id)
                 .expect("活动显示器已创建占用集合"); // 当前显示器已经占用的位置。
-            // 当前新项目获得的首个空网格位置。
+            // 新增项目逐行从左上扫描，保留已有项目和拖动网格的顺序语义。
             let position = (0..capacity)
-                .map(|index| grid_position(grid, index))
+                .map(|index| WorkspacePoint {
+                    left: grid.left + f64::from(index % grid.columns) * grid.column_width,
+                    top: grid.top + f64::from(index / grid.columns) * grid.row_height,
+                })
                 .find(|position| !monitor_occupied.contains(position))
                 .ok_or_else(|| WorkspaceError::invalid_command("未归类网格空间不足"))?;
             // 当前新项目获得的最高显示层级。
@@ -2587,6 +2590,7 @@ impl WorkspaceSnapshot {
                     members: Vec::new(),
                     layout_mode: FenceLayoutMode::Tile,
                     sort_mode: FenceSortMode::None,
+                    auto_expand: false,
                     scroll_top: 0.0,
                     collapsed: false,
                     last_expanded_height: bounds.height,
@@ -2605,6 +2609,16 @@ impl WorkspaceSnapshot {
                 fence.bounds = bounds;
                 fence.last_expanded_height = bounds.height;
                 Ok("更新围栏边界")
+            }
+            WorkspaceCommand::RenameFence { fence_id, title } => {
+                let title = title.trim(); // 去除输入两端空白。
+                validate_title(title)?;
+                self.fence_mut(&fence_id)?.title = title.to_string();
+                Ok("重命名围栏")
+            }
+            WorkspaceCommand::SetFenceAutoExpand { fence_id, enabled } => {
+                self.fence_mut(&fence_id)?.auto_expand = enabled;
+                Ok("更新围栏悬停展开策略")
             }
             WorkspaceCommand::SetFenceCollapsed {
                 fence_id,
@@ -3484,6 +3498,100 @@ mod tests {
             .unwrap(); // 同一观察重试成功。
         assert_eq!(result.unclassified_items[0].stable_reference, "b");
         assert_eq!(state.item_names.lock().unwrap().get("b").unwrap(), "after");
+        drop(state);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir_all(path.with_extension("snapshots")).unwrap();
+    }
+
+    /// 围栏标题和悬停策略通过公开命令持久化，并可独立撤销。
+    #[test]
+    fn fence_title_and_hover_policy_persist_and_undo() {
+        let path = snapshot_path("fence-options"); // 独占配置。
+        let state = workspace_state(path.clone()); // 测试工作区。
+        let snapshot = state
+            .apply(WorkspaceCommand::CreateFence {
+                title: "旧标题".into(),
+                bounds: WorkspaceRect {
+                    left: 10.0,
+                    top: 10.0,
+                    width: 320.0,
+                    height: 240.0,
+                },
+            })
+            .unwrap(); // 初始围栏。
+        let id = snapshot.fences[0].id.clone(); // 稳定围栏身份。
+        let rename = serde_json::from_value(
+            serde_json::json!({"type":"rename-fence", "fenceId":id, "title":"新标题"}),
+        )
+        .unwrap(); // 前端实际命令格式。
+        state.apply(rename).unwrap();
+        let enable = serde_json::from_value(
+            serde_json::json!({"type":"set-fence-auto-expand", "fenceId":id, "enabled":true}),
+        )
+        .unwrap(); // 前端开关命令。
+        state.apply(enable).unwrap();
+        assert!(state.snapshot().unwrap().fences[0].auto_expand);
+        assert_eq!(
+            workspace_state(path.clone()).snapshot().unwrap().fences[0].title,
+            "新标题"
+        );
+        state.apply(WorkspaceCommand::UndoLayout).unwrap();
+        assert!(!state.snapshot().unwrap().fences[0].auto_expand);
+        state.apply(WorkspaceCommand::UndoLayout).unwrap();
+        assert_eq!(state.snapshot().unwrap().fences[0].title, "旧标题");
+        assert!(
+            state
+                .apply(WorkspaceCommand::RenameFence {
+                    fence_id: id,
+                    title: "  ".into()
+                })
+                .is_err()
+        );
+        drop(state);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir_all(path.with_extension("snapshots")).unwrap();
+    }
+
+    /// 新增项目逐行填补空位，保留已有布局位置。
+    #[test]
+    fn new_desktop_items_fill_rows_and_reuse_holes() {
+        let path = snapshot_path("new-items-row-order"); // 测试独占布局文件。
+        let state = workspace_state(path.clone()); // 当前权威工作区。
+        let first = state
+            .reconcile_items(400.0, 400.0, &["a".into(), "b".into(), "c".into()])
+            .unwrap(); // 首次枚举。
+        let positions = first
+            .unclassified_items
+            .iter()
+            .map(|item| item.position)
+            .collect::<Vec<_>>(); // 初始逐行位置。
+        assert_eq!(positions[0].top, positions[1].top);
+        assert_eq!(
+            positions[1].left - positions[0].left,
+            first.grid.column_width
+        );
+        state
+            .reconcile_items(400.0, 400.0, &["a".into(), "c".into()])
+            .unwrap();
+        let next = state
+            .reconcile_items(400.0, 400.0, &["a".into(), "c".into(), "d".into()])
+            .unwrap(); // 补充新项目。
+        assert_eq!(
+            next.unclassified_items
+                .iter()
+                .find(|item| item.stable_reference == "d")
+                .unwrap()
+                .position,
+            positions[1]
+        );
+        assert_eq!(
+            next.unclassified_items
+                .iter()
+                .find(|item| item.stable_reference == "c")
+                .unwrap()
+                .position,
+            positions[2]
+        );
         drop(state);
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_dir_all(path.with_extension("snapshots")).unwrap();
@@ -4506,6 +4614,60 @@ mod tests {
         );
 
         std::fs::remove_file(path).expect("测试快照应可清理");
+    }
+
+    /// 验证重命名补偿后的精确引用仍能撤销先前的布局移动。
+    #[test]
+    fn rename_compensation_preserves_prior_layout_undo() {
+        let path = snapshot_path("rename-layout-undo"); // 当前测试布局。
+        let state = workspace_state(path.clone()); // 同一会话的历史集合。
+        let initial = state
+            .reconcile_items(1280.0, 720.0, &["old".into()])
+            .unwrap(); // 原始来源位置。
+        state
+            .apply(WorkspaceCommand::CommitItemDrag {
+                anchor_item_id: "old".into(),
+                item_ids: vec!["old".into()],
+                placements: vec![WorkspaceItemPlacement {
+                    item_id: "old".into(),
+                    position: WorkspacePoint {
+                        left: 300.0,
+                        top: 200.0,
+                    },
+                }],
+                target_fence_id: None,
+                before_item_id: None,
+                fence_scrolls: vec![],
+            })
+            .unwrap();
+        state
+            .reconcile_shell_items(
+                1280.0,
+                720.0,
+                &["new".into()],
+                &[("old".into(), "new".into())],
+            )
+            .unwrap();
+        state
+            .reconcile_shell_items(
+                1280.0,
+                720.0,
+                &["old".into()],
+                &[("new".into(), "old".into())],
+            )
+            .unwrap();
+        let restored = state.restore_layout_history(false).unwrap(); // 撤销重命名后再撤销布局。
+        assert_eq!(
+            restored.snapshot.unclassified_items[0].position,
+            initial.unclassified_items[0].position
+        );
+        assert_eq!(
+            restored.snapshot.unclassified_items[0].stable_reference,
+            "old"
+        );
+        drop(state);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir_all(path.with_extension("snapshots")).unwrap();
     }
 
     /// 验证 Explorer 初始归属、断开投射、重连恢复和 DPI 变化保持持久显示器。

@@ -14,6 +14,7 @@ import type { DesktopItemSnapshot } from "../../../contracts/desktopItem";
 import { FenceWorkspace } from "../../fences/FenceWorkspace";
 import { useWorkspace } from "../state/useWorkspace";
 import { useDesktopHostSurface } from "./useDesktopHostSurface";
+import { useCrossMonitorPreview } from "./useCrossMonitorPreview";
 import { projectWorkspaceSurface } from "./workspaceSurfaceProjection";
 
 /** 将未知错误转换为桌面项目操作说明。 */
@@ -35,6 +36,7 @@ export const WorkspaceSurface = () => {
     }, [workspace.status]); // 统一撤销或重做的部分恢复说明复用工作区状态区域呈现。
     // 正式透明宿主门槛与最小输入处理器。
     const desktopHost = useDesktopHostSurface(true, monitorIndex, desktopItemSnapshot, workspace.snapshot?.revision);
+    useCrossMonitorPreview(desktopHost.host?.monitor.id, desktopItemSnapshot, workspace.snapshot);
     const projectedWorkspace = useMemo(
         () => projectWorkspaceSurface(workspace.snapshot, desktopHost.host?.monitor.id),
         [workspace.snapshot, desktopHost.host?.monitor.id],

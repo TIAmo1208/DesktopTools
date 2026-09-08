@@ -25,6 +25,7 @@ import { projectDesktopItems, type DesktopItemViewModel } from "../desktop-items
 import { OfficialComponentHost } from "../components/OfficialComponentHost";
 import { useWorkspaceInteraction } from "../workspace/interaction/useWorkspaceInteraction";
 import { useWorkspaceDrag } from "../workspace/interaction/useWorkspaceDrag";
+import { publishCrossMonitorDrag, type CrossMonitorDrag } from "../workspace/interaction/crossMonitorDrag";
 import { clientPointToPhysical, monitorAtPhysicalPoint, physicalPointToMonitorDip } from "../workspace/interaction/workspaceDrag";
 import { moveFence, resizeFence, snapFenceEdges, type FenceResizeDirection } from "./fenceGeometry";
 import "./FenceWorkspace.css";
@@ -55,6 +56,8 @@ interface FenceWorkspaceProps {
 
 /** 单个围栏的呈现与交互参数。 */
 interface FencePanelProps {
+    renaming: boolean; // 是否编辑围栏标题。
+    onRenameEnd: () => void; // 结束标题编辑。
     fence: FenceSnapshot;
     snapTargets: WorkspaceRect[];
     items: DesktopItemViewModel[];
@@ -94,7 +97,9 @@ const applyFenceBounds = (element: HTMLElement, bounds: WorkspaceRect, collapsed
 
 /** 呈现一个可移动、缩放、折叠、滚动和接收项目的围栏。 */
 const FencePanel = ({
-    fence,
+    fence: persistedFence,
+    renaming,
+    onRenameEnd,
     snapTargets,
     items,
     onCommand,
@@ -118,9 +123,38 @@ const FencePanel = ({
     onRenameCommit,
     onRenameCancel,
 }: FencePanelProps) => {
+    const [hovered, setHovered] = useState(false); // 当前指针是否位于围栏表面。
+    const cancelRename = useRef(false); // Escape 取消后阻止失焦提交。
+    const fence = { ...persistedFence, collapsed: persistedFence.collapsed && !(persistedFence.autoExpand && hovered) }; // 临时展开不写入领域折叠状态。
     const fenceRef = useRef<HTMLElement>(null); // 当前围栏表面节点。
     const { preferences } = usePreferences(); // 网格改变后重新计算滚动条。
     const contentRef = useRef<HTMLUListElement>(null); // 当前围栏滚动内容节点。
+    useEffect(() => {
+        if (!persistedFence.autoExpand || !persistedFence.collapsed || !currentMonitor) return;
+        let timeout = 0; // 跨屏源宿主异常停止时关闭临时展开。
+        const handleRemoteHover = (event: Event) => {
+            const drag = (event as CustomEvent).detail; // 原生转发的指针位置。
+            if (!drag || drag.phase === "result" || drag.source === currentMonitor.id) return;
+            const bounds = fenceRef.current?.getBoundingClientRect(); // 当前标题或已展开表面。
+            const inside =
+                drag.phase !== "end" &&
+                drag.target === currentMonitor.id &&
+                bounds &&
+                drag.pointer?.left >= bounds.left &&
+                drag.pointer?.left <= bounds.right &&
+                drag.pointer?.top >= bounds.top &&
+                drag.pointer?.top <= bounds.bottom;
+            setHovered(Boolean(inside));
+            clearTimeout(timeout);
+            if (inside) timeout = window.setTimeout(() => setHovered(false), 2500);
+        };
+        window.addEventListener("desktop-tools-drag", handleRemoteHover);
+        return () => {
+            window.removeEventListener("desktop-tools-drag", handleRemoteHover);
+            clearTimeout(timeout);
+        };
+    }, [persistedFence.autoExpand, persistedFence.collapsed, currentMonitor?.id]);
+    const scrollSync = useRef({ running: false, requested: undefined as number | undefined }); // 合并滚动写入，防止旧快照拉回正在滚动的内容。
     const [scrollbar, setScrollbar] = useState({ maxScrollTop: 0, thumbTop: 0, thumbHeight: 0, trackHeight: 0 }); // 当前覆盖式滚动条几何。
 
     /** 按原型规则同步围栏覆盖式滚动条。 */
@@ -136,8 +170,8 @@ const FencePanel = ({
     };
 
     useEffect(() => {
-        if (contentRef.current) contentRef.current.scrollTop = fence.scrollTop;
-    }, [fence.scrollTop]);
+        if (contentRef.current && !scrollSync.current.running) contentRef.current.scrollTop = fence.scrollTop;
+    }, [fence.scrollTop, fence.collapsed]);
 
     useEffect(() => {
         updateScrollbar();
@@ -162,6 +196,8 @@ const FencePanel = ({
         const startPointer = { x: event.clientX, y: event.clientY };
         // 当前交互开始时的权威围栏边界。
         const startBounds = { ...fence.bounds };
+        const session = crypto.randomUUID(); // 当前围栏跨屏会话。
+        let crossDrag: CrossMonitorDrag | undefined; // 最近一次跨屏预览。
         const geometryTargets = [
             ...snapTargets,
             ...Array.from(document.querySelectorAll<HTMLElement>(".official-component")).map((component) => component.getBoundingClientRect()),
@@ -198,19 +234,47 @@ const FencePanel = ({
                     : undefined,
             );
             applyFenceBounds(element, preview, fence.collapsed);
+            if (!direction && currentMonitor) {
+                const physical = clientPointToPhysical({ x: moveEvent.clientX, y: moveEvent.clientY }, currentMonitor); // 跨屏物理指针。
+                const target = monitorAtPhysicalPoint(physical, monitors); // 预览目的屏。
+                if (target) {
+                    crossDrag = {
+                        session,
+                        source: currentMonitor.id,
+                        target: target.id,
+                        kind: "fence",
+                        itemIds: [],
+                        pointer: physicalPointToMonitorDip(physical, target),
+                        origin: { left: startPointer.x, top: startPointer.y },
+                        delta: { left: delta.x, top: delta.y },
+                        visuals: [{ title: fence.title, bounds: { ...startBounds, height: fence.collapsed ? 28 : startBounds.height } }],
+                    };
+                    void publishCrossMonitorDrag(crossDrag, "move").catch(() => undefined);
+                }
+            }
         };
 
         // 结束指针交互并提交或恢复权威边界。
         const finishGeometry = (finishEvent: globalThis.PointerEvent) => {
             if (finished) return;
             finished = true;
+            if (crossDrag) void publishCrossMonitorDrag(crossDrag, "end").catch(() => undefined);
             handle.removeEventListener("pointermove", handlePointerMove);
             handle.removeEventListener("pointerup", finishGeometry);
             handle.removeEventListener("pointercancel", finishGeometry);
             handle.removeEventListener("lostpointercapture", finishGeometry);
+            window.removeEventListener("keydown", handleGeometryKey);
             if (finishEvent.type === "pointerup") {
                 const centerPhysical = currentMonitor
-                    ? clientPointToPhysical({ x: preview.left + preview.width / 2, y: preview.top + preview.height / 2 }, currentMonitor)
+                    ? clientPointToPhysical(
+                          direction
+                              ? { x: preview.left + preview.width / 2, y: preview.top + preview.height / 2 }
+                              : {
+                                    x: finishEvent.clientX - (startPointer.x - startBounds.left) + preview.width / 2,
+                                    y: finishEvent.clientY - (startPointer.y - startBounds.top) + preview.height / 2,
+                                },
+                          currentMonitor,
+                      )
                     : undefined; // 围栏中心在虚拟桌面中的物理坐标。
                 const targetMonitor = centerPhysical ? monitorAtPhysicalPoint(centerPhysical, monitors) : currentMonitor; // 围栏最终归属的显示器。
                 const targetCenter = centerPhysical && targetMonitor ? physicalPointToMonitorDip(centerPhysical, targetMonitor) : undefined; // 围栏中心在目标显示器中的 DIP。
@@ -246,6 +310,12 @@ const FencePanel = ({
             void onEndInputDrag().catch(() => undefined);
         };
 
+        const handleGeometryKey = (keyEvent: KeyboardEvent) => {
+            if (keyEvent.key !== "Escape") return;
+            keyEvent.preventDefault();
+            finishGeometry(new globalThis.PointerEvent("pointercancel", { pointerId: event.pointerId }));
+        }; // Escape 同时清理所有屏幕预览。
+        window.addEventListener("keydown", handleGeometryKey);
         handle.addEventListener("pointermove", handlePointerMove);
         handle.addEventListener("pointerup", finishGeometry);
         handle.addEventListener("pointercancel", finishGeometry);
@@ -256,7 +326,20 @@ const FencePanel = ({
     const handleScroll = () => {
         if (contentRef.current?.dataset.dragScrolling === "true") return;
         updateScrollbar();
-        void onCommand({ type: "set-fence-scroll", fenceId: fence.id, scrollTop: contentRef.current?.scrollTop ?? 0 }).catch(() => undefined);
+        scrollSync.current.requested = contentRef.current?.scrollTop ?? 0;
+        if (scrollSync.current.running) return;
+        scrollSync.current.running = true;
+        void (async () => {
+            try {
+                while (scrollSync.current.requested !== undefined) {
+                    const scrollTop = scrollSync.current.requested; // 当前最新滚动位置，同一时刻只允许一个写请求。
+                    scrollSync.current.requested = undefined;
+                    await onCommand({ type: "set-fence-scroll", fenceId: fence.id, scrollTop });
+                }
+            } finally {
+                scrollSync.current.running = false;
+            }
+        })().catch(() => undefined);
     };
 
     /** 按原型步进滚动围栏内容。 */
@@ -327,17 +410,51 @@ const FencePanel = ({
                 zIndex: FENCE_Z_INDEX_BASE + fence.zIndex,
             }}
             aria-label={`围栏 ${fence.title}`}
+            onPointerEnter={() => setHovered(true)}
+            onPointerLeave={() => setHovered(false)}
             onContextMenu={(event) => onFenceContextMenu(event, fence.id)}
         >
             <header
                 className="fence__header"
                 onPointerDown={(event) => {
-                    if (event.target instanceof Element && event.target.closest("button")) return;
+                    if (event.target instanceof Element && event.target.closest("button,input")) return;
                     focusFence();
                     void beginGeometry(event);
                 }}
             >
-                <h2>{fence.title}</h2>
+                {renaming ? (
+                    <input
+                        className="fence__title-editor"
+                        aria-label="围栏名称"
+                        defaultValue={fence.title}
+                        autoFocus
+                        onFocus={(event) => {
+                            cancelRename.current = false;
+                            event.currentTarget.select();
+                        }}
+                        onKeyDown={(event) => {
+                            event.stopPropagation();
+                            if (event.key === "Escape") {
+                                cancelRename.current = true;
+                                onRenameEnd();
+                            }
+                            if (event.key === "Enter" && !event.nativeEvent.isComposing) event.currentTarget.blur();
+                        }}
+                        onBlur={(event) => {
+                            if (cancelRename.current) return;
+                            const title = event.currentTarget.value.trim(); // 提交的非空标题。
+                            if (!title || title === persistedFence.title) {
+                                onRenameEnd();
+                                return;
+                            }
+                            void onCommand({ type: "rename-fence", fenceId: fence.id, title })
+                                .then(onRenameEnd)
+                                .catch(() => undefined);
+                        }}
+                    />
+                ) : (
+                    <h2>{fence.title}</h2>
+                )}
                 <div className="fence__commands">
                     <button
                         type="button"
@@ -371,10 +488,15 @@ const FencePanel = ({
                     </button>
                     <button
                         type="button"
-                        title={fence.collapsed ? "展开围栏" : "折叠围栏"}
-                        onClick={() => void onCommand({ type: "set-fence-collapsed", fenceId: fence.id, collapsed: !fence.collapsed }).catch(() => undefined)}
+                        title={persistedFence.collapsed ? "展开围栏" : "折叠围栏"}
+                        onClick={() =>
+                            void onCommand({ type: "set-fence-collapsed", fenceId: fence.id, collapsed: !persistedFence.collapsed }).catch(() => undefined)
+                        }
                     >
-                        <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: fence.collapsed ? fenceToggleExpandIcon : fenceToggleCollapseIcon }} />
+                        <span
+                            aria-hidden="true"
+                            dangerouslySetInnerHTML={{ __html: persistedFence.collapsed ? fenceToggleExpandIcon : fenceToggleCollapseIcon }}
+                        />
                     </button>
                 </div>
             </header>
@@ -495,6 +617,7 @@ export const FenceWorkspace = ({
         if (fenceMenu?.sorting) menuRef.current?.querySelector<HTMLButtonElement>("[aria-checked='true']")?.focus();
     }, [fenceMenu]);
     const [renameItemId, setRenameItemId] = useState<string>(); // 当前 F2 原位编辑的单一项目引用。
+    const [renameFenceId, setRenameFenceId] = useState<string>(); // 当前编辑标题的围栏。
     const [renameValue, setRenameValue] = useState(""); // 当前重命名输入框中的用户文本。
     // 当前 Shell 项目对应的页面展示模型。
     const items = useMemo(() => (desktopItems ? projectDesktopItems(desktopItems) : []), [desktopItems]);
@@ -540,7 +663,7 @@ export const FenceWorkspace = ({
             return await onContextMenu(target, clientX, clientY);
         } finally {
             contextMenuOpenRef.current = false;
-            workspaceRef.current?.focus({ preventScroll: true });
+            if (target.type !== "background") workspaceRef.current?.focus({ preventScroll: true });
         }
     };
 
@@ -765,8 +888,33 @@ export const FenceWorkspace = ({
                     ) : (
                         <>
                             <li>
-                                <button type="button" disabled title="正式领域暂未提供围栏重命名命令">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setRenameFenceId(fenceMenu.fenceId);
+                                        setFenceMenu(undefined);
+                                    }}
+                                >
                                     重命名
+                                </button>
+                            </li>
+                            <li>
+                                <button
+                                    type="button"
+                                    role="menuitemcheckbox"
+                                    aria-checked={Boolean(menuFence?.autoExpand)}
+                                    onClick={() => {
+                                        if (menuFence)
+                                            void onCommand({ type: "set-fence-auto-expand", fenceId: menuFence.id, enabled: !menuFence.autoExpand }).catch(
+                                                () => undefined,
+                                            );
+                                        setFenceMenu(undefined);
+                                    }}
+                                >
+                                    <span className="fence-object-menu__icon" aria-hidden="true">
+                                        {menuFence?.autoExpand ? "✓" : ""}
+                                    </span>
+                                    折叠时自动展开
                                 </button>
                             </li>
                             <li>
@@ -814,6 +962,8 @@ export const FenceWorkspace = ({
             {workspace?.fences.map((fence) => (
                 <FencePanel
                     key={fence.id}
+                    renaming={renameFenceId === fence.id}
+                    onRenameEnd={() => setRenameFenceId(undefined)}
                     fence={fence}
                     snapTargets={workspace.fences.filter((candidate) => candidate.id !== fence.id).map((candidate) => candidate.bounds)}
                     items={fence.members.flatMap((itemId) => {

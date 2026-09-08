@@ -34,7 +34,7 @@ fn sync_menu(app: &AppHandle) -> tauri::Result<()> {
 }
 
 /// 显示时恢复最小化并聚焦，隐藏时保持应用和桌面宿主运行。
-fn set_settings_visible(app: &AppHandle, visible: bool) -> tauri::Result<()> {
+pub(crate) fn set_settings_visible(app: &AppHandle, visible: bool) -> tauri::Result<()> {
     let window = app
         .get_webview_window("main")
         .ok_or(tauri::Error::WindowNotFound)?; // 本次显隐操作的唯一窗口。

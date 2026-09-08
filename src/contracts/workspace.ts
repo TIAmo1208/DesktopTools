@@ -54,6 +54,7 @@ export interface FenceSnapshot {
     sortMode?: FenceSortMode; // 旧快照省略时使用无排序。
     scrollTop: number;
     collapsed: boolean;
+    autoExpand?: boolean; // 折叠时悬停临时展开，旧布局默认关闭。
     lastExpandedHeight: number;
     zIndex: number;
 }
@@ -152,6 +153,8 @@ export type WorkspaceCommand =
     | { type: "set-fence-collapsed"; fenceId: string; collapsed: boolean }
     | { type: "set-fence-layout"; fenceId: string; layoutMode: FenceLayoutMode }
     | { type: "set-fence-sort"; fenceId: string; sortMode: FenceSortMode }
+    | { type: "rename-fence"; fenceId: string; title: string }
+    | { type: "set-fence-auto-expand"; fenceId: string; enabled: boolean }
     | { type: "set-fence-scroll"; fenceId: string; scrollTop: number }
     | { type: "move-item-to-fence"; itemId: string; fenceId: string; beforeItemId: string | null }
     | { type: "remove-item-from-fence"; itemId: string }
@@ -289,6 +292,7 @@ export const parseWorkspaceSnapshot = (value: unknown): WorkspaceSnapshot => {
             throw new WorkspaceContractError();
         if (!isFiniteNumber(fenceCandidate.scrollTop) || fenceCandidate.scrollTop < 0) throw new WorkspaceContractError();
         if (typeof fenceCandidate.collapsed !== "boolean") throw new WorkspaceContractError();
+        if (fenceCandidate.autoExpand !== undefined && typeof fenceCandidate.autoExpand !== "boolean") throw new WorkspaceContractError();
         if (!isFiniteNumber(fenceCandidate.lastExpandedHeight) || fenceCandidate.lastExpandedHeight <= 0) throw new WorkspaceContractError();
         if (!Number.isSafeInteger(fenceCandidate.zIndex) || (fenceCandidate.zIndex as number) < 0) throw new WorkspaceContractError();
 
@@ -305,6 +309,7 @@ export const parseWorkspaceSnapshot = (value: unknown): WorkspaceSnapshot => {
             members: [...fenceCandidate.members] as string[],
             layoutMode,
             sortMode: (fenceCandidate.sortMode ?? "none") as FenceSortMode,
+            autoExpand: fenceCandidate.autoExpand === true,
             scrollTop: fenceCandidate.scrollTop,
             collapsed: fenceCandidate.collapsed,
             lastExpandedHeight: fenceCandidate.lastExpandedHeight,

@@ -507,14 +507,8 @@ fn monitor_id_at_point(monitors: &[DesktopHostMonitor], point: POINT) -> Option<
         .map(|monitor| monitor.id.as_str())
 }
 
-/// 按原型公开 Shell 路径读取 Explorer 桌面项目解析名称和物理屏幕坐标。
-fn explorer_desktop_item_positions(list_view_raw: isize) -> Result<HashMap<String, POINT>, String> {
-    if list_view_raw == 0 {
-        return Err("Explorer SysListView32 句柄为空".to_string());
-    }
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-    }
+/// 返回 Explorer 已附着的桌面视图，调用线程必须已初始化 COM。
+pub(super) fn explorer_desktop_view() -> Result<windows::Win32::UI::Shell::IShellView, String> {
     let shell_windows: IShellWindows = unsafe {
         CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER)
             .map_err(|error| format!("创建 IShellWindows 失败: {error}"))?
@@ -540,12 +534,21 @@ fn explorer_desktop_item_positions(list_view_raw: isize) -> Result<HashMap<Strin
             .QueryService(&SID_STopLevelBrowser)
             .map_err(|error| format!("获取 IShellBrowser 失败: {error}"))?
     }; // 桌面顶层浏览器接口。
-    let folder_view = unsafe {
-        shell_browser
-            .QueryActiveShellView()
-            .and_then(|view| view.cast::<IFolderView>())
-            .map_err(|error| format!("获取 IFolderView 失败: {error}"))?
-    }; // 当前 Explorer 桌面文件夹视图。
+    unsafe { shell_browser.QueryActiveShellView() }
+        .map_err(|error| format!("获取 Explorer 桌面视图失败: {error}"))
+}
+
+/// 按原型公开 Shell 路径读取 Explorer 桌面项目解析名称和物理屏幕坐标。
+fn explorer_desktop_item_positions(list_view_raw: isize) -> Result<HashMap<String, POINT>, String> {
+    if list_view_raw == 0 {
+        return Err("Explorer SysListView32 句柄为空".to_string());
+    }
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+    let folder_view = explorer_desktop_view()?
+        .cast::<IFolderView>()
+        .map_err(|error| format!("获取 IFolderView 失败: {error}"))?; // 当前 Explorer 桌面文件夹视图。
     let folder: IShellFolder = unsafe {
         folder_view
             .GetFolder()
@@ -923,6 +926,44 @@ pub fn create_desktop_hosts(
     Ok(hosts)
 }
 
+/// 保留未变化且页面索引一致的宿主，只创建并导航发生变化的显示器。
+pub fn reconcile_desktop_hosts(
+    app: &AppHandle,
+    shell: ShellDesktopState,
+    command_handler: NativeCommandHandler,
+    monitors: &[DesktopHostMonitor],
+    previous: &[NativeDesktopHost],
+) -> Result<Vec<NativeDesktopHost>, String> {
+    let retained = previous
+        .iter()
+        .enumerate()
+        .filter(|(index, host)| monitors.get(*index) == Some(&host.monitor))
+        .map(|(_, host)| host.clone())
+        .collect::<Vec<_>>(); // 索引变化会改变页面身份，不能复用。
+    destroy_matching_hosts(|id| !retained.iter().any(|host| host.monitor.id == id));
+    let mut result = Vec::with_capacity(monitors.len()); // 最新顺序的完整宿主集合。
+    for (index, monitor) in monitors.iter().enumerate() {
+        if let Some(host) = retained.iter().find(|host| host.monitor.id == monitor.id) {
+            result.push(host.clone());
+            continue;
+        }
+        let host = create_desktop_host(app, shell, Arc::clone(&command_handler), monitor, index)?; // 仅新建受影响的宿主。
+        NATIVE_HOSTS.with(|hosts| {
+            let hosts = hosts.borrow(); // 同线程持有的新 WebView。
+            let resource = hosts
+                .iter()
+                .find(|resource| resource.hwnd == host.hwnd)
+                .ok_or("新宿主资源不存在")?; // 待导航资源。
+            resource
+                .webview
+                .load_url(&resource.page_url)
+                .map_err(|error| error.to_string())
+        })?;
+        result.push(host);
+    }
+    Ok(result)
+}
+
 /// 导航全部正式宿主到 Tauri 内嵌 React 页面。
 pub fn load_desktop_hosts() -> Result<(), String> {
     NATIVE_HOSTS.with(|hosts| {
@@ -956,6 +997,24 @@ pub fn reload_desktop_host(monitor_id: &str) -> Result<(), String> {
         host.webview
             .load_url(&host.page_url)
             .map_err(|error| format!("Renderer 轻量重载失败，显示器={monitor_id}，错误={error}"))
+    })
+}
+
+/// 在宿主 UI 线程转发有界拖动消息；内容只作为 CustomEvent 数据，不插入 HTML。
+pub fn relay_workspace_drag(payload: serde_json::Value) -> Result<(), String> {
+    let encoded = serde_json::to_string(&payload).map_err(|error| error.to_string())?; // 安全编码的事件数据。
+    if encoded.len() > 65536 {
+        return Err("跨屏拖动消息过大".into());
+    }
+    let script =
+        format!("window.dispatchEvent(new CustomEvent('desktop-tools-drag',{{detail:{encoded}}}))"); // 仅分发给本应用宿主。
+    NATIVE_HOSTS.with(|hosts| {
+        for host in hosts.borrow().iter() {
+            host.webview
+                .evaluate_script(&script)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     })
 }
 
@@ -1164,8 +1223,19 @@ pub fn probe_host_pixels(host: &NativeDesktopHost) -> Result<usize, String> {
 
 /// 销毁全部正式 Windowed WebView2 与外层 HWND。
 pub fn destroy_desktop_hosts() {
+    destroy_matching_hosts(|_| true);
+}
+
+/// 释放匹配宿主的 OLE、WebView 与 HWND，其他宿主不受影响。
+fn destroy_matching_hosts(matches: impl Fn(&str) -> bool) {
     NATIVE_HOSTS.with(|hosts| {
-        for host in hosts.borrow_mut().drain(..) {
+        let mut hosts = hosts.borrow_mut(); // 当前线程独占原生资源集合。
+        let removed = (0..hosts.len())
+            .rev()
+            .filter(|index| matches(&hosts[*index].monitor_id))
+            .collect::<Vec<_>>(); // 逆序移除避免索引变化。
+        for index in removed {
+            let host = hosts.remove(index); // 仅释放本次选中的宿主。
             for (hwnd, _) in &host.drop_targets {
                 let _ = unsafe { RevokeDragDrop(raw_hwnd(*hwnd)) };
             }

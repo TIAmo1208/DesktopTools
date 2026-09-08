@@ -160,6 +160,9 @@ pub struct FenceSnapshot {
     pub scroll_top: f64,
     /// 围栏当前折叠状态。
     pub collapsed: bool,
+    /// 折叠时悬停临时展开；旧备份缺省关闭且保持原校验和。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_expand: bool,
     /// 最近一次展开时的内容高度。
     pub last_expanded_height: f64,
     /// 围栏在工作区中的层级顺序。
@@ -450,6 +453,18 @@ pub enum WorkspaceCommand {
         fence_id: String,
         /// 下一折叠状态。
         collapsed: bool,
+    },
+    /// 修改围栏名称。
+    #[serde(rename = "rename-fence")]
+    RenameFence {
+        fence_id: String, // 目标围栏。
+        title: String,    // 已编辑的新标题。
+    },
+    /// 设置折叠时悬停展开策略。
+    #[serde(rename = "set-fence-auto-expand")]
+    SetFenceAutoExpand {
+        fence_id: String, // 目标围栏。
+        enabled: bool,    // 是否启用临时展开。
     },
     /// 提交围栏布局方式。
     #[serde(rename = "set-fence-layout")]

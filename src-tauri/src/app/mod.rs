@@ -1,5 +1,6 @@
 use std::sync::Mutex;
 
+pub mod desktop_menu;
 pub mod settings;
 pub mod tray;
 

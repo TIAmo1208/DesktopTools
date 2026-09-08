@@ -9,10 +9,12 @@ pub use desktop_host::{
     NativeCommandHandler, NativeDesktopHost, ShellDesktopState, apply_host_hit_regions,
     create_desktop_hosts, desktop_item_monitor_assignments, desktop_items_setting_visible,
     desktop_items_visible, destroy_desktop_hosts, discover_shell_desktop,
-    enumerate_desktop_monitors, load_desktop_hosts, probe_host_pixels, redraw_shell_desktop,
-    reload_desktop_host, set_desktop_items_visible, set_host_visible, suspend_host_hit_regions,
+    enumerate_desktop_monitors, load_desktop_hosts, probe_host_pixels, reconcile_desktop_hosts,
+    redraw_shell_desktop, reload_desktop_host, set_desktop_items_visible, set_host_visible,
+    suspend_host_hit_regions,
 };
 
+pub use desktop_host::relay_workspace_drag;
 pub use file_system::replace_file_atomic;
 
 pub use shell::{

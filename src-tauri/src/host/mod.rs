@@ -339,16 +339,23 @@ impl DesktopHostRuntime {
         // 当前正式宿主与 CSS 视口尺寸。
         let host = {
             // 等待命中图校验的正式宿主状态。
-            let data = self
+            let mut data = self
                 .data
                 .lock()
                 .map_err(|_| DesktopHostError::state_unavailable())?;
-            let context = host_context(&data, monitor_id)?; // 当前命中图所属的逐屏上下文。
+            let context = host_context_mut(&mut data, monitor_id)?; // 当前命中图所属的逐屏上下文。
             validate_hit_regions(
                 &hit_regions,
                 context.host.monitor.work_width as f64 / context.host.monitor.scale_factor,
                 context.host.monitor.work_height as f64 / context.host.monitor.scale_factor,
             )?;
+            if context.hit_regions == hit_regions {
+                return Ok(snapshot_from(&data));
+            }
+            if context.input_drag_active {
+                context.hit_regions = hit_regions;
+                return Ok(snapshot_from(&data));
+            } // 连续拖动期间仅缓存命中图，结束时统一恢复窗口裁剪。
             context.host.clone()
         };
         apply_host_hit_regions(&host, hit_regions.clone())
@@ -797,37 +804,61 @@ impl DesktopHostRuntime {
                 )
             })
         }; // 重建后全部 WebView2 共用的命令边界。
-        destroy_desktop_hosts();
-        let hosts = match create_desktop_hosts(app, latest_shell, command_handler, &latest_monitors)
-        {
+        let previous_hosts = {
+            let data = self
+                .data
+                .lock()
+                .map_err(|_| "桌面宿主状态暂时不可用".to_string())?; // 复用前的原生宿主身份。
+            if shell_changed {
+                Vec::new()
+            } else {
+                data.hosts
+                    .iter()
+                    .map(|context| context.host.clone())
+                    .collect::<Vec<_>>()
+            }
+        };
+        let hosts = match crate::platform::windows::reconcile_desktop_hosts(
+            app,
+            latest_shell,
+            command_handler,
+            &latest_monitors,
+            &previous_hosts,
+        ) {
             Ok(hosts) => hosts,
             Err(error) => {
                 self.fail_host_adapter(&format!("显示环境重建创建宿主失败：{error}"));
                 return Err(error);
             }
         }; // 最新环境中的逐屏原生宿主集合。
-        if let Err(error) = load_desktop_hosts() {
-            self.fail_host_adapter(&format!("显示环境重建加载 Renderer 失败：{error}"));
-            return Err(error);
-        }
         {
             let mut data = self
                 .data
                 .lock()
                 .map_err(|_| "桌面宿主状态暂时不可用".to_string())?;
             data.shell = latest_shell;
+            let mut previous_contexts = std::mem::take(&mut data.hosts); // 按 HWND 保留未重建屏幕的全部就绪与输入状态。
             data.hosts = hosts
                 .into_iter()
-                .map(|host| DesktopHostContext {
-                    host,
-                    readiness: DesktopHostReadiness {
-                        guardian: data.coordinator.guardian_ready,
-                        ..Default::default()
-                    },
-                    hit_regions: Vec::new(),
-                    input_drag_active: false,
-                    last_renderer_heartbeat: Instant::now(),
-                    renderer_reload_requested_at: None,
+                .map(|host| {
+                    if let Some(index) = previous_contexts.iter().position(|context| {
+                        !shell_changed
+                            && context.host.hwnd == host.hwnd
+                            && context.host.monitor == host.monitor
+                    }) {
+                        return previous_contexts.remove(index);
+                    }
+                    DesktopHostContext {
+                        host,
+                        readiness: DesktopHostReadiness {
+                            guardian: data.coordinator.guardian_ready,
+                            ..Default::default()
+                        },
+                        hit_regions: Vec::new(),
+                        input_drag_active: false,
+                        last_renderer_heartbeat: Instant::now(),
+                        renderer_reload_requested_at: None,
+                    }
                 })
                 .collect();
             if shell_changed {

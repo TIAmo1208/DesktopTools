@@ -7,6 +7,78 @@ mod virtual_desktop;
 mod workspace;
 mod workspace_menu;
 
+/// 执行 Explorer 注册表菜单回传的动作，复用现有布局事务和事件发布。
+pub(crate) fn execute_registered_desktop_menu(
+    app: &tauri::AppHandle,
+    selected: u32,
+) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+    if selected == 0x7807 {
+        return crate::app::tray::set_settings_visible(app, true)
+            .map_err(|error| error.to_string());
+    }
+    let runtime = app.state::<std::sync::Arc<DesktopHostRuntime>>(); // 当前逐屏宿主。
+    let hosts = runtime.snapshot().map_err(|error| error.message)?; // 当前显示器环境。
+    let mut point = windows::Win32::Foundation::POINT::default(); // 执行动作时的物理指针位置。
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut point) }
+        .map_err(|error| error.to_string())?;
+    let monitor = hosts
+        .hosts
+        .iter()
+        .map(|host| &host.monitor)
+        .find(|monitor| {
+            point.x >= monitor.x
+                && point.y >= monitor.y
+                && i64::from(point.x) < i64::from(monitor.x) + i64::from(monitor.width)
+                && i64::from(point.y) < i64::from(monitor.y) + i64::from(monitor.height)
+        })
+        .or_else(|| hosts.hosts.first().map(|host| &host.monitor))
+        .ok_or("桌面宿主尚未就绪")?; // 跨屏命令按实际指针选择宿主。
+    let workspace = app.state::<WorkspaceState>(); // 权威工作区。
+    let items = app.state::<DesktopItemState>(); // Shell 项目状态。
+    let snapshot = workspace.snapshot().map_err(|error| error.message)?; // 解析动作时的当前布局。
+    let action = workspace_menu::choose_workspace_menu(
+        &snapshot,
+        monitor,
+        WorkspaceContextMenuTarget::Background,
+        (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor,
+        (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor,
+        |_, _, _, _| Ok(Some(selected)),
+    )
+    .map_err(|error| error.message)?; // 只解释已选择的动作，不获取或弹出菜单。
+    match action {
+        workspace_menu::WorkspaceMenuAction::None => {}
+        workspace_menu::WorkspaceMenuAction::Layout(command) => {
+            workspace::execute_apply_workspace_command(
+                app,
+                &workspace,
+                &items,
+                &runtime,
+                monitor.id.clone(),
+                command,
+            )
+            .map_err(|error| error.message)?;
+        }
+        workspace_menu::WorkspaceMenuAction::Refresh => {
+            let snapshot = items.refresh().map_err(|error| error.message)?; // 重新枚举 Shell 事实。
+            let next = reconcile_workspace_environment(&workspace, &runtime, &snapshot, true, &[])
+                .map_err(|error| error.message)?; // 沿用原有协调。
+            app.emit(
+                crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT,
+                &snapshot,
+            )
+            .map_err(|error| error.to_string())?;
+            app.emit(crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, &next)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    crate::log_info!(
+        "桌面菜单：注册动词执行完成，命令={selected}，显示器={}",
+        monitor.id
+    );
+    Ok(())
+}
+
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -56,6 +128,22 @@ pub(crate) fn dispatch_native_command(
 ) -> Result<Value, Value> {
     // 当前本地 transport 命令的统一 JSON 结果。
     let result: Result<Value, Value> = match command {
+        "relay_workspace_drag" => {
+            let payload: Value = command_argument(&arguments, "payload", "跨屏拖动参数无效")
+                .map_err(serialize_error)?; // 仅允许有界对象消息。
+            if !payload.is_object() || payload.to_string().len() > 65536 {
+                return Err(serialize_error(DesktopHostError::invalid_readiness(
+                    "跨屏拖动消息无效",
+                )));
+            }
+            app.run_on_main_thread(move || {
+                if let Err(error) = crate::platform::windows::relay_workspace_drag(payload) {
+                    crate::log_warn!("宿主：转发跨屏拖动失败，错误={error}");
+                }
+            })
+            .map_err(|error| serialize_error(DesktopHostError::platform_failed(&error)))?;
+            serialize_result(())
+        }
         "get_windows_accent_color" => app
             .state::<crate::platform::windows::settings::WindowsAccentMonitor>()
             .color()

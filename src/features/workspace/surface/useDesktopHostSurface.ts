@@ -128,6 +128,7 @@ export const useDesktopHostSurface = (enabled: boolean, monitorIndex: number, it
                 records.some(
                     (record) =>
                         (record.target instanceof Element && record.target.closest(".fence-object-menu")) ||
+                        (record.type === "attributes" && record.target instanceof Element && record.target.matches(".fence")) ||
                         [...record.addedNodes, ...record.removedNodes].some(
                             (node) => node instanceof Element && (node.matches("[data-hit-id]") || node.querySelector("[data-hit-id]")),
                         ),

@@ -11,8 +11,8 @@ use super::desktop_sources::{SYSTEM_ICONS, SourceConfigWatch, visible_icons};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use windows::Win32::Foundation::{
-    DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, HANDLE, HINSTANCE, HWND,
-    LPARAM, LRESULT, S_OK, WPARAM,
+    DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, GetLastError, HANDLE,
+    HINSTANCE, HWND, LPARAM, LRESULT, S_OK, SetLastError, WIN32_ERROR, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
@@ -34,30 +34,32 @@ use windows::Win32::System::Ole::{
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
 use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+#[cfg(test)]
+use windows::Win32::UI::Shell::IShellFolder;
 use windows::Win32::UI::Shell::{
-    CFSTR_PREFERREDDROPEFFECT, CMF_NORMAL, CMINVOKECOMMANDINFO, CSIDL_DESKTOP, FOF_ALLOWUNDO,
-    FOF_WANTNUKEWARNING, FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FOLDERID_Desktop,
-    FOLDERID_PublicDesktop, FileOperation, IContextMenu, IContextMenu2, IContextMenu3,
-    IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl, ILGetSize,
-    IShellItem, IShellView, SEE_MASK_IDLIST, SHCNE_ALLEVENTS, SHCNE_RENAMEFOLDER, SHCNE_RENAMEITEM,
-    SHCNRF_NewDelivery, SHCNRF_ShellLevel, SHCONTF_FOLDERS, SHCONTF_INCLUDEHIDDEN,
-    SHCONTF_NONFOLDERS, SHChangeNotification_Lock, SHChangeNotification_Unlock,
-    SHChangeNotifyDeregister, SHChangeNotifyEntry, SHChangeNotifyRegister, SHCreateItemFromIDList,
-    SHELLEXECUTEINFOW, SHFILEINFOW, SHGFI_PIDL, SHGFI_SYSICONINDEX, SHGetDesktopFolder,
-    SHGetFileInfoW, SHGetImageList, SHGetKnownFolderIDList, SHGetNameFromIDList,
-    SHGetSpecialFolderLocation, SHIL_EXTRALARGE, SHParseDisplayName, SIGDN,
-    SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEEDITING,
-    SVGIO_BACKGROUND, ShellExecuteExW,
+    CFSTR_PREFERREDDROPEFFECT, CMF_NORMAL, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX,
+    CSIDL_DESKTOP, FOF_ALLOWUNDO, FOF_WANTNUKEWARNING, FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE,
+    FOLDERID_Desktop, FOLDERID_PublicDesktop, FileOperation, IContextMenu, IContextMenu2,
+    IContextMenu3, IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl,
+    ILGetSize, IShellItem, SEE_MASK_IDLIST, SEE_MASK_UNICODE, SHCNE_ALLEVENTS, SHCNE_RENAMEFOLDER,
+    SHCNE_RENAMEITEM, SHCNRF_NewDelivery, SHCNRF_ShellLevel, SHCONTF_FOLDERS,
+    SHCONTF_INCLUDEHIDDEN, SHCONTF_NONFOLDERS, SHChangeNotification_Lock,
+    SHChangeNotification_Unlock, SHChangeNotifyDeregister, SHChangeNotifyEntry,
+    SHChangeNotifyRegister, SHCreateItemFromIDList, SHELLEXECUTEINFOW, SHFILEINFOW, SHGFI_PIDL,
+    SHGFI_SYSICONINDEX, SHGetDesktopFolder, SHGetFileInfoW, SHGetImageList, SHGetKnownFolderIDList,
+    SHGetNameFromIDList, SHGetSpecialFolderLocation, SHIL_EXTRALARGE, SHParseDisplayName, SIGDN,
+    SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH, SIGDN_NORMALDISPLAY,
+    SIGDN_PARENTRELATIVEEDITING, ShellExecuteExW,
 };
 use windows::Win32::UI::Shell::{KF_FLAG_DEFAULT, SHGetKnownFolderPath};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CreatePopupMenu, CreateWindowExW, DI_NORMAL, DefWindowProcW,
     DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, GWLP_USERDATA,
-    GetWindowLongPtrW, HICON, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, PostMessageW,
-    PostQuitMessage, RegisterClassW, SW_SHOWNORMAL, SetForegroundWindow, SetWindowLongPtrW,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_APP,
-    WM_CLOSE, WM_DESTROY, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE,
-    WNDCLASSW, WS_POPUP,
+    GetForegroundWindow, GetWindowLongPtrW, HICON, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
+    MSG, PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOWNORMAL, SetForegroundWindow,
+    SetWindowLongPtrW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
+    WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM,
+    WM_MENUCHAR, WM_NCCREATE, WM_NULL, WNDCLASSW, WS_POPUP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT, WM_QUIT,
@@ -363,7 +365,7 @@ enum MenuMessageHandler {
 #[derive(Default)]
 struct MenuOwnerState {
     /// TrackPopupMenu 期间接收窗口消息的 Shell 菜单接口。
-    handler: Option<MenuMessageHandler>,
+    handlers: Vec<MenuMessageHandler>,
 }
 
 /// 承载 Shell 菜单、owner-drawn 项和原生确认界面的专用 HWND。
@@ -397,22 +399,30 @@ unsafe extern "system" fn shell_menu_owner_proc(
         // Shell 菜单处理后返回给窗口消息循环的结果。
         let mut result = LRESULT(0);
         // TrackPopupMenu 期间设置的当前 Shell 菜单接口。
-        let handler = unsafe { &mut *state }.handler.as_ref();
-        match handler {
-            Some(MenuMessageHandler::ContextMenu3(menu)) => {
-                if unsafe { menu.HandleMenuMsg2(message, wparam, lparam, Some(&mut result)) }
-                    .is_ok()
-                {
-                    return result;
+        let handlers = &unsafe { &*state }.handlers;
+        let mut handled = false; // 组合菜单需要将动态消息送达每个原生处理器。
+        for handler in handlers {
+            match handler {
+                MenuMessageHandler::ContextMenu3(menu) => {
+                    if unsafe { menu.HandleMenuMsg2(message, wparam, lparam, Some(&mut result)) }
+                        .is_ok()
+                    {
+                        handled = true;
+                        if message == WM_MENUCHAR && result.0 != 0 {
+                            return result;
+                        }
+                    }
                 }
+                MenuMessageHandler::ContextMenu2(menu)
+                    if unsafe { menu.HandleMenuMsg(message, wparam, lparam) }.is_ok() =>
+                {
+                    handled = true;
+                }
+                MenuMessageHandler::ContextMenu2(_) => {}
             }
-            Some(MenuMessageHandler::ContextMenu2(menu))
-                if unsafe { menu.HandleMenuMsg(message, wparam, lparam) }.is_ok() =>
-            {
-                return LRESULT(0);
-            }
-            Some(MenuMessageHandler::ContextMenu2(_)) => {}
-            None => {}
+        }
+        if handled {
+            return result;
         }
     }
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
@@ -460,7 +470,7 @@ impl ShellMenuOwner {
 
     /// 设置 TrackPopupMenu 期间接收消息的 Shell 菜单接口。
     fn set_context_menu(&mut self, context_menu: &IContextMenu) {
-        self.state.handler = context_menu
+        let handler = context_menu
             .cast::<IContextMenu3>()
             .map(MenuMessageHandler::ContextMenu3)
             .or_else(|_| {
@@ -469,11 +479,12 @@ impl ShellMenuOwner {
                     .map(MenuMessageHandler::ContextMenu2)
             })
             .ok();
+        self.state.handlers.extend(handler);
     }
 
     /// 清除已经关闭的 Shell 菜单接口。
     fn clear_context_menu(&mut self) {
-        self.state.handler = None;
+        self.state.handlers.clear();
     }
 }
 
@@ -782,6 +793,29 @@ pub fn open_desktop_items(references: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// 保留 Shell 隐藏的快捷方式后缀，普通文件仍允许显式修改扩展名。
+fn shortcut_rename_name(source_path: Option<&str>, new_name: &str) -> String {
+    let extension = source_path
+        .and_then(|path| std::path::Path::new(path).extension())
+        .and_then(|value| value.to_str()); // 真实文件类型。
+    match extension {
+        Some(extension)
+            if extension.eq_ignore_ascii_case("lnk") || extension.eq_ignore_ascii_case("url") =>
+        {
+            let suffix = format!(".{extension}"); // 保留原始大小写的快捷方式后缀。
+            if new_name
+                .to_ascii_lowercase()
+                .ends_with(&suffix.to_ascii_lowercase())
+            {
+                new_name.to_string()
+            } else {
+                format!("{new_name}{suffix}")
+            }
+        }
+        _ => new_name.to_string(),
+    }
+}
+
 /// 使用 IFileOperation 重命名单个桌面项目并返回 Shell 实际结果。
 pub fn rename_desktop_item(
     owner: &ShellMenuOwner,
@@ -795,7 +829,8 @@ pub fn rename_desktop_item(
     let item = resolve_shell_item(reference)?; // 等待重命名的真实 Shell 项目。
     let operation = create_file_operation(owner, FOF_ALLOWUNDO | FOFX_ADDUNDORECORD)?; // 写入系统撤销记录的原生文件操作。
     let (sink, results) = create_operation_sink(); // 捕获实际重命名结果的进度回调。
-    let shell_name = HSTRING::from(new_name); // IFileOperation 接收的 UTF-16 新名称。
+    let source_path = shell_item_name(&item, SIGDN_FILESYSPATH).ok(); // 真实文件路径，不依赖隐藏后缀的显示名。
+    let shell_name = HSTRING::from(shortcut_rename_name(source_path.as_deref(), new_name)); // 保留快捷方式类型。
     unsafe { operation.RenameItem(&item, &shell_name, &sink) }
         .map_err(|error| format!("提交 Shell 重命名失败: {error}"))?;
     perform_file_operation(
@@ -868,7 +903,9 @@ pub fn compensate_desktop_items(
                 new_name,
             } => {
                 let item = resolve_shell_item(&reference)?; // 当前等待补偿重命名的项目。
-                let new_name = HSTRING::from(new_name); // IFileOperation 接收的 UTF-16 编辑名称。
+                let source_path = shell_item_name(&item, SIGDN_FILESYSPATH).ok(); // 兼容已经记录隐藏后缀的会话历史。
+                let new_name =
+                    HSTRING::from(shortcut_rename_name(source_path.as_deref(), &new_name)); // 与正向重命名共用后缀保护。
                 unsafe { operation.RenameItem(&item, &new_name, &sink) }
                     .map_err(|error| format!("提交 Shell 补偿重命名失败: {error}"))?;
             }
@@ -1033,7 +1070,88 @@ pub fn start_desktop_item_drag(
     })
 }
 
-/// 显示 Shell 原生上下文菜单并返回选中的产品命令编号。
+/// 在当前 STA 结合桌面菜单类与真实目录上下文，目录对象保持到命令执行结束。
+#[cfg(test)]
+fn folder_background_menu(
+    owner: HWND,
+    directory: &str,
+) -> Result<(IShellFolder, IContextMenu, IContextMenu), String> {
+    let pidl = parse_desktop_item_reference(directory)?; // 真实文件系统目录的绝对 PIDL。
+    let desktop = unsafe { SHGetDesktopFolder() }
+        .map_err(|error| format!("获取本地 Shell 根失败: {error}"))?; // 本进程 Shell 根。
+    let folder: IShellFolder = unsafe { desktop.BindToObject(pidl.0, None) }
+        .map_err(|error| format!("绑定背景菜单目录失败: {error}"))?; // 明确的新建目标。
+    use windows::Win32::System::Registry::{
+        HKEY, HKEY_CLASSES_ROOT, KEY_READ, RegCloseKey, RegOpenKeyExW,
+    };
+    use windows::Win32::UI::Shell::{DEFCONTEXTMENU, SHCreateDefaultContextMenu};
+    let menu: IContextMenu = unsafe { folder.CreateViewObject(owner) }
+        .map_err(|error| format!("创建本地目录背景菜单失败: {error}"))?; // 保留粘贴、新建及目录扩展。
+    let mut key = HKEY::default(); // 仅追加桌面专属动词，避免重复加载目录扩展。
+    unsafe {
+        RegOpenKeyExW(
+            HKEY_CLASSES_ROOT,
+            w!("DesktopBackground"),
+            None,
+            KEY_READ,
+            &mut key,
+        )
+    }
+    .ok()
+    .map_err(|error| format!("读取桌面菜单注册类失败: {error}"))?;
+    let mut definition = DEFCONTEXTMENU {
+        hwnd: owner,
+        pidlFolder: pidl.0,
+        psf: std::mem::ManuallyDrop::new(Some(folder.clone())),
+        cKeys: 1,
+        aKeys: &key,
+        ..Default::default()
+    }; // 菜单接口在本 STA 创建，文件系统目录仍是命令目标。
+    let result = unsafe { SHCreateDefaultContextMenu::<IContextMenu>(&definition) }; // Shell 加载本机注册的原生菜单扩展。
+    unsafe { std::mem::ManuallyDrop::drop(&mut definition.psf) };
+    let _ = unsafe { RegCloseKey(key) };
+    let desktop_menu = result.map_err(|error| format!("创建本地桌面背景菜单失败: {error}"))?;
+    Ok((folder, menu, desktop_menu))
+}
+
+/// 执行原生菜单命令并保留 Unicode 新建目标目录。
+fn invoke_menu_command(
+    menu: &IContextMenu,
+    owner: HWND,
+    command_offset: u32,
+    directory: Option<&str>,
+) -> Result<(), String> {
+    let directory = directory.map(HSTRING::from); // 持有到 InvokeCommand 返回的目录字符串。
+    let invocation = CMINVOKECOMMANDINFOEX {
+        cbSize: size_of::<CMINVOKECOMMANDINFOEX>() as u32,
+        fMask: SEE_MASK_UNICODE, // Windows SDK 中 CMIC_MASK_UNICODE 与此标志同值。
+        hwnd: owner,
+        lpVerb: PCSTR(command_offset as usize as *const u8),
+        lpVerbW: PCWSTR(command_offset as usize as *const u16),
+        lpDirectoryW: directory
+            .as_ref()
+            .map_or(PCWSTR::null(), |value| PCWSTR(value.as_ptr())),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    }; // 扩展结构通过兼容首部传给 Shell。
+    unsafe {
+        menu.InvokeCommand(
+            (&invocation as *const CMINVOKECOMMANDINFOEX).cast::<CMINVOKECOMMANDINFO>(),
+        )
+    }
+    .map_err(|error| format!("执行 Shell 菜单命令失败: {error}"))
+}
+
+/// 按 WM_CONTEXTMENU 协议打包坐标，保留位于主屏左侧或上方的负坐标。
+fn desktop_menu_coordinates(x: i32, y: i32) -> Result<LPARAM, String> {
+    let x = i16::try_from(x).map_err(|_| "桌面菜单横坐标超出 Win32 消息范围")?; // 防止静默截断到其他屏幕。
+    let y = i16::try_from(y).map_err(|_| "桌面菜单纵坐标超出 Win32 消息范围")?; // 防止静默截断到其他屏幕。
+    Ok(LPARAM(
+        (u32::from(x as u16) | (u32::from(y as u16) << 16)) as isize,
+    ))
+}
+
+/// 桌面背景交给 Explorer；项目和围栏仍使用当前应用的上下文菜单。
 pub fn show_native_context_menu(
     owner: &mut ShellMenuOwner,
     target: NativeMenuTarget,
@@ -1041,6 +1159,32 @@ pub fn show_native_context_menu(
     screen_y: i32,
     product_commands: &[NativeMenuCommand],
 ) -> Result<Option<u32>, String> {
+    if matches!(&target, NativeMenuTarget::Background) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            AllowSetForegroundWindow, GetWindowThreadProcessId, WM_CONTEXTMENU,
+        };
+        let desktop = super::desktop_host::discover_shell_desktop()?; // 每次重新发现真实 Explorer 视图，兼容 Explorer 重启。
+        let view = HWND(desktop.def_view as *mut c_void); // 由 Explorer 自己处理背景菜单及全部 Shell 动词。
+        let coordinates = desktop_menu_coordinates(screen_x, screen_y)?; // WM_CONTEXTMENU 使用有符号 16 位屏幕坐标。
+        let mut process_id = 0; // 允许真实菜单所属进程取得前台。
+        unsafe { GetWindowThreadProcessId(view, Some(&mut process_id)) };
+        if let Err(error) = unsafe { AllowSetForegroundWindow(process_id) } {
+            crate::log_debug!("Shell：授权 Explorer 菜单前台失败，进程={process_id}，错误={error}");
+        }
+        unsafe {
+            PostMessageW(
+                Some(view),
+                WM_CONTEXTMENU,
+                WPARAM(view.0 as usize),
+                coordinates,
+            )
+        }
+        .map_err(|error| format!("请求 Explorer 桌面背景菜单失败: {error}"))?;
+        crate::log_info!(
+            "Shell：背景菜单已交给 Explorer，视图={view:?}，位置=({screen_x},{screen_y})"
+        );
+        return Ok(None); // 只确认消息投递；菜单与命令执行完全由 Explorer 持有。
+    }
     /// Shell 菜单命令起始编号。
     const SHELL_COMMAND_FIRST: u32 = 1;
     /// Shell 菜单命令结束编号。
@@ -1067,61 +1211,71 @@ pub fn show_native_context_menu(
                     .map_err(|error| format!("创建多选 Shell 项目菜单失败: {error}"))?,
             )
         }
-        NativeMenuTarget::Background => {
-            let view: IShellView = unsafe { desktop.CreateViewObject(owner.hwnd) }
-                .map_err(|error| format!("创建 Shell 桌面视图失败: {error}"))?;
-            Some(
-                unsafe { view.GetItemObject(SVGIO_BACKGROUND) }
-                    .map_err(|error| format!("获取 Shell 桌面背景菜单失败: {error}"))?,
-            )
-        }
+        NativeMenuTarget::Background => unreachable!("背景菜单已交给 Explorer"),
         NativeMenuTarget::ProductOnly => None,
     };
     // 承载 Shell 与 Desktop Tools 命令的原生菜单。
     let menu =
         unsafe { CreatePopupMenu() }.map_err(|error| format!("创建原生上下文菜单失败: {error}"))?;
-    if let Some(context_menu) = &context_menu {
-        unsafe {
-            context_menu
-                .QueryContextMenu(menu, 0, SHELL_COMMAND_FIRST, SHELL_COMMAND_LAST, CMF_NORMAL)
-                .ok()
-        }
-        .map_err(|error| format!("填充 Shell 上下文菜单失败: {error}"))?;
-        owner.set_context_menu(context_menu);
-    }
-
-    if !product_commands.is_empty() {
-        // Desktop Tools 产品命令子菜单。
-        let product_menu = unsafe { CreatePopupMenu() }
-            .map_err(|error| format!("创建 Desktop Tools 菜单失败: {error}"))?;
-        for command in product_commands {
-            // 当前产品命令的 UTF-16 用户可见名称。
-            let label = HSTRING::from(&command.label);
-            // 当前完整选择集合对应的菜单启用状态。
-            let flags = if command.enabled {
-                MF_STRING
-            } else {
-                MF_STRING | MF_GRAYED
-            };
+    // 填充失败也释放处理器和 HMENU，避免影响后续菜单请求。
+    let prepared: Result<(), String> = (|| {
+        if let Some(context_menu) = &context_menu {
             unsafe {
-                AppendMenuW(
-                    product_menu,
-                    flags,
-                    command.id as usize,
-                    PCWSTR(label.as_ptr()),
-                )
+                context_menu
+                    .QueryContextMenu(menu, 0, SHELL_COMMAND_FIRST, SHELL_COMMAND_LAST, CMF_NORMAL)
+                    .ok()
             }
-            .map_err(|error| format!("添加 Desktop Tools 菜单项失败: {error}"))?;
+            .map_err(|error| format!("填充 Shell 上下文菜单失败: {error}"))?;
+            owner.set_context_menu(context_menu);
         }
-        if context_menu.is_some() {
-            unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) }
-                .map_err(|error| format!("添加菜单分隔线失败: {error}"))?;
+
+        if !product_commands.is_empty() {
+            // Desktop Tools 产品命令子菜单。
+            let product_menu = unsafe { CreatePopupMenu() }
+                .map_err(|error| format!("创建 Desktop Tools 菜单失败: {error}"))?;
+            for command in product_commands {
+                // 当前产品命令的 UTF-16 用户可见名称。
+                let label = HSTRING::from(&command.label);
+                // 当前完整选择集合对应的菜单启用状态。
+                let flags = if command.enabled {
+                    MF_STRING
+                } else {
+                    MF_STRING | MF_GRAYED
+                };
+                unsafe {
+                    AppendMenuW(
+                        product_menu,
+                        flags,
+                        command.id as usize,
+                        PCWSTR(label.as_ptr()),
+                    )
+                }
+                .map_err(|error| format!("添加 Desktop Tools 菜单项失败: {error}"))?;
+            }
+            if context_menu.is_some() {
+                unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) }
+                    .map_err(|error| format!("添加菜单分隔线失败: {error}"))?;
+            }
+            unsafe { AppendMenuW(menu, MF_POPUP, product_menu.0 as usize, w!("Desktop Tools")) }
+                .map_err(|error| format!("添加 Desktop Tools 子菜单失败: {error}"))?;
         }
-        unsafe { AppendMenuW(menu, MF_POPUP, product_menu.0 as usize, w!("Desktop Tools")) }
-            .map_err(|error| format!("添加 Desktop Tools 子菜单失败: {error}"))?;
+
+        Ok(())
+    })();
+    if let Err(error) = prepared {
+        owner.clear_context_menu();
+        let _ = unsafe { DestroyMenu(menu) };
+        return Err(error);
     }
 
-    let _ = unsafe { SetForegroundWindow(owner.hwnd) };
+    let foreground_before = unsafe { GetForegroundWindow() }; // 记录前台归属，区分激活失败与用户取消。
+    let activated = unsafe { SetForegroundWindow(owner.hwnd) }.as_bool(); // 系统可能拒绝前台切换。
+    let started = std::time::Instant::now(); // 弹出菜单持续时间。
+    crate::log_debug!(
+        "Shell：开始弹出菜单，位置=({screen_x},{screen_y})，原前台={foreground_before:?}，所有者={:?}，激活={activated}",
+        owner.hwnd
+    );
+    unsafe { SetLastError(WIN32_ERROR(0)) };
     // 用户在原生菜单中选择的命令编号。
     let selected = unsafe {
         TrackPopupMenu(
@@ -1135,33 +1289,36 @@ pub fn show_native_context_menu(
         )
         .0 as u32
     };
-    owner.clear_context_menu();
-    let _ = unsafe { DestroyMenu(menu) };
-
-    if (SHELL_COMMAND_FIRST..=SHELL_COMMAND_LAST).contains(&selected) {
-        // IContextMenu 要求的零基命令偏移指针。
-        let verb = (selected - SHELL_COMMAND_FIRST) as usize as *const u8;
-        // Shell 菜单命令调用参数。
-        let invocation = CMINVOKECOMMANDINFO {
-            cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
-            hwnd: owner.hwnd,
-            lpVerb: PCSTR(verb),
-            nShow: SW_SHOWNORMAL.0,
-            ..Default::default()
-        };
-        unsafe {
+    let tracking_error = unsafe { GetLastError() }; // 必须在其他 Win32 调用前读取。
+    // Win32 弹出菜单协议要求向 owner 投递消息，使下次点击能正常激活菜单。
+    let _ = unsafe { PostMessageW(Some(owner.hwnd), WM_NULL, WPARAM(0), LPARAM(0)) };
+    crate::log_debug!(
+        "Shell：菜单跟踪结束，命令={selected}，耗时={}ms，错误=0x{:08X}，当前前台={:?}",
+        started.elapsed().as_millis(),
+        tracking_error.0,
+        unsafe { GetForegroundWindow() }
+    );
+    let result = if selected == 0 && tracking_error.0 != 0 {
+        Err(format!("显示 Shell 菜单失败: 0x{:08X}", tracking_error.0))
+    } else if (SHELL_COMMAND_FIRST..=SHELL_COMMAND_LAST).contains(&selected) {
+        invoke_menu_command(
             context_menu
                 .as_ref()
-                .expect("Shell 命令只来自 Shell 上下文菜单")
-                .InvokeCommand(&invocation)
-        }
-        .map_err(|error| format!("执行 Shell 菜单命令失败: {error}"))?;
-        return Ok(None);
-    }
-    Ok(product_commands
-        .iter()
-        .find(|command| command.enabled && command.id == selected)
-        .map(|command| command.id))
+                .expect("Shell 命令只来自 Shell 上下文菜单"),
+            owner.hwnd,
+            selected - SHELL_COMMAND_FIRST,
+            None,
+        )
+        .map(|()| None)
+    } else {
+        Ok(product_commands
+            .iter()
+            .find(|command| command.enabled && command.id == selected)
+            .map(|command| command.id))
+    }; // 动态菜单及消息处理器保持到执行完成；失败也执行清理。
+    owner.clear_context_menu();
+    let _ = unsafe { DestroyMenu(menu) };
+    result
 }
 
 /// 从桌面根目录重新解析多选菜单使用的相对子 PIDL。
@@ -1345,7 +1502,14 @@ fn shell_item_metadata(item: &IShellItem) -> ShellItemMetadata {
         parent_reference: unsafe { item.GetParent() }
             .ok()
             .and_then(|parent| shell_item_reference(&parent).ok()),
-        name: shell_item_name(item, SIGDN_PARENTRELATIVEEDITING).ok(),
+        name: shell_item_name(item, SIGDN_FILESYSPATH)
+            .ok()
+            .and_then(|path| {
+                std::path::Path::new(&path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .or_else(|| shell_item_name(item, SIGDN_PARENTRELATIVEEDITING).ok()), // 文件系统历史保存完整文件名，虚拟项目沿用 Shell 编辑名。
     }
 }
 
@@ -1767,6 +1931,333 @@ unsafe fn icon_data_url(icon: HICON) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// 显式原生验收：背景菜单必须由 Explorer 进程创建，测试结束取消菜单。
+    #[test]
+    #[ignore = "需要交互式 Windows 桌面，会短暂弹出真实系统菜单"]
+    fn background_menu_is_owned_by_explorer() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            FindWindowW, GetWindowThreadProcessId, WM_CANCELMODE,
+        };
+        super::initialize_shell_apartment().unwrap();
+        let desktop = super::super::desktop_host::discover_shell_desktop().unwrap(); // 当前 Explorer 桌面。
+        let view = super::HWND(desktop.def_view as *mut std::ffi::c_void); // 真实桌面视图。
+        let mut explorer_pid = 0; // 预期菜单所属进程。
+        unsafe { GetWindowThreadProcessId(view, Some(&mut explorer_pid)) };
+        let mut owner = super::ShellMenuOwner::create().unwrap(); // 用于调用正式共享入口。
+        assert_eq!(
+            super::show_native_context_menu(
+                &mut owner,
+                super::NativeMenuTarget::Background,
+                20,
+                20,
+                &[]
+            )
+            .unwrap(),
+            None
+        );
+        let started = std::time::Instant::now(); // 等待异步消息投递和菜单显示。
+        let mut observed = false; // 不以成功投递代替菜单实际出现。
+        while started.elapsed() < std::time::Duration::from_secs(3) {
+            let popup = unsafe { FindWindowW(super::w!("#32768"), super::PCWSTR::null()) }
+                .unwrap_or_default(); // Windows 原生菜单窗口类。
+            let mut process_id = 0; // 实际弹出窗口所属进程。
+            if !popup.is_invalid() {
+                unsafe { GetWindowThreadProcessId(popup, Some(&mut process_id)) };
+            }
+            if process_id == explorer_pid {
+                observed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let _ = unsafe {
+            super::PostMessageW(
+                Some(view),
+                WM_CANCELMODE,
+                super::WPARAM(0),
+                super::LPARAM(0),
+            )
+        };
+        drop(owner);
+        super::uninitialize_shell_apartment();
+        assert!(observed, "已投递请求，但没有观察到 Explorer 所属的菜单窗口");
+    }
+
+    /// 覆盖负坐标副屏、纵向副屏与协议边界，避免右键菜单落到错误屏幕。
+    #[test]
+    fn explorer_menu_coordinates_preserve_signed_monitors() {
+        for (x, y) in [(-1920, 40), (2560, -1080), (0, 0), (32767, -32768)] {
+            let packed = super::desktop_menu_coordinates(x, y).unwrap().0 as u32; // 实际发送的消息参数。
+            assert_eq!(i32::from(packed as u16 as i16), x);
+            assert_eq!(i32::from((packed >> 16) as u16 as i16), y);
+        }
+        assert!(super::desktop_menu_coordinates(32768, 0).is_err());
+    }
+
+    /// 显式运行的真实菜单循环检查，会短暂显示并自动取消八次菜单。
+    #[test]
+    #[ignore = "需要交互式 Windows 桌面，会临时取得前台焦点"]
+    fn native_menu_reopens_after_cancel() {
+        use windows::Win32::UI::WindowsAndMessaging::{EndMenu, KillTimer, SetTimer};
+        unsafe extern "system" fn cancel_menu(_: super::HWND, _: u32, _: usize, _: u32) {
+            let _ = unsafe { EndMenu() }; // 定时退出当前菜单，模拟取消后的再次打开。
+        }
+        super::initialize_shell_apartment().unwrap();
+        let mut owner = super::ShellMenuOwner::create().unwrap(); // 本 STA 的真实菜单 owner。
+        for attempt in 0..8 {
+            let timer = unsafe { SetTimer(Some(owner.hwnd), 1, 150, Some(cancel_menu)) }; // 每轮自动取消。
+            assert_ne!(timer, 0);
+            let started = std::time::Instant::now(); // 立即返回意味着菜单没有保持打开。
+            let result = super::show_native_context_menu(
+                &mut owner,
+                super::NativeMenuTarget::ProductOnly,
+                20,
+                20,
+                &[super::NativeMenuCommand {
+                    id: 0x7000,
+                    label: "菜单循环检查".into(),
+                    enabled: true,
+                }],
+            );
+            unsafe { KillTimer(Some(owner.hwnd), timer) }.unwrap();
+            assert_eq!(result.unwrap(), None);
+            assert!(
+                started.elapsed().as_millis() >= 100,
+                "第 {attempt} 次菜单提前关闭"
+            );
+        }
+        drop(owner);
+        super::uninitialize_shell_apartment();
+    }
+
+    /// 桌面原生设置动词必须出现在生产菜单中，不能退化为普通目录菜单。
+    #[test]
+    fn local_background_menu_preserves_desktop_verbs() {
+        use windows::Win32::UI::Shell::GCS_VERBW;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetMenuItemCount, GetMenuItemID, GetMenuStringW, MF_BYPOSITION,
+        };
+        super::initialize_shell_apartment().unwrap();
+        let (folder, primary, menu) = super::folder_background_menu(
+            super::HWND::default(),
+            std::env::temp_dir().to_str().unwrap(),
+        )
+        .unwrap(); // 使用生产菜单获取路径。
+        let popup = unsafe { super::CreatePopupMenu() }.unwrap(); // 仅枚举，不显示。
+        unsafe {
+            primary
+                .QueryContextMenu(popup, 0, 1, 0x4fff, super::CMF_NORMAL)
+                .ok()
+        }
+        .unwrap();
+        unsafe {
+            menu.QueryContextMenu(
+                popup,
+                GetMenuItemCount(Some(popup)) as u32,
+                0x5000,
+                0x6fff,
+                super::CMF_NORMAL,
+            )
+            .ok()
+        }
+        .unwrap();
+        let mut labels = Vec::new(); // 当前系统实际提供的标签。
+        let mut verbs = Vec::new(); // 与显示语言无关的原生动词。
+        for index in 0..unsafe { GetMenuItemCount(Some(popup)) } {
+            let mut buffer = [0u16; 256]; // 标签缓冲区。
+            let length =
+                unsafe { GetMenuStringW(popup, index as u32, Some(&mut buffer), MF_BYPOSITION) }; // 读取顶层标签。
+            labels.push(String::from_utf16_lossy(&buffer[..length.max(0) as usize]));
+            let id = unsafe { GetMenuItemID(popup, index) }; // 分隔线及子菜单没有普通命令编号。
+            if id != u32::MAX && id > 0 {
+                let (source, first) = if id >= 0x5000 {
+                    (&menu, 0x5000)
+                } else {
+                    (&primary, 1)
+                }; // 与生产菜单一致的编号空间。
+                let mut verb = [0u16; 256]; // GCS_VERBW 返回 UTF-16。
+                if unsafe {
+                    source.GetCommandString(
+                        (id - first) as usize,
+                        GCS_VERBW,
+                        None,
+                        windows::core::PSTR(verb.as_mut_ptr().cast()),
+                        verb.len() as u32,
+                    )
+                }
+                .is_ok()
+                {
+                    verbs.push(String::from_utf16_lossy(
+                        &verb[..verb
+                            .iter()
+                            .position(|value| *value == 0)
+                            .unwrap_or(verb.len())],
+                    ));
+                }
+            }
+        }
+        eprintln!("生产桌面菜单: {labels:?}，动词: {verbs:?}");
+        assert!(
+            verbs
+                .iter()
+                .any(|verb| verb.eq_ignore_ascii_case("display")),
+            "缺少显示设置: {verbs:?}"
+        );
+        assert!(
+            verbs
+                .iter()
+                .any(|verb| verb.eq_ignore_ascii_case("personalize")),
+            "缺少个性化: {verbs:?}"
+        );
+        unsafe { super::DestroyMenu(popup) }.unwrap();
+        drop(menu);
+        drop(primary);
+        drop(folder);
+        super::uninitialize_shell_apartment();
+    }
+
+    /// 实际展开 Shell 新建菜单并创建 TXT，覆盖获取和执行两个阶段。
+    #[test]
+    fn local_background_menu_creates_text_document() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetMenuItemCount, GetMenuItemID, GetMenuStringW, GetSubMenu, MF_BYPOSITION,
+        };
+        super::initialize_shell_apartment().unwrap();
+        let directory = std::env::temp_dir().join(format!(
+            "desktop-tools-menu-{}",
+            crate::tools::time::next_timeline_timestamp()
+        )); // 独占中文目录，用来验证 Unicode 工作目录。
+        let directory = directory.join("菜单测试"); // 不接触用户桌面。
+        std::fs::create_dir_all(&directory).unwrap();
+        let (_folder, menu, desktop_menu) =
+            super::folder_background_menu(super::HWND::default(), directory.to_str().unwrap())
+                .unwrap(); // 与产品相同的获取路径。
+        let popup = unsafe { super::CreatePopupMenu() }.unwrap(); // 不显示的真实 HMENU。
+        unsafe {
+            menu.QueryContextMenu(popup, 0, 1, 0x6fff, super::CMF_NORMAL)
+                .ok()
+        }
+        .unwrap();
+        let handler = windows::core::Interface::cast::<super::IContextMenu2>(&menu).unwrap(); // Shell 动态子菜单消息处理器。
+        let mut selected = None; // TXT 新建项的真实编号。
+        let mut labels = Vec::new(); // 失败时报告实际枚举项。
+        for index in 0..unsafe { GetMenuItemCount(Some(popup)) } {
+            let submenu = unsafe { GetSubMenu(popup, index) }; // 延迟生成的子菜单。
+            if submenu.is_invalid() {
+                continue;
+            }
+            let _ = unsafe {
+                handler.HandleMenuMsg(
+                    super::WM_INITMENUPOPUP,
+                    super::WPARAM(submenu.0 as usize),
+                    super::LPARAM(index as isize),
+                )
+            };
+            for child in 0..unsafe { GetMenuItemCount(Some(submenu)) } {
+                let mut buffer = [0u16; 256]; // 菜单标签缓冲区。
+                let length = unsafe {
+                    GetMenuStringW(submenu, child as u32, Some(&mut buffer), MF_BYPOSITION)
+                }; // 本地 Shell 的标签。
+                let label = String::from_utf16_lossy(&buffer[..length.max(0) as usize]); // 可检查文本。
+                if label.contains("文本文档") || label.contains("Text Document") {
+                    selected = Some(unsafe { GetMenuItemID(submenu, child) });
+                }
+                labels.push(label);
+            }
+        }
+        let selected = selected.unwrap_or_else(|| panic!("TXT 模板不在实际菜单中: {labels:?}")); // 未提供模板不能记为通过。
+        super::invoke_menu_command(
+            &menu,
+            super::HWND::default(),
+            selected - 1,
+            directory.to_str(),
+        )
+        .unwrap();
+        let created = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "txt")
+            }); // 验证实际文件，不以 HRESULT 成功代替。
+        unsafe { super::DestroyMenu(popup) }.unwrap();
+        assert!(created, "Shell 返回成功但没有在目标目录创建 TXT");
+        drop(handler);
+        drop(menu);
+        drop(desktop_menu);
+        drop(_folder);
+        std::fs::remove_dir_all(directory.parent().unwrap()).unwrap();
+        super::uninitialize_shell_apartment();
+    }
+
+    /// 在独立临时目录执行原生重命名、旧历史补偿与重做，验证快捷方式类型不丢失。
+    #[test]
+    fn native_shortcut_rename_undo_redo_preserves_extension() {
+        super::initialize_shell_apartment().unwrap();
+        let directory = std::env::temp_dir().join(format!(
+            "desktop-tools-shortcut-{}-{}",
+            std::process::id(),
+            crate::tools::time::next_timeline_timestamp()
+        )); // 测试独占目录。
+        std::fs::create_dir(&directory).unwrap();
+        let original = directory.join("original.lnk"); // 测试文件不在用户桌面。
+        std::fs::write(&original, []).unwrap();
+        let owner = super::ShellMenuOwner::create().unwrap(); // 本线程原生操作所有者。
+        let renamed =
+            super::rename_desktop_item(&owner, original.to_str().unwrap(), "renamed").unwrap(); // 正向名称不含后缀。
+        assert_eq!(
+            renamed.items[0].source_name.as_deref(),
+            Some("original.lnk")
+        );
+        assert!(directory.join("renamed.lnk").exists());
+        let undone = super::compensate_desktop_items(
+            &owner,
+            super::ShellOperationKind::Rename,
+            vec![super::ShellCompensationAction::Rename {
+                reference: directory.join("renamed.lnk").to_string_lossy().into_owned(),
+                new_name: "original".into(),
+            }],
+        )
+        .unwrap(); // 模拟本会话已经保存隐藏后缀的旧历史。
+        assert!(undone.items[0].succeeded);
+        assert!(original.exists());
+        super::compensate_desktop_items(
+            &owner,
+            super::ShellOperationKind::Rename,
+            vec![super::ShellCompensationAction::Rename {
+                reference: original.to_string_lossy().into_owned(),
+                new_name: "renamed.lnk".into(),
+            }],
+        )
+        .unwrap();
+        assert!(directory.join("renamed.lnk").exists());
+        drop(owner);
+        std::fs::remove_dir_all(directory).unwrap();
+        super::uninitialize_shell_apartment();
+    }
+    /// 隐藏快捷方式后缀不应在用户只修改显示名称时丢失。
+    #[test]
+    fn shortcut_rename_preserves_hidden_extension() {
+        assert_eq!(
+            super::shortcut_rename_name(Some(r"C:\Desktop\old.lnk"), "新名称"),
+            "新名称.lnk"
+        );
+        assert_eq!(
+            super::shortcut_rename_name(Some(r"C:\Desktop\old.LNK"), "new.lnk"),
+            "new.lnk"
+        );
+        assert_eq!(
+            super::shortcut_rename_name(Some(r"C:\Desktop\old.url"), "new"),
+            "new.url"
+        );
+        assert_eq!(
+            super::shortcut_rename_name(Some(r"C:\Desktop\old.txt"), "new.md"),
+            "new.md"
+        );
+        assert_eq!(super::shortcut_rename_name(None, "new"), "new");
+    }
     use super::{encoded_pidl_reference, parse_desktop_item_reference};
 
     /// 半透明 HICON 经 PNG 编码后保持原色，避免浏览器再次乘 Alpha 导致边缘变暗。
