@@ -164,7 +164,7 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
     "desktop-item-snapshot-changed": "get_current_desktop_item_snapshot",
     "desktop-host-snapshot-changed": "get_desktop_host_snapshot",
     "workspace-snapshot-changed": "get_current_workspace_snapshot",
-    "component-runtime-snapshot-changed": "get_component_runtime_snapshot",
+    "component-runtime-snapshot-changed": "get_current_component_runtime_snapshot",
     "component-host-event": "get_current_component_host_event",
   };
 

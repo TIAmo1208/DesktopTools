@@ -26,15 +26,25 @@ pub fn get_desktop_item_snapshot(
     workspace: State<'_, WorkspaceState>,
     runtime: State<'_, Arc<DesktopHostRuntime>>,
 ) -> Result<DesktopItemSnapshot, DesktopItemError> {
+    execute_get_desktop_item_snapshot(&app, &state, &workspace, &runtime)
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+pub(crate) fn execute_get_desktop_item_snapshot(
+    app: &AppHandle,
+    state: &DesktopItemState,
+    workspace: &WorkspaceState,
+    runtime: &DesktopHostRuntime,
+) -> Result<DesktopItemSnapshot, DesktopItemError> {
     // 已发布到内存状态的桌面项目快照。
-    let snapshot = refresh_desktop_item_snapshot(&state)?;
+    let snapshot = refresh_desktop_item_snapshot(state)?;
     app.emit(DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, &snapshot)
         .map_err(|error| {
             crate::log_error!("Shell：桌面项目快照事件发布失败，错误：{error}");
             DesktopItemError::event_publish_failed(&error)
         })?;
     // 已按正式宿主网格协调的工作区快照。
-    let workspace_snapshot = reconcile_workspace_items(&workspace, &runtime, &snapshot)
+    let workspace_snapshot = reconcile_workspace_items(workspace, runtime, &snapshot)
         .map_err(|error| DesktopItemError::workspace_reconciliation_failed(&error))?;
     app.emit(WORKSPACE_SNAPSHOT_CHANGED_EVENT, &workspace_snapshot)
         .map_err(|error| DesktopItemError::event_publish_failed(&error))?;
@@ -59,8 +69,18 @@ pub fn rename_desktop_item(
     item_id: String,
     new_name: String,
 ) -> Result<ShellOperationResult, DesktopItemError> {
+    execute_rename_desktop_item(&state, &workspace, item_id, new_name)
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+pub(crate) fn execute_rename_desktop_item(
+    state: &DesktopItemState,
+    workspace: &WorkspaceState,
+    item_id: String,
+    new_name: String,
+) -> Result<ShellOperationResult, DesktopItemError> {
     let result = state.rename(&item_id, new_name)?; // 已记录统一时间线的实际 Shell 结果。
-    clear_layout_redo_for_shell_operation(&workspace, &result)?;
+    clear_layout_redo_for_shell_operation(workspace, &result)?;
     Ok(result)
 }
 
@@ -72,8 +92,18 @@ pub fn delete_desktop_items(
     item_ids: Vec<String>,
     permanent: bool,
 ) -> Result<ShellOperationResult, DesktopItemError> {
+    execute_delete_desktop_items(&state, &workspace, item_ids, permanent)
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+pub(crate) fn execute_delete_desktop_items(
+    state: &DesktopItemState,
+    workspace: &WorkspaceState,
+    item_ids: Vec<String>,
+    permanent: bool,
+) -> Result<ShellOperationResult, DesktopItemError> {
     let result = state.delete(&item_ids, permanent)?; // 已记录统一时间线的实际 Shell 结果。
-    clear_layout_redo_for_shell_operation(&workspace, &result)?;
+    clear_layout_redo_for_shell_operation(workspace, &result)?;
     Ok(result)
 }
 
@@ -93,8 +123,16 @@ pub fn paste_desktop_items(
     state: State<'_, DesktopItemState>,
     workspace: State<'_, WorkspaceState>,
 ) -> Result<ShellOperationResult, DesktopItemError> {
+    execute_paste_desktop_items(&state, &workspace)
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+pub(crate) fn execute_paste_desktop_items(
+    state: &DesktopItemState,
+    workspace: &WorkspaceState,
+) -> Result<ShellOperationResult, DesktopItemError> {
     let result = state.paste()?; // 已记录统一时间线的实际 Shell 粘贴结果。
-    clear_layout_redo_for_shell_operation(&workspace, &result)?;
+    clear_layout_redo_for_shell_operation(workspace, &result)?;
     Ok(result)
 }
 
@@ -120,11 +158,28 @@ pub fn show_workspace_context_menu(
     client_x: f64,
     client_y: f64,
 ) -> Result<WorkspaceSnapshot, DesktopItemError> {
+    execute_show_workspace_context_menu(
+        &app, &state, &workspace, &runtime, monitor_id, target, client_x, client_y,
+    )
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_show_workspace_context_menu(
+    app: &AppHandle,
+    state: &DesktopItemState,
+    workspace: &WorkspaceState,
+    runtime: &DesktopHostRuntime,
+    monitor_id: String,
+    target: WorkspaceContextMenuTarget,
+    client_x: f64,
+    client_y: f64,
+) -> Result<WorkspaceSnapshot, DesktopItemError> {
     // 已应用 Shell 或产品菜单动作的权威工作区快照。
     let snapshot = show_workspace_context_menu_state(
-        &state,
-        &workspace,
-        &runtime,
+        state,
+        workspace,
+        runtime,
         &monitor_id,
         target,
         client_x,

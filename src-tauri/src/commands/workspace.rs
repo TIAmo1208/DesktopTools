@@ -33,13 +33,25 @@ pub fn apply_workspace_command(
     monitor_id: String,
     command: WorkspaceCommand,
 ) -> Result<WorkspaceSnapshot, WorkspaceError> {
+    execute_apply_workspace_command(&app, &state, &desktop_items, &runtime, monitor_id, command)
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+pub(crate) fn execute_apply_workspace_command(
+    app: &AppHandle,
+    state: &WorkspaceState,
+    desktop_items: &DesktopItemState,
+    runtime: &DesktopHostRuntime,
+    monitor_id: String,
+    command: WorkspaceCommand,
+) -> Result<WorkspaceSnapshot, WorkspaceError> {
     let before_revision = state.snapshot()?.revision; // 判断布局命令是否真正创建新统一时间线分支的修订号。
     let history_command = matches!(
         &command,
         WorkspaceCommand::UndoLayout | WorkspaceCommand::RedoLayout
     ); // 兼容旧 transport 的布局历史命令不清除 Shell 重做分支。
     // 已原子持久化的下一工作区快照。
-    let snapshot = apply_workspace_state_command(&state, &runtime, &monitor_id, command)?;
+    let snapshot = apply_workspace_state_command(state, runtime, &monitor_id, command)?;
     if !history_command && snapshot.revision != before_revision {
         desktop_items
             .clear_redo_history()
@@ -111,17 +123,36 @@ pub fn restore_workspace_backup(
     runtime: State<'_, Arc<DesktopHostRuntime>>,
     path: String,
 ) -> Result<WorkspaceRestoreResult, WorkspaceError> {
+    execute_restore_workspace_backup(
+        &app,
+        &virtual_desktops,
+        &workspace,
+        &desktop_items,
+        &runtime,
+        path,
+    )
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+pub(crate) fn execute_restore_workspace_backup(
+    app: &AppHandle,
+    virtual_desktops: &VirtualDesktopState,
+    workspace: &WorkspaceState,
+    desktop_items: &DesktopItemState,
+    runtime: &DesktopHostRuntime,
+    path: String,
+) -> Result<WorkspaceRestoreResult, WorkspaceError> {
     let result = virtual_desktops.restore_workspace_backup(
         &PathBuf::from(path),
-        &workspace,
-        &runtime,
-        &desktop_items,
+        workspace,
+        runtime,
+        desktop_items,
     )?; // Windows 桌面补齐和工作区原子替换均已完成的还原结果。
     desktop_items
         .clear_operation_history()
         .map_err(|error| WorkspaceError::history_failed(&error.message))?;
     let virtual_desktop_snapshot = virtual_desktops
-        .snapshot(&workspace)
+        .snapshot(workspace)
         .map_err(|error| WorkspaceError::restore_failed(&error.message))?; // 还原后的最终 Windows 虚拟桌面环境。
     app.emit(WORKSPACE_SNAPSHOT_CHANGED_EVENT, &result.snapshot)
         .map_err(|error| WorkspaceError::restore_failed(&error))?;
@@ -223,8 +254,19 @@ pub fn apply_workspace_interaction(
     monitor_id: String,
     command: WorkspaceInteractionCommand,
 ) -> Result<WorkspaceSnapshot, WorkspaceError> {
+    execute_apply_workspace_interaction(&app, &state, &runtime, monitor_id, command)
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+pub(crate) fn execute_apply_workspace_interaction(
+    app: &AppHandle,
+    state: &WorkspaceState,
+    runtime: &DesktopHostRuntime,
+    monitor_id: String,
+    command: WorkspaceInteractionCommand,
+) -> Result<WorkspaceSnapshot, WorkspaceError> {
     // 已提交到内存的下一工作区快照。
-    let snapshot = apply_workspace_state_interaction(&state, &runtime, &monitor_id, command)?;
+    let snapshot = apply_workspace_state_interaction(state, runtime, &monitor_id, command)?;
     app.emit(WORKSPACE_SNAPSHOT_CHANGED_EVENT, &snapshot)
         .map_err(|error| {
             crate::log_error!("工作区：交互快照事件发布失败，错误={error}");
