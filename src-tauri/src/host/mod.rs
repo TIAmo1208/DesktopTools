@@ -281,21 +281,14 @@ impl DesktopHostRuntime {
         // 已应用到 HWND 的语义区域数量。
         let region_count = apply_host_hit_regions(&host, report.hit_regions.clone())
             .map_err(|error| DesktopHostError::platform_failed(&error))?;
-        // PrintWindow 检测到的真实渲染像素数量。
-        let mut visible_pixels = None;
-        for _ in 0..10 {
-            match probe_host_pixels(&host) {
-                Ok(count) => {
-                    visible_pixels = Some(count);
-                    break;
-                }
-                Err(_) => thread::sleep(Duration::from_millis(100)),
-            }
-        }
-        // 最终通过探针的可见像素数量。
-        let visible_pixels = visible_pixels.ok_or_else(|| {
-            DesktopHostError::platform_failed(&"正式宿主像素探针未检测到渲染内容")
-        })?;
+        // 像素仅作诊断，空屏或 PrintWindow 捕获失败不阻塞接管。
+        let visible_pixels = probe_host_pixels(&host).unwrap_or_else(|error| {
+            crate::log_debug!(
+                "宿主：像素诊断未取得可见内容，显示器={}，原因={error}",
+                monitor_id
+            );
+            0
+        });
 
         // 日志中用于验证输入坐标的首个语义命中区域。
         let first_region = report
@@ -319,7 +312,7 @@ impl DesktopHostRuntime {
             context.hit_regions = report.hit_regions;
             context.readiness.page = true;
             context.readiness.system_images = true;
-            context.readiness.pixels = true;
+            context.readiness.pixels = visible_pixels > 0;
             context.readiness.hit_map = true;
             if all_hosts_ready(&data) {
                 data.coordinator.mark_hosts_ready();
@@ -1024,15 +1017,12 @@ fn host_context_mut<'a>(
         .ok_or_else(|| DesktopHostError::invalid_readiness("显示器宿主不存在"))
 }
 
-/// 判断 guardian 与每台显示器的页面、图像、像素和命中图是否全部就绪。
+/// 判断 guardian 与每台显示器的页面、图像和命中图是否全部就绪；像素仅供诊断。
 fn all_hosts_ready(data: &DesktopHostRuntimeData) -> bool {
     data.coordinator.guardian_ready
         && !data.hosts.is_empty()
         && data.hosts.iter().all(|context| {
-            context.readiness.page
-                && context.readiness.system_images
-                && context.readiness.pixels
-                && context.readiness.hit_map
+            context.readiness.page && context.readiness.system_images && context.readiness.hit_map
         })
 }
 
@@ -1236,7 +1226,10 @@ mod tests {
         assert!(!all_hosts_ready(&data));
         data.hosts[1].readiness.hit_map = true;
         data.hosts[1].readiness.input = false;
+        data.hosts[1].readiness.pixels = false;
         assert!(all_hosts_ready(&data));
+        data.hosts[1].readiness.page = false;
+        assert!(!all_hosts_ready(&data));
     }
 
     /// 验证 DPI-only 变化不被分类为持久显示器拓扑变化。
