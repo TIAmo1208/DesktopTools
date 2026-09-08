@@ -1727,7 +1727,15 @@ unsafe fn icon_data_url(icon: HICON) -> Option<String> {
         } else {
             0
         };
-        rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], alpha]);
+        let mut color = [pixel[2], pixel[1], pixel[0], alpha]; // PNG 使用直通 Alpha 的 RGBA 像素。
+        // GDI 绘制结果已预乘 Alpha，编码前还原颜色，避免半透明边缘被重复压暗。
+        if has_alpha && alpha > 0 && alpha < 255 {
+            for channel in &mut color[..3] {
+                *channel = ((u32::from(*channel) * 255 + u32::from(alpha) / 2) / u32::from(alpha))
+                    .min(255) as u8;
+            }
+        }
+        rgba.extend_from_slice(&color);
     }
 
     unsafe {
@@ -1760,6 +1768,32 @@ unsafe fn icon_data_url(icon: HICON) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{encoded_pidl_reference, parse_desktop_item_reference};
+
+    /// 半透明 HICON 经 PNG 编码后保持原色，避免浏览器再次乘 Alpha 导致边缘变暗。
+    #[test]
+    fn icon_png_preserves_translucent_colors() {
+        use base64::Engine;
+        use windows::Win32::UI::WindowsAndMessaging::{CreateIcon, DestroyIcon};
+
+        let pixels = [0_u8, 128, 255, 128].repeat(48 * 48); // CreateIcon 接收的直通 Alpha BGRA 橙色图标。
+        let mask = [0_u8; 48 * 48 / 8]; // 32 位图标使用 Alpha，不额外裁切像素。
+        let icon = unsafe { CreateIcon(None, 48, 48, 1, 32, mask.as_ptr(), pixels.as_ptr()) }
+            .expect("测试图标应创建成功"); // 当前测试独占的原生图标。
+        let encoded = unsafe { super::icon_data_url(icon) }; // 经过正式 GDI 绘制与 PNG 编码路径。
+        unsafe { DestroyIcon(icon).expect("测试图标应释放") };
+        let encoded = encoded.expect("图标应编码成功"); // 待解码验证的 data URL。
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded.strip_prefix("data:image/png;base64,").unwrap())
+            .unwrap(); // PNG 文件字节。
+        let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+            .read_info()
+            .unwrap(); // 原始 RGBA 解码器。
+        let mut rgba = vec![0; reader.output_buffer_size()]; // 解码输出缓冲。
+        let info = reader.next_frame(&mut rgba).unwrap(); // 本次解码的像素范围。
+        for pixel in rgba[..info.buffer_size()].chunks_exact(4) {
+            assert_eq!(pixel, [255, 128, 0, 128]);
+        }
+    }
 
     /// 验证 PIDL 稳定引用可解码并保持原始字节。
     #[test]
