@@ -29,8 +29,19 @@ pub fn create_virtual_desktop(
     runtime: State<'_, Arc<DesktopHostRuntime>>,
     desktop_items: State<'_, DesktopItemState>,
 ) -> Result<VirtualDesktopSnapshot, VirtualDesktopError> {
-    let snapshot = state.create(&workspace, &runtime, &desktop_items)?; // 创建后最终虚拟桌面环境。
-    emit_virtual_desktop_state(&app, &workspace, &snapshot)?;
+    execute_create_virtual_desktop(&app, &state, &workspace, &runtime, &desktop_items)
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+pub(crate) fn execute_create_virtual_desktop(
+    app: &AppHandle,
+    state: &VirtualDesktopState,
+    workspace: &WorkspaceState,
+    runtime: &DesktopHostRuntime,
+    desktop_items: &DesktopItemState,
+) -> Result<VirtualDesktopSnapshot, VirtualDesktopError> {
+    let snapshot = state.create(workspace, runtime, desktop_items)?; // 创建后最终虚拟桌面环境。
+    emit_virtual_desktop_state(app, workspace, &snapshot)?;
     Ok(snapshot)
 }
 
@@ -45,14 +56,29 @@ pub fn delete_virtual_desktop(
     desktop_id: String,
     fallback_id: String,
 ) -> Result<VirtualDesktopSnapshot, VirtualDesktopError> {
-    let snapshot = state.remove(
-        &desktop_id,
-        &fallback_id,
+    execute_delete_virtual_desktop(
+        &app,
+        &state,
         &workspace,
         &runtime,
         &desktop_items,
-    )?; // 删除后最终虚拟桌面环境。
-    emit_virtual_desktop_state(&app, &workspace, &snapshot)?;
+        desktop_id,
+        fallback_id,
+    )
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+pub(crate) fn execute_delete_virtual_desktop(
+    app: &AppHandle,
+    state: &VirtualDesktopState,
+    workspace: &WorkspaceState,
+    runtime: &DesktopHostRuntime,
+    desktop_items: &DesktopItemState,
+    desktop_id: String,
+    fallback_id: String,
+) -> Result<VirtualDesktopSnapshot, VirtualDesktopError> {
+    let snapshot = state.remove(&desktop_id, &fallback_id, workspace, runtime, desktop_items)?; // 删除后最终虚拟桌面环境。
+    emit_virtual_desktop_state(app, workspace, &snapshot)?;
     Ok(snapshot)
 }
 
@@ -66,8 +92,27 @@ pub fn restore_virtual_desktop_archive(
     desktop_items: State<'_, DesktopItemState>,
     archive_id: String,
 ) -> Result<VirtualDesktopSnapshot, VirtualDesktopError> {
-    let snapshot = state.restore_archive(&archive_id, &workspace, &runtime, &desktop_items)?; // 归档绑定后的最终虚拟桌面环境。
-    emit_virtual_desktop_state(&app, &workspace, &snapshot)?;
+    execute_restore_virtual_desktop_archive(
+        &app,
+        &state,
+        &workspace,
+        &runtime,
+        &desktop_items,
+        archive_id,
+    )
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+pub(crate) fn execute_restore_virtual_desktop_archive(
+    app: &AppHandle,
+    state: &VirtualDesktopState,
+    workspace: &WorkspaceState,
+    runtime: &DesktopHostRuntime,
+    desktop_items: &DesktopItemState,
+    archive_id: String,
+) -> Result<VirtualDesktopSnapshot, VirtualDesktopError> {
+    let snapshot = state.restore_archive(&archive_id, workspace, runtime, desktop_items)?; // 归档绑定后的最终虚拟桌面环境。
+    emit_virtual_desktop_state(app, workspace, &snapshot)?;
     Ok(snapshot)
 }
 

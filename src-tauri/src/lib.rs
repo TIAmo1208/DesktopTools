@@ -180,7 +180,11 @@ pub fn run() {
             }
         }
         RunEvent::Exit => {
-            app.unmanage::<crate::platform::windows::settings::WindowsAccentMonitor>();
+            if let Some(monitor) =
+                app.try_state::<crate::platform::windows::settings::WindowsAccentMonitor>()
+            {
+                monitor.shutdown();
+            }
             if let Some(runtime) = app.try_state::<Arc<DesktopHostRuntime>>() {
                 runtime.cleanup();
             }

@@ -35,9 +35,18 @@ pub fn publish_desktop_host_readiness(
     state: State<'_, Arc<DesktopHostRuntime>>,
     report: FrontendHostReadiness,
 ) -> Result<DesktopHostSnapshot, DesktopHostError> {
+    execute_publish_desktop_host_readiness(&app, &state, report)
+}
+
+/// 两种 transport 共用的宿主命令与快照发布。
+pub(crate) fn execute_publish_desktop_host_readiness(
+    app: &AppHandle,
+    state: &DesktopHostRuntime,
+    report: FrontendHostReadiness,
+) -> Result<DesktopHostSnapshot, DesktopHostError> {
     // 已提交前端准备证据的正式宿主快照。
-    let snapshot = publish_readiness(&state, report)?;
-    emit_snapshot(&app, &snapshot);
+    let snapshot = state.publish_frontend_readiness(report)?;
+    emit_snapshot(app, &snapshot);
     Ok(snapshot)
 }
 
@@ -65,14 +74,6 @@ pub(crate) fn record_renderer_heartbeat(
     runtime.record_renderer_heartbeat(monitor_id)
 }
 
-/// 校验前端准备证据并发布 transport 共享的正式宿主快照。
-pub(crate) fn publish_readiness(
-    runtime: &DesktopHostRuntime,
-    report: FrontendHostReadiness,
-) -> Result<DesktopHostSnapshot, DesktopHostError> {
-    runtime.publish_frontend_readiness(report)
-}
-
 /// 原子替换页面布局变化后的完整语义命中图。
 #[tauri::command]
 pub fn update_desktop_host_hit_map(
@@ -81,9 +82,19 @@ pub fn update_desktop_host_hit_map(
     monitor_id: String,
     hit_regions: Vec<HitRegion>,
 ) -> Result<DesktopHostSnapshot, DesktopHostError> {
+    execute_update_desktop_host_hit_map(&app, &state, monitor_id, hit_regions)
+}
+
+/// 两种 transport 共用的宿主命令与快照发布。
+pub(crate) fn execute_update_desktop_host_hit_map(
+    app: &AppHandle,
+    state: &DesktopHostRuntime,
+    monitor_id: String,
+    hit_regions: Vec<HitRegion>,
+) -> Result<DesktopHostSnapshot, DesktopHostError> {
     // 已应用命中图的正式宿主快照。
-    let snapshot = replace_hit_map(&state, &monitor_id, hit_regions)?;
-    emit_snapshot(&app, &snapshot);
+    let snapshot = state.update_hit_map(&monitor_id, hit_regions)?;
+    emit_snapshot(app, &snapshot);
     Ok(snapshot)
 }
 
@@ -94,9 +105,18 @@ pub fn begin_desktop_host_input_drag(
     state: State<'_, Arc<DesktopHostRuntime>>,
     monitor_id: String,
 ) -> Result<DesktopHostSnapshot, DesktopHostError> {
+    execute_begin_desktop_host_input_drag(&app, &state, monitor_id)
+}
+
+/// 两种 transport 共用的宿主命令与快照发布。
+pub(crate) fn execute_begin_desktop_host_input_drag(
+    app: &AppHandle,
+    state: &DesktopHostRuntime,
+    monitor_id: String,
+) -> Result<DesktopHostSnapshot, DesktopHostError> {
     // 已暂停命中裁剪的正式宿主快照。
-    let snapshot = begin_input_drag(&state, &monitor_id)?;
-    emit_snapshot(&app, &snapshot);
+    let snapshot = state.begin_input_drag(&monitor_id)?;
+    emit_snapshot(app, &snapshot);
     Ok(snapshot)
 }
 
@@ -107,35 +127,19 @@ pub fn end_desktop_host_input_drag(
     state: State<'_, Arc<DesktopHostRuntime>>,
     monitor_id: String,
 ) -> Result<DesktopHostSnapshot, DesktopHostError> {
+    execute_end_desktop_host_input_drag(&app, &state, monitor_id)
+}
+
+/// 两种 transport 共用的宿主命令与快照发布。
+pub(crate) fn execute_end_desktop_host_input_drag(
+    app: &AppHandle,
+    state: &DesktopHostRuntime,
+    monitor_id: String,
+) -> Result<DesktopHostSnapshot, DesktopHostError> {
     // 已恢复命中图的正式宿主快照。
-    let snapshot = end_input_drag(&state, &monitor_id)?;
-    emit_snapshot(&app, &snapshot);
+    let snapshot = state.end_input_drag(&monitor_id)?;
+    emit_snapshot(app, &snapshot);
     Ok(snapshot)
-}
-
-/// 替换命中图并发布 transport 共享的正式宿主快照。
-pub(crate) fn replace_hit_map(
-    runtime: &DesktopHostRuntime,
-    monitor_id: &str,
-    hit_regions: Vec<HitRegion>,
-) -> Result<DesktopHostSnapshot, DesktopHostError> {
-    runtime.update_hit_map(monitor_id, hit_regions)
-}
-
-/// 暂停 transport 共享的正式宿主命中裁剪。
-pub(crate) fn begin_input_drag(
-    runtime: &DesktopHostRuntime,
-    monitor_id: &str,
-) -> Result<DesktopHostSnapshot, DesktopHostError> {
-    runtime.begin_input_drag(monitor_id)
-}
-
-/// 恢复 transport 共享的正式宿主命中图。
-pub(crate) fn end_input_drag(
-    runtime: &DesktopHostRuntime,
-    monitor_id: &str,
-) -> Result<DesktopHostSnapshot, DesktopHostError> {
-    runtime.end_input_drag(monitor_id)
 }
 
 /// 记录最小桌面项目输入回传并尝试提交接管。
@@ -146,19 +150,20 @@ pub fn record_desktop_host_input_probe(
     monitor_id: String,
     item_id: String,
 ) -> Result<DesktopHostSnapshot, DesktopHostError> {
-    // 已记录输入诊断状态的正式宿主快照。
-    let snapshot = record_input_probe(&state, &monitor_id, &item_id)?;
-    emit_snapshot(&app, &snapshot);
-    Ok(snapshot)
+    execute_record_desktop_host_input_probe(&app, &state, monitor_id, item_id)
 }
 
-/// 记录输入证据并发布 transport 共享的正式宿主快照。
-pub(crate) fn record_input_probe(
-    runtime: &DesktopHostRuntime,
-    monitor_id: &str,
-    item_id: &str,
+/// 两种 transport 共用的宿主命令与快照发布。
+pub(crate) fn execute_record_desktop_host_input_probe(
+    app: &AppHandle,
+    state: &DesktopHostRuntime,
+    monitor_id: String,
+    item_id: String,
 ) -> Result<DesktopHostSnapshot, DesktopHostError> {
-    runtime.record_input_probe(monitor_id, item_id)
+    // 已记录输入诊断状态的正式宿主快照。
+    let snapshot = state.record_input_probe(&monitor_id, &item_id)?;
+    emit_snapshot(app, &snapshot);
+    Ok(snapshot)
 }
 
 /// 发布正式宿主快照并记录事件发布失败。

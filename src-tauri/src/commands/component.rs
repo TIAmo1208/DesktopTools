@@ -14,7 +14,16 @@ pub fn get_component_runtime_snapshot(
     state: State<'_, ComponentRuntimeState>,
     workspace: State<'_, WorkspaceState>,
 ) -> Result<ComponentRuntimeSnapshot, ComponentRuntimeError> {
-    let snapshot = component_runtime_snapshot(&state, &workspace)?; // 当前活动布局对应的实例注册结果。
+    execute_get_component_runtime_snapshot(&app, &state, &workspace)
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+pub(crate) fn execute_get_component_runtime_snapshot(
+    app: &AppHandle,
+    state: &ComponentRuntimeState,
+    workspace: &WorkspaceState,
+) -> Result<ComponentRuntimeSnapshot, ComponentRuntimeError> {
+    let snapshot = component_runtime_snapshot(state, workspace)?; // 当前活动布局对应的实例注册结果。
     app.emit(COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, &snapshot)
         .map_err(|_| ComponentRuntimeError::state_unavailable())?;
     Ok(snapshot)
@@ -25,6 +34,16 @@ pub fn get_component_runtime_snapshot(
 pub fn invoke_component_capability(
     state: State<'_, ComponentRuntimeState>,
     workspace: State<'_, WorkspaceState>,
+    instance_id: String,
+    capability: ComponentCapability,
+) -> Result<ComponentCapabilityResult, ComponentRuntimeError> {
+    execute_invoke_component_capability(&state, &workspace, instance_id, capability)
+}
+
+/// 两种 transport 共用的命令执行与事件发布。
+pub(crate) fn execute_invoke_component_capability(
+    state: &ComponentRuntimeState,
+    workspace: &WorkspaceState,
     instance_id: String,
     capability: ComponentCapability,
 ) -> Result<ComponentCapabilityResult, ComponentRuntimeError> {
