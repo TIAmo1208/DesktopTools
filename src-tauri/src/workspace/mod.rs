@@ -39,6 +39,14 @@ static NEXT_AUTO_SNAPSHOT_ID: AtomicU64 = AtomicU64::new(1);
 /// 已删除虚拟桌面布局归档保留秒数。
 const LAYOUT_ARCHIVE_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
 
+/// 一次协调使用的环境事实；采集时间由调用方决定，不宣称跨运行时原子采集。
+pub(crate) struct WorkspaceEnvironment<'a> {
+    pub monitors: &'a [DesktopHostMonitor], // 当前逐屏物理环境。
+    pub items: &'a [crate::contracts::DesktopItem], // 同次 Shell 观察的引用与名称。
+    pub assignments: &'a [(String, String)], // 初次导入可用的 Explorer 归属。
+    pub renames: &'a [(String, String)],    // Shell 确认的精确重命名。
+}
+
 /// 持有正式桌面内容工作区的权威布局和持久化位置。
 pub struct WorkspaceState {
     grid_preferences: Mutex<GridPreferences>, // 全部虚拟桌面共用的网格生成参数。
@@ -277,6 +285,7 @@ impl WorkspaceState {
     }
 
     /// 更新 Shell 权威显示名称供后续布局事务排序。
+    #[cfg(test)]
     pub fn update_item_names(
         &self,
         items: &[crate::contracts::DesktopItem],
@@ -395,6 +404,14 @@ impl WorkspaceState {
             .item_names
             .lock()
             .map_err(|_| WorkspaceError::state_unavailable())?; // 当前 Shell 名称索引。
+        Ok(Self::sort_fences_with_names(snapshot, &names))
+    }
+
+    /// 使用本次事务固定的名称事实排序，不重新读取共享名称表。
+    fn sort_fences_with_names(
+        snapshot: &mut WorkspaceSnapshot,
+        names: &HashMap<String, String>,
+    ) -> bool {
         let mut changed = false; // 本次排序是否改变权威成员顺序。
         for fence in &mut snapshot.fences {
             if fence.sort_mode == FenceSortMode::None {
@@ -414,7 +431,7 @@ impl WorkspaceState {
             });
             changed |= previous != fence.members;
         }
-        Ok(changed)
+        changed
     }
 
     /// 返回当前不可变工作区快照。
@@ -958,12 +975,54 @@ impl WorkspaceState {
     }
 
     /// 将全部显示器网格、项目归属、临时投射和 Shell 最终事实原子协调进 Workspace。
+    #[cfg(test)]
     pub fn reconcile_host_monitors(
         &self,
         monitors: &[DesktopHostMonitor],
         item_ids: &[String],
         assignments: &[(String, String)],
         renames: &[(String, String)],
+    ) -> Result<WorkspaceSnapshot, WorkspaceError> {
+        self.reconcile_environment_state(monitors, item_ids, assignments, renames, None)
+    }
+
+    /// 将同次环境观察的名称与布局作为一次协调提交。
+    pub(crate) fn reconcile_environment(
+        &self,
+        environment: WorkspaceEnvironment<'_>,
+    ) -> Result<WorkspaceSnapshot, WorkspaceError> {
+        let ids = environment
+            .items
+            .iter()
+            .map(|item| item.stable_reference.clone())
+            .collect::<Vec<_>>(); // 完整项目引用。
+        let names = environment
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    item.stable_reference.clone(),
+                    item.display_name.to_lowercase(),
+                )
+            })
+            .collect(); // 本次排序事实。
+        self.reconcile_environment_state(
+            environment.monitors,
+            &ids,
+            environment.assignments,
+            environment.renames,
+            Some(names),
+        )
+    }
+
+    /// 在既有锁顺序下协调布局，持久化成功后才更新名称缓存。
+    fn reconcile_environment_state(
+        &self,
+        monitors: &[DesktopHostMonitor],
+        item_ids: &[String],
+        assignments: &[(String, String)],
+        renames: &[(String, String)],
+        observed_names: Option<HashMap<String, String>>,
     ) -> Result<WorkspaceSnapshot, WorkspaceError> {
         if monitors.is_empty() {
             return Err(WorkspaceError::invalid_command("工作区缺少显示器"));
@@ -993,6 +1052,11 @@ impl WorkspaceState {
             .history
             .lock()
             .map_err(|_| WorkspaceError::state_unavailable())?; // 等待同步 Shell 重命名引用的全部布局历史。
+        let mut names = self
+            .item_names
+            .lock()
+            .map_err(|_| WorkspaceError::state_unavailable())?; // 与布局同时提交的名称表。
+        let next_names = observed_names.unwrap_or_else(|| names.clone()); // 测试兼容入口沿用现有名称。
         // 保持当前快照可回滚的项目协调副本。
         let mut next = current.clone();
         let mut next_virtual_desktops = virtual_desktops.clone(); // 保存失败时保持其他布局和首次导入状态不变的候选副本。
@@ -1012,7 +1076,7 @@ impl WorkspaceState {
             renames,
             &primary_monitor_id,
         )?; // 当前活动虚拟桌面的 Shell 与显示器协调结果。
-        if self.sort_fences(&mut next)? {
+        if Self::sort_fences_with_names(&mut next, &next_names) {
             next.revision += 1;
             changed = true;
         }
@@ -1027,7 +1091,7 @@ impl WorkspaceState {
                 renames,
                 &primary_monitor_id,
             )?;
-            if self.sort_fences(layout)? {
+            if Self::sort_fences_with_names(layout, &next_names) {
                 layout.revision += 1;
                 changed = true;
             }
@@ -1044,6 +1108,7 @@ impl WorkspaceState {
         } // Shell 精确重命名同步到每个虚拟桌面的撤销与重做快照。
         if !changed {
             *histories = next_histories;
+            *names = next_names;
             return Ok(current.clone());
         }
         let store = save_workspace_store(&self.persistence_path, &next, &next_virtual_desktops)
@@ -1055,6 +1120,7 @@ impl WorkspaceState {
         *current = next.clone();
         *virtual_desktops = next_virtual_desktops;
         *histories = next_histories;
+        *names = next_names;
         self.schedule_auto_snapshot(&current_id, store);
         crate::log_debug!(
             "工作区：全部虚拟桌面逐屏项目位置已协调，活动布局={}，修订={}，项目={}，显示器={}",
@@ -3365,6 +3431,62 @@ mod tests {
     /// 创建当前测试使用的工作区状态。
     fn workspace_state(path: std::path::PathBuf) -> WorkspaceState {
         WorkspaceState::load(path).expect("测试工作区应可启动")
+    }
+
+    /// 验证环境观察失败时名称、布局和磁盘保持原状态，重试可整体提交。
+    #[test]
+    fn environment_observation_rolls_back_names_with_layout() {
+        let path = snapshot_path("environment-transaction"); // 测试独占持久文件。
+        let mut state = workspace_state(path.clone()); // 可注入保存失败的工作区。
+        let monitors = [monitor("DISPLAY1", true, 0, 1.0)]; // 当前宿主事实。
+        let items = vec![crate::contracts::DesktopItem {
+            stable_reference: "a".into(),
+            display_name: "Before".into(),
+            system_image: None,
+            availability: crate::contracts::DesktopItemAvailability::Available,
+        }]; // 首次 Shell 观察。
+        state
+            .reconcile_environment(super::WorkspaceEnvironment {
+                monitors: &monitors,
+                items: &items,
+                assignments: &[],
+                renames: &[],
+            })
+            .unwrap();
+        let before = state.snapshot().unwrap(); // 原始权威布局。
+        let disk = std::fs::read(&path).unwrap(); // 已保存的原始快照。
+        let mut next_items = items.clone(); // Shell 确认的重命名结果。
+        next_items[0].stable_reference = "b".into();
+        next_items[0].display_name = "After".into();
+        let renames = [("a".into(), "b".into())]; // 精确身份变化。
+        state.persistence_path = path.join("blocked.json");
+        assert!(
+            state
+                .reconcile_environment(super::WorkspaceEnvironment {
+                    monitors: &monitors,
+                    items: &next_items,
+                    assignments: &[],
+                    renames: &renames
+                })
+                .is_err()
+        );
+        assert_eq!(state.snapshot().unwrap(), before);
+        assert_eq!(state.item_names.lock().unwrap().get("a").unwrap(), "before");
+        assert_eq!(std::fs::read(&path).unwrap(), disk);
+        state.persistence_path = path.clone();
+        let result = state
+            .reconcile_environment(super::WorkspaceEnvironment {
+                monitors: &monitors,
+                items: &next_items,
+                assignments: &[],
+                renames: &renames,
+            })
+            .unwrap(); // 同一观察重试成功。
+        assert_eq!(result.unclassified_items[0].stable_reference, "b");
+        assert_eq!(state.item_names.lock().unwrap().get("b").unwrap(), "after");
+        drop(state);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir_all(path.with_extension("snapshots")).unwrap();
     }
 
     /// 独立网格设置覆盖运行、重启及容量不足不提交的完整路径。

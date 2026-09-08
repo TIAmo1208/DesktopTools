@@ -290,12 +290,6 @@ pub(crate) fn reconcile_workspace_environment(
         crate::log_error!("工作区：读取宿主尺寸失败，错误={}", error.message);
         WorkspaceError::state_unavailable()
     })?;
-    // Shell 当前完整项目集合的稳定引用。
-    let item_ids = desktop_items
-        .items
-        .iter()
-        .map(|item| item.stable_reference.clone())
-        .collect::<Vec<_>>();
     let monitors = host_snapshot
         .hosts
         .into_iter()
@@ -313,6 +307,10 @@ pub(crate) fn reconcile_workspace_environment(
     } else {
         Vec::new()
     }; // 初始导入、拓扑或 Explorer 变化时使用的原始项目归属。
-    state.update_item_names(&desktop_items.items)?;
-    state.reconcile_host_monitors(&monitors, &item_ids, &assignments, renames)
+    state.reconcile_environment(crate::workspace::WorkspaceEnvironment {
+        monitors: &monitors,
+        items: &desktop_items.items,
+        assignments: &assignments,
+        renames,
+    })
 }
