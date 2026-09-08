@@ -1,4 +1,5 @@
 mod desktop_host;
+mod desktop_sources;
 mod file_system;
 mod shell;
 mod virtual_desktop;

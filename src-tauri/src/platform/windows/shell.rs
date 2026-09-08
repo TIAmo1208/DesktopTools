@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::c_void;
 use std::mem::size_of;
+use std::os::windows::fs::MetadataExt;
 use std::ptr::null_mut;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+use super::desktop_sources::{SYSTEM_ICONS, SourceConfigWatch, visible_icons};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use windows::Win32::Foundation::{
@@ -47,6 +49,7 @@ use windows::Win32::UI::Shell::{
     SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEEDITING,
     SVGIO_BACKGROUND, ShellExecuteExW,
 };
+use windows::Win32::UI::Shell::{KF_FLAG_DEFAULT, SHGetKnownFolderPath};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CreatePopupMenu, CreateWindowExW, DI_NORMAL, DefWindowProcW,
     DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, GWLP_USERDATA,
@@ -55,6 +58,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowLongPtrW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
     WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM,
     WM_MENUCHAR, WM_NCCREATE, WNDCLASSW, WS_POPUP,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT, WM_QUIT,
 };
 use windows::core::{
     BOOL, HRESULT, HSTRING, IUnknown, Interface, PCSTR, PCWSTR, Ref, implement, w,
@@ -531,6 +537,7 @@ unsafe extern "system" fn shell_change_window_proc(
             )
         };
         if !lock.is_invalid() && !sender.is_null() {
+            crate::log_debug!("Shell：收到原始变化通知，事件掩码=0x{:08X}", event as u32);
             // 当前通知能够提供的精确变化事实。
             let change = if (event as u32 & (SHCNE_RENAMEITEM.0 | SHCNE_RENAMEFOLDER.0)) != 0
                 && !pidls.is_null()
@@ -677,14 +684,41 @@ pub fn start_shell_change_watcher()
                 }
                 registrations.push(registration);
             }
+            let mut config_watches = match SourceConfigWatch::create_all() {
+                Ok(watches) => watches,
+                Err(error) => {
+                    for registration in registrations { let _ = unsafe { SHChangeNotifyDeregister(registration) }; }
+                    let _ = unsafe { DestroyWindow(hwnd) };
+                    uninitialize_shell_apartment();
+                    let _ = ready.send(Err(error));
+                    return;
+                }
+            }; // 同一 Shell 消息线程持有全部注册表订阅。
+            let handles = config_watches.iter().map(|watch| watch.event).collect::<Vec<_>>(); // 等待中的系统通知事件。
             let _ = ready.send(Ok(hwnd.0 as isize));
+            crate::log_info!("桌面来源：显示配置与策略监听已启动");
 
             // Shell 变化线程持续运行的 Windows 消息。
             let mut message = MSG::default();
-            while unsafe { GetMessageW(&mut message, None, 0, 0) }.as_bool() {
-                unsafe {
-                    let _ = TranslateMessage(&message);
-                    DispatchMessageW(&message);
+            'messages: loop {
+                let result = unsafe { MsgWaitForMultipleObjects(Some(&handles), false, u32::MAX, QS_ALLINPUT) }; // 注册表事件与 Shell 消息共同唤醒。
+                if (result.0 as usize) < config_watches.len() {
+                    crate::log_debug!("桌面来源：收到注册表配置变化通知，订阅索引={}", result.0);
+                    if let Err(error) = config_watches[result.0 as usize].rearm() {
+                        crate::log_error!("桌面来源：配置监听重新注册失败，错误：{error}");
+                        break;
+                    }
+                    let _ = events.send(ShellChangeEvent::Invalidated);
+                } else if result.0 as usize != config_watches.len() {
+                    crate::log_error!("桌面来源：等待配置变化失败，状态：{}", result.0);
+                    break;
+                }
+                while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+                    if message.message == WM_QUIT { break 'messages; }
+                    unsafe {
+                        let _ = TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
                 }
             }
             for registration in registrations {
@@ -1411,44 +1445,69 @@ pub fn uninitialize_shell_apartment() {
     unsafe { OleUninitialize() };
 }
 
-/// 枚举 Windows Shell 桌面命名空间中的完整项目集合。
+/// 仅读取两个真实桌面目录的直接子项及显式开启的五类系统对象。
 pub fn enumerate_desktop_items() -> Result<Vec<DesktopItem>, String> {
-    // Windows Shell 桌面根目录接口。
-    let desktop = unsafe { SHGetDesktopFolder() }
-        .map_err(|error| format!("获取 Shell 桌面命名空间失败: {error}"))?;
-    // Shell 桌面项目枚举器。
-    let mut enumerator = None;
-    // 同时包含文件夹、普通项目和隐藏项目的枚举标志。
-    let flags = (SHCONTF_FOLDERS.0 | SHCONTF_NONFOLDERS.0 | SHCONTF_INCLUDEHIDDEN.0) as u32;
-    unsafe { desktop.EnumObjects(HWND::default(), flags, &mut enumerator) }
-        .ok()
-        .map_err(|error| format!("创建 Shell 桌面项目枚举器失败: {error}"))?;
-    // 已创建的 Shell 桌面项目枚举器。
-    let enumerator = enumerator.ok_or_else(|| "Shell 桌面项目枚举器为空".to_string())?;
-    // 本次枚举观察到的完整项目集合。
-    let mut items = Vec::new();
-
-    loop {
-        // Shell 为当前项目分配的 PIDL。
-        let mut pidl: *mut ITEMIDLIST = null_mut();
-        // 当前调用实际返回的项目数量。
-        let mut fetched = 0;
-        // 当前项目枚举结果。
-        let result =
-            unsafe { enumerator.Next(std::slice::from_mut(&mut pidl), Some(&mut fetched)) };
-        result
-            .ok()
-            .map_err(|error| format!("读取 Shell 桌面项目失败: {error}"))?;
-        if fetched == 0 {
-            break;
-        }
-        if pidl.is_null() {
+    let visible = visible_icons()?; // 先完整校验配置，读取失败不发布部分结果。
+    let mut references = Vec::new(); // 可重新解析的真实目录子项及系统对象引用。
+    let mut roots = HashSet::new(); // 重定向到相同目录时只读取一次。
+    for folder in [FOLDERID_Desktop, FOLDERID_PublicDesktop] {
+        let raw = unsafe { SHGetKnownFolderPath(&folder, KF_FLAG_DEFAULT, None) }
+            .map_err(|error| format!("读取实际桌面目录失败：{error}"))?; // Known Folder 返回当前重定向路径。
+        let path =
+            unsafe { raw.to_string() }.map_err(|error| format!("转换桌面目录路径失败：{error}")); // 在释放 COM 字符串前复制路径。
+        unsafe { CoTaskMemFree(Some(raw.0.cast())) };
+        let path = path?; // 完整 Unicode 桌面目录。
+        if !roots.insert(path.to_lowercase()) {
             continue;
         }
-
-        // 当前项目的可重新解析稳定引用。
-        let stable_reference = shell_name(pidl, SIGDN_DESKTOPABSOLUTEPARSING)
-            .unwrap_or_else(|_| encoded_pidl_reference(pidl));
+        let entries = std::fs::read_dir(&path)
+            .map_err(|error| format!("读取桌面目录失败，路径：{path}，错误：{error}"))?; // 不递归，不展开快捷方式目标。
+        for entry in entries {
+            let entry =
+                entry.map_err(|error| format!("读取桌面子项失败，路径：{path}，错误：{error}"))?; // 当前实际目录的直接子项。
+            let metadata = entry.metadata().map_err(|error| {
+                format!(
+                    "读取桌面子项属性失败，路径：{}，错误：{error}",
+                    entry.path().display()
+                )
+            })?; // Windows 原始隐藏属性。
+            if metadata.file_attributes() & 0x2 != 0 {
+                continue;
+            }
+            let reference = entry
+                .path()
+                .into_os_string()
+                .into_string()
+                .map_err(|_| "桌面项目路径包含无效 Unicode".to_string())?; // 保持原始文件与快捷方式身份。
+            references.push(reference);
+        }
+    }
+    for ((folder, _), enabled) in SYSTEM_ICONS.iter().zip(visible) {
+        if !enabled {
+            continue;
+        }
+        let pidl = OwnedPidl(
+            unsafe { SHGetKnownFolderIDList(folder, 0, None) }
+                .map_err(|error| format!("读取已开启系统图标 PIDL 失败：{error}"))?,
+        ); // 独立获取系统对象，不枚举桌面根。
+        references.push(
+            shell_name(pidl.0, SIGDN_DESKTOPABSOLUTEPARSING)
+                .unwrap_or_else(|_| encoded_pidl_reference(pidl.0)),
+        );
+    }
+    // 本次枚举观察到的完整项目集合。
+    let mut items = Vec::new();
+    let mut identities = HashSet::new(); // 同一稳定身份去重，同名不同路径仍保留。
+    for reference in references {
+        let resolved = parse_desktop_item_reference(&reference); // 元数据解析失败仍保留真实目录项目。
+        let stable_reference = resolved
+            .as_ref()
+            .ok()
+            .and_then(|pidl| shell_name(pidl.0, SIGDN_DESKTOPABSOLUTEPARSING).ok())
+            .unwrap_or(reference); // 复用原来的 Shell 稳定名称。
+        if !identities.insert(stable_reference.to_lowercase()) {
+            continue;
+        }
         // 从稳定引用重新解析出的 PIDL。
         let resolved_pidl = parse_desktop_item_reference(&stable_reference);
         // 当前项目的系统显示名称读取结果。
@@ -1476,7 +1535,6 @@ pub fn enumerate_desktop_items() -> Result<Vec<DesktopItem>, String> {
             system_image,
             availability,
         });
-        unsafe { CoTaskMemFree(Some(pidl.cast())) };
     }
 
     Ok(items)
