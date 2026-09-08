@@ -1,6 +1,7 @@
 import type { CSSProperties, MouseEventHandler, PointerEventHandler } from "react";
 
 import type { DesktopItemSnapshot } from "../../contracts/desktopItem";
+import { usePreferences } from "../settings/PreferencesProvider";
 import { projectDesktopItems, type DesktopItemViewModel } from "./desktopItemViewModel";
 import "./DesktopItemGrid.css";
 
@@ -50,60 +51,66 @@ export const DesktopItemTile = ({
     onRenameValueChange,
     onRenameCommit,
     onRenameCancel,
-}: DesktopItemTileProps) => (
-    <li
-        className={`desktop-item${className ? ` ${className}` : ""}`}
-        data-availability={item.isAvailable ? "available" : "unavailable"}
-        data-item-id={item.key}
-        data-selected={selected ? "true" : undefined}
-        data-keyboard-focus={keyboardFocused ? "true" : undefined}
-        data-hit-id={desktopHost ? item.key : undefined}
-        data-hit-kind={desktopHost ? "desktop-item" : undefined}
-        data-hit-priority={desktopHost ? "70" : undefined}
-        data-fence-member-id={fenceMemberId}
-        style={style}
-        onPointerDown={(event) => {
-            onItemInput?.(item.key);
-            onItemPointerDown?.(event);
-        }}
-        onDoubleClick={onItemDoubleClick}
-        onContextMenu={onItemContextMenu}
-    >
-        <div className="desktop-item__image" aria-hidden="true">
-            {item.imageSource && <img src={item.imageSource} alt="" draggable={false} />}
-        </div>
-        {renaming ? (
-            <input
-                className="desktop-item__rename"
-                value={renameValue}
-                aria-label={`重命名 ${item.label}`}
-                autoFocus
-                onFocus={(event) => event.currentTarget.select()}
-                onChange={(event) => onRenameValueChange?.(event.currentTarget.value)}
-                onPointerDown={(event) => event.stopPropagation()}
-                onBlur={(event) => {
-                    if (event.currentTarget.dataset.cancelled !== "true") onRenameCommit?.();
-                }}
-                onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                        event.preventDefault();
-                        event.currentTarget.blur();
-                    } else if (event.key === "Escape") {
-                        event.preventDefault();
-                        event.currentTarget.dataset.cancelled = "true";
-                        onRenameCancel?.();
-                        event.currentTarget.blur();
-                    }
-                }}
-            />
-        ) : (
-            <span className="desktop-item__label" title={item.label}>
-                {item.label}
-            </span>
-        )}
-        {!item.isAvailable && <span className="desktop-item__status">等待恢复</span>}
-    </li>
-);
+}: DesktopItemTileProps) => {
+    const { preferences } = usePreferences(); // 当前窗口共享的项目打开方式。
+    return (
+        <li
+            className={`desktop-item${className ? ` ${className}` : ""}`}
+            data-availability={item.isAvailable ? "available" : "unavailable"}
+            data-item-id={item.key}
+            data-selected={selected ? "true" : undefined}
+            data-keyboard-focus={keyboardFocused ? "true" : undefined}
+            data-hit-id={desktopHost ? item.key : undefined}
+            data-hit-kind={desktopHost ? "desktop-item" : undefined}
+            data-hit-priority={desktopHost ? "70" : undefined}
+            data-fence-member-id={fenceMemberId}
+            style={style}
+            onPointerDown={(event) => {
+                onItemInput?.(item.key);
+                onItemPointerDown?.(event);
+            }}
+            onDoubleClick={(event) => {
+                if (renaming || event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) return;
+                if (preferences?.doubleClickToOpen ?? true) onItemDoubleClick?.(event);
+            }}
+            onContextMenu={onItemContextMenu}
+        >
+            <div className="desktop-item__image" aria-hidden="true">
+                {item.imageSource && <img src={item.imageSource} alt="" draggable={false} />}
+            </div>
+            {renaming ? (
+                <input
+                    className="desktop-item__rename"
+                    value={renameValue}
+                    aria-label={`重命名 ${item.label}`}
+                    autoFocus
+                    onFocus={(event) => event.currentTarget.select()}
+                    onChange={(event) => onRenameValueChange?.(event.currentTarget.value)}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onBlur={(event) => {
+                        if (event.currentTarget.dataset.cancelled !== "true") onRenameCommit?.();
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                            event.preventDefault();
+                            event.currentTarget.blur();
+                        } else if (event.key === "Escape") {
+                            event.preventDefault();
+                            event.currentTarget.dataset.cancelled = "true";
+                            onRenameCancel?.();
+                            event.currentTarget.blur();
+                        }
+                    }}
+                />
+            ) : (
+                <span className="desktop-item__label" title={item.label}>
+                    {item.label}
+                </span>
+            )}
+            {!item.isAvailable && <span className="desktop-item__status">等待恢复</span>}
+        </li>
+    );
+};
 
 /** 呈现 Windows Shell 提供的真实桌面项目集合。 */
 export const DesktopItemGrid = ({ snapshot, failure, desktopHost = false, onItemInput }: DesktopItemGridProps) => {

@@ -1,5 +1,8 @@
 use std::sync::Mutex;
 
+pub mod settings;
+pub mod tray;
+
 use crate::contracts::{
     ApplicationError, ApplicationSnapshot, ApplicationStatus, parse_application_status,
 };

@@ -25,6 +25,7 @@ export const snapFenceEdges = (
     workspace: WorkspaceSize,
     threshold = 8,
     edges?: FenceSnapEdges,
+    minimum: WorkspaceSize = { width: FENCE_MIN_WIDTH, height: FENCE_MIN_HEIGHT },
 ): WorkspaceRect => {
     const result = { ...rect };
     const xTargets = [0, workspace.width, ...targets.flatMap((target) => [target.left, target.left + target.width])];
@@ -43,15 +44,15 @@ export const snapFenceEdges = (
         const topSnap = edges.top ? nearest(rect.top, yTargets) : undefined;
         const bottomSnap = edges.bottom ? nearest(bottom, yTargets) : undefined;
         if (leftSnap) {
-            result.left = Math.min(leftSnap.value, right - FENCE_MIN_WIDTH);
+            result.left = Math.min(leftSnap.value, right - minimum.width);
             result.width = right - result.left;
         }
-        if (rightSnap) result.width = Math.max(FENCE_MIN_WIDTH, rightSnap.value - result.left);
+        if (rightSnap) result.width = Math.max(minimum.width, rightSnap.value - result.left);
         if (topSnap) {
-            result.top = Math.min(topSnap.value, bottom - FENCE_MIN_HEIGHT);
+            result.top = Math.min(topSnap.value, bottom - minimum.height);
             result.height = bottom - result.top;
         }
-        if (bottomSnap) result.height = Math.max(FENCE_MIN_HEIGHT, bottomSnap.value - result.top);
+        if (bottomSnap) result.height = Math.max(minimum.height, bottomSnap.value - result.top);
         return result;
     }
 
@@ -92,7 +93,13 @@ export const moveFence = (start: WorkspaceRect, delta: PointerDelta, workspace: 
 });
 
 /** 按原型八方向规则缩放围栏并保持最小尺寸与工作区边界。 */
-export const resizeFence = (direction: FenceResizeDirection, start: WorkspaceRect, delta: PointerDelta, workspace: WorkspaceSize): WorkspaceRect => {
+export const resizeFence = (
+    direction: FenceResizeDirection,
+    start: WorkspaceRect,
+    delta: PointerDelta,
+    workspace: WorkspaceSize,
+    minimum: WorkspaceSize = { width: FENCE_MIN_WIDTH, height: FENCE_MIN_HEIGHT },
+): WorkspaceRect => {
     // 等待当前缩放方向修改的围栏边界。
     const result = { ...start };
     // 缩放开始时的固定右边界。
@@ -100,14 +107,14 @@ export const resizeFence = (direction: FenceResizeDirection, start: WorkspaceRec
     // 缩放开始时的固定下边界。
     const bottom = start.top + start.height;
 
-    if (direction.includes("e")) result.width = Math.max(FENCE_MIN_WIDTH, Math.min(workspace.width - start.left, start.width + delta.x));
-    if (direction.includes("s")) result.height = Math.max(FENCE_MIN_HEIGHT, Math.min(workspace.height - start.top, start.height + delta.y));
+    if (direction.includes("e")) result.width = Math.max(minimum.width, Math.min(workspace.width - start.left, start.width + delta.x));
+    if (direction.includes("s")) result.height = Math.max(minimum.height, Math.min(workspace.height - start.top, start.height + delta.y));
     if (direction.includes("w")) {
-        result.left = Math.max(0, Math.min(right - FENCE_MIN_WIDTH, start.left + delta.x));
+        result.left = Math.max(0, Math.min(right - minimum.width, start.left + delta.x));
         result.width = right - result.left;
     }
     if (direction.includes("n")) {
-        result.top = Math.max(0, Math.min(bottom - FENCE_MIN_HEIGHT, start.top + delta.y));
+        result.top = Math.max(0, Math.min(bottom - minimum.height, start.top + delta.y));
         result.height = bottom - result.top;
     }
     return result;

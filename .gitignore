@@ -20,6 +20,7 @@ dist
 dist-ssr
 *.local
 *.test.*
+!src/contracts/settings.test.ts
 *.spec.*
 temp/
 

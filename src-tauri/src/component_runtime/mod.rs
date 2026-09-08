@@ -41,7 +41,14 @@ pub struct ComponentRuntimeState {
 impl ComponentRuntimeState {
     /// 加载全部官方组件清单，单个失败只形成隔离错误。
     pub fn new() -> Self {
-        Self::from_manifest_sources(&[("official.local-clock", LOCAL_CLOCK_MANIFEST)])
+        let mut sources = vec![("official.local-clock", LOCAL_CLOCK_MANIFEST)]; // Release 只注册正式功能。
+        if cfg!(debug_assertions) {
+            sources.push((
+                "official.debug-test",
+                include_str!("../../components/official.debug-test.json"),
+            ));
+        }
+        Self::from_manifest_sources(&sources)
     }
 
     /// 返回成功注册清单对应的默认组件实例。
@@ -49,7 +56,7 @@ impl ComponentRuntimeState {
         if !self.manifests.contains_key("official.local-clock") {
             return Vec::new();
         }
-        vec![ComponentInstanceSnapshot {
+        let mut instances = vec![ComponentInstanceSnapshot {
             instance_id: "official.local-clock.default".to_string(),
             component_id: "official.local-clock".to_string(),
             monitor_id: String::new(),
@@ -63,7 +70,25 @@ impl ComponentRuntimeState {
             },
             state_version: 1,
             state: json!({"format": "24-hour"}),
-        }]
+        }]; // 保持既有时钟实例身份和持久状态。
+        if self.manifests.contains_key("official.debug-test") {
+            instances.push(ComponentInstanceSnapshot {
+                instance_id: "official.debug-test.default".to_string(),
+                component_id: "official.debug-test".to_string(),
+                monitor_id: String::new(),
+                projection_monitor_id: None,
+                projection_bounds: None,
+                bounds: WorkspaceRect {
+                    left: 0.0,
+                    top: 16.0,
+                    width: 420.0,
+                    height: 270.0,
+                },
+                state_version: 1,
+                state: json!({}),
+            });
+        }
+        instances
     }
 
     /// 校验并注册当前活动虚拟桌面的全部组件实例。
@@ -73,6 +98,9 @@ impl ComponentRuntimeState {
     ) -> Result<ComponentRuntimeSnapshot, ComponentRuntimeError> {
         let registrations = instances
             .iter()
+            .filter(|instance| {
+                cfg!(debug_assertions) || instance.component_id != "official.debug-test"
+            })
             .map(|instance| self.registration_snapshot(instance))
             .collect::<Vec<_>>(); // 当前布局中每个实例互相隔离的注册结果。
         let mut current = self
@@ -258,7 +286,10 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
     if manifest.name.trim().is_empty() || manifest.name.chars().count() > 64 {
         return Err(ComponentRuntimeError::invalid_manifest("组件清单名称无效"));
     }
-    if manifest.entry != LOCAL_CLOCK_ENTRY {
+    let debug_manifest = cfg!(debug_assertions)
+        && manifest.id == "official.debug-test"
+        && manifest.entry == "official:debug-test"; // 仅 Debug 可注册测试入口。
+    if manifest.entry != LOCAL_CLOCK_ENTRY && !debug_manifest {
         return Err(ComponentRuntimeError::invalid_manifest(
             "组件前端入口不受支持",
         ));
@@ -267,6 +298,9 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
         return Err(ComponentRuntimeError::invalid_manifest(
             "组件持久化版本无效",
         ));
+    }
+    if debug_manifest && manifest.required_capabilities.is_empty() {
+        return Ok(());
     }
     let capabilities = manifest
         .required_capabilities
@@ -307,6 +341,23 @@ mod tests {
         WorkspaceRect,
     };
     use serde_json::json;
+
+    /// Debug 清单与默认实例严格跟随 Rust 构建模式。
+    #[test]
+    fn debug_widget_is_registered_only_in_debug_builds() {
+        let runtime = ComponentRuntimeState::new(); // 当前构建注册表。
+        let instances = runtime.default_instances(); // 当前构建默认实例。
+        assert_eq!(
+            instances
+                .iter()
+                .any(|instance| instance.component_id == "official.debug-test"),
+            cfg!(debug_assertions)
+        );
+        assert_eq!(
+            runtime.manifests.contains_key("official.debug-test"),
+            cfg!(debug_assertions)
+        );
+    }
 
     /// 验证未授权能力在清单注册边界被拒绝。
     #[test]

@@ -1,0 +1,432 @@
+/* 设置窗口根布局，仅负责侧栏与内容区的编排。 */
+.settings {
+    display: grid;
+    grid-template-columns: 224px minmax(0, 1fr);
+    grid-template-rows: 38px minmax(0, 1fr);
+    height: 100vh;
+    overflow: hidden;
+    color: var(--color-text);
+    background: var(--color-background);
+    font-size: var(--interface-font-size);
+    letter-spacing: 0;
+}
+
+/* 固定宽度的设置导航区域。 */
+.settings__sidebar {
+    position: sticky;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    height: 100%;
+    overflow-y: auto;
+    padding: 16px 4px;
+    background: color-mix(in srgb, var(--color-border) 35%, var(--color-background));
+}
+
+/* 应用名称与共用位图。 */
+.settings__brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 36px;
+    padding: 0 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* Windows 内置 Fluent 图标字体。 */
+.settings__icon {
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+    font-size: 18px;
+    font-weight: 400;
+    line-height: 20px;
+    text-align: center;
+}
+
+/* 导航折叠命令的固定点击区域。 */
+.settings__navigation-toggle {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 38px;
+    margin-left: 6px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    color: inherit;
+    background: transparent;
+    cursor: pointer;
+}
+
+/* 同级导航项的稳定间距。 */
+.settings__navigation {
+    display: grid;
+    gap: 4px;
+    padding: 1px;
+}
+
+/* 设置分类按钮。 */
+.settings__navigation-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-height: 42px;
+    padding: 8px 15px;
+    border: 0;
+    border-radius: 4px;
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+}
+
+/* Windows 风格的导航悬停表面。 */
+.settings__navigation-item:hover,
+.settings__navigation-toggle:hover {
+    background: color-mix(in srgb, var(--color-text) 5%, transparent);
+}
+
+/* 当前页面的轻量选中表面。 */
+.settings__navigation-item[aria-current="page"] {
+    background: color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+
+/* 当前设置分类的强调条。 */
+.settings__navigation-item[aria-current="page"]::before {
+    position: absolute;
+    top: 13px;
+    bottom: 13px;
+    left: 0;
+    width: 3px;
+    border-radius: 2px;
+    background: var(--color-focus);
+    content: "";
+}
+
+/* 当前页面的非卡片内容区域。 */
+.settings__content {
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    padding: 24px;
+}
+
+/* 自定义标题栏完整覆盖窗口顶部，原生 DWM 负责窗口阴影。 */
+.settings__titlebar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-left: 12px;
+    min-width: 0;
+    user-select: none;
+    background: var(--color-background);
+}
+/* 窗口命令保持稳定的命中轨道。 */
+.settings__window-controls {
+    display: flex;
+    align-self: stretch;
+    margin-left: auto;
+}
+/* 系统图标字体表达最小化、最大化和关闭。 */
+.settings__window-controls button {
+    width: 46px;
+    padding: 0;
+    border: 0;
+    color: var(--color-text);
+    background: transparent;
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+    font-size: 12px;
+}
+/* 窗口命令指针反馈。 */
+.settings__window-controls button:hover {
+    background: var(--color-subtle);
+}
+/* 关闭命令使用系统危险色语义。 */
+.settings__window-controls button:last-child:hover {
+    color: white;
+    background: var(--color-error);
+}
+/* 标题栏键盘焦点。 */
+.settings__window-controls button:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: -3px;
+}
+
+/* 设置页标题保持紧凑，不使用展示型大字。 */
+.settings__content h1 {
+    margin: 0 0 22px;
+    font-size: 26px;
+    font-weight: 600;
+    line-height: 1.3;
+}
+
+/* 同级设置条目列表，为边框预留空间。 */
+.settings__rows {
+    display: grid;
+    gap: 4px;
+    max-width: 900px;
+    padding: 1px;
+}
+
+/* 单个设置条目的图标、名称与控制区域。 */
+.settings__row {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    min-width: 0;
+    min-height: 70px;
+    padding: 16px 20px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    background: var(--color-surface);
+}
+
+/* 整行可点击的二级菜单入口。 */
+.settings__row--link {
+    width: 100%;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* 二级菜单返回命令沿用系统图标与点击尺寸。 */
+.settings__back {
+    width: 38px;
+    height: 38px;
+    margin-bottom: 12px;
+    border: 0;
+    border-radius: 4px;
+    color: var(--color-text);
+    background: transparent;
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+    cursor: pointer;
+}
+
+/* 二级导航入口的悬停反馈。 */
+.settings__row--link:hover,
+.settings__back:hover {
+    background: var(--color-subtle);
+}
+
+/* 设置名称允许换行，控制区域不遮挡名称。 */
+.settings__row-title {
+    user-select: none;
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: calc(var(--interface-font-size) + 1px);
+}
+
+/* 状态值与诊断详情。 */
+.settings__value {
+    max-width: 55%;
+    color: var(--color-muted);
+    text-align: right;
+    overflow-wrap: anywhere;
+}
+
+/* 原生选择菜单与清晰命令按钮。 */
+.settings__select,
+.settings__button {
+    min-height: 38px;
+    max-width: 100%;
+    padding: 6px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text);
+    background: var(--color-subtle);
+    font: inherit;
+}
+
+/* 主题选择的固定宽度。 */
+.settings__select {
+    width: 176px;
+}
+
+/* 配置目录保持与其他设置项相同的横向排列。 */
+.settings__directory {
+    flex-wrap: nowrap;
+}
+
+/* 文本占据剩余横向空间。 */
+.settings__directory .settings__row-title {
+    min-width: 0;
+    overflow: hidden;
+}
+
+/* 当前目录在文本区域内省略显示，悬停可查看完整路径。 */
+.settings__directory-path {
+    user-select: text;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-muted);
+}
+
+/* 图标命令沿用设置按钮尺寸，不因路径长度压缩。 */
+.settings__directory .settings__button {
+    flex-shrink: 0;
+}
+
+/* 文件夹和恢复默认按钮仅显示图标。 */
+.settings__icon-button {
+    width: 38px;
+    padding: 6px;
+}
+
+/* SVG 蒙版跟随主题文字颜色。 */
+.settings__directory-icon {
+    display: block;
+    width: 18px;
+    height: 18px;
+    background: currentColor;
+    mask: var(--settings-icon) center / contain no-repeat;
+}
+
+/* 原生目录选择命令图标。 */
+.settings__directory-icon--folder {
+    --settings-icon: url("../../../resources/settings-folder.svg");
+}
+
+/* 恢复默认配置目录命令图标。 */
+.settings__directory-icon--reset {
+    --settings-icon: url("../../../resources/settings-reset.svg");
+}
+
+/* 带系统图标的明确操作命令。 */
+.settings__button {
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+/* 命令按钮悬停状态。 */
+.settings__button:hover:not(:disabled) {
+    background: var(--color-background);
+}
+
+/* 保存期间的禁用控件。 */
+.settings__button:disabled,
+.settings__select:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* 所有可交互控件的键盘焦点。 */
+.settings button:focus-visible,
+.settings input:focus-visible,
+.settings select:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
+/* 独立错误区域允许长错误文本换行。 */
+.settings__error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0 0 12px;
+    padding: 12px;
+    border: 1px solid var(--color-error);
+    border-radius: 4px;
+    color: var(--color-error);
+    background: var(--color-error-surface);
+    overflow-wrap: anywhere;
+}
+
+/* 初次加载提示使用弱化文字。 */
+.settings__status {
+    color: var(--color-muted);
+}
+
+/* 诊断刷新命令按内容宽度放置。 */
+.settings__refresh {
+    justify-self: start;
+    margin-top: 12px;
+}
+
+/* 关于页保持无框的产品与版本信息。 */
+.settings__about {
+    padding: 12px 0;
+}
+
+/* 关于页产品名称。 */
+.settings__about h2 {
+    margin: 12px 0 24px;
+    font-size: 20px;
+    font-weight: 600;
+}
+
+/* 关于页紧凑的事实信息表。 */
+.settings__about dl {
+    display: grid;
+    grid-template-columns: 80px minmax(0, 1fr);
+    gap: 12px;
+    margin: 0;
+}
+
+/* 版本信息的弱化字段标签。 */
+.settings__about dt {
+    color: var(--color-muted);
+}
+
+/* 版本值无额外缩进并支持长版本号。 */
+.settings__about dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+/* 用户主动收起的图标导航宽度。 */
+.settings--collapsed {
+    grid-template-columns: 64px minmax(0, 1fr);
+}
+
+/* 收起导航后保留图标与可访问名称。 */
+.settings--collapsed .settings__brand span,
+.settings--collapsed .settings__navigation-label {
+    display: none;
+}
+
+/* 小窗口中保留内容区域可用宽度。 */
+@media (max-width: 600px) {
+    /* 紧凑窗口使用图标侧栏。 */
+    .settings {
+        grid-template-columns: 64px minmax(0, 1fr);
+    }
+    /* 窄侧栏的文本由按钮可访问名称保留。 */
+    .settings__brand span,
+    .settings__navigation-label {
+        display: none;
+    }
+    /* 紧凑内容区边距。 */
+    .settings__content {
+        padding: 20px 12px;
+    }
+    /* 小窗口设置项可换行，避免开关与标题互相遮挡。 */
+    .settings__row {
+        flex-wrap: wrap;
+        gap: 12px;
+        padding: 14px 12px;
+    }
+    /* 窄窗口的选择框占据独立完整轨道。 */
+    .settings__select {
+        margin-left: 32px;
+        width: calc(100% - 32px);
+    }
+    /* 窄窗口错误区的操作允许换行。 */
+    .settings__error {
+        flex-wrap: wrap;
+    }
+}

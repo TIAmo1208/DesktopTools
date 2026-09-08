@@ -1,0 +1,91 @@
+/* 二元开关标签、状态与点击区域。 */
+.settings-switch {
+    user-select: none;
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 72px;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    min-height: 38px;
+    cursor: pointer;
+}
+
+/* 原生复选框保留键盘与辅助技术语义。 */
+.settings-switch input {
+    position: absolute;
+    right: 0;
+    width: 40px;
+    height: 22px;
+    margin: 0;
+    opacity: 0;
+    cursor: inherit;
+}
+
+/* Windows 风格的关闭状态开关轨道。 */
+.settings-switch__track {
+    display: block;
+    width: 40px;
+    height: 22px;
+    padding: 4px;
+    border: 1px solid var(--color-muted);
+    border-radius: 11px;
+    pointer-events: none;
+}
+
+/* 开关滑块保持固定尺寸，不造成布局位移。 */
+.settings-switch__track::after {
+    display: block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--color-muted);
+    content: "";
+}
+
+/* 已启用的开关轨道。 */
+.settings-switch input:checked + .settings-switch__track {
+    border-color: var(--color-focus);
+    background: var(--color-focus);
+}
+
+/* 已启用的开关滑块。 */
+.settings-switch input:checked + .settings-switch__track::after {
+    transform: translateX(18px);
+    background: var(--color-surface);
+}
+
+/* 键盘焦点显示在可见轨道上。 */
+.settings-switch input:focus-visible + .settings-switch__track {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
+/* 保存或加载期间禁止操作。 */
+.settings-switch:has(input:disabled) {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* 高对比度模式保留系统选中与边框辨识。 */
+@media (forced-colors: active) {
+    /* 原生开关自绘轨道跟随系统可访问色。 */
+    .settings-switch__track {
+        forced-color-adjust: none;
+        border-color: ButtonText;
+        background: Canvas;
+    }
+    /* 高对比度开启轨道。 */
+    .settings-switch input:checked + .settings-switch__track {
+        border-color: Highlight;
+        background: Highlight;
+    }
+    /* 高对比度开关滑块。 */
+    .settings-switch__track::after {
+        background: ButtonText;
+    }
+    /* 高对比度开启滑块。 */
+    .settings-switch input:checked + .settings-switch__track::after {
+        background: HighlightText;
+    }
+}

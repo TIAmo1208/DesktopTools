@@ -1,0 +1,96 @@
+/* 外观条目采用与设置页相同的无框纵向列表。 */
+.appearance-settings {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+/* 单项设置的名称与输入控件编排。 */
+.appearance-settings__row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    min-height: 70px;
+    padding: 16px 20px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    background: var(--color-surface);
+}
+
+/* 名称占据剩余空间，不挤压输入控件。 */
+.appearance-settings__label {
+    user-select: none;
+    flex: 1;
+    min-width: 70px;
+}
+
+/* 同级主题色色块与自定义色选择器。 */
+.appearance-settings__colors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 2px;
+}
+
+/* 固定尺寸主题色色块。 */
+.appearance-settings__swatch {
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+/* 当前颜色以双边界区分，避免只依赖颜色。 */
+.appearance-settings__swatch[aria-pressed="true"] {
+    outline: 2px solid var(--color-text);
+    outline-offset: 2px;
+}
+
+/* 系统原生自定义颜色入口。 */
+.appearance-settings__color {
+    width: 32px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    background: transparent;
+}
+
+/* 数字和字体选择采用原生输入行为。 */
+.appearance-settings__number,
+.appearance-settings__font {
+    min-height: 38px;
+    max-width: 100%;
+    padding: 6px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: min(4px, var(--surface-radius));
+    color: var(--color-text);
+    background: var(--color-subtle);
+    font: inherit;
+}
+
+/* 数字输入的稳定轨道。 */
+.appearance-settings__number {
+    width: 80px;
+}
+
+/* 字体列表限制在内容区内。 */
+.appearance-settings__font {
+    width: 210px;
+}
+
+/* 键盘焦点始终清楚可见。 */
+.appearance-settings :is(button, input, select):focus-visible {
+    outline: 2px solid var(--color-text);
+    outline-offset: 2px;
+}
+
+/* 未加载和提交期间的控件状态。 */
+.appearance-settings :is(button, input, select):disabled {
+    opacity: 0.5;
+    cursor: default;
+}

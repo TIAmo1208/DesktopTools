@@ -1,0 +1,59 @@
+/* Debug 格子内部内容，不拥有外层位置、边框及缩放控件。 */
+.debug-test {
+    min-width: 0;
+    font-size: var(--interface-font-size);
+}
+/* 紧凑的真实宿主字段。 */
+.debug-test dl {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+}
+/* 名称和长技术值分列。 */
+.debug-test dl > div {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 8px;
+}
+/* 字段名称。 */
+.debug-test dt {
+    opacity: 0.72;
+}
+/* 显示器名称与技术值可换行。 */
+.debug-test dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+/* 明确的调试命令区域。 */
+.debug-test__actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    padding: 1px;
+}
+/* 命令沿用应用主题语义。 */
+.debug-test__actions button {
+    min-height: 32px;
+    padding: 4px 10px;
+    border: 1px solid var(--fence-border);
+    border-radius: 4px;
+    font: inherit;
+    color: inherit;
+    background: transparent;
+}
+/* 重载命令使用系统图标。 */
+.debug-test__actions button:first-child {
+    width: 32px;
+    padding: 0;
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+}
+/* 键盘焦点。 */
+.debug-test button:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 1px;
+}
+/* 悬停状态不改变几何。 */
+.debug-test button:hover {
+    background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+}

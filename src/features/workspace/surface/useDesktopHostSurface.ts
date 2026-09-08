@@ -12,6 +12,7 @@ import {
 } from "../../../bridge/desktopHost";
 import type { DesktopHostSnapshot, HitRegion } from "../../../contracts/desktopHost";
 import type { DesktopItemSnapshot } from "../../../contracts/desktopItem";
+import { usePreferences } from "../../settings/PreferencesProvider";
 
 /** 将未知错误转换为正式宿主用户可见说明。 */
 const hostErrorMessage = (error: unknown): string => (error instanceof Error ? error.message : "桌面宿主请求失败");
@@ -54,6 +55,7 @@ const waitForSystemImages = async (): Promise<{ total: number; loaded: number }>
 
 /** 驱动正式桌面宿主页面门槛、命中图和最小输入探针。 */
 export const useDesktopHostSurface = (enabled: boolean, monitorIndex: number, items?: DesktopItemSnapshot, layoutRevision = 0) => {
+    const { preferences } = usePreferences(); // 外观与格子显隐变更后重发命中图。
     const [snapshot, setSnapshot] = useState<DesktopHostSnapshot>(); // 当前正式宿主快照。
     const [failure, setFailure] = useState<string>(); // 当前正式宿主错误说明。
     const host = snapshot?.hosts[monitorIndex]; // 当前页面枚举索引对应的逐屏宿主上下文。
@@ -120,13 +122,15 @@ export const useDesktopHostSurface = (enabled: boolean, monitorIndex: number, it
         };
         // 监视页面布局变化并发布最新完整命中图。
         const observer = new ResizeObserver(publishHitMap);
-        // 只响应菜单挂载、移除和内部布局变化，避免拖动预览触发额外命中图发布。
+        // 菜单与功能格子挂载、移除后重发命中图；忽略时钟文本和拖动预览更新。
         const menuObserver = new MutationObserver((records) => {
             if (
                 records.some(
                     (record) =>
                         (record.target instanceof Element && record.target.closest(".fence-object-menu")) ||
-                        [...record.addedNodes, ...record.removedNodes].some((node) => node instanceof Element && node.matches(".fence-object-menu")),
+                        [...record.addedNodes, ...record.removedNodes].some(
+                            (node) => node instanceof Element && (node.matches("[data-hit-id]") || node.querySelector("[data-hit-id]")),
+                        ),
                 )
             )
                 publishHitMap();
@@ -144,7 +148,7 @@ export const useDesktopHostSurface = (enabled: boolean, monitorIndex: number, it
             observer.disconnect();
             menuObserver.disconnect();
         };
-    }, [enabled, host?.monitor.id, items, layoutRevision]);
+    }, [enabled, host?.monitor.id, items, layoutRevision, preferences]);
 
     useEffect(() => {
         if (!enabled || !host) return;

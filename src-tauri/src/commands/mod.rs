@@ -2,6 +2,7 @@ mod application;
 mod component;
 mod desktop_host;
 mod desktop_item;
+pub mod settings;
 mod virtual_desktop;
 mod workspace;
 
@@ -55,6 +56,16 @@ pub(crate) fn dispatch_native_command(
 ) -> Result<Value, Value> {
     // 当前本地 transport 命令的统一 JSON 结果。
     let result: Result<Value, Value> = match command {
+        "get_windows_accent_color" => app
+            .state::<crate::platform::windows::settings::WindowsAccentMonitor>()
+            .color()
+            .map_err(serialize_error)
+            .and_then(serialize_result),
+        "get_preferences" => app
+            .state::<crate::app::settings::SettingsState>()
+            .preferences()
+            .map_err(serialize_error)
+            .and_then(serialize_result),
         "get_desktop_item_snapshot" => {
             desktop_item::refresh_desktop_item_snapshot(&app.state::<DesktopItemState>())
                 .map_err(serialize_error)

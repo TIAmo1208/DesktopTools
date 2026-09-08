@@ -1,0 +1,7 @@
+{
+  "id": "official.debug-test",
+  "name": "Debug 测试",
+  "entry": "official:debug-test",
+  "requiredCapabilities": [],
+  "persistenceVersion": 1
+}

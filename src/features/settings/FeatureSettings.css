@@ -1,0 +1,109 @@
+/* 功能格子的一级与二级设置表面。 */
+.feature-settings {
+    min-width: 0;
+    max-width: 900px;
+    padding: 1px;
+}
+/* 紧凑分区标题。 */
+.feature-settings h2 {
+    margin: 0 0 16px;
+    font-size: 18px;
+}
+/* 功能设置行的名称和控件。 */
+.feature-settings__row {
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 70px;
+    margin-bottom: 4px;
+    padding: 16px 20px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    background: var(--color-surface);
+}
+/* 二级设置中的控件靠右。 */
+.feature-settings__row > :is(.settings-switch, select) {
+    margin-left: auto;
+}
+
+/* 二级菜单行建立整行点击区域的定位边界。 */
+.feature-settings__row--link {
+    position: relative;
+}
+
+/* 导航按钮的透明命中面覆盖名称、留白和箭头。 */
+.feature-settings__open {
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* 原生按钮负责鼠标及键盘导航，不嵌套开关控件。 */
+.feature-settings__open::after {
+    position: absolute;
+    inset: 0;
+    border-radius: var(--surface-radius);
+    content: "";
+}
+
+/* 开关位于导航命中面之上，点击不会触发进入二级菜单。 */
+.feature-settings__row--link > .settings-switch {
+    z-index: 1;
+}
+
+/* 菜单箭头沿用系统图标和固定轨道。 */
+.feature-settings__chevron {
+    flex: 0 0 38px;
+    text-align: center;
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+}
+
+/* 整行导航悬停与键盘焦点反馈。 */
+.feature-settings__row--link:has(.feature-settings__open:hover) {
+    background: var(--color-subtle);
+}
+
+/* 导航焦点沿整行边框显示。 */
+.feature-settings__open:focus-visible::after {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+/* 时间格式选择。 */
+.feature-settings select {
+    min-height: 38px;
+    padding: 6px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    font: inherit;
+    color: var(--color-text);
+    background: var(--color-subtle);
+}
+/* 原生字体图标式前进和返回命令。 */
+.feature-settings__back {
+    flex-shrink: 0;
+    width: 38px;
+    height: 38px;
+    border: 0;
+    border-radius: 4px;
+    color: var(--color-text);
+    background: transparent;
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+}
+/* 二级菜单返回入口。 */
+.feature-settings__back {
+    margin-bottom: 12px;
+}
+/* 指针悬停反馈。 */
+.feature-settings__back:hover {
+    background: var(--color-subtle);
+}
+/* 键盘焦点。 */
+.feature-settings :is(.feature-settings__back, select):focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}

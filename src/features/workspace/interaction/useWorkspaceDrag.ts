@@ -3,7 +3,8 @@ import type { PointerEvent, RefObject } from "react";
 import type { DesktopHostMonitor } from "../../../contracts/desktopHost";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspacePoint, WorkspaceSnapshot } from "../../../contracts/workspace";
 import { listenVirtualDesktopSwitching } from "../../../bridge/virtualDesktop";
-import { selectionModeForPointer } from "./workspaceInteraction";
+import { selectionModeForPointer, shouldOpenItemOnPointerRelease } from "./workspaceInteraction";
+import { usePreferences } from "../../settings/PreferencesProvider";
 import {
     beforeItemIdForFenceDrop,
     clientPointToPhysical,
@@ -29,6 +30,7 @@ interface WorkspaceDragOptions {
     onBeginInputDrag: () => Promise<void>;
     onEndInputDrag: () => Promise<void>;
     onStartShellDrag: (itemIds: string[]) => Promise<void>;
+    onOpenItems: (itemIds: string[]) => Promise<void>; // 未形成拖动的单击打开动作。
     onFailure: (failure: string | undefined) => void;
 }
 
@@ -45,8 +47,10 @@ export const useWorkspaceDrag = ({
     onBeginInputDrag,
     onEndInputDrag,
     onStartShellDrag,
+    onOpenItems,
     onFailure,
 }: WorkspaceDragOptions) => {
+    const { preferences } = usePreferences(); // 当前窗口共用的单击或双击打开偏好。
     /** 冻结布局后建立连续项目拖动。 */
     const handleItemPointerDown = async (event: PointerEvent<HTMLLIElement>, anchorItemId: string) => {
         if (event.button !== 0 || !workspace) return;
@@ -56,6 +60,7 @@ export const useWorkspaceDrag = ({
         workspaceRef.current?.focus({ preventScroll: true });
 
         const handle = event.currentTarget; // 当前连续拖动持有指针捕获的锚点节点。
+        const openingModifiers = { ctrlKey: event.ctrlKey, shiftKey: event.shiftKey, altKey: event.altKey, metaKey: event.metaKey }; // 冻结按下时的选择修饰键，避免释放后读取失效事件。
         const workspaceElement = workspaceRef.current; // 当前完整工作区交互表面。
         if (!workspaceElement) return;
         const allItemElements = Array.from(workspaceElement.querySelectorAll<HTMLElement>("[data-item-id]")); // 当前宿主中全部可见项目节点。
@@ -115,7 +120,12 @@ export const useWorkspaceDrag = ({
             preview.removeAttribute("data-hit-id");
             preview.removeAttribute("data-fence-member-id");
             preview.classList.add("desktop-item--drag-preview");
+            const appearance = window.getComputedStyle(element); // 脱离围栏后仍需保留的真实文字与主题。
+            for (const property of ["--fence-text", "--fence-item-text-shadow"]) preview.style.setProperty(property, appearance.getPropertyValue(property));
             Object.assign(preview.style, {
+                visibility: "hidden",
+                color: appearance.color,
+                textShadow: appearance.textShadow,
                 position: "fixed",
                 left: bounds.left + "px",
                 top: bounds.top + "px",
@@ -124,7 +134,6 @@ export const useWorkspaceDrag = ({
                 zIndex: "20000",
             });
             document.body.append(preview);
-            element.classList.add("desktop-item--dragging");
             return [{ itemId, preview, bounds }];
         }); // 当前组拖动的全部视觉预览。
         const marker = document.createElement("div"); // 当前网格或围栏插入位置标记。
@@ -296,7 +305,11 @@ export const useWorkspaceDrag = ({
             latestClientPointer = { x: moveEvent.clientX, y: moveEvent.clientY };
             delta = { x: moveEvent.clientX - startPointer.x, y: moveEvent.clientY - startPointer.y };
             moved ||= Math.abs(delta.x) > 3 || Math.abs(delta.y) > 3;
-            previews.forEach(({ preview, bounds }) => {
+            previews.forEach(({ itemId, preview, bounds }) => {
+                if (moved) {
+                    preview.style.visibility = "visible";
+                    dragElements.get(itemId)?.classList.add("desktop-item--dragging");
+                }
                 preview.style.left = bounds.left + delta.x + "px";
                 preview.style.top = bounds.top + delta.y + "px";
             });
@@ -343,9 +356,12 @@ export const useWorkspaceDrag = ({
             if (finishType !== "pointerup" || !moved) {
                 restoreStartLayout();
                 if (finishType === "pointerup") {
-                    void onInteraction({ type: "focus-item", itemId: anchorItemId, selectionMode: pointerSelectionMode }).catch(() => undefined);
+                    await onInteraction({ type: "focus-item", itemId: anchorItemId, selectionMode: pointerSelectionMode }).catch(() => undefined);
                 }
                 await cleanupDrag();
+                if (shouldOpenItemOnPointerRelease(preferences?.doubleClickToOpen ?? true, moved, finishType, openingModifiers)) {
+                    await onOpenItems([anchorItemId]).catch((error: unknown) => onFailure(error instanceof Error ? error.message : "打开桌面项目失败"));
+                }
                 return;
             }
 

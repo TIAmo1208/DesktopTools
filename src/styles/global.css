@@ -1,7 +1,12 @@
 /* 全局主题变量。 */
 :root {
-    color-scheme: light dark;
-    font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+    color-scheme: light;
+    --interface-font: "Segoe UI Variable", "Segoe UI", sans-serif;
+    --interface-font-size: 13px;
+    --surface-radius: 6px;
+    --color-accent: #2563eb;
+    font-family: var(--interface-font);
+    font-size: var(--interface-font-size);
     font-synthesis: none;
     --color-background: #eef1f4;
     --color-surface: #ffffff;
@@ -47,23 +52,21 @@ html[data-desktop-host="true"] #root {
     background: transparent;
 }
 
-/* 深色主题变量。 */
-@media (prefers-color-scheme: dark) {
-    /* 深色主题根变量。 */
-    :root {
-        --color-background: #15191d;
-        --color-surface: #20252a;
-        --color-subtle: #272d33;
-        --color-border: #394149;
-        --color-text: #f2f5f7;
-        --color-muted: #a9b2bb;
-        --color-ready: #60a5fa;
-        --color-active: #34d399;
-        --color-action: #e5e7eb;
-        --color-action-hover: #ffffff;
-        --color-action-text: #111827;
-        --color-focus: #60a5fa;
-        --color-error: #fda29b;
-        --color-error-surface: #3b2020;
-    }
+/* 用户选择或系统主题解析后的深色变量。 */
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --color-background: #15191d;
+    --color-surface: #20252a;
+    --color-subtle: #272d33;
+    --color-border: #394149;
+    --color-text: #f2f5f7;
+    --color-muted: #a9b2bb;
+    --color-ready: #60a5fa;
+    --color-active: #34d399;
+    --color-action: #e5e7eb;
+    --color-action-hover: #ffffff;
+    --color-action-text: #111827;
+    --color-focus: #60a5fa;
+    --color-error: #fda29b;
+    --color-error-surface: #3b2020;
 }

@@ -8,8 +8,19 @@ import {
     nextWorkspaceFocus,
     selectionModeForDirectionalKey,
     selectionModeForPointer,
+    shouldOpenItemOnPointerRelease,
     workspaceFocusTargetsInVisualOrder,
 } from "./workspaceInteraction.ts";
+
+// 单击打开不得在拖动、取消、默认双击或修饰键选择时执行。
+test("opens a single click only after an unmodified pointer release", () => {
+    const modifiers = { ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }; // 普通点击修饰键。
+    assert.equal(shouldOpenItemOnPointerRelease(false, false, "pointerup", modifiers), true);
+    assert.equal(shouldOpenItemOnPointerRelease(true, false, "pointerup", modifiers), false);
+    assert.equal(shouldOpenItemOnPointerRelease(false, true, "pointerup", modifiers), false);
+    for (const finishType of ["pointercancel", "lostpointercapture", "virtual-desktop-switch"]) assert.equal(shouldOpenItemOnPointerRelease(false, false, finishType, modifiers), false);
+    for (const key of ["ctrlKey", "shiftKey", "altKey", "metaKey"]) assert.equal(shouldOpenItemOnPointerRelease(false, false, "pointerup", { ...modifiers, [key]: true }), false);
+});
 
 // 验证指针和方向键修饰键映射到已确认的选择规则。
 test("maps pointer and directional modifiers to selection modes", () => {

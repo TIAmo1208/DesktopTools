@@ -6,7 +6,8 @@ import fenceLayoutTileIcon from "../../../resources/fence-layout-tile.svg?raw";
 import fenceSortIcon from "../../../resources/fence-sort.svg?raw";
 import fenceToggleCollapseIcon from "../../../resources/fence-toggle-collapse.svg?raw";
 import fenceToggleExpandIcon from "../../../resources/fence-toggle-expand.svg?raw";
-import { exitDesktopTools } from "../../bridge/desktopHost";
+import { DebugTest } from "../components/DebugTest";
+import { usePreferences } from "../settings/PreferencesProvider";
 import type { DesktopHostMonitor, DesktopHostSnapshot } from "../../contracts/desktopHost";
 import {
     FENCE_MIN_HEIGHT,
@@ -118,6 +119,7 @@ const FencePanel = ({
     onRenameCancel,
 }: FencePanelProps) => {
     const fenceRef = useRef<HTMLElement>(null); // 当前围栏表面节点。
+    const { preferences } = usePreferences(); // 网格改变后重新计算滚动条。
     const contentRef = useRef<HTMLUListElement>(null); // 当前围栏滚动内容节点。
     const [scrollbar, setScrollbar] = useState({ maxScrollTop: 0, thumbTop: 0, thumbHeight: 0, trackHeight: 0 }); // 当前覆盖式滚动条几何。
 
@@ -144,7 +146,7 @@ const FencePanel = ({
         const track = contentRef.current?.parentElement?.querySelector<HTMLElement>(".fence__scroll-track");
         if (track) observer.observe(track);
         return () => observer.disconnect();
-    }, [fence.collapsed, fence.layoutMode, items.length]);
+    }, [fence.collapsed, fence.layoutMode, items.length, preferences?.fenceGrid]);
 
     /** 开始围栏移动或缩放，并在指针释放时提交一次边界。 */
     const beginGeometry = async (event: PointerEvent<HTMLElement>, direction?: FenceResizeDirection) => {
@@ -160,6 +162,10 @@ const FencePanel = ({
         const startPointer = { x: event.clientX, y: event.clientY };
         // 当前交互开始时的权威围栏边界。
         const startBounds = { ...fence.bounds };
+        const geometryTargets = [
+            ...snapTargets,
+            ...Array.from(document.querySelectorAll<HTMLElement>(".official-component")).map((component) => component.getBoundingClientRect()),
+        ]; // 仅使用可见功能格子，避免对齐到已隐藏实例。
         // 指针移动期间持续更新的预览边界。
         let preview = startBounds;
         let finished = false; // 当前连续指针交互结束标记。
@@ -184,7 +190,7 @@ const FencePanel = ({
             preview = direction ? resizeFence(direction, startBounds, delta, viewport) : moveFence(startBounds, delta, viewport);
             preview = snapFenceEdges(
                 preview,
-                snapTargets,
+                geometryTargets,
                 viewport,
                 8,
                 direction
@@ -224,7 +230,7 @@ const FencePanel = ({
                     : { width: window.innerWidth, height: window.innerHeight };
                 const snappedTargetBounds = snapFenceEdges(
                     targetBounds,
-                    targetMonitor?.id === currentMonitor?.id ? snapTargets : [],
+                    targetMonitor?.id === currentMonitor?.id ? geometryTargets : [],
                     targetViewport,
                     8,
                     direction
@@ -390,7 +396,7 @@ const FencePanel = ({
                                 key={item.key}
                                 item={item}
                                 desktopHost
-                                className="desktop-item--fence"
+                                className={`desktop-item--fence${fence.layoutMode === "list" ? " desktop-item--list" : ""}`}
                                 fenceMemberId={item.key}
                                 onItemInput={onItemInput}
                                 onItemPointerDown={(event) => onItemPointerDown(event, item)}
@@ -502,9 +508,6 @@ export const FenceWorkspace = ({
     const selectedItemIds = useMemo(() => new Set(workspace?.interaction.selectedItemIds ?? []), [workspace]);
     // 当前未归属围栏的桌面项目。
     const unclassifiedItems = items.filter((item) => !memberIds.has(item.key));
-    const readyHostCount =
-        hostSnapshot?.hosts.filter(({ readiness }) => readiness.guardian && readiness.page && readiness.systemImages && readiness.pixels && readiness.hitMap)
-            .length ?? 0; // 已满足自动接管门槛的逐屏宿主数量。
 
     /** 进入单项 F2 原位重命名状态。 */
     const handleBeginRename = (itemId: string) => {
@@ -593,6 +596,7 @@ export const FenceWorkspace = ({
         onBeginInputDrag,
         onEndInputDrag,
         onStartShellDrag,
+        onOpenItems,
         onFailure: setDragFailure,
     });
 
@@ -655,60 +659,6 @@ export const FenceWorkspace = ({
             onPointerMoveCapture={handleWorkspacePointerMove}
             onContextMenu={handleWorkspaceContextMenu}
         >
-            <aside
-                className="fence-workspace__test-panel"
-                data-hit-id="workspace-test-panel"
-                data-hit-kind="component"
-                data-hit-priority="90"
-                aria-label="桌面宿主测试信息"
-            >
-                <strong>Desktop Tools Tauri/WebView2 正式宿主</strong>
-                <p>当前平台桌面接管状态与测试操作</p>
-                <dl className="fence-workspace__test-state">
-                    <div>
-                        <dt>平台</dt>
-                        <dd>
-                            Windows 10 22H2 · {currentMonitor?.name ?? "正在发现显示器"} · DPI {currentMonitor?.dpi ?? "--"}
-                        </dd>
-                    </div>
-                    <div>
-                        <dt>宿主</dt>
-                        <dd>Windowed WebView2 · {hostSnapshot?.hosts.length ?? 0} 屏</dd>
-                    </div>
-                    <div>
-                        <dt>阶段</dt>
-                        <dd>{hostSnapshot?.phase ?? "starting"}</dd>
-                    </div>
-                    <div>
-                        <dt>就绪</dt>
-                        <dd>
-                            {readyHostCount} / {hostSnapshot?.hosts.length ?? 0}
-                        </dd>
-                    </div>
-                    <div>
-                        <dt>项目</dt>
-                        <dd>{items.length} 个真实项目</dd>
-                    </div>
-                    <div>
-                        <dt>围栏</dt>
-                        <dd>
-                            {workspace?.fences.length ?? 0} 个 · 布局修订 {workspace?.revision ?? "--"}
-                        </dd>
-                    </div>
-                </dl>
-                <div className="fence-workspace__test-actions">
-                    <button type="button" disabled>
-                        {hostSnapshot?.committed ? "接管已提交" : "等待自动接管"}
-                    </button>
-                    <button type="button" onClick={() => window.location.reload()}>
-                        重载渲染器
-                    </button>
-                    <button className="fence-workspace__test-exit" type="button" onClick={() => void exitDesktopTools()}>
-                        退出应用
-                    </button>
-                </div>
-            </aside>
-
             {(failure ?? dragFailure) && (
                 <p className="fence-workspace__error" role="alert" data-hit-id="workspace-error" data-hit-kind="workspace-status" data-hit-priority="80">
                     {failure ?? dragFailure}
@@ -894,6 +844,16 @@ export const FenceWorkspace = ({
             ))}
 
             <OfficialComponentHost
+                snapTargets={workspace?.fences.map((fence) => fence.bounds) ?? []}
+                debugContent={
+                    <DebugTest
+                        monitor={currentMonitor}
+                        host={hostSnapshot}
+                        itemCount={items.length}
+                        fenceCount={workspace?.fences.length ?? 0}
+                        revision={workspace?.revision}
+                    />
+                }
                 instances={workspace?.components ?? []}
                 currentMonitor={currentMonitor}
                 monitors={monitors}

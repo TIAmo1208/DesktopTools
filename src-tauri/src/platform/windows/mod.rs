@@ -1,6 +1,7 @@
 mod desktop_host;
 mod desktop_sources;
 mod file_system;
+pub mod settings;
 mod shell;
 mod virtual_desktop;
 

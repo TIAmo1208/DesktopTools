@@ -2,6 +2,7 @@ mod application;
 mod component;
 mod desktop_host;
 mod desktop_item;
+pub mod settings;
 mod virtual_desktop;
 mod workspace;
 

@@ -159,6 +159,8 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
 
   // 快照事件对应的只读轮询命令。
   const eventCommands = {
+    "preferences-changed": "get_preferences",
+    "windows-accent-color-changed": "get_windows_accent_color",
     "desktop-item-snapshot-changed": "get_current_desktop_item_snapshot",
     "desktop-host-snapshot-changed": "get_desktop_host_snapshot",
     "workspace-snapshot-changed": "get_current_workspace_snapshot",

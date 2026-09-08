@@ -1,0 +1,74 @@
+/* 独立网格设置分区，不额外包裹卡片。 */
+.grid-settings {
+    min-width: 0;
+    max-width: 900px;
+}
+/* 网格编辑组。 */
+.grid-settings fieldset {
+    min-width: 0;
+    margin: 0;
+    padding: 1px;
+    border: 0;
+}
+/* 每个参数采用与外观设置相同的纵向设置行。 */
+.grid-settings__fields {
+    display: grid;
+    gap: 4px;
+}
+/* 单项字段允许在窄窗口中换行。 */
+.grid-settings__fields label {
+    user-select: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 70px;
+    padding: 16px 20px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    background: var(--color-surface);
+}
+/* 数值与单位。 */
+.grid-settings__fields span {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+/* 原生数值控件及明确的提交命令。 */
+.grid-settings input,
+.grid-settings button {
+    min-height: 38px;
+    padding: 6px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: min(4px, var(--surface-radius));
+    background: var(--color-surface);
+    color: var(--color-text);
+    font: inherit;
+}
+/* 数值输入保持固定宽度。 */
+.grid-settings input {
+    user-select: text;
+    width: 80px;
+    background: var(--color-subtle);
+}
+/* 组级操作靠右。 */
+.grid-settings__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 12px;
+}
+/* 键盘焦点。 */
+.grid-settings :is(button, input):focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+/* 无效输入说明。 */
+.grid-settings [role="alert"] {
+    color: var(--color-error);
+}
+/* 不可操作状态。 */
+.grid-settings :disabled {
+    opacity: 0.6;
+}

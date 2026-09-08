@@ -30,6 +30,15 @@ export interface InteractionSurface {
 /** 工作区支持的空间导航方向。 */
 export type NavigationDirection = "up" | "right" | "down" | "left";
 
+/** 只允许普通单击在释放且未形成拖动时打开项目。 */
+export const shouldOpenItemOnPointerRelease = (
+    doubleClickToOpen: boolean,
+    moved: boolean,
+    finishType: string,
+    modifiers: SelectionModifiers & { altKey: boolean; metaKey: boolean },
+): boolean =>
+    !doubleClickToOpen && !moved && finishType === "pointerup" && !modifiers.ctrlKey && !modifiers.shiftKey && !modifiers.altKey && !modifiers.metaKey;
+
 /** 将桌面项目指针输入映射为选择规则。 */
 export const selectionModeForPointer = ({ ctrlKey, shiftKey }: SelectionModifiers): WorkspaceSelectionMode => {
     if (shiftKey) return "range";

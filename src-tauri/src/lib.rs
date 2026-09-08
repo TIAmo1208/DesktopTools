@@ -61,6 +61,14 @@ pub fn run() {
         .manage(desktop_items)
         .manage(component_runtime)
         .invoke_handler(tauri::generate_handler![
+            commands::settings::get_settings,
+            commands::settings::control_settings_window,
+            commands::settings::get_preferences,
+            commands::settings::get_windows_accent_color,
+            commands::settings::save_preferences,
+            commands::settings::set_autostart,
+            commands::settings::open_logs,
+            commands::settings::choose_config_directory,
             get_application_snapshot,
             get_desktop_host_snapshot,
             get_desktop_item_snapshot,
@@ -96,16 +104,31 @@ pub fn run() {
             update_desktop_host_hit_map,
         ])
         .setup(move |app| {
+            let config_directory =
+                crate::app::settings::prepare_config_directory(&app.path().app_data_dir()?)?; // 在后台写入线程启动前完成配置迁移。
+            let settings_path = config_directory.join("settings.json"); // 当前用户的正式设置文件。
+            app.manage(crate::app::settings::SettingsState::load(settings_path)?);
+            app.manage(
+                crate::platform::windows::settings::WindowsAccentMonitor::install(
+                    app.handle().clone(),
+                )?,
+            );
+            crate::app::tray::install(app.handle())?;
             let (virtual_desktops, virtual_desktop_changes) = VirtualDesktopState::new()?; // 当前 Windows 版本隔离适配器与生命周期接收端。
             let virtual_desktop_environment = virtual_desktops.environment()?; // 启动时完整虚拟桌面身份集合。
             // 当前 Windows 用户独占的正式工作区快照路径。
-            let workspace_path = app.path().app_data_dir()?.join("workspace-layout.json");
+            let workspace_path = config_directory.join("workspace-layout.json");
             // 启动前完成恢复的权威工作区状态。
             let workspace = WorkspaceState::load_for_virtual_desktops_with_components(
                 workspace_path,
                 &virtual_desktop_environment.current_id,
                 &virtual_desktop_environment.desktop_ids,
                 &default_components,
+            )?;
+            workspace.initialize_grid_preferences(
+                app.state::<crate::app::settings::SettingsState>()
+                    .preferences()?
+                    .desktop_grid,
             )?;
             app.manage(workspace);
             app.manage(virtual_desktops);
@@ -157,6 +180,7 @@ pub fn run() {
             }
         }
         RunEvent::Exit => {
+            app.unmanage::<crate::platform::windows::settings::WindowsAccentMonitor>();
             if let Some(runtime) = app.try_state::<Arc<DesktopHostRuntime>>() {
                 runtime.cleanup();
             }

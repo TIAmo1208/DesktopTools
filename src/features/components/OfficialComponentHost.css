@@ -1,80 +1,144 @@
-/* 官方组件实例表面。 */
+/* 功能格子共用围栏主题，外层只拥有表面、标题和八向缩放。 */
 .official-component {
     position: absolute;
     z-index: 7000;
     display: grid;
-    grid-template-columns: 1fr auto;
-    align-content: start;
-    gap: 10px 14px;
+    grid-template-rows: 28px minmax(0, 1fr);
     box-sizing: border-box;
-    padding: 12px;
-    border: 1px solid rgb(239 196 108 / 64%);
-    border-radius: 6px;
-    color: #ffffff;
-    background: rgb(40 36 27 / 80%);
-    box-shadow: 0 8px 22px rgb(0 0 0 / 24%);
-    backdrop-filter: blur(10px);
+    padding: 1px;
+    border: 1px solid var(--fence-border);
+    border-radius: min(8px, var(--surface-radius));
+    color: var(--fence-text);
+    background: var(--fence-surface);
+    backdrop-filter: blur(5px);
+    font-family: var(--interface-font);
+    font-size: var(--interface-font-size);
 }
-
-/* 官方组件键盘焦点状态。 */
+/* 聚焦功能格子使用围栏的边界语义。 */
 .official-component:focus-visible {
-    outline: 2px solid #ffffff;
-    outline-offset: 2px;
+    outline: 2px solid var(--color-focus);
+    outline-offset: -2px;
 }
-
-/* 官方组件拖动标题。 */
+/* 标题是拖动入口，内容操作不触发几何变更。 */
 .official-component__header {
-    grid-column: 1 / -1;
-    color: #f5e2b9;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    padding: 2px 6px;
+    border-bottom: 1px solid var(--fence-border);
     cursor: move;
     touch-action: none;
 }
-
-/* 官方本地时间文本。 */
+/* 标题不允许挤出固定轨道。 */
+.official-component__header strong {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: inherit;
+}
+/* 内容单独滚动，不裁掉外层缩放命中区域。 */
+.official-component__content {
+    display: grid;
+    min-width: 0;
+    min-height: 0;
+    padding: 10px;
+    overflow: auto;
+}
+/* 数字采用固定字号和等宽数字，不跟随普通正文字号缩放。 */
 .official-component__clock {
     align-self: center;
-    font-size: 24px;
+    justify-self: center;
+    font-size: 20px;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
 }
-
-/* 官方组件动作按钮。 */
-.official-component__action {
-    min-width: 58px;
-    border: 1px solid rgb(255 255 255 / 28%);
-    border-radius: 4px;
-    color: #ffffff;
-    background: rgb(255 255 255 / 10%);
-    cursor: pointer;
-}
-
-/* 官方组件动作按钮悬停状态。 */
-.official-component__action:hover {
-    background: rgb(255 255 255 / 18%);
-}
-
-/* 单个组件隔离失败表面。 */
+/* 单个组件的失败边界。 */
 .official-component--failed {
-    border-color: rgb(255 132 132 / 76%);
-    background: rgb(58 27 27 / 88%);
+    border-color: var(--color-error);
 }
-
-/* 组件实例内部错误说明。 */
+/* 实例内部错误说明。 */
 .official-component__error {
-    grid-column: 1 / -1;
     margin: 0;
-    color: #ffd1d1;
+    color: var(--color-error);
     font-size: 12px;
+    overflow-wrap: anywhere;
 }
-
-/* 组件实例首次同步状态。 */
+/* 实例加载状态。 */
 .official-component__status {
-    grid-column: 1 / -1;
     margin: 0;
-    color: #f5e2b9;
     font-size: 12px;
 }
-
-/* 官方清单或运行时失败汇总。 */
+/* 八方向缩放命中区域置于表面内部，原生命中图能完整覆盖。 */
+.official-component__resize {
+    position: absolute;
+    z-index: 2;
+    touch-action: none;
+}
+/* 上边缘。 */
+.official-component__resize--n {
+    top: 0;
+    left: 8px;
+    right: 8px;
+    height: 4px;
+    cursor: ns-resize;
+}
+/* 下边缘。 */
+.official-component__resize--s {
+    bottom: 0;
+    left: 8px;
+    right: 8px;
+    height: 4px;
+    cursor: ns-resize;
+}
+/* 左边缘。 */
+.official-component__resize--w {
+    left: 0;
+    top: 8px;
+    bottom: 8px;
+    width: 4px;
+    cursor: ew-resize;
+}
+/* 右边缘。 */
+.official-component__resize--e {
+    right: 0;
+    top: 8px;
+    bottom: 8px;
+    width: 4px;
+    cursor: ew-resize;
+}
+/* 左上角。 */
+.official-component__resize--nw {
+    top: 0;
+    left: 0;
+    width: 8px;
+    height: 8px;
+    cursor: nwse-resize;
+}
+/* 右上角。 */
+.official-component__resize--ne {
+    top: 0;
+    right: 0;
+    width: 8px;
+    height: 8px;
+    cursor: nesw-resize;
+}
+/* 左下角。 */
+.official-component__resize--sw {
+    bottom: 0;
+    left: 0;
+    width: 8px;
+    height: 8px;
+    cursor: nesw-resize;
+}
+/* 右下角。 */
+.official-component__resize--se {
+    bottom: 0;
+    right: 0;
+    width: 8px;
+    height: 8px;
+    cursor: nwse-resize;
+}
+/* 非实例级运行时失败汇总。 */
 .component-runtime-failure {
     position: absolute;
     top: 58px;
@@ -82,9 +146,9 @@
     z-index: 18000;
     max-width: min(420px, calc(100vw - 28px));
     padding: 8px 10px;
-    border: 1px solid rgb(255 132 132 / 72%);
-    border-radius: 5px;
-    color: #ffd1d1;
-    background: rgb(58 27 27 / 92%);
+    border: 1px solid var(--color-error);
+    border-radius: 4px;
+    color: var(--color-error);
+    background: var(--color-error-surface);
     font-size: 12px;
 }

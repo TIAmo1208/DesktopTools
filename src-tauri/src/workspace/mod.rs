@@ -10,15 +10,17 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use crate::app::settings::SettingsState;
+use crate::contracts::settings::{ApplicationPreferences, GridPreferences};
 use crate::contracts::{
     ComponentInstanceSnapshot, DesktopHostMonitor, FENCE_MIN_HEIGHT, FENCE_MIN_WIDTH,
     FenceLayoutMode, FenceSnapshot, FenceSortMode, UnclassifiedItemSnapshot,
-    WORKSPACE_BACKUP_SCHEMA_VERSION, WORKSPACE_GRID_BOTTOM_MARGIN, WORKSPACE_GRID_COLUMN_WIDTH,
-    WORKSPACE_GRID_LEFT, WORKSPACE_GRID_ROW_HEIGHT, WORKSPACE_GRID_TOP, WORKSPACE_SCHEMA_VERSION,
-    WorkspaceBackupSummary, WorkspaceCommand, WorkspaceError, WorkspaceFenceScroll,
-    WorkspaceFocusTarget, WorkspaceGrid, WorkspaceInteractionCommand, WorkspaceInteractionSnapshot,
-    WorkspaceItemPlacement, WorkspaceMonitorGrid, WorkspacePoint, WorkspaceRect,
-    WorkspaceRestoreResult, WorkspaceSelectionMode, WorkspaceSnapshot,
+    WORKSPACE_BACKUP_SCHEMA_VERSION, WORKSPACE_GRID_BOTTOM_MARGIN, WORKSPACE_GRID_LEFT,
+    WORKSPACE_GRID_TOP, WORKSPACE_SCHEMA_VERSION, WorkspaceBackupSummary, WorkspaceCommand,
+    WorkspaceError, WorkspaceFenceScroll, WorkspaceFocusTarget, WorkspaceGrid,
+    WorkspaceInteractionCommand, WorkspaceInteractionSnapshot, WorkspaceItemPlacement,
+    WorkspaceMonitorGrid, WorkspacePoint, WorkspaceRect, WorkspaceRestoreResult,
+    WorkspaceSelectionMode, WorkspaceSnapshot,
 };
 use crate::persistence::{load_json, save_json_atomic};
 
@@ -39,6 +41,7 @@ const LAYOUT_ARCHIVE_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 /// 持有正式桌面内容工作区的权威布局和持久化位置。
 pub struct WorkspaceState {
+    grid_preferences: Mutex<GridPreferences>, // 全部虚拟桌面共用的网格生成参数。
     /// Shell 最近发布的显示名称，仅供排序，不写入布局文件。
     item_names: Mutex<HashMap<String, String>>,
     /// command 共享的当前工作区快照。
@@ -220,6 +223,26 @@ impl WorkspaceState {
             default_components,
         )?; // 已迁移旧布局格式并补齐官方默认组件的多虚拟桌面运行状态。
         snapshot.interaction = WorkspaceInteractionSnapshot::default();
+        // 升级已有布局时按稳定身份补齐新增官方格子，不覆盖已有位置、尺寸或状态。
+        for layout in std::iter::once(&mut snapshot)
+            .chain(virtual_desktops.layouts.values_mut())
+            .chain(
+                virtual_desktops
+                    .archives
+                    .iter_mut()
+                    .map(|archive| &mut archive.layout),
+            )
+        {
+            for component in default_components {
+                if !layout
+                    .components
+                    .iter()
+                    .any(|existing| existing.instance_id == component.instance_id)
+                {
+                    layout.components.push(component.clone());
+                }
+            }
+        }
         snapshot.validate()?;
         for layout in virtual_desktops.layouts.values_mut() {
             layout.interaction = WorkspaceInteractionSnapshot::default();
@@ -240,6 +263,7 @@ impl WorkspaceState {
                 .map_err(|error| WorkspaceError::persistence_failed(&error))?; // 2 秒合并写入线程。
 
         Ok(Self {
+            grid_preferences: Mutex::new(GridPreferences::default()),
             item_names: Mutex::new(HashMap::new()),
             snapshot: Mutex::new(snapshot),
             virtual_desktops: Mutex::new(virtual_desktops),
@@ -271,6 +295,98 @@ impl WorkspaceState {
             })
             .collect();
         Ok(())
+    }
+
+    /// 在逐屏宿主启动之前恢复网格生成参数。
+    pub fn initialize_grid_preferences(
+        &self,
+        preferences: GridPreferences,
+    ) -> Result<(), WorkspaceError> {
+        preferences
+            .validate()
+            .map_err(|message| WorkspaceError::invalid_command(&message))?;
+        *self
+            .grid_preferences
+            .lock()
+            .map_err(|_| WorkspaceError::state_unavailable())? = preferences;
+        Ok(())
+    }
+
+    /// 所有环境协调入口共用当前网格参数。
+    fn monitor_grids(
+        &self,
+        monitors: &[DesktopHostMonitor],
+    ) -> Result<Vec<WorkspaceMonitorGrid>, WorkspaceError> {
+        let preferences = *self
+            .grid_preferences
+            .lock()
+            .map_err(|_| WorkspaceError::state_unavailable())?; // 一次协调中的固定参数。
+        monitor_grids(monitors, preferences)
+    }
+
+    /// 校验全部活动布局的容量，再保存布局及偏好；偏好写入失败时恢复旧布局文件。
+    pub fn save_preferences(
+        &self,
+        settings: &SettingsState,
+        preferences: ApplicationPreferences,
+        monitors: &[DesktopHostMonitor],
+    ) -> Result<ApplicationPreferences, String> {
+        preferences.validate()?;
+        let mut grid_preferences = self.grid_preferences.lock().map_err(|_| "网格状态不可用")?; // 阻止网格配置并发提交。
+        if *grid_preferences == preferences.desktop_grid {
+            return settings.save(preferences);
+        }
+        let grids =
+            monitor_grids(monitors, preferences.desktop_grid).map_err(|error| error.message)?; // 当前显示器的新网格。
+        let mut current = self.snapshot.lock().map_err(|_| "工作区状态不可用")?; // 当前活动布局锁。
+        let mut desktops = self
+            .virtual_desktops
+            .lock()
+            .map_err(|_| "虚拟桌面状态不可用")?; // 其他活动布局锁。
+        let mut next = current.clone(); // 保存失败时不影响可见布局。
+        let mut next_desktops = desktops.clone(); // 非活动虚拟桌面候选布局。
+        for layout in std::iter::once(&mut next).chain(next_desktops.layouts.values_mut()) {
+            reflow_grid_items(layout, &grids).map_err(|error| error.message)?;
+            layout.monitor_grids = grids.clone();
+            layout.grid = grids
+                .iter()
+                .find(|entry| {
+                    monitors
+                        .iter()
+                        .any(|monitor| monitor.primary && monitor.id == entry.monitor_id)
+                })
+                .or(grids.first())
+                .ok_or("工作区缺少显示器")?
+                .grid;
+            layout.revision += 1;
+            layout.validate().map_err(|error| error.message)?;
+        }
+        let store = save_workspace_store(&self.persistence_path, &next, &next_desktops)
+            .map_err(|error| format!("保存网格布局失败：{error}"))?; // 完整布局先写入磁盘。
+        let saved = match settings.save(preferences) {
+            Ok(saved) => saved,
+            Err(error) => {
+                if let Err(rollback) =
+                    save_workspace_store(&self.persistence_path, &current, &desktops)
+                {
+                    crate::log_error!("设置：网格布局回滚失败，错误：{rollback}");
+                    return Err(format!("{error}；布局文件回滚失败：{rollback}"));
+                }
+                return Err(error);
+            }
+        }; // 仅两份文件均写入成功后更新运行状态。
+        *grid_preferences = saved.desktop_grid;
+        *current = next;
+        *desktops = next_desktops;
+        self.schedule_auto_snapshot(&desktops.current_id, store);
+        crate::log_info!(
+            "设置：桌面网格已应用，宽度：{}，高度：{}，横向间距：{}，纵向间距：{}",
+            saved.desktop_grid.width,
+            saved.desktop_grid.height,
+            saved.desktop_grid.column_gap,
+            saved.desktop_grid.row_gap
+        );
+        Ok(saved)
     }
 
     /// 使用最新 Shell 名称统一排序，返回成员顺序是否变化。
@@ -480,7 +596,7 @@ impl WorkspaceState {
                 .or_insert_with(|| default_workspace_snapshot(&self.default_components));
         }
 
-        let monitor_grids = monitor_grids(monitors)?; // 当前逐屏环境对应的持久网格集合。
+        let monitor_grids = self.monitor_grids(monitors)?; // 当前逐屏环境对应的持久网格集合。
         let primary_monitor_id = monitors
             .iter()
             .find(|monitor| monitor.primary)
@@ -601,18 +717,7 @@ impl WorkspaceState {
             .cloned()
             .collect::<std::collections::HashSet<_>>(); // Windows 当前完整虚拟桌面身份集合。
         active_ids.insert(current_virtual_desktop_id.to_string());
-        let monitor_grids = monitors
-            .iter()
-            .map(|monitor| {
-                Ok(WorkspaceMonitorGrid {
-                    monitor_id: monitor.id.clone(),
-                    grid: workspace_grid(
-                        f64::from(monitor.work_width) / monitor.scale_factor,
-                        f64::from(monitor.work_height) / monitor.scale_factor,
-                    )?,
-                })
-            })
-            .collect::<Result<Vec<_>, WorkspaceError>>()?; // 新建默认布局使用的逐屏网格。
+        let monitor_grids = self.monitor_grids(monitors)?; // 新建默认布局使用相同的网格偏好。
         let primary_monitor_id = monitors
             .iter()
             .find(|monitor| monitor.primary)
@@ -768,7 +873,7 @@ impl WorkspaceState {
             .ok_or_else(|| WorkspaceError::invalid_command("布局归档不存在"))?; // 当前恢复目标归档索引。
         let mut layout = next_virtual_desktops.archives.remove(archive_index).layout; // 删除归档中恢复的完整布局。
         layout.interaction = WorkspaceInteractionSnapshot::default();
-        let monitor_grids = monitor_grids(monitors)?; // 恢复目标当前逐屏网格。
+        let monitor_grids = self.monitor_grids(monitors)?; // 恢复目标当前逐屏网格。
         let primary_monitor_id = monitors
             .iter()
             .find(|monitor| monitor.primary)
@@ -863,7 +968,7 @@ impl WorkspaceState {
         if monitors.is_empty() {
             return Err(WorkspaceError::invalid_command("工作区缺少显示器"));
         }
-        let monitor_grids = monitor_grids(monitors)?; // 当前全部显示器对应的独立 DIP 网格。
+        let monitor_grids = self.monitor_grids(monitors)?; // 当前全部显示器对应的独立 DIP 网格。
         let primary_monitor_id = monitors
             .iter()
             .find(|monitor| monitor.primary)
@@ -1080,6 +1185,8 @@ impl WorkspaceState {
         };
 
         // 使用历史布局和当前选择焦点生成下一份权威快照。
+        let mut target = target; // 旧历史先转换到现行步进，再合并 Shell 新项目。
+        reflow_grid_items(&mut target, &current.monitor_grids)?;
         let (mut next, restored_count, changed_count) =
             merge_layout_history_target(target, &current); // 保留外部新增项目并排除已离开工作区的历史引用。
         // 撤销和重做期间需要保留的当前围栏滚动位置。
@@ -1410,6 +1517,7 @@ fn stable_hash(bytes: &[u8]) -> u64 {
 /// 从正式宿主显示器状态生成逐屏工作区网格。
 fn monitor_grids(
     monitors: &[DesktopHostMonitor],
+    preferences: GridPreferences,
 ) -> Result<Vec<WorkspaceMonitorGrid>, WorkspaceError> {
     monitors
         .iter()
@@ -1419,10 +1527,59 @@ fn monitor_grids(
                 grid: workspace_grid(
                     f64::from(monitor.work_width) / monitor.scale_factor,
                     f64::from(monitor.work_height) / monitor.scale_factor,
+                    preferences,
                 )?,
             })
         })
         .collect()
+}
+
+/// 网格步进改变时按原先纵向顺序重排；不触及断开显示器或围栏内的来源记录。
+fn reflow_grid_items(
+    layout: &mut WorkspaceSnapshot,
+    grids: &[WorkspaceMonitorGrid],
+) -> Result<(), WorkspaceError> {
+    let members = layout
+        .fences
+        .iter()
+        .flat_map(|fence| fence.members.iter().cloned())
+        .collect::<std::collections::HashSet<_>>(); // 围栏成员不占桌面格位。
+    for entry in grids {
+        let previous = layout
+            .monitor_grids
+            .iter()
+            .find(|old| old.monitor_id == entry.monitor_id)
+            .map(|old| old.grid); // 此显示器上次使用的步进。
+        if previous.is_none_or(|old| {
+            old.column_width == entry.grid.column_width && old.row_height == entry.grid.row_height
+        }) {
+            continue;
+        }
+        let mut items = layout
+            .unclassified_items
+            .iter_mut()
+            .filter(|item| {
+                item.monitor_id == entry.monitor_id && !members.contains(&item.stable_reference)
+            })
+            .collect::<Vec<_>>(); // 本屏可见桌面项目。
+        if items.len() > grid_capacity(entry.grid)? as usize {
+            return Err(WorkspaceError::invalid_command(
+                "新网格空间不足，请减小格子尺寸或间距",
+            ));
+        }
+        items.sort_by(|a, b| {
+            a.position
+                .left
+                .total_cmp(&b.position.left)
+                .then(a.position.top.total_cmp(&b.position.top))
+        });
+        for (index, item) in items.into_iter().enumerate() {
+            item.position = grid_position(entry.grid, index as u32);
+            item.projection_position = None;
+            item.projection_monitor_id = None;
+        }
+    }
+    Ok(())
 }
 
 /// 将一次 Shell 与显示器环境变化协调到单个虚拟桌面布局。
@@ -1439,6 +1596,7 @@ fn reconcile_layout_snapshot(
 ) -> Result<bool, WorkspaceError> {
     let previous = layout.clone(); // 本次协调前用于判断是否产生状态变化的布局。
     let interaction = layout.interaction.clone(); // 协调前当前桌面运行期选择与焦点。
+    reflow_grid_items(layout, monitor_grids)?;
     layout.grid = primary_grid;
     layout.monitor_grids = monitor_grids.to_vec();
     layout.remap_item_references(renames)?;
@@ -2317,7 +2475,11 @@ impl WorkspaceSnapshot {
             if was_unassigned {
                 component.monitor_id = primary_monitor_id.to_string();
                 component.bounds.left = (viewport_width - component.bounds.width - 28.0).max(0.0);
-                component.bounds.top = (viewport_height - component.bounds.height - 28.0).max(0.0);
+                component.bounds.top = if component.component_id == "official.debug-test" {
+                    16.0
+                } else {
+                    (viewport_height - component.bounds.height - 28.0).max(0.0)
+                };
             }
             if active_monitor_ids.contains(component.monitor_id.as_str()) {
                 component.projection_monitor_id = None;
@@ -3052,6 +3214,7 @@ fn validate_point(point: WorkspacePoint) -> Result<(), WorkspaceError> {
 fn workspace_grid(
     workspace_width: f64,
     workspace_height: f64,
+    preferences: GridPreferences,
 ) -> Result<WorkspaceGrid, WorkspaceError> {
     if !workspace_width.is_finite()
         || !workspace_height.is_finite()
@@ -3060,15 +3223,17 @@ fn workspace_grid(
     {
         return Err(WorkspaceError::invalid_command("工作区尺寸无效"));
     }
+    let column_width = f64::from(preferences.width + preferences.column_gap); // 格子宽度加横向空白。
+    let row_height = f64::from(preferences.height + preferences.row_gap); // 格子高度加纵向空白。
     Ok(WorkspaceGrid {
         left: WORKSPACE_GRID_LEFT,
         top: WORKSPACE_GRID_TOP,
-        column_width: WORKSPACE_GRID_COLUMN_WIDTH,
-        row_height: WORKSPACE_GRID_ROW_HEIGHT,
-        rows: ((workspace_height - WORKSPACE_GRID_BOTTOM_MARGIN) / WORKSPACE_GRID_ROW_HEIGHT)
+        column_width,
+        row_height,
+        rows: ((workspace_height - WORKSPACE_GRID_BOTTOM_MARGIN) / row_height)
             .floor()
             .max(1.0) as u32,
-        columns: ((workspace_width - WORKSPACE_GRID_LEFT) / WORKSPACE_GRID_COLUMN_WIDTH)
+        columns: ((workspace_width - WORKSPACE_GRID_LEFT) / column_width)
             .floor()
             .max(1.0) as u32,
     })
@@ -3200,6 +3365,74 @@ mod tests {
     /// 创建当前测试使用的工作区状态。
     fn workspace_state(path: std::path::PathBuf) -> WorkspaceState {
         WorkspaceState::load(path).expect("测试工作区应可启动")
+    }
+
+    /// 独立网格设置覆盖运行、重启及容量不足不提交的完整路径。
+    #[test]
+    fn grid_preferences_reflow_and_reject_insufficient_capacity() {
+        let path = snapshot_path("grid-preferences"); // 测试独占布局文件。
+        let settings_path = snapshot_path("grid-settings"); // 测试独占偏好文件。
+        let state = workspace_state(path.clone()); // 原子持久化工作区。
+        let settings = crate::app::settings::SettingsState::load(settings_path.clone()).unwrap(); // 首次启动配置。
+        let monitors = [monitor("DISPLAY1", true, 0, 1.5)]; // 混合 DPI 计算中的 150% 显示器。
+        let items = (0..30)
+            .map(|index| format!("item-{index}"))
+            .collect::<Vec<_>>(); // 新大网格不能全部容纳的项目数。
+        state
+            .reconcile_host_monitors(&monitors, &items, &[], &[])
+            .unwrap();
+        let mut preferences = settings.preferences().unwrap(); // 等待修改的配置。
+        preferences.desktop_grid.width = 100;
+        state
+            .save_preferences(&settings, preferences.clone(), &monitors)
+            .unwrap();
+        let snapshot = state.snapshot().unwrap(); // 已应用的权威布局。
+        assert_eq!(snapshot.grid.column_width, 110.0);
+        assert_eq!(snapshot.grid.row_height, 98.0);
+        assert_eq!(snapshot.unclassified_items[0].position.left, 0.0);
+        assert_eq!(
+            settings.preferences().unwrap().fence_grid,
+            crate::contracts::settings::ApplicationPreferences::default().fence_grid
+        );
+        preferences.desktop_grid = crate::contracts::settings::GridPreferences {
+            width: 160,
+            height: 180,
+            column_gap: 48,
+            row_gap: 48,
+        };
+        assert!(
+            state
+                .save_preferences(&settings, preferences, &monitors)
+                .is_err()
+        );
+        assert_eq!(state.snapshot().unwrap(), snapshot);
+        assert_eq!(settings.preferences().unwrap().desktop_grid.width, 100);
+        let blocked_path = snapshot_path("blocked-grid-settings"); // 写入时才变成目录的配置目标。
+        let blocked_settings =
+            crate::app::settings::SettingsState::load(blocked_path.clone()).unwrap(); // 可读取但随后无法替换目标的配置状态。
+        std::fs::create_dir(&blocked_path).unwrap();
+        let mut rejected = settings.preferences().unwrap(); // 会触发重排但最终保存失败的配置。
+        rejected.desktop_grid.width = 110;
+        assert!(
+            state
+                .save_preferences(&blocked_settings, rejected, &monitors)
+                .is_err()
+        );
+        assert_eq!(state.snapshot().unwrap(), snapshot);
+        std::fs::remove_dir(blocked_path).unwrap();
+        drop(state);
+        let restored = workspace_state(path.clone()); // 重启恢复旧格位与新步进。
+        restored
+            .initialize_grid_preferences(settings.preferences().unwrap().desktop_grid)
+            .unwrap();
+        let next = restored
+            .reconcile_host_monitors(&monitors, &items, &[], &[])
+            .unwrap(); // 环境变化不回退默认网格。
+        assert_eq!(next.grid.column_width, 110.0);
+        assert_eq!(next.unclassified_items, snapshot.unclassified_items);
+        drop(restored);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(settings_path).unwrap();
     }
 
     /// 创建逐屏工作区测试使用的显示器物理状态。

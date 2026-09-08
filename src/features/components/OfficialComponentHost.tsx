@@ -5,10 +5,14 @@ import type { ComponentHostEvent, ComponentInstanceSnapshot, ComponentRegistrati
 import type { DesktopHostMonitor } from "../../contracts/desktopHost";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspaceRect, WorkspaceSnapshot } from "../../contracts/workspace";
 import { clientPointToPhysical, monitorAtPhysicalPoint, physicalPointToMonitorDip } from "../workspace/interaction/workspaceDrag";
+import { moveFence, resizeFence, snapFenceEdges, type FenceResizeDirection } from "../fences/fenceGeometry";
+import { usePreferences } from "../settings/PreferencesProvider";
 import "./OfficialComponentHost.css";
 
 /** 官方组件宿主接收的工作区实例和命令边界。 */
 interface OfficialComponentHostProps {
+    snapTargets: WorkspaceRect[]; // 当前显示器可对齐的围栏边界。
+    debugContent?: ReactNode; // 调试格子的宿主信息，Release 不呈现。
     instances: ComponentInstanceSnapshot[];
     currentMonitor?: DesktopHostMonitor;
     monitors: DesktopHostMonitor[];
@@ -63,11 +67,11 @@ const LocalClock = ({
     const [unixMillis, setUnixMillis] = useState<number>(); // 宿主授权能力或事件提供的当前时间。
     const [failure, setFailure] = useState<string>(); // 当前实例能力调用失败说明。
     const canReadTime = registration.authorizedCapabilities.includes("read-host-time"); // 当前清单实际获得的宿主时间能力。
-    const state = typeof instance.state === "object" && instance.state !== null ? (instance.state as Record<string, unknown>) : {}; // 当前版本化组件状态。
-    const hour12 = state.format === "12-hour"; // 当前持久状态选择的时间格式。
+    const { preferences } = usePreferences(); // 跨窗口同步的时间格式。
+    const hour12 = preferences?.clockHour12 ?? false; // 用户设置的时间制式。
 
     /** 通过 Component Runtime 能力边界刷新本地时间。 */
-    const refresh = async () => {
+    const handleRefresh = async () => {
         if (!canReadTime) {
             setFailure("组件未获得宿主时间能力");
             return;
@@ -82,7 +86,7 @@ const LocalClock = ({
     };
 
     useEffect(() => {
-        void refresh();
+        void handleRefresh();
     }, [instance.instanceId]);
 
     useEffect(() => {
@@ -90,7 +94,12 @@ const LocalClock = ({
     }, [canReadTime, hostEvent]);
 
     const text = unixMillis
-        ? new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12 }).format(new Date(unixMillis))
+        ? new Intl.DateTimeFormat("zh-CN", {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: preferences?.clockShowSeconds === false ? undefined : "2-digit",
+              hour12,
+          }).format(new Date(unixMillis))
         : "--:--:--"; // 当前组件显示的宿主时间文本。
 
     return (
@@ -98,16 +107,6 @@ const LocalClock = ({
             <time className="official-component__clock" dateTime={unixMillis ? new Date(unixMillis).toISOString() : undefined}>
                 {text}
             </time>
-            <button
-                className="official-component__action"
-                type="button"
-                data-hit-id={`${instance.instanceId}:refresh`}
-                data-hit-kind="component-control"
-                data-hit-priority="110"
-                onClick={() => void refresh()}
-            >
-                刷新
-            </button>
             {failure && <p className="official-component__error">{failure}</p>}
         </>
     );
@@ -115,6 +114,8 @@ const LocalClock = ({
 
 /** 呈现一个可聚焦、可拖动并隔离加载失败的组件实例。 */
 const ComponentSurface = ({
+    snapTargets,
+    debugContent,
     instance,
     registration,
     hostEvent,
@@ -125,6 +126,8 @@ const ComponentSurface = ({
     onBeginInputDrag,
     onEndInputDrag,
 }: {
+    snapTargets: WorkspaceRect[]; // 围栏及其他功能格子的对齐目标。
+    debugContent?: ReactNode; // 已装配的调试内容。
     instance: ComponentInstanceSnapshot;
     registration?: ComponentRegistrationSnapshot;
     hostEvent?: ComponentHostEvent;
@@ -138,48 +141,83 @@ const ComponentSurface = ({
     const surfaceRef = useRef<HTMLElement>(null); // 当前组件实例表面。
     const [previewBounds, setPreviewBounds] = useState<WorkspaceRect>(); // 连续拖动期间的临时边界。
     const bounds = previewBounds ?? instance.bounds; // 当前呈现使用的预览或权威边界。
+    const { preferences } = usePreferences(); // 当前功能格子交互偏好。
+    const [failure, setFailure] = useState<string>(); // 保存失败保持旧布局并显示原因。
+    const cancelDrag = useRef<(() => void) | undefined>(undefined); // 卸载时释放原生输入拖动。
+    const minimum = instance.componentId === "official.debug-test" ? { width: 280, height: 154 } : { width: 164, height: 90 }; // 按内容定义最小可读尺寸。
+    useEffect(() => () => cancelDrag.current?.(), []);
 
     /** 从组件标题开始连续拖动并在释放时提交一次布局事务。 */
-    const beginDrag = async (event: PointerEvent<HTMLElement>) => {
+    const handleGeometry = async (event: PointerEvent<HTMLElement>, direction?: FenceResizeDirection) => {
         if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button"))) return;
         event.preventDefault();
         event.stopPropagation();
+        const handle = event.currentTarget; // React 事件异步等待前保存当前节点。
+        const pointerId = event.pointerId; // 当前唯一指针。
+        const startPointer = { x: event.clientX, y: event.clientY }; // 拖动开始时的指针位置。
+        const startBounds = { ...instance.bounds }; // 拖动开始时的权威组件边界。
+        if (cancelDrag.current) return;
+        cancelDrag.current = () => undefined;
+        surfaceRef.current?.focus({ preventScroll: true });
+        setFailure(undefined);
         await onInteraction({ type: "focus-surface", focus: { type: "component", componentId: instance.instanceId } }).catch(() => undefined);
         try {
             await onBeginInputDrag();
         } catch {
+            cancelDrag.current = undefined;
             return;
         }
-        const handle = event.currentTarget; // 指针捕获和原生监听所属的标题节点。
-        const startPointer = { x: event.clientX, y: event.clientY }; // 拖动开始时的指针位置。
-        const startBounds = { ...instance.bounds }; // 拖动开始时的权威组件边界。
         let preview = startBounds; // 指针移动期间持续更新的临时边界。
         let finished = false; // 当前连续拖动结束标记。
         try {
-            handle.setPointerCapture(event.pointerId);
+            if (!handle.isConnected) throw new Error("格子已隐藏");
+            handle.setPointerCapture(pointerId);
         } catch {
+            cancelDrag.current = undefined;
             await onEndInputDrag().catch(() => undefined);
             return;
         }
 
         // 使用当前指针位移更新组件预览位置。
         const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
-            preview = {
-                ...startBounds,
-                left: startBounds.left + moveEvent.clientX - startPointer.x,
-                top: startBounds.top + moveEvent.clientY - startPointer.y,
-            };
+            if (moveEvent.pointerId !== pointerId) return;
+            const viewport = { width: window.innerWidth, height: window.innerHeight }; // 当前宿主逻辑工作区。
+            const delta = { x: moveEvent.clientX - startPointer.x, y: moveEvent.clientY - startPointer.y }; // 指针位移。
+            preview = direction
+                ? resizeFence(direction, startBounds, delta, viewport, minimum)
+                : { ...startBounds, left: startBounds.left + delta.x, top: startBounds.top + delta.y };
+            if (
+                preferences?.componentSnap !== false &&
+                preview.left + preview.width / 2 >= 0 &&
+                preview.left + preview.width / 2 <= viewport.width &&
+                preview.top + preview.height / 2 >= 0 &&
+                preview.top + preview.height / 2 <= viewport.height
+            )
+                preview = snapFenceEdges(
+                    preview,
+                    snapTargets,
+                    viewport,
+                    8,
+                    direction
+                        ? { left: direction.includes("w"), right: direction.includes("e"), top: direction.includes("n"), bottom: direction.includes("s") }
+                        : undefined,
+                    minimum,
+                );
             setPreviewBounds(preview);
         };
         // 提交释放位置或恢复权威边界。
         const finishDrag = (finishEvent: globalThis.PointerEvent) => {
+            if (finishEvent.type === "pointerup" && finishEvent.pointerId !== pointerId) return;
             if (finished) return;
             finished = true;
             handle.removeEventListener("pointermove", handlePointerMove);
             handle.removeEventListener("pointerup", finishDrag);
             handle.removeEventListener("pointercancel", finishDrag);
             handle.removeEventListener("lostpointercapture", finishDrag);
-            setPreviewBounds(undefined);
+            document.removeEventListener("keydown", handleEscape);
+            window.removeEventListener("blur", handleCancel);
+            cancelDrag.current = undefined;
+            if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
             if (finishEvent.type === "pointerup") {
                 const centerPhysical = currentMonitor
                     ? clientPointToPhysical({ x: preview.left + preview.width / 2, y: preview.top + preview.height / 2 }, currentMonitor)
@@ -196,13 +234,28 @@ const ComponentSurface = ({
                           targetMonitor,
                       )
                     : preview; // 保持逻辑尺寸并约束到目标工作区的最终边界。
-                void onCommand({ type: "update-component-bounds", instanceId: instance.instanceId, bounds: targetBounds }, targetMonitor?.id).finally(() =>
-                    onEndInputDrag().catch(() => undefined),
-                );
+                void onCommand({ type: "update-component-bounds", instanceId: instance.instanceId, bounds: targetBounds }, targetMonitor?.id)
+                    .catch((error: unknown) => setFailure(error instanceof Error ? error.message : "格子布局保存失败"))
+                    .finally(() => {
+                        setPreviewBounds(undefined);
+                        void onEndInputDrag().catch(() => undefined);
+                    });
             } else {
+                setPreviewBounds(undefined);
                 void onEndInputDrag().catch(() => undefined);
             }
         };
+        // Escape、失焦及组件隐藏都取消当前预览。
+        const handleCancel = () => finishDrag(new globalThis.PointerEvent("pointercancel"));
+        const handleEscape = (keyEvent: KeyboardEvent) => {
+            if (keyEvent.key === "Escape") {
+                keyEvent.preventDefault();
+                handleCancel();
+            }
+        };
+        cancelDrag.current = handleCancel;
+        document.addEventListener("keydown", handleEscape);
+        window.addEventListener("blur", handleCancel);
         handle.addEventListener("pointermove", handlePointerMove);
         handle.addEventListener("pointerup", finishDrag);
         handle.addEventListener("pointercancel", finishDrag);
@@ -221,29 +274,65 @@ const ComponentSurface = ({
             data-hit-kind="component"
             data-hit-priority="60"
             tabIndex={0}
-            aria-label={loading ? "组件正在加载" : registration?.componentId === "official.local-clock" ? "本地时间组件" : "组件加载失败"}
+            aria-label={loading ? "组件正在加载" : instance.componentId === "official.debug-test" ? "Debug 测试格子" : "本地时间格子"}
+            onPointerDown={(event) => event.stopPropagation()}
+            onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+            }}
+            onKeyDown={(event) => {
+                if (event.target !== event.currentTarget || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                const delta = {
+                    x: event.key === "ArrowLeft" ? -8 : event.key === "ArrowRight" ? 8 : 0,
+                    y: event.key === "ArrowUp" ? -8 : event.key === "ArrowDown" ? 8 : 0,
+                }; // 键盘移动或缩放步长。
+                const viewport = { width: window.innerWidth, height: window.innerHeight }; // 当前逻辑工作区。
+                const next = event.shiftKey ? resizeFence("se", instance.bounds, delta, viewport, minimum) : moveFence(instance.bounds, delta, viewport); // Shift 使用右下角缩放。
+                void onCommand({ type: "update-component-bounds", instanceId: instance.instanceId, bounds: next }).catch(() => setFailure("格子布局保存失败"));
+            }}
             onFocus={() => void onInteraction({ type: "focus-surface", focus: { type: "component", componentId: instance.instanceId } }).catch(() => undefined)}
         >
-            <header className="official-component__header" onPointerDown={(event) => void beginDrag(event)}>
-                <strong>{registration?.componentId === "official.local-clock" ? "本地时间" : instance.componentId}</strong>
+            <header className="official-component__header" onPointerDown={(event) => void handleGeometry(event)}>
+                <strong>{instance.componentId === "official.debug-test" ? "Debug 测试" : "本地时间"}</strong>
             </header>
-            <ComponentErrorBoundary instanceId={instance.instanceId}>
-                {loading ? (
-                    <p className="official-component__status">正在加载组件...</p>
-                ) : failed ? (
-                    <p className="official-component__error">{registration?.error ?? "组件清单不存在"}</p>
-                ) : registration.entry === "official:local-clock" ? (
-                    <LocalClock instance={instance} registration={registration} hostEvent={hostEvent} />
-                ) : (
-                    <p className="official-component__error">组件前端入口不存在</p>
+            <div className="official-component__content">
+                <ComponentErrorBoundary instanceId={instance.instanceId}>
+                    {loading ? (
+                        <p className="official-component__status">正在加载组件...</p>
+                    ) : failed ? (
+                        <p className="official-component__error">{registration?.error ?? "组件清单不存在"}</p>
+                    ) : registration.entry === "official:local-clock" ? (
+                        <LocalClock instance={instance} registration={registration} hostEvent={hostEvent} />
+                    ) : registration.entry === "official:debug-test" ? (
+                        debugContent
+                    ) : (
+                        <p className="official-component__error">组件前端入口不存在</p>
+                    )}
+                </ComponentErrorBoundary>
+                {failure && (
+                    <p className="official-component__error" role="alert">
+                        {failure}
+                    </p>
                 )}
-            </ComponentErrorBoundary>
+            </div>
+            {(["n", "ne", "e", "se", "s", "sw", "w", "nw"] as const).map((direction) => (
+                <div
+                    key={direction}
+                    className={`official-component__resize official-component__resize--${direction}`}
+                    aria-hidden="true"
+                    onPointerDown={(event) => void handleGeometry(event, direction)}
+                />
+            ))}
         </section>
     );
 };
 
 /** 同步 Component Runtime 并呈现当前显示器的全部官方组件实例。 */
 export const OfficialComponentHost = ({
+    snapTargets,
+    debugContent,
     instances,
     currentMonitor,
     monitors,
@@ -252,10 +341,18 @@ export const OfficialComponentHost = ({
     onBeginInputDrag,
     onEndInputDrag,
 }: OfficialComponentHostProps) => {
+    const { preferences } = usePreferences(); // 开关只控制可见实例。
     const [runtime, setRuntime] = useState<ComponentRuntimeSnapshot>(); // 当前后端组件注册表和实例状态。
     const [hostEvent, setHostEvent] = useState<ComponentHostEvent>(); // 最近一次通过宿主事件边界发布的时间事件。
     const [failure, setFailure] = useState<string>(); // 组件运行时 command 或 event 错误说明。
     const registrations = useMemo(() => new Map(runtime?.instances.map((instance) => [instance.instanceId, instance]) ?? []), [runtime]);
+    const visibleInstances = instances.filter((instance) =>
+        instance.componentId === "official.local-clock"
+            ? preferences?.clockEnabled !== false
+            : instance.componentId === "official.debug-test"
+              ? preferences?.debugEnabled !== false && runtime?.manifests.some((manifest) => manifest.id === "official.debug-test")
+              : true,
+    ); // Release 没有 Debug 注册入口。
 
     useEffect(() => {
         let mounted = true; // 当前组件宿主挂载标记。
@@ -295,9 +392,11 @@ export const OfficialComponentHost = ({
                     {failure ?? runtime?.failures.map((item) => `${item.componentId}：${item.message}`).join("；")}
                 </aside>
             )}
-            {instances.map((instance) => (
+            {visibleInstances.map((instance) => (
                 <ComponentSurface
                     key={instance.instanceId}
+                    snapTargets={[...snapTargets, ...visibleInstances.filter((other) => other.instanceId !== instance.instanceId).map((other) => other.bounds)]}
+                    debugContent={debugContent}
                     instance={instance}
                     registration={registrations.get(instance.instanceId)}
                     hostEvent={hostEvent}
