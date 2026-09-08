@@ -133,10 +133,10 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             if let Err(error) = set_settings_visible(&handle, false) {
                 crate::log_error!("设置：隐藏窗口失败，错误：{error}");
             }
-        } else if matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_)) {
-            if let Err(error) = sync_menu(&handle) {
-                crate::log_warn!("托盘：菜单状态更新失败，错误：{error}");
-            }
+        } else if matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_))
+            && let Err(error) = sync_menu(&handle)
+        {
+            crate::log_warn!("托盘：菜单状态更新失败，错误：{error}");
         }
     });
     crate::log_info!("托盘：图标和原生菜单已创建");

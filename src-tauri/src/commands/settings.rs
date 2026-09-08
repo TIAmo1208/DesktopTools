@@ -105,10 +105,10 @@ pub fn save_preferences(
     if let Err(error) = app.emit("preferences-changed", &saved) {
         crate::log_warn!("设置：偏好事件发布失败，错误：{error}");
     }
-    if let Ok(snapshot) = workspace.snapshot() {
-        if let Err(error) = app.emit(crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, snapshot) {
-            crate::log_warn!("设置：网格快照事件发布失败，错误：{error}");
-        }
+    if let Ok(snapshot) = workspace.snapshot()
+        && let Err(error) = app.emit(crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, snapshot)
+    {
+        crate::log_warn!("设置：网格快照事件发布失败，错误：{error}");
     }
     Ok(saved)
 }

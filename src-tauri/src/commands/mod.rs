@@ -5,6 +5,7 @@ mod desktop_item;
 pub mod settings;
 mod virtual_desktop;
 mod workspace;
+mod workspace_menu;
 
 use std::path::PathBuf;
 

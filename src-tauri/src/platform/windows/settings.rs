@@ -47,8 +47,8 @@ use windows::{
 
 /// 持有 Windows 强调色订阅，随应用退出解除系统回调。
 pub struct WindowsAccentMonitor {
-    settings: UISettings, // Windows 用户界面颜色提供者。
-    token: i64,           // 强调色事件订阅凭据。
+    settings: UISettings,                 // Windows 用户界面颜色提供者。
+    token: std::sync::Mutex<Option<i64>>, // 可显式解除的订阅凭据。
 }
 
 impl WindowsAccentMonitor {
@@ -75,7 +75,21 @@ impl WindowsAccentMonitor {
             Ok(())
         }))?; // 应用生命周期内唯一的系统颜色订阅。
         crate::log_info!("设置：Windows 强调色监听已启动");
-        Ok(Self { settings, token })
+        Ok(Self {
+            settings,
+            token: std::sync::Mutex::new(Some(token)),
+        })
+    }
+
+    /// 退出时解除回调，保留托管状态以免已借出的引用失效。
+    pub fn shutdown(&self) {
+        let mut token = self.token.lock().unwrap_or_else(|error| error.into_inner()); // 串行化重复退出清理。
+        if let Some(value) = *token {
+            match self.settings.RemoveColorValuesChanged(value) {
+                Ok(()) => *token = None,
+                Err(error) => crate::log_warn!("设置：解除 Windows 强调色监听失败，错误：{error}"),
+            }
+        }
     }
 
     /// 返回系统当前强调色，不覆盖已保存的自定义颜色。
@@ -91,9 +105,7 @@ impl WindowsAccentMonitor {
 impl Drop for WindowsAccentMonitor {
     /// 释放 Windows 事件处理器及其持有的应用句柄。
     fn drop(&mut self) {
-        if let Err(error) = self.settings.RemoveColorValuesChanged(self.token) {
-            crate::log_warn!("设置：解除 Windows 强调色监听失败，错误：{error}");
-        }
+        self.shutdown();
     }
 }
 

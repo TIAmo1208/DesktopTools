@@ -274,8 +274,10 @@ mod tests {
             preferences: Mutex::new(ApplicationPreferences::default()),
         }; // 文件作为父目录时必定无法写入。
         assert!(blocked.save(next).is_err());
-        let mut invalid = ApplicationPreferences::default(); // 不能持久化的越界外观配置。
-        invalid.font_size = 19;
+        let invalid = ApplicationPreferences {
+            font_size: 19,
+            ..Default::default()
+        }; // 不能持久化的越界外观配置。
         assert!(state.save(invalid).is_err());
         let legacy: ApplicationPreferences =
             serde_json::from_str(r#"{"theme":"light","doubleClickToOpen":true}"#).unwrap(); // 旧版字段缺失时的兼容配置。

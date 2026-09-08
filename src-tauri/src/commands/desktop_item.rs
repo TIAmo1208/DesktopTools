@@ -6,13 +6,13 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::contracts::{
-    DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, DesktopItemError, DesktopItemSnapshot, FENCE_MIN_HEIGHT,
-    FENCE_MIN_WIDTH, ShellOperationResult, WORKSPACE_SNAPSHOT_CHANGED_EVENT, WorkspaceCommand,
-    WorkspaceContextMenuTarget, WorkspaceItemPlacement, WorkspaceRect, WorkspaceSnapshot,
+    DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, DesktopItemError, DesktopItemSnapshot,
+    ShellOperationResult, WORKSPACE_SNAPSHOT_CHANGED_EVENT, WorkspaceContextMenuTarget,
+    WorkspaceSnapshot,
 };
 use crate::host::DesktopHostRuntime;
+use crate::platform::windows::NativeMenuTarget;
 use crate::platform::windows::ShellChangeEvent;
-use crate::platform::windows::{NativeMenuCommand, NativeMenuTarget};
 use crate::shell::DesktopItemState;
 use crate::workspace::WorkspaceState;
 
@@ -145,256 +145,43 @@ pub(crate) fn show_workspace_context_menu_state(
     client_x: f64,
     client_y: f64,
 ) -> Result<WorkspaceSnapshot, DesktopItemError> {
-    /// 第一个动态移动到围栏命令编号。
-    const MOVE_TO_FENCE_FIRST: u32 = 0x7000;
-    /// 将完整选择集合移出围栏命令编号。
-    const REMOVE_FROM_FENCE: u32 = 0x7800;
-    /// 切换围栏折叠状态命令编号。
-    const TOGGLE_FENCE: u32 = 0x7801;
-    /// 切换围栏排列方式命令编号。
-    const TOGGLE_FENCE_LAYOUT: u32 = 0x7802;
-    /// 解散围栏命令编号。
-    const DISSOLVE_FENCE: u32 = 0x7803;
-    /// 在菜单锚点创建围栏命令编号。
-    const CREATE_FENCE: u32 = 0x7804;
-    /// 当前工作区已经持续启用的编辑布局命令编号。
-    const EDIT_LAYOUT: u32 = 0x7805;
-    /// 重新枚举 Shell 项目并协调工作区命令编号。
-    const REFRESH_ITEMS: u32 = 0x7806;
-    /// 等待正式设置表面交付后启用的设置命令编号。
-    const OPEN_SETTINGS: u32 = 0x7807;
-
-    if !client_x.is_finite() || !client_y.is_finite() {
-        return Err(DesktopItemError::invalid_selection("菜单锚点坐标无效"));
-    }
-    // 当前宿主物理工作区与 CSS 缩放信息。
     let host_snapshot = runtime
         .snapshot()
-        .map_err(|error| DesktopItemError::shell_operation_failed(&error.message))?;
+        .map_err(|error| DesktopItemError::shell_operation_failed(&error.message))?; // 当前宿主环境。
     let monitor = host_snapshot
         .hosts
         .iter()
         .find(|host| host.monitor.id == monitor_id)
         .map(|host| &host.monitor)
-        .ok_or_else(|| DesktopItemError::shell_operation_failed(&"当前显示器宿主不存在"))?;
-    // 菜单锚点的屏幕物理横坐标。
-    let screen_x = monitor.work_x + (client_x * monitor.scale_factor).round() as i32;
-    // 菜单锚点的屏幕物理纵坐标。
-    let screen_y = monitor.work_y + (client_y * monitor.scale_factor).round() as i32;
-    // 菜单打开前的当前权威工作区快照。
+        .ok_or_else(|| DesktopItemError::shell_operation_failed(&"当前显示器宿主不存在"))?; // 目标显示器。
     let snapshot = workspace
         .snapshot()
-        .map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
-
-    // 当前菜单目标对应的原生 Shell 目标、产品命令和项目选择。
-    let (native_target, product_commands, item_ids, fence_id) = match target {
-        WorkspaceContextMenuTarget::Items { item_ids } => {
-            // 已通过当前 Shell 快照校验的多选稳定引用。
-            let references = state.selection_references(&item_ids)?;
-            // 当前选择集合全部成员共同支持的产品命令。
-            let mut commands = snapshot
-                .fences
-                .iter()
-                .enumerate()
-                .map(|(index, fence)| NativeMenuCommand {
-                    id: MOVE_TO_FENCE_FIRST.saturating_add(index as u32),
-                    label: format!("移动到围栏：{}", fence.title),
-                    enabled: item_ids
-                        .iter()
-                        .any(|item_id| !fence.members.contains(item_id)),
-                })
-                .collect::<Vec<_>>();
-            // 当前完整选择集合是否都具有移出围栏能力。
-            let can_remove = item_ids.iter().all(|item_id| {
-                snapshot
-                    .fences
-                    .iter()
-                    .any(|fence| fence.members.contains(item_id))
-            });
-            commands.push(NativeMenuCommand {
-                id: REMOVE_FROM_FENCE,
-                label: "移出围栏".to_string(),
-                enabled: can_remove,
-            });
-            commands.push(NativeMenuCommand {
-                id: EDIT_LAYOUT,
-                label: "编辑布局".to_string(),
-                enabled: true,
-            });
-            (
-                NativeMenuTarget::Items(references),
-                commands,
-                item_ids,
-                None,
-            )
-        }
-        WorkspaceContextMenuTarget::Fence { fence_id } => {
-            // 当前菜单目标围栏权威快照。
-            let fence = snapshot
-                .fences
-                .iter()
-                .find(|fence| fence.id == fence_id)
-                .ok_or_else(|| DesktopItemError::invalid_selection("围栏不存在"))?;
-            (
-                NativeMenuTarget::ProductOnly,
-                vec![
-                    NativeMenuCommand {
-                        id: TOGGLE_FENCE,
-                        label: if fence.collapsed {
-                            "展开围栏"
-                        } else {
-                            "折叠围栏"
-                        }
-                        .to_string(),
-                        enabled: true,
-                    },
-                    NativeMenuCommand {
-                        id: TOGGLE_FENCE_LAYOUT,
-                        label: if fence.layout_mode == crate::contracts::FenceLayoutMode::Tile {
-                            "切换为列表"
-                        } else {
-                            "切换为平铺"
-                        }
-                        .to_string(),
-                        enabled: !fence.collapsed,
-                    },
-                    NativeMenuCommand {
-                        id: DISSOLVE_FENCE,
-                        label: "解散围栏".to_string(),
-                        enabled: true,
-                    },
-                ],
-                Vec::new(),
-                Some(fence_id),
-            )
-        }
-        WorkspaceContextMenuTarget::Background => (
-            NativeMenuTarget::Background,
-            vec![
-                NativeMenuCommand {
-                    id: CREATE_FENCE,
-                    label: "新建围栏".to_string(),
-                    enabled: true,
-                },
-                NativeMenuCommand {
-                    id: EDIT_LAYOUT,
-                    label: "编辑布局".to_string(),
-                    enabled: true,
-                },
-                NativeMenuCommand {
-                    id: REFRESH_ITEMS,
-                    label: "刷新桌面项目".to_string(),
-                    enabled: true,
-                },
-                NativeMenuCommand {
-                    id: OPEN_SETTINGS,
-                    label: "打开设置".to_string(),
-                    enabled: false,
-                },
-            ],
-            Vec::new(),
-            None,
-        ),
-    };
-    // 原生菜单关闭后返回的可选产品命令编号。
-    let selected = state.show_menu(native_target, screen_x, screen_y, product_commands)?;
-    let Some(selected) = selected else {
-        return Ok(snapshot);
-    };
-    if selected == EDIT_LAYOUT {
-        crate::log_info!("工作区：编辑布局命令已激活");
-        return Ok(snapshot);
-    }
-    if selected == REFRESH_ITEMS {
-        let item_snapshot = state.refresh()?; // 用户显式刷新得到的当前 Shell 项目集合。
-        return reconcile_workspace_environment(workspace, runtime, &item_snapshot, true, &[])
-            .map_err(|error| DesktopItemError::workspace_reconciliation_failed(&error));
-    }
-
-    // 产品菜单动作提交后的单一布局事务。
-    let command = if (MOVE_TO_FENCE_FIRST..REMOVE_FROM_FENCE).contains(&selected) {
-        // 动态移动命令编号对应的目标围栏。
-        let target_fence = snapshot
-            .fences
-            .get((selected - MOVE_TO_FENCE_FIRST) as usize)
-            .ok_or_else(|| DesktopItemError::invalid_selection("目标围栏不存在"))?;
-        WorkspaceCommand::CommitItemDrag {
-            anchor_item_id: item_ids[0].clone(),
-            item_ids,
-            placements: Vec::new(),
-            target_fence_id: Some(target_fence.id.clone()),
-            before_item_id: None,
-            fence_scrolls: Vec::new(),
-        }
-    } else {
-        match selected {
-            REMOVE_FROM_FENCE => WorkspaceCommand::CommitItemDrag {
-                anchor_item_id: item_ids[0].clone(),
-                item_ids: item_ids.clone(),
-                placements: snapshot
-                    .unclassified_items
-                    .iter()
-                    .filter(|item| item_ids.contains(&item.stable_reference))
-                    .map(|item| WorkspaceItemPlacement {
-                        item_id: item.stable_reference.clone(),
-                        position: item.position,
-                    })
-                    .collect(),
-                target_fence_id: None,
-                before_item_id: None,
-                fence_scrolls: Vec::new(),
-            },
-            TOGGLE_FENCE => {
-                let fence_id = fence_id.expect("围栏菜单命令包含目标围栏");
-                let fence = snapshot
-                    .fences
-                    .iter()
-                    .find(|fence| fence.id == fence_id)
-                    .expect("围栏菜单目标已完成校验");
-                WorkspaceCommand::SetFenceCollapsed {
-                    fence_id,
-                    collapsed: !fence.collapsed,
+        .map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 菜单打开前的事实。
+    let action = super::workspace_menu::choose_workspace_menu(
+        &snapshot,
+        monitor,
+        target,
+        client_x,
+        client_y,
+        |target, x, y, commands| {
+            let target = match target {
+                NativeMenuTarget::Items(ids) => {
+                    NativeMenuTarget::Items(state.selection_references(&ids)?)
                 }
-            }
-            TOGGLE_FENCE_LAYOUT => {
-                let fence_id = fence_id.expect("围栏菜单命令包含目标围栏");
-                let fence = snapshot
-                    .fences
-                    .iter()
-                    .find(|fence| fence.id == fence_id)
-                    .expect("围栏菜单目标已完成校验");
-                WorkspaceCommand::SetFenceLayout {
-                    fence_id,
-                    layout_mode: if fence.layout_mode == crate::contracts::FenceLayoutMode::Tile {
-                        crate::contracts::FenceLayoutMode::List
-                    } else {
-                        crate::contracts::FenceLayoutMode::Tile
-                    },
-                }
-            }
-            DISSOLVE_FENCE => WorkspaceCommand::DissolveFence {
-                fence_id: fence_id.expect("围栏菜单命令包含目标围栏"),
-            },
-            CREATE_FENCE => {
-                // 当前 CSS 工作区可容纳的新围栏初始边界。
-                let viewport_width = monitor.work_width as f64 / monitor.scale_factor;
-                // 当前 CSS 工作区可容纳的新围栏初始高度。
-                let viewport_height = monitor.work_height as f64 / monitor.scale_factor;
-                let width = FENCE_MIN_WIDTH.max(320.0_f64.min(viewport_width));
-                let height = FENCE_MIN_HEIGHT.max(240.0_f64.min(viewport_height));
-                WorkspaceCommand::CreateFence {
-                    title: format!("新围栏 {}", snapshot.fences.len() + 1),
-                    bounds: WorkspaceRect {
-                        left: client_x.clamp(0.0, (viewport_width - width).max(0.0)),
-                        top: client_y.clamp(0.0, (viewport_height - height).max(0.0)),
-                        width,
-                        height,
-                    },
-                }
-            }
-            _ => return Ok(snapshot),
+                target => target,
+            }; // 进入 STA 前校验 Shell 引用。
+            state.show_menu(target, x, y, commands)
+        },
+    )?; // 已解释的产品选择。
+    let command = match action {
+        super::workspace_menu::WorkspaceMenuAction::None => return Ok(snapshot),
+        super::workspace_menu::WorkspaceMenuAction::Refresh => {
+            let item_snapshot = state.refresh()?; // 刷新后的 Shell 事实。
+            return reconcile_workspace_environment(workspace, runtime, &item_snapshot, true, &[])
+                .map_err(|error| DesktopItemError::workspace_reconciliation_failed(&error));
         }
-    };
+        super::workspace_menu::WorkspaceMenuAction::Layout(command) => command,
+    }; // 进入现有事务路径的命令。
     let before_revision = snapshot.revision; // 判断产品菜单动作是否创建新统一时间线分支的修订号。
     let next = workspace
         .apply_on_monitor(Some(monitor_id), command)
