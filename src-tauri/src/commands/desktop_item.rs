@@ -474,7 +474,7 @@ pub fn start_desktop_item_change_monitor(app: AppHandle, changes: Receiver<Shell
             };
             let _ = app.emit(DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, &item_snapshot);
             let _ = app.emit(WORKSPACE_SNAPSHOT_CHANGED_EVENT, &workspace_snapshot);
-            crate::log_info!(
+            crate::log_debug!(
                 "Shell：桌面变化已协调，重命名={}，项目={}，布局修订={}",
                 renames.len(),
                 item_snapshot.items.len(),

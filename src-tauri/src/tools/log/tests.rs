@@ -44,6 +44,15 @@ fn read_log(directory: &Path) -> String {
 fn restores_tool_log_behavior() {
     // 进程级日志测试串行锁。
     let _guard = TEST_LOCK.lock().expect("日志测试锁应可获取");
+    let defaults = LogConfig::default(); // 正式运行默认目录及输出等级。
+    assert_eq!(defaults.console_level, LogLevel::Debug);
+    assert_eq!(defaults.file_level, LogLevel::Info);
+    assert_eq!(
+        defaults.directory,
+        PathBuf::from(std::env::var_os("LOCALAPPDATA").expect("Windows 用户目录应存在"))
+            .join("TIAmo")
+            .join("DesktopTools")
+    );
     // 当前测试的根目录。
     let root = unique_test_path("behavior");
     // 路径切换前的日志目录。
@@ -73,6 +82,12 @@ fn restores_tool_log_behavior() {
     crate::log_info!("关闭期间记录");
     set_file_output(true).expect("文件输出应重新启用");
     crate::log_info!("重新启用记录");
+
+    set_file_level(LogLevel::Info).expect("文件输出切换为正式等级");
+    set_console_level(LogLevel::Debug).expect("控制台接受调试记录");
+    crate::log_debug!("仅控制台调试记录");
+    crate::log_info!("文件信息记录");
+    set_console_level(LogLevel::None).expect("测试恢复静默控制台");
 
     set_file_level(LogLevel::Warn).expect("文件等级应更新");
     crate::log_info!("等级过滤记录");
@@ -114,6 +129,8 @@ fn restores_tool_log_behavior() {
     assert!(second_text.contains("切换后记录"));
     assert!(!second_text.contains("关闭期间记录"));
     assert!(second_text.contains("重新启用记录"));
+    assert!(!second_text.contains("仅控制台调试记录"));
+    assert!(second_text.contains("文件信息记录"));
     assert!(!second_text.contains("等级过滤记录"));
     assert!(second_text.contains("等级接受记录"));
     assert!(second_text.contains(&long_message));

@@ -325,7 +325,7 @@ impl DesktopHostRuntime {
                 data.coordinator.mark_hosts_ready();
             }
         }
-        crate::log_info!(
+        crate::log_debug!(
             "宿主：逐屏前端门槛已通过，显示器={}，命中区域：{}，首个区域：{}，系统图像：{}/{}，真实像素：{}",
             monitor_id,
             region_count,
@@ -492,7 +492,7 @@ impl DesktopHostRuntime {
                 data.coordinator.mark_hosts_ready();
             }
         }
-        crate::log_info!(
+        crate::log_debug!(
             "宿主：最小输入探针已回传，显示器={}，项目引用：{}",
             monitor_id,
             item_id

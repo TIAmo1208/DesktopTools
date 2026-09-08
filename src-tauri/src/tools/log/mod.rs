@@ -63,16 +63,29 @@ pub struct LogConfig {
 }
 
 impl Default for LogConfig {
-    /// 创建与原日志工具一致的默认配置。
+    /// 控制台保留调试信息，文件仅记录运行信息及更严重事件。
     fn default() -> Self {
+        let directory = default_directory(); // 当前用户固定日志目录，失败时不回退工作目录。
+        if let Err(error) = &directory {
+            eprintln!("日志文件输出已关闭：{error}");
+        }
         Self {
             file_level: LogLevel::Info,
-            console_level: LogLevel::Info,
-            file_output: true,
-            directory: PathBuf::from("Log"),
+            console_level: LogLevel::Debug,
+            file_output: directory.is_ok(),
+            directory: directory.unwrap_or_default(),
             flush_interval: Duration::from_secs(10),
         }
     }
+}
+
+/// 返回当前用户的固定日志目录，拒绝缺失或相对路径。
+pub fn default_directory() -> Result<PathBuf, String> {
+    let root = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or("无法读取当前用户 LOCALAPPDATA 目录")?; // Windows 提供的用户本地应用数据根目录。
+    Ok(root.join("TIAmo").join("DesktopTools"))
 }
 
 /// 描述日志初始化、配置和关闭阶段的错误。

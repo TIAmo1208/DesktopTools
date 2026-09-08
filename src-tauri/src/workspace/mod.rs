@@ -728,7 +728,7 @@ impl WorkspaceState {
         *virtual_desktops = next_virtual_desktops;
         histories.retain(|desktop_id, _| active_ids.contains(desktop_id));
         self.schedule_auto_snapshot(current_virtual_desktop_id, store);
-        crate::log_info!(
+        crate::log_debug!(
             "工作区：虚拟桌面已协调，当前={}，活动布局={}，归档={}，切换={}",
             current_virtual_desktop_id,
             virtual_desktops.layouts.len() + 1,
@@ -951,7 +951,7 @@ impl WorkspaceState {
         *virtual_desktops = next_virtual_desktops;
         *histories = next_histories;
         self.schedule_auto_snapshot(&current_id, store);
-        crate::log_info!(
+        crate::log_debug!(
             "工作区：全部虚拟桌面逐屏项目位置已协调，活动布局={}，修订={}，项目={}，显示器={}",
             virtual_desktops.layouts.len() + 1,
             next.revision,
@@ -1034,7 +1034,7 @@ impl WorkspaceState {
         }
         *current = next.clone();
         self.schedule_auto_snapshot(&virtual_desktop_id, store);
-        crate::log_info!(
+        crate::log_debug!(
             "工作区：布局事务已提交，命令={command_name}，修订={}，围栏={}",
             next.revision,
             next.fences.len()
@@ -1121,7 +1121,7 @@ impl WorkspaceState {
         }
         *current = next.clone();
         self.schedule_auto_snapshot(&virtual_desktop_id, store);
-        crate::log_info!(
+        crate::log_debug!(
             "工作区：布局历史已恢复，方向={}，修订={}",
             if redo { "重做" } else { "撤销" },
             next.revision
@@ -1331,7 +1331,7 @@ fn write_auto_snapshot(
     for obsolete in snapshots.into_iter().take(remove_count) {
         fs::remove_file(obsolete)?;
     }
-    crate::log_info!(
+    crate::log_debug!(
         "工作区：自动快照已写入，桌面={}，路径={}",
         virtual_desktop_id,
         path.display()

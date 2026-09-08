@@ -463,7 +463,7 @@ impl DesktopItemState {
             .iter()
             .filter(|item| item.availability == DesktopItemAvailability::Unavailable)
             .count();
-        crate::log_info!(
+        crate::log_debug!(
             "Shell：桌面项目快照已发布，修订：{}，项目数量：{}，等待恢复：{}",
             snapshot.revision,
             snapshot.items.len(),
@@ -486,7 +486,7 @@ impl DesktopItemState {
             crate::log_error!("Shell：桌面项目打开失败，错误：{error}");
             DesktopItemError::shell_operation_failed(&error)
         })?;
-        crate::log_info!("Shell：桌面项目已打开，项目数量：{}", item_ids.len());
+        crate::log_debug!("Shell：桌面项目已打开，项目数量：{}", item_ids.len());
         Ok(())
     }
 
@@ -545,7 +545,7 @@ impl DesktopItemState {
                 DesktopItemError::shell_operation_failed(&error)
             })?; // 系统剪贴板接受完整 IDataObject 后的结果。
         result.completed_at_unix_micros = crate::tools::time::next_timeline_timestamp();
-        crate::log_info!(
+        crate::log_debug!(
             "Shell：系统剪贴板已更新，剪切={}，项目数量={}",
             u8::from(cut),
             item_ids.len()
@@ -570,7 +570,7 @@ impl DesktopItemState {
             DesktopItemError::shell_operation_failed(&error)
         })?; // 系统目标协商后的最终拖放结果。
         result.completed_at_unix_micros = crate::tools::time::next_timeline_timestamp();
-        crate::log_info!(
+        crate::log_debug!(
             "Shell：系统 OLE 拖放结束，项目数量={}，效果={}，取消={}",
             item_ids.len(),
             result.effect.as_deref().unwrap_or("无"),

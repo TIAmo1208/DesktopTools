@@ -28,7 +28,7 @@ pub fn set_application_status(
             crate::log_error!("应用：状态事件发布失败，错误：{error}");
             ApplicationError::event_publish_failed(&error)
         })?;
-    crate::log_info!(
+    crate::log_debug!(
         "应用：状态已更新，状态：{:?}，修订：{}",
         snapshot.status,
         snapshot.revision

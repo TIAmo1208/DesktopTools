@@ -600,7 +600,7 @@ pub fn desktop_item_monitor_assignments(
         }
     }; // Explorer 当前项目物理坐标。
     let assignments = match_desktop_item_monitor_assignments(items, monitors, &positions); // Explorer 坐标与当前显示器边界的匹配结果。
-    crate::log_info!(
+    crate::log_debug!(
         "工作区：Explorer 项目显示器归属已读取，项目={}，匹配={}，显示器={}",
         items.len(),
         assignments.len(),
@@ -853,7 +853,7 @@ fn create_desktop_host(
                 PageLoadEvent::Started => "开始",
                 PageLoadEvent::Finished => "完成",
             };
-            crate::log_info!("宿主：React 页面加载{}，URL：{}", stage, url);
+            crate::log_debug!("宿主：React 页面加载{}，URL：{}", stage, url);
         })
         .with_url("about:blank")
         .build_as_child(&raw_window)
@@ -869,7 +869,7 @@ fn create_desktop_host(
             .map_err(|error| format!("通知 WebView2 宿主位置变化失败: {error}"))?;
     }
     let (drop_targets, ole_initialized) = register_shell_drop_targets(hwnd)?; // Desktop Tools 接收外部 Shell IDataObject 的窗口注册。
-    crate::log_info!(
+    crate::log_debug!(
         "宿主：逐屏透明宿主已创建，显示器={}，主显示器={}，工作区：[{}, {}, {}, {}]，DPI：{}，栅格化比例：{}，BoundsMode：USE_RAW_PIXELS",
         monitor.id,
         u8::from(monitor.primary),
