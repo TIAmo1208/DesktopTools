@@ -163,6 +163,17 @@ export const resolveGridInsertion = (
     return { active: true, direction, positions: previewPositions };
 };
 
+/** 自由定位保留组内偏移，并将整组限制在工作区左上边界内。 */
+export const resolveFreeDrop = (draggedIds: string[], desired: WorkspacePoint, positions: Map<string, WorkspacePoint>): Map<string, WorkspacePoint> | null => {
+    if (!draggedIds.length || !Number.isFinite(desired.left) || !Number.isFinite(desired.top)) return null;
+    const anchor = positions.get(draggedIds[0]); // 来源组的视觉锚点。
+    if (!anchor || draggedIds.some((id) => !positions.has(id))) return null;
+    const offsets = draggedIds.map((id) => ({ id, left: positions.get(id)!.left - anchor.left, top: positions.get(id)!.top - anchor.top })); // 保留组内相对位置。
+    const left = Math.max(desired.left, -Math.min(0, ...offsets.map((offset) => offset.left))); // 整组留在工作区左边界内。
+    const top = Math.max(desired.top, -Math.min(0, ...offsets.map((offset) => offset.top))); // 整组留在工作区上边界内。
+    return new Map(offsets.map((offset) => [offset.id, { left: left + offset.left, top: top + offset.top }]));
+};
+
 /** 将组拖动释放点吸附到最近可用网格位置。 */
 export const resolveGridDrop = (
     draggedIds: string[],

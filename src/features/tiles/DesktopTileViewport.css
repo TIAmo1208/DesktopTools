@@ -1,0 +1,99 @@
+/* 围栏内容区承载项目和覆盖式滚动条。 */
+.desktop-tile-viewport {
+    position: relative;
+    display: grid;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* 折叠不卸载内容，恢复后保留订阅与滚动。 */
+.desktop-tile-viewport[hidden] {
+    display: none;
+}
+
+/* 公共滚动容器隐藏系统滚动条，使用原型覆盖轨道。 */
+.desktop-tile-viewport__content {
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+}
+
+/* 固定内容由宿主保障最小尺寸，不提供滚动。 */
+.desktop-tile-viewport__content--fixed {
+    overflow: hidden;
+}
+
+/* WebView 隐藏滚动条但保留原生滚动行为。 */
+.desktop-tile-viewport__content::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+}
+
+/* 围栏右侧覆盖式滚动条。 */
+.desktop-tile-viewport__scrollbar {
+    position: absolute;
+    z-index: 13;
+    top: 2px;
+    right: 0;
+    bottom: 6px;
+    display: grid;
+    grid-template-rows: 12px minmax(0, 1fr) 12px;
+    width: 12px;
+    color: rgb(218 228 230 / 66%);
+}
+
+/* 没有可滚动内容时隐藏覆盖式滚动条。 */
+.desktop-tile-viewport__scrollbar[data-scrollable="false"] {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* 覆盖式滚动条箭头按钮。 */
+.desktop-tile-viewport__button {
+    display: grid;
+    place-items: center;
+    width: 12px;
+    height: 12px;
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    cursor: default;
+}
+
+/* 覆盖式滚动条箭头图标。 */
+.desktop-tile-viewport__button svg {
+    width: 10px;
+    height: 10px;
+    pointer-events: none;
+}
+
+/* 覆盖式滚动条轨道。 */
+.desktop-tile-viewport__track {
+    position: relative;
+    min-height: 0;
+    background: transparent;
+}
+
+/* 覆盖式滚动条滑块。 */
+.desktop-tile-viewport__thumb {
+    position: absolute;
+    top: 0;
+    left: 2px;
+    width: 8px;
+    min-height: 18px;
+    border-radius: 999px;
+    background: rgb(218 228 230 / 66%);
+    cursor: default;
+    touch-action: none;
+}
+
+/* 覆盖式滚动条滑块键盘焦点。 */
+.desktop-tile-viewport__thumb:focus-visible {
+    outline: 1px solid rgb(186 230 238 / 90%);
+    outline-offset: 1px;
+}

@@ -1,49 +1,19 @@
-/* 功能格子共用围栏主题，外层只拥有表面、标题和八向缩放。 */
+/* 功能内容在公共外壳中的默认层级。 */
 .official-component {
-    position: absolute;
     z-index: 7000;
-    display: grid;
-    grid-template-rows: 28px minmax(0, 1fr);
-    box-sizing: border-box;
-    padding: 1px;
-    border: 1px solid var(--fence-border);
-    border-radius: min(8px, var(--surface-radius));
-    color: var(--fence-text);
-    background: var(--fence-surface);
-    backdrop-filter: blur(5px);
-    font-family: var(--interface-font);
-    font-size: var(--interface-font-size);
-}
-/* 聚焦功能格子使用围栏的边界语义。 */
-.official-component:focus-visible {
-    outline: 2px solid var(--color-focus);
-    outline-offset: -2px;
-}
-/* 标题是拖动入口，内容操作不触发几何变更。 */
-.official-component__header {
-    display: flex;
-    align-items: center;
-    min-width: 0;
-    padding: 2px 6px;
-    border-bottom: 1px solid var(--fence-border);
-    cursor: move;
-    touch-action: none;
-}
-/* 标题不允许挤出固定轨道。 */
-.official-component__header strong {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    font-size: inherit;
 }
 /* 内容单独滚动，不裁掉外层缩放命中区域。 */
 .official-component__content {
     display: grid;
-    min-width: 0;
-    min-height: 0;
     padding: 10px;
-    overflow: auto;
 }
+/* 音乐内容填满可用区域，最小尺寸由宿主几何约束保障。 */
+.official-component__content--music {
+    container-type: size;
+    place-items: stretch;
+    align-content: stretch;
+}
+
 /* 数字采用固定字号和等宽数字，不跟随普通正文字号缩放。 */
 .official-component__clock {
     align-self: center;
@@ -67,76 +37,6 @@
 .official-component__status {
     margin: 0;
     font-size: 12px;
-}
-/* 八方向缩放命中区域置于表面内部，原生命中图能完整覆盖。 */
-.official-component__resize {
-    position: absolute;
-    z-index: 2;
-    touch-action: none;
-}
-/* 上边缘。 */
-.official-component__resize--n {
-    top: 0;
-    left: 8px;
-    right: 8px;
-    height: 4px;
-    cursor: ns-resize;
-}
-/* 下边缘。 */
-.official-component__resize--s {
-    bottom: 0;
-    left: 8px;
-    right: 8px;
-    height: 4px;
-    cursor: ns-resize;
-}
-/* 左边缘。 */
-.official-component__resize--w {
-    left: 0;
-    top: 8px;
-    bottom: 8px;
-    width: 4px;
-    cursor: ew-resize;
-}
-/* 右边缘。 */
-.official-component__resize--e {
-    right: 0;
-    top: 8px;
-    bottom: 8px;
-    width: 4px;
-    cursor: ew-resize;
-}
-/* 左上角。 */
-.official-component__resize--nw {
-    top: 0;
-    left: 0;
-    width: 8px;
-    height: 8px;
-    cursor: nwse-resize;
-}
-/* 右上角。 */
-.official-component__resize--ne {
-    top: 0;
-    right: 0;
-    width: 8px;
-    height: 8px;
-    cursor: nesw-resize;
-}
-/* 左下角。 */
-.official-component__resize--sw {
-    bottom: 0;
-    left: 0;
-    width: 8px;
-    height: 8px;
-    cursor: nesw-resize;
-}
-/* 右下角。 */
-.official-component__resize--se {
-    bottom: 0;
-    right: 0;
-    width: 8px;
-    height: 8px;
-    cursor: nwse-resize;
 }
 /* 非实例级运行时失败汇总。 */
 .component-runtime-failure {

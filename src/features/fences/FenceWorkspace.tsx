@@ -7,13 +7,16 @@ import fenceSortIcon from "../../../resources/fence-sort.svg?raw";
 import fenceToggleCollapseIcon from "../../../resources/fence-toggle-collapse.svg?raw";
 import fenceToggleExpandIcon from "../../../resources/fence-toggle-expand.svg?raw";
 import { DebugTest } from "../components/DebugTest";
-import { usePreferences } from "../settings/PreferencesProvider";
+import { MessageNotificationHost } from "../notifications/MessageNotificationHost";
+import { publishMessage } from "../notifications/messageNotification";
+
 import type { DesktopHostMonitor, DesktopHostSnapshot } from "../../contracts/desktopHost";
 import {
     FENCE_MIN_HEIGHT,
     FENCE_MIN_WIDTH,
     type FenceSnapshot,
     type WorkspaceCommand,
+    type WorkspacePoint,
     type WorkspaceContextMenuTarget,
     type WorkspaceFocusTarget,
     type WorkspaceInteractionCommand,
@@ -25,10 +28,14 @@ import { projectDesktopItems, type DesktopItemViewModel } from "../desktop-items
 import { OfficialComponentHost } from "../components/OfficialComponentHost";
 import { useWorkspaceInteraction } from "../workspace/interaction/useWorkspaceInteraction";
 import { useWorkspaceDrag } from "../workspace/interaction/useWorkspaceDrag";
-import { publishCrossMonitorDrag, type CrossMonitorDrag } from "../workspace/interaction/crossMonitorDrag";
-import { clientPointToPhysical, monitorAtPhysicalPoint, physicalPointToMonitorDip } from "../workspace/interaction/workspaceDrag";
-import { moveFence, resizeFence, snapFenceEdges, type FenceResizeDirection } from "./fenceGeometry";
+
 import "./FenceWorkspace.css";
+import { DesktopTileBase } from "../tiles/DesktopTileBase";
+import { DesktopTileHeader } from "../tiles/DesktopTileHeader";
+import { DesktopTileViewport } from "../tiles/DesktopTileViewport";
+import { useDesktopTileGeometry } from "../tiles/useDesktopTileGeometry";
+import { useDesktopTileExpansion } from "../tiles/useDesktopTileExpansion";
+import type { TileAppearance, TileAppearanceChange } from "../../contracts/tile";
 
 /** 围栏工作区接收的权威快照与命令边界。 */
 interface FenceWorkspaceProps {
@@ -47,7 +54,7 @@ interface FenceWorkspaceProps {
     onDeleteItems: (itemIds: string[], permanent: boolean) => Promise<void>;
     onSetClipboard: (itemIds: string[], cut: boolean) => Promise<void>;
     onPasteItems: () => Promise<void>;
-    onStartShellDrag: (itemIds: string[]) => Promise<void>;
+    onStartShellDrag: (token: number, pointerOffset: WorkspacePoint) => Promise<void>;
     onContextMenu: (target: WorkspaceContextMenuTarget, clientX: number, clientY: number) => Promise<WorkspaceSnapshot>;
     onItemInput?: (itemId: string) => void;
     onBeginInputDrag: () => Promise<void>;
@@ -56,16 +63,15 @@ interface FenceWorkspaceProps {
 
 /** 单个围栏的呈现与交互参数。 */
 interface FencePanelProps {
+    appearance?: TileAppearance; // 当前共享外观。
+    onRenameStart: () => void; // 开始标题编辑。
     renaming: boolean; // 是否编辑围栏标题。
     onRenameEnd: () => void; // 结束标题编辑。
     fence: FenceSnapshot;
-    snapTargets: WorkspaceRect[];
     items: DesktopItemViewModel[];
     onCommand: (command: WorkspaceCommand, monitorId?: string) => Promise<WorkspaceSnapshot>;
     onInteraction: (command: WorkspaceInteractionCommand) => Promise<WorkspaceSnapshot>;
-    onFenceContextMenu: (event: MouseEvent<HTMLElement>, fenceId: string) => void;
-    onSortMenu: (event: MouseEvent<HTMLButtonElement>, fenceId: string) => void; // 打开围栏排序菜单。
-    sortMenuOpen: boolean; // 当前围栏排序菜单是否展开。
+
     onItemContextMenu: (event: MouseEvent<HTMLLIElement>, itemId: string) => void;
     onOpenItems: (itemIds: string[]) => Promise<void>;
     onItemPointerDown: (event: PointerEvent<HTMLLIElement>, item: DesktopItemViewModel) => void;
@@ -83,30 +89,19 @@ interface FencePanelProps {
     onRenameCancel: () => void;
 }
 
-// 围栏提供的八个缩放边框方向。
-const RESIZE_DIRECTIONS: FenceResizeDirection[] = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
 const FENCE_Z_INDEX_BASE = 1000; // 围栏始终位于未归类图标之上，拖动预览使用更高层级。
-
-/** 将权威围栏边界直接投射到交互预览 DOM。 */
-const applyFenceBounds = (element: HTMLElement, bounds: WorkspaceRect, collapsed = false) => {
-    element.style.left = `${bounds.left}px`;
-    element.style.top = `${bounds.top}px`;
-    element.style.width = `${bounds.width}px`;
-    element.style.height = `${collapsed ? 28 : bounds.height}px`;
-};
 
 /** 呈现一个可移动、缩放、折叠、滚动和接收项目的围栏。 */
 const FencePanel = ({
     fence: persistedFence,
+    appearance: savedAppearance,
+    onRenameStart,
     renaming,
     onRenameEnd,
-    snapTargets,
     items,
     onCommand,
     onInteraction,
-    onFenceContextMenu,
-    onSortMenu,
-    sortMenuOpen,
+
     onItemContextMenu,
     onOpenItems,
     onItemPointerDown,
@@ -123,209 +118,63 @@ const FencePanel = ({
     onRenameCommit,
     onRenameCancel,
 }: FencePanelProps) => {
-    const [hovered, setHovered] = useState(false); // 当前指针是否位于围栏表面。
-    const cancelRename = useRef(false); // Escape 取消后阻止失焦提交。
-    const fence = { ...persistedFence, collapsed: persistedFence.collapsed && !(persistedFence.autoExpand && hovered) }; // 临时展开不写入领域折叠状态。
-    const fenceRef = useRef<HTMLElement>(null); // 当前围栏表面节点。
-    const { preferences } = usePreferences(); // 网格改变后重新计算滚动条。
-    const contentRef = useRef<HTMLUListElement>(null); // 当前围栏滚动内容节点。
-    useEffect(() => {
-        if (!persistedFence.autoExpand || !persistedFence.collapsed || !currentMonitor) return;
-        let timeout = 0; // 跨屏源宿主异常停止时关闭临时展开。
-        const handleRemoteHover = (event: Event) => {
-            const drag = (event as CustomEvent).detail; // 原生转发的指针位置。
-            if (!drag || drag.phase === "result" || drag.source === currentMonitor.id) return;
-            const bounds = fenceRef.current?.getBoundingClientRect(); // 当前标题或已展开表面。
-            const inside =
-                drag.phase !== "end" &&
-                drag.target === currentMonitor.id &&
-                bounds &&
-                drag.pointer?.left >= bounds.left &&
-                drag.pointer?.left <= bounds.right &&
-                drag.pointer?.top >= bounds.top &&
-                drag.pointer?.top <= bounds.bottom;
-            setHovered(Boolean(inside));
-            clearTimeout(timeout);
-            if (inside) timeout = window.setTimeout(() => setHovered(false), 2500);
-        };
-        window.addEventListener("desktop-tools-drag", handleRemoteHover);
-        return () => {
-            window.removeEventListener("desktop-tools-drag", handleRemoteHover);
-            clearTimeout(timeout);
-        };
-    }, [persistedFence.autoExpand, persistedFence.collapsed, currentMonitor?.id]);
+    const fenceRef = useRef<HTMLElement>(null); // 公共格子表面。
+    const appearance: TileAppearance = savedAppearance ?? {
+        title: persistedFence.title,
+        titleMode: "fixed",
+        buttonMode: "hover",
+        collapsed: persistedFence.collapsed,
+        autoExpand: persistedFence.autoExpand ?? false,
+    }; // 未设置时保留已有围栏数据。
+    const expansion = useDesktopTileExpansion(fenceRef, appearance.collapsed, appearance.autoExpand, currentMonitor?.id); // 临时展开不保存。
+    const fence = { ...persistedFence, title: appearance.title ?? persistedFence.title, collapsed: expansion.collapsed }; // 内容的有效呈现状态。
+    const contentRef = useRef<HTMLUListElement>(null); // 内容滚动表面。
+    const handleAppearance = (change: TileAppearanceChange) => {
+        void onCommand({ type: "set-tile-appearance", target: { type: "fence", fenceId: fence.id }, change }).catch(() => undefined);
+    }; // 单字段外观命令。
+    const sortItems = [
+        {
+            label: `按名称排序${fence.sortMode === "name-ascending" ? "（升序）" : fence.sortMode === "name-descending" ? "（降序）" : ""}`,
+            radio: true,
+            checked: Boolean(fence.sortMode && fence.sortMode !== "none"),
+            onSelect: () =>
+                void onCommand({
+                    type: "set-fence-sort",
+                    fenceId: fence.id,
+                    sortMode: fence.sortMode === "name-ascending" ? "name-descending" : "name-ascending",
+                }).catch(() => undefined),
+        },
+        {
+            label: "无排序",
+            radio: true,
+            checked: !fence.sortMode || fence.sortMode === "none",
+            onSelect: () => void onCommand({ type: "set-fence-sort", fenceId: fence.id, sortMode: "none" }).catch(() => undefined),
+        },
+    ]; // 两个排序入口使用同一内容。
     const scrollSync = useRef({ running: false, requested: undefined as number | undefined }); // 合并滚动写入，防止旧快照拉回正在滚动的内容。
-    const [scrollbar, setScrollbar] = useState({ maxScrollTop: 0, thumbTop: 0, thumbHeight: 0, trackHeight: 0 }); // 当前覆盖式滚动条几何。
-
-    /** 按原型规则同步围栏覆盖式滚动条。 */
-    const updateScrollbar = () => {
-        const content = contentRef.current;
-        const track = content?.parentElement?.querySelector<HTMLElement>(".fence__scroll-track");
-        if (!content || !track) return;
-        const maxScrollTop = Math.max(0, content.scrollHeight - content.clientHeight);
-        const trackHeight = track.clientHeight;
-        const thumbHeight = maxScrollTop > 0 ? Math.max(18, (content.clientHeight / content.scrollHeight) * trackHeight) : 0;
-        const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
-        setScrollbar({ maxScrollTop, trackHeight, thumbHeight, thumbTop: maxThumbTop > 0 ? (content.scrollTop / maxScrollTop) * maxThumbTop : 0 });
-    };
-
     useEffect(() => {
         if (contentRef.current && !scrollSync.current.running) contentRef.current.scrollTop = fence.scrollTop;
     }, [fence.scrollTop, fence.collapsed]);
 
-    useEffect(() => {
-        updateScrollbar();
-        const observer = new ResizeObserver(updateScrollbar);
-        if (contentRef.current) observer.observe(contentRef.current);
-        const track = contentRef.current?.parentElement?.querySelector<HTMLElement>(".fence__scroll-track");
-        if (track) observer.observe(track);
-        return () => observer.disconnect();
-    }, [fence.collapsed, fence.layoutMode, items.length, preferences?.fenceGrid]);
-
-    /** 开始围栏移动或缩放，并在指针释放时提交一次边界。 */
-    const beginGeometry = async (event: PointerEvent<HTMLElement>, direction?: FenceResizeDirection) => {
-        if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button"))) return;
-        event.preventDefault();
-        event.stopPropagation();
-        // 捕获当前连续指针交互的围栏节点。
-        const element = fenceRef.current;
-        if (!element) return;
-        // 指针捕获和原生监听所属的交互节点。
-        const handle = event.currentTarget;
-        // 当前交互开始时的指针位置。
-        const startPointer = { x: event.clientX, y: event.clientY };
-        // 当前交互开始时的权威围栏边界。
-        const startBounds = { ...fence.bounds };
-        const session = crypto.randomUUID(); // 当前围栏跨屏会话。
-        let crossDrag: CrossMonitorDrag | undefined; // 最近一次跨屏预览。
-        const geometryTargets = [
-            ...snapTargets,
-            ...Array.from(document.querySelectorAll<HTMLElement>(".official-component")).map((component) => component.getBoundingClientRect()),
-        ]; // 仅使用可见功能格子，避免对齐到已隐藏实例。
-        // 指针移动期间持续更新的预览边界。
-        let preview = startBounds;
-        let finished = false; // 当前连续指针交互结束标记。
-        try {
-            await onBeginInputDrag();
-        } catch {
-            return;
-        }
-        try {
-            handle.setPointerCapture(event.pointerId);
-        } catch {
-            await onEndInputDrag().catch(() => undefined);
-            return;
-        }
-
-        // 根据最新指针更新直接 DOM 预览。
-        const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
-            // 当前指针相对交互起点的位移。
-            const delta = { x: moveEvent.clientX - startPointer.x, y: moveEvent.clientY - startPointer.y };
-            // 当前透明宿主工作区尺寸。
-            const viewport = { width: window.innerWidth, height: window.innerHeight };
-            preview = direction ? resizeFence(direction, startBounds, delta, viewport) : moveFence(startBounds, delta, viewport);
-            preview = snapFenceEdges(
-                preview,
-                geometryTargets,
-                viewport,
-                8,
-                direction
-                    ? { left: direction.includes("w"), right: direction.includes("e"), top: direction.includes("n"), bottom: direction.includes("s") }
-                    : undefined,
-            );
-            applyFenceBounds(element, preview, fence.collapsed);
-            if (!direction && currentMonitor) {
-                const physical = clientPointToPhysical({ x: moveEvent.clientX, y: moveEvent.clientY }, currentMonitor); // 跨屏物理指针。
-                const target = monitorAtPhysicalPoint(physical, monitors); // 预览目的屏。
-                if (target) {
-                    crossDrag = {
-                        session,
-                        source: currentMonitor.id,
-                        target: target.id,
-                        kind: "fence",
-                        itemIds: [],
-                        pointer: physicalPointToMonitorDip(physical, target),
-                        origin: { left: startPointer.x, top: startPointer.y },
-                        delta: { left: delta.x, top: delta.y },
-                        visuals: [{ title: fence.title, bounds: { ...startBounds, height: fence.collapsed ? 28 : startBounds.height } }],
-                    };
-                    void publishCrossMonitorDrag(crossDrag, "move").catch(() => undefined);
-                }
-            }
-        };
-
-        // 结束指针交互并提交或恢复权威边界。
-        const finishGeometry = (finishEvent: globalThis.PointerEvent) => {
-            if (finished) return;
-            finished = true;
-            if (crossDrag) void publishCrossMonitorDrag(crossDrag, "end").catch(() => undefined);
-            handle.removeEventListener("pointermove", handlePointerMove);
-            handle.removeEventListener("pointerup", finishGeometry);
-            handle.removeEventListener("pointercancel", finishGeometry);
-            handle.removeEventListener("lostpointercapture", finishGeometry);
-            window.removeEventListener("keydown", handleGeometryKey);
-            if (finishEvent.type === "pointerup") {
-                const centerPhysical = currentMonitor
-                    ? clientPointToPhysical(
-                          direction
-                              ? { x: preview.left + preview.width / 2, y: preview.top + preview.height / 2 }
-                              : {
-                                    x: finishEvent.clientX - (startPointer.x - startBounds.left) + preview.width / 2,
-                                    y: finishEvent.clientY - (startPointer.y - startBounds.top) + preview.height / 2,
-                                },
-                          currentMonitor,
-                      )
-                    : undefined; // 围栏中心在虚拟桌面中的物理坐标。
-                const targetMonitor = centerPhysical ? monitorAtPhysicalPoint(centerPhysical, monitors) : currentMonitor; // 围栏最终归属的显示器。
-                const targetCenter = centerPhysical && targetMonitor ? physicalPointToMonitorDip(centerPhysical, targetMonitor) : undefined; // 围栏中心在目标显示器中的 DIP。
-                const targetBounds = targetMonitor
-                    ? moveFence(
-                          {
-                              ...preview,
-                              left: (targetCenter?.left ?? preview.left + preview.width / 2) - preview.width / 2,
-                              top: (targetCenter?.top ?? preview.top + preview.height / 2) - preview.height / 2,
-                          },
-                          { x: 0, y: 0 },
-                          { width: targetMonitor.workWidth / targetMonitor.scaleFactor, height: targetMonitor.workHeight / targetMonitor.scaleFactor },
-                      )
-                    : preview; // 保持逻辑尺寸并约束到目标显示器工作区的最终边界。
-                const targetViewport = targetMonitor
-                    ? { width: targetMonitor.workWidth / targetMonitor.scaleFactor, height: targetMonitor.workHeight / targetMonitor.scaleFactor }
-                    : { width: window.innerWidth, height: window.innerHeight };
-                const snappedTargetBounds = snapFenceEdges(
-                    targetBounds,
-                    targetMonitor?.id === currentMonitor?.id ? geometryTargets : [],
-                    targetViewport,
-                    8,
-                    direction
-                        ? { left: direction.includes("w"), right: direction.includes("e"), top: direction.includes("n"), bottom: direction.includes("s") }
-                        : undefined,
-                );
-                void onCommand({ type: "update-fence-bounds", fenceId: fence.id, bounds: snappedTargetBounds }, targetMonitor?.id)
-                    .catch(() => applyFenceBounds(element, startBounds, fence.collapsed))
-                    .finally(() => onEndInputDrag().catch(() => undefined));
-                return;
-            }
-            applyFenceBounds(element, startBounds, fence.collapsed);
-            void onEndInputDrag().catch(() => undefined);
-        };
-
-        const handleGeometryKey = (keyEvent: KeyboardEvent) => {
-            if (keyEvent.key !== "Escape") return;
-            keyEvent.preventDefault();
-            finishGeometry(new globalThis.PointerEvent("pointercancel", { pointerId: event.pointerId }));
-        }; // Escape 同时清理所有屏幕预览。
-        window.addEventListener("keydown", handleGeometryKey);
-        handle.addEventListener("pointermove", handlePointerMove);
-        handle.addEventListener("pointerup", finishGeometry);
-        handle.addEventListener("pointercancel", finishGeometry);
-        handle.addEventListener("lostpointercapture", finishGeometry);
-    };
+    const { handlePointerDown: beginGeometry, handleKeyDown: handleGeometryKey } = useDesktopTileGeometry({
+        surfaceRef: fenceRef,
+        bounds: fence.bounds,
+        collapsed: fence.collapsed,
+        title: fence.title,
+        minimum: { width: FENCE_MIN_WIDTH, height: FENCE_MIN_HEIGHT },
+        snap: true,
+        currentMonitor,
+        monitors,
+        onFocus: () => focusFence(),
+        onCommit: (bounds, monitorId) => onCommand({ type: "update-fence-bounds", fenceId: fence.id, bounds }, monitorId),
+        onBeginInputDrag,
+        onEndInputDrag,
+        onFailure: (error) => publishMessage({ type: "error", content: error instanceof Error ? error.message : "格子几何操作失败", source: "desktop-tile" }),
+    }); // 公共几何沿用原型调用路径。
 
     /** 将当前原生滚动位置立即提交到权威工作区。 */
     const handleScroll = () => {
         if (contentRef.current?.dataset.dragScrolling === "true") return;
-        updateScrollbar();
         scrollSync.current.requested = contentRef.current?.scrollTop ?? 0;
         if (scrollSync.current.running) return;
         scrollSync.current.running = true;
@@ -342,47 +191,6 @@ const FencePanel = ({
         })().catch(() => undefined);
     };
 
-    /** 按原型步进滚动围栏内容。 */
-    const scrollBy = (offset: number) => contentRef.current?.scrollBy({ top: offset });
-
-    /** 拖动覆盖式滚动条滑块并同步内容位置。 */
-    const handleThumbPointerDown = (event: PointerEvent<HTMLDivElement>) => {
-        if (event.button !== 0 || scrollbar.maxScrollTop <= 0 || scrollbar.trackHeight <= scrollbar.thumbHeight) return;
-        event.preventDefault();
-        event.stopPropagation();
-        const thumb = event.currentTarget;
-        const startPointerY = event.clientY;
-        const startScrollTop = contentRef.current?.scrollTop ?? 0;
-        const maxThumbTop = scrollbar.trackHeight - scrollbar.thumbHeight;
-        let finished = false;
-        thumb.setPointerCapture(event.pointerId);
-        const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
-            if (contentRef.current)
-                contentRef.current.scrollTop = startScrollTop + ((moveEvent.clientY - startPointerY) / maxThumbTop) * scrollbar.maxScrollTop;
-        };
-        const finish = (finishEvent: globalThis.PointerEvent) => {
-            if (finished) return;
-            finished = true;
-            if (finishEvent.type !== "lostpointercapture" && thumb.hasPointerCapture(finishEvent.pointerId)) thumb.releasePointerCapture(finishEvent.pointerId);
-            thumb.removeEventListener("pointermove", handlePointerMove);
-            thumb.removeEventListener("pointerup", finish);
-            thumb.removeEventListener("pointercancel", finish);
-            thumb.removeEventListener("lostpointercapture", finish);
-            handleScroll();
-        };
-        thumb.addEventListener("pointermove", handlePointerMove);
-        thumb.addEventListener("pointerup", finish);
-        thumb.addEventListener("pointercancel", finish);
-        thumb.addEventListener("lostpointercapture", finish);
-    };
-
-    /** 点击覆盖式滚动条轨道分页滚动。 */
-    const handleTrackPointerDown = (event: PointerEvent<HTMLDivElement>) => {
-        if (event.button !== 0 || event.target !== event.currentTarget || !contentRef.current) return;
-        const thumbTop = scrollbar.thumbTop + event.currentTarget.getBoundingClientRect().top;
-        scrollBy(event.clientY < thumbTop ? -contentRef.current.clientHeight : contentRef.current.clientHeight);
-    };
-
     /** 清空项目选择并将键盘焦点交给当前围栏标题。 */
     const focusFence = () => {
         fenceRef.current?.focus({ preventScroll: true });
@@ -390,8 +198,20 @@ const FencePanel = ({
     };
 
     return (
-        <section
+        <DesktopTileBase
             ref={fenceRef}
+            collapsed={fence.collapsed}
+            appearance={appearance}
+            renaming={renaming}
+            onRenameStart={onRenameStart}
+            onAppearanceChange={handleAppearance}
+            sortItems={sortItems}
+            menuItems={[
+                { label: "排序方式", children: sortItems },
+                { label: "解除围栏", onSelect: () => void onCommand({ type: "dissolve-fence", fenceId: fence.id }).catch(() => undefined) },
+            ]}
+            onResize={(event, direction) => void beginGeometry(event, direction)}
+            onKeyDown={handleGeometryKey}
             className={`fence${fence.collapsed ? " fence--collapsed" : ""}`}
             data-fence-id={fence.id}
             data-layout-mode={fence.layoutMode}
@@ -410,174 +230,109 @@ const FencePanel = ({
                 zIndex: FENCE_Z_INDEX_BASE + fence.zIndex,
             }}
             aria-label={`围栏 ${fence.title}`}
-            onPointerEnter={() => setHovered(true)}
-            onPointerLeave={() => setHovered(false)}
-            onContextMenu={(event) => onFenceContextMenu(event, fence.id)}
+            onPointerEnter={expansion.onPointerEnter}
+            onPointerLeave={expansion.onPointerLeave}
+            onContextMenu={() => focusFence()}
         >
-            <header
-                className="fence__header"
+            <DesktopTileHeader
+                title={fence.title}
+                onRenameStart={onRenameStart}
+                editing={renaming}
+                onRenameEnd={onRenameEnd}
+                onRename={(title) => onCommand({ type: "rename-fence", fenceId: fence.id, title })}
                 onPointerDown={(event) => {
                     if (event.target instanceof Element && event.target.closest("button,input")) return;
                     focusFence();
                     void beginGeometry(event);
                 }}
-            >
-                {renaming ? (
-                    <input
-                        className="fence__title-editor"
-                        aria-label="围栏名称"
-                        defaultValue={fence.title}
-                        autoFocus
-                        onFocus={(event) => {
-                            cancelRename.current = false;
-                            event.currentTarget.select();
-                        }}
-                        onKeyDown={(event) => {
-                            event.stopPropagation();
-                            if (event.key === "Escape") {
-                                cancelRename.current = true;
-                                onRenameEnd();
+                commands={(sortMenuOpen) => (
+                    <>
+                        <button
+                            type="button"
+                            className="fence__sort"
+                            data-sort-active={Boolean(fence.sortMode && fence.sortMode !== "none")}
+                            title="排序方式"
+                            aria-label="排序方式"
+                            aria-haspopup="menu"
+                            aria-expanded={sortMenuOpen}
+
+                            onClick={(event) => {
+                                const bounds = event.currentTarget.getBoundingClientRect();
+                                event.currentTarget.closest(".desktop-tile")?.dispatchEvent(
+                                    new CustomEvent("desktop-tile-menu", {
+                                        detail: { left: bounds.left, top: bounds.bottom, sorting: true, trigger: event.currentTarget },
+                                    }),
+                                );
+                            }}
+                        >
+                            <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: fenceSortIcon }} />
+                        </button>
+                        <button
+                            type="button"
+                            title={fence.layoutMode === "tile" ? "切换为列表" : "切换为平铺"}
+                            onClick={() =>
+                                void onCommand({
+                                    type: "set-fence-layout",
+                                    fenceId: fence.id,
+                                    layoutMode: fence.layoutMode === "tile" ? "list" : "tile",
+                                }).catch(() => undefined)
                             }
-                            if (event.key === "Enter" && !event.nativeEvent.isComposing) event.currentTarget.blur();
-                        }}
-                        onBlur={(event) => {
-                            if (cancelRename.current) return;
-                            const title = event.currentTarget.value.trim(); // 提交的非空标题。
-                            if (!title || title === persistedFence.title) {
-                                onRenameEnd();
-                                return;
+                        >
+                            {/* 仅内联仓库中可信的原型 SVG，使 currentColor 继承系统主题。 */}
+                            <span
+                                aria-hidden="true"
+                                dangerouslySetInnerHTML={{ __html: fence.layoutMode === "tile" ? fenceLayoutTileIcon : fenceLayoutListIcon }}
+                            />
+                        </button>
+                        <button
+                            type="button"
+                            title={persistedFence.collapsed ? "展开围栏" : "折叠围栏"}
+                            onClick={() =>
+                                void onCommand({ type: "set-fence-collapsed", fenceId: fence.id, collapsed: !persistedFence.collapsed }).catch(() => undefined)
                             }
-                            void onCommand({ type: "rename-fence", fenceId: fence.id, title })
-                                .then(onRenameEnd)
-                                .catch(() => undefined);
-                        }}
-                    />
-                ) : (
-                    <h2>{fence.title}</h2>
+                        >
+                            <span
+                                aria-hidden="true"
+                                dangerouslySetInnerHTML={{ __html: persistedFence.collapsed ? fenceToggleExpandIcon : fenceToggleCollapseIcon }}
+                            />
+                        </button>
+                    </>
                 )}
-                <div className="fence__commands">
-                    <button
-                        type="button"
-                        className="fence__sort"
-                        data-sort-active={Boolean(fence.sortMode && fence.sortMode !== "none")}
-                        title="排序方式"
-                        aria-label="排序方式"
-                        aria-haspopup="menu"
-                        aria-expanded={sortMenuOpen}
-                        aria-controls={sortMenuOpen ? "fence-sort-menu" : undefined}
-                        onClick={(event) => onSortMenu(event, fence.id)}
-                    >
-                        <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: fenceSortIcon }} />
-                    </button>
-                    <button
-                        type="button"
-                        title={fence.layoutMode === "tile" ? "切换为列表" : "切换为平铺"}
-                        onClick={() =>
-                            void onCommand({
-                                type: "set-fence-layout",
-                                fenceId: fence.id,
-                                layoutMode: fence.layoutMode === "tile" ? "list" : "tile",
-                            }).catch(() => undefined)
-                        }
-                    >
-                        {/* 仅内联仓库中可信的原型 SVG，使 currentColor 继承系统主题。 */}
-                        <span
-                            aria-hidden="true"
-                            dangerouslySetInnerHTML={{ __html: fence.layoutMode === "tile" ? fenceLayoutListIcon : fenceLayoutTileIcon }}
-                        />
-                    </button>
-                    <button
-                        type="button"
-                        title={persistedFence.collapsed ? "展开围栏" : "折叠围栏"}
-                        onClick={() =>
-                            void onCommand({ type: "set-fence-collapsed", fenceId: fence.id, collapsed: !persistedFence.collapsed }).catch(() => undefined)
-                        }
-                    >
-                        <span
-                            aria-hidden="true"
-                            dangerouslySetInnerHTML={{ __html: persistedFence.collapsed ? fenceToggleExpandIcon : fenceToggleCollapseIcon }}
-                        />
-                    </button>
-                </div>
-            </header>
+            />
 
-            {!fence.collapsed && (
-                <div className="fence__body">
-                    <ul
-                        ref={contentRef}
-                        className="fence__items"
-                        data-fence-content-id={fence.id}
-                        onScroll={handleScroll}
-                        onPointerDown={(event) => {
-                            if (event.target === event.currentTarget || (event.target instanceof Element && event.target.closest(".fence__empty")))
-                                focusFence();
-                        }}
-                    >
-                        {items.map((item) => (
-                            <DesktopItemTile
-                                key={item.key}
-                                item={item}
-                                desktopHost
-                                className={`desktop-item--fence${fence.layoutMode === "list" ? " desktop-item--list" : ""}`}
-                                fenceMemberId={item.key}
-                                onItemInput={onItemInput}
-                                onItemPointerDown={(event) => onItemPointerDown(event, item)}
-                                onItemDoubleClick={() => void onOpenItems([item.key]).catch(() => undefined)}
-                                onItemContextMenu={(event) => onItemContextMenu(event, item.key)}
-                                selected={selectedItemIds.has(item.key)}
-                                keyboardFocused={keyboardFocus?.type === "item" && keyboardFocus.itemId === item.key}
-                                renaming={renameItemId === item.key}
-                                renameValue={renameValue}
-                                onRenameValueChange={onRenameValueChange}
-                                onRenameCommit={onRenameCommit}
-                                onRenameCancel={onRenameCancel}
-                            />
-                        ))}
-                    </ul>
-                    <div className="fence__scrollbar" hidden={scrollbar.maxScrollTop <= 1}>
-                        <button type="button" className="fence__scroll-button" title="向上滚动" aria-label="向上滚动" onClick={() => scrollBy(-46)}>
-                            <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: fenceToggleCollapseIcon }} />
-                        </button>
-                        <div className="fence__scroll-track" onPointerDown={handleTrackPointerDown}>
-                            <div
-                                className="fence__scroll-thumb"
-                                role="scrollbar"
-                                tabIndex={0}
-                                aria-label="围栏滚动位置"
-                                aria-valuemin={0}
-                                aria-valuemax={Math.round(scrollbar.maxScrollTop)}
-                                aria-valuenow={Math.round(contentRef.current?.scrollTop ?? 0)}
-                                style={{ height: scrollbar.thumbHeight, transform: `translateY(${scrollbar.thumbTop}px)` }}
-                                onPointerDown={handleThumbPointerDown}
-                                onKeyDown={(event) => {
-                                    if (!["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) return;
-                                    event.preventDefault();
-                                    if (event.key === "Home") scrollBy(-scrollbar.maxScrollTop);
-                                    else if (event.key === "End") scrollBy(scrollbar.maxScrollTop);
-                                    else
-                                        scrollBy(
-                                            (event.key.endsWith("Up") ? -1 : 1) * (event.key.startsWith("Page") ? (contentRef.current?.clientHeight ?? 0) : 46),
-                                        );
-                                }}
-                            />
-                        </div>
-                        <button type="button" className="fence__scroll-button" title="向下滚动" aria-label="向下滚动" onClick={() => scrollBy(46)}>
-                            <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: fenceToggleExpandIcon }} />
-                        </button>
-                    </div>
-                </div>
-            )}
-
-            {!fence.collapsed &&
-                RESIZE_DIRECTIONS.map((direction) => (
-                    <span
-                        className={`fence__resize fence__resize--${direction}`}
-                        key={direction}
-                        aria-hidden="true"
-                        onPointerDown={(event) => void beginGeometry(event, direction)}
+            <DesktopTileViewport
+                contentRef={contentRef}
+                as="ul"
+                collapsed={fence.collapsed}
+                className="fence__items"
+                data-fence-content-id={fence.id}
+                onScroll={handleScroll}
+                onPointerDown={(event) => {
+                    if (event.target === event.currentTarget || (event.target instanceof Element && event.target.closest(".fence__empty"))) focusFence();
+                }}
+            >
+                {items.map((item) => (
+                    <DesktopItemTile
+                        key={item.key}
+                        item={item}
+                        desktopHost
+                        className={`desktop-item--fence${fence.layoutMode === "list" ? " desktop-item--list" : ""}`}
+                        fenceMemberId={item.key}
+                        onItemInput={onItemInput}
+                        onItemPointerDown={(event) => onItemPointerDown(event, item)}
+                        onItemDoubleClick={() => void onOpenItems([item.key]).catch(() => undefined)}
+                        onItemContextMenu={(event) => onItemContextMenu(event, item.key)}
+                        selected={selectedItemIds.has(item.key)}
+                        keyboardFocused={keyboardFocus?.type === "item" && keyboardFocus.itemId === item.key}
+                        renaming={renameItemId === item.key}
+                        renameValue={renameValue}
+                        onRenameValueChange={onRenameValueChange}
+                        onRenameCommit={onRenameCommit}
+                        onRenameCancel={onRenameCancel}
                     />
                 ))}
-        </section>
+            </DesktopTileViewport>
+        </DesktopTileBase>
     );
 };
 
@@ -608,14 +363,15 @@ export const FenceWorkspace = ({
     const contextMenuOpenRef = useRef(false); // 原生 owner HWND 打开期间阻止窗口失焦清空选择。
     const [dragFailure, setDragFailure] = useState<string>(); // 当前项目拖动取消或容量错误说明。
     const [interactionStatus, setInteractionStatus] = useState<string>(); // 当前无需调用 Shell 的键盘操作提示。
-    const [fenceMenu, setFenceMenu] = useState<{ fenceId: string; left: number; top: number; sorting?: boolean }>(); // 当前围栏对象或排序菜单。
-    const menuRef = useRef<HTMLMenuElement>(null); // 当前排序菜单焦点容器。
-    const sortTriggerRef = useRef<HTMLButtonElement | null>(null); // 关闭排序菜单后恢复焦点的按钮。
-    const menuFence = workspace?.fences.find((fence) => fence.id === fenceMenu?.fenceId); // 当前菜单对应的最新围栏状态。
-
+    // 将原有工作区反馈送入统一消息入口，避免在围栏内重复呈现。
     useEffect(() => {
-        if (fenceMenu?.sorting) menuRef.current?.querySelector<HTMLButtonElement>("[aria-checked='true']")?.focus();
-    }, [fenceMenu]);
+        const content = failure ?? dragFailure; // 当前优先呈现的操作错误。
+        if (content) publishMessage({ type: "error", content, source: "workspace", dedupeKey: content });
+    }, [failure, dragFailure]);
+    useEffect(() => {
+        const content = status ?? interactionStatus; // 当前 Shell 或交互操作反馈。
+        if (content) publishMessage({ type: "info", content, source: "workspace", dedupeKey: content });
+    }, [status, interactionStatus]);
     const [renameItemId, setRenameItemId] = useState<string>(); // 当前 F2 原位编辑的单一项目引用。
     const [renameFenceId, setRenameFenceId] = useState<string>(); // 当前编辑标题的围栏。
     const [renameValue, setRenameValue] = useState(""); // 当前重命名输入框中的用户文本。
@@ -658,6 +414,12 @@ export const FenceWorkspace = ({
 
     /** 使用同步打开标记承载原生菜单生命周期。 */
     const handleContextMenu = async (target: WorkspaceContextMenuTarget, clientX: number, clientY: number) => {
+        if (target.type === "fence" && workspace) {
+            workspaceRef.current
+                ?.querySelector<HTMLElement>(`[data-fence-id="${CSS.escape(target.fenceId)}"]`)
+                ?.dispatchEvent(new CustomEvent("desktop-tile-menu", { detail: { left: clientX, top: clientY } }));
+            return workspace;
+        }
         contextMenuOpenRef.current = true;
         try {
             return await onContextMenu(target, clientX, clientY);
@@ -666,30 +428,6 @@ export const FenceWorkspace = ({
             if (target.type !== "background") workspaceRef.current?.focus({ preventScroll: true });
         }
     };
-
-    useEffect(() => {
-        /** 在菜单外部发生指针输入时关闭围栏菜单。 */
-        const handleDocumentPointerDown = (event: globalThis.PointerEvent) => {
-            if (event.target instanceof Element && event.target.closest(".fence-object-menu,.fence__sort")) return;
-            setFenceMenu(undefined);
-        };
-        /** 使用 Escape 关闭当前围栏菜单。 */
-        const handleDocumentKeyDown = (event: globalThis.KeyboardEvent) => {
-            if (event.key !== "Escape") return;
-            if (event.target instanceof Element && event.target.closest("#fence-sort-menu")) return;
-            setFenceMenu(undefined);
-        };
-        /** 窗口失去焦点时关闭当前围栏菜单。 */
-        const handleWindowBlur = () => setFenceMenu(undefined);
-        document.addEventListener("pointerdown", handleDocumentPointerDown, true);
-        document.addEventListener("keydown", handleDocumentKeyDown, true);
-        window.addEventListener("blur", handleWindowBlur);
-        return () => {
-            document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
-            document.removeEventListener("keydown", handleDocumentKeyDown, true);
-            window.removeEventListener("blur", handleWindowBlur);
-        };
-    }, []);
 
     const { handleWorkspacePointerDown, handleWorkspacePointerMove, handleWorkspaceContextMenu, handleWorkspaceKeyDown } = useWorkspaceInteraction({
         workspaceRef,
@@ -737,37 +475,6 @@ export const FenceWorkspace = ({
         await handleContextMenu({ type: "items", itemIds }, event.clientX, event.clientY).catch(() => undefined);
     };
 
-    /** 在当前围栏标题位置显示原型对象菜单。 */
-    const handleFenceContextMenu = (event: MouseEvent<HTMLElement>, fenceId: string) => {
-        event.preventDefault();
-        event.stopPropagation();
-        sortTriggerRef.current = null;
-        workspaceRef.current?.focus({ preventScroll: true });
-        void onInteraction({ type: "focus-surface", focus: { type: "fence", fenceId } }).catch(() => undefined);
-        setFenceMenu({ fenceId, left: event.clientX, top: event.clientY });
-    };
-
-    /** 在标题栏按钮下方打开排序菜单，再次点击同一按钮关闭。 */
-    const handleSortMenu = (event: MouseEvent<HTMLButtonElement>, fenceId: string) => {
-        const bounds = event.currentTarget.getBoundingClientRect(); // 菜单的按钮锚点。
-        sortTriggerRef.current = event.currentTarget;
-        setFenceMenu((current) =>
-            current?.sorting && current.fenceId === fenceId ? undefined : { fenceId, left: bounds.right - 164, top: bounds.bottom, sorting: true },
-        );
-    };
-
-    /** 将排序状态与成员顺序交给同一个 Rust 布局事务。 */
-    const handleSortChange = (byName: boolean) => {
-        if (!menuFence) return;
-        void onCommand({
-            type: "set-fence-sort",
-            fenceId: menuFence.id,
-            sortMode: byName ? (menuFence.sortMode === "name-ascending" ? "name-descending" : "name-ascending") : "none",
-        }).catch(() => undefined);
-        setFenceMenu(undefined);
-        (sortTriggerRef.current ?? workspaceRef.current)?.focus();
-    };
-
     return (
         <main
             ref={workspaceRef}
@@ -782,17 +489,7 @@ export const FenceWorkspace = ({
             onPointerMoveCapture={handleWorkspacePointerMove}
             onContextMenu={handleWorkspaceContextMenu}
         >
-            {(failure ?? dragFailure) && (
-                <p className="fence-workspace__error" role="alert" data-hit-id="workspace-error" data-hit-kind="workspace-status" data-hit-priority="80">
-                    {failure ?? dragFailure}
-                </p>
-            )}
-
-            {(status ?? interactionStatus) && !failure && !dragFailure && (
-                <p className="fence-workspace__status" role="status" data-hit-id="workspace-status" data-hit-kind="workspace-status" data-hit-priority="80">
-                    {status ?? interactionStatus}
-                </p>
-            )}
+            <MessageNotificationHost />
 
             <ul className="fence-workspace__unclassified" aria-label="未归类区域" onPointerDown={handleWorkspacePointerDown}>
                 {unclassifiedItems.map((item) => {
@@ -822,159 +519,21 @@ export const FenceWorkspace = ({
                 })}
             </ul>
 
-            {fenceMenu && workspace?.fences.find((fence) => fence.id === fenceMenu.fenceId) && (
-                <menu
-                    ref={menuRef}
-                    id={fenceMenu.sorting ? "fence-sort-menu" : undefined}
-                    role={fenceMenu.sorting ? "menu" : undefined}
-                    aria-label={fenceMenu.sorting ? "排序方式" : undefined}
-                    data-hit-id="fence-menu"
-                    data-hit-kind="component"
-                    data-hit-priority="100"
-                    className={`fence-object-menu${fenceMenu.sorting ? " fence-object-menu--sort" : ""}`}
-                    style={{
-                        left: Math.max(0, Math.min(fenceMenu.left, window.innerWidth - 172)),
-                        top: Math.max(0, Math.min(fenceMenu.top, window.innerHeight - (fenceMenu.sorting ? 76 : 180))),
-                    }}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onKeyDown={(event) => {
-                        event.stopPropagation();
-                        if (event.key === "Escape" || event.key === "Tab") {
-                            setFenceMenu(undefined);
-                            if (event.key === "Escape") {
-                                event.preventDefault();
-                                (sortTriggerRef.current ?? workspaceRef.current)?.focus();
-                            }
-                        }
-                        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-                        event.preventDefault();
-                        const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")]; // 当前菜单可用命令。
-                        const index = buttons.indexOf(document.activeElement as HTMLButtonElement); // 当前焦点命令位置。
-                        buttons[
-                            event.key === "Home"
-                                ? 0
-                                : event.key === "End"
-                                  ? buttons.length - 1
-                                  : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length
-                        ]?.focus();
-                    }}
-                >
-                    {fenceMenu.sorting ? (
-                        <>
-                            <li role="none">
-                                <button
-                                    type="button"
-                                    role="menuitemradio"
-                                    aria-checked={Boolean(menuFence?.sortMode && menuFence.sortMode !== "none")}
-                                    onClick={() => handleSortChange(true)}
-                                >
-                                    按名称排序
-                                    <span className="fence-object-menu__direction">
-                                        {menuFence?.sortMode === "name-ascending" ? "升序" : menuFence?.sortMode === "name-descending" ? "降序" : ""}
-                                    </span>
-                                </button>
-                            </li>
-                            <li role="none">
-                                <button
-                                    type="button"
-                                    role="menuitemradio"
-                                    aria-checked={!menuFence?.sortMode || menuFence.sortMode === "none"}
-                                    onClick={() => handleSortChange(false)}
-                                >
-                                    无排序
-                                </button>
-                            </li>
-                        </>
-                    ) : (
-                        <>
-                            <li>
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        setRenameFenceId(fenceMenu.fenceId);
-                                        setFenceMenu(undefined);
-                                    }}
-                                >
-                                    重命名
-                                </button>
-                            </li>
-                            <li>
-                                <button
-                                    type="button"
-                                    role="menuitemcheckbox"
-                                    aria-checked={Boolean(menuFence?.autoExpand)}
-                                    onClick={() => {
-                                        if (menuFence)
-                                            void onCommand({ type: "set-fence-auto-expand", fenceId: menuFence.id, enabled: !menuFence.autoExpand }).catch(
-                                                () => undefined,
-                                            );
-                                        setFenceMenu(undefined);
-                                    }}
-                                >
-                                    <span className="fence-object-menu__icon" aria-hidden="true">
-                                        {menuFence?.autoExpand ? "✓" : ""}
-                                    </span>
-                                    折叠时自动展开
-                                </button>
-                            </li>
-                            <li>
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        const fence = workspace?.fences.find((item) => item.id === fenceMenu.fenceId);
-                                        if (fence)
-                                            void onCommand({ type: "set-fence-collapsed", fenceId: fence.id, collapsed: !fence.collapsed }).catch(
-                                                () => undefined,
-                                            );
-                                        setFenceMenu(undefined);
-                                    }}
-                                >
-                                    {workspace?.fences.find((fence) => fence.id === fenceMenu.fenceId)?.collapsed ? "展开" : "折叠"}
-                                </button>
-                            </li>
-                            <li>
-                                <button type="button" onClick={() => setFenceMenu({ ...fenceMenu, sorting: true })}>
-                                    <span className="fence-object-menu__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: fenceSortIcon }} />
-                                    排序方式
-                                </button>
-                            </li>
-                            <li>
-                                <button type="button" disabled title="正式领域暂未提供布局编辑命令">
-                                    编辑布局
-                                </button>
-                            </li>
-                            <li>
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        void onCommand({ type: "dissolve-fence", fenceId: fenceMenu.fenceId }).catch(() => undefined);
-                                        setFenceMenu(undefined);
-                                    }}
-                                >
-                                    删除围栏
-                                </button>
-                            </li>
-                        </>
-                    )}
-                </menu>
-            )}
-
             {workspace?.fences.map((fence) => (
                 <FencePanel
                     key={fence.id}
+                    appearance={workspace.tileAppearances?.[`fence:${fence.id}`]}
+                    onRenameStart={() => setRenameFenceId(fence.id)}
                     renaming={renameFenceId === fence.id}
                     onRenameEnd={() => setRenameFenceId(undefined)}
                     fence={fence}
-                    snapTargets={workspace.fences.filter((candidate) => candidate.id !== fence.id).map((candidate) => candidate.bounds)}
                     items={fence.members.flatMap((itemId) => {
                         const item = itemsById.get(itemId); // Shell 当前可解析或保留的围栏成员。
                         return item ? [item] : [];
                     })}
                     onCommand={onCommand}
                     onInteraction={onInteraction}
-                    onFenceContextMenu={handleFenceContextMenu}
-                    onSortMenu={handleSortMenu}
-                    sortMenuOpen={Boolean(fenceMenu?.sorting && fenceMenu.fenceId === fence.id)}
+
                     onItemContextMenu={handleItemContextMenu}
                     onOpenItems={onOpenItems}
                     onItemPointerDown={(event, item) => void handleItemPointerDown(event, item.key)}
@@ -994,7 +553,8 @@ export const FenceWorkspace = ({
             ))}
 
             <OfficialComponentHost
-                snapTargets={workspace?.fences.map((fence) => fence.bounds) ?? []}
+                tileAppearances={workspace?.tileAppearances}
+                keyboardFocus={workspace?.interaction.keyboardFocus}
                 debugContent={
                     <DebugTest
                         monitor={currentMonitor}

@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseWorkspaceSnapshot } from "../../../contracts/workspace.ts";
-import { projectWorkspaceSurface } from "./workspaceSurfaceProjection.ts";
+import { projectWorkspaceSurface, projectHitRegions } from "./workspaceSurfaceProjection.ts";
+
+test("native hit regions follow stacking and exclude scrolled-out members", () => {
+    const item = { id: "member", kind: "desktop-item", left: 10, top: -20, width: 40, height: 60, priority: 70, stackingOrder: 1001, clip: { left: 0, top: 20, width: 200, height: 100 } }; // 只露出底部二十 DIP 的成员。
+    const regions = projectHitRegions([item, { ...item, id: "hidden", top: -100 }, { ...item, id: "front", kind: "fence", top: 0, priority: 50, stackingOrder: 1002, clip: undefined }], 200, 120);
+    assert.equal(regions.some((region) => region.id === "hidden"), false);
+    assert.deepEqual(regions[0], { id: "member", kind: "desktop-item", left: 10, top: 20, width: 40, height: 20, priority: 1 });
+    assert.ok(regions[1].priority > regions[0].priority);
+});
 
 /** 验证断屏投射只改变呈现，重连与跨屏拖动仍可使用原始权威事实。 */
 test("projects a disconnected display without mutating global selection or ownership", () => {

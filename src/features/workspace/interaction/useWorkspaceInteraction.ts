@@ -265,7 +265,18 @@ export const useWorkspaceInteraction = ({
             const current =
                 focus.type === "item" ? (focusedFence ? { type: "fence" as const, fenceId: focusedFence.id } : { type: "background" as const }) : focus;
             const next = nextWorkspaceFocus(targets, current, event.shiftKey); // 当前 Tab 方向命中的下一高层焦点。
-            if (next && next.type !== "item") void onInteraction({ type: "focus-surface", focus: next }).catch(() => undefined);
+            if (next && next.type !== "item")
+                void onInteraction({ type: "focus-surface", focus: next })
+                    .then(() => {
+                        const element =
+                            next.type === "fence"
+                                ? workspaceRef.current?.querySelector<HTMLElement>(`[data-fence-id="${CSS.escape(next.fenceId)}"]`)
+                                : next.type === "component"
+                                  ? workspaceRef.current?.querySelector<HTMLElement>(`[data-component-id="${CSS.escape(next.componentId)}"]`)
+                                  : workspaceRef.current; // 语义焦点与真实 DOM 焦点同步。
+                        element?.focus({ preventScroll: true });
+                    })
+                    .catch(() => undefined);
             return;
         }
 

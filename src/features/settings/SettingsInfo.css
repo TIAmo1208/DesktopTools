@@ -1,0 +1,50 @@
+/* 信息按钮保持独立键盘入口，不触发相邻开关。 */
+.settings-info {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle;
+    width: 24px;
+    height: 24px;
+    margin-left: 4px;
+    padding: 4px;
+    border: 0;
+    border-radius: 4px;
+    color: var(--color-muted);
+    background: transparent;
+    cursor: help;
+}
+
+/* Lucide 图标与项目音乐图标使用相同基线。 */
+.settings-info span,
+.settings-info svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+}
+
+/* 指针悬停保持项目现有弱表面。 */
+.settings-info:hover {
+    background: var(--color-subtle);
+}
+
+/* 键盘焦点不改变按钮布局。 */
+.settings-info:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 1px;
+}
+
+/* Portal 浮层采用界面主题，长说明在窗口可用空间内换行。 */
+.settings-info__tooltip {
+    z-index: 20000;
+    max-width: min(320px, var(--radix-tooltip-content-available-width));
+    max-height: var(--radix-tooltip-content-available-height);
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+    padding: 8px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: var(--color-surface);
+    color: var(--color-text);
+    font: var(--interface-font-size) / 1.5 var(--interface-font);
+}

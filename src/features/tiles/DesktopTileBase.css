@@ -1,0 +1,122 @@
+/* 单个围栏表面。 */
+.desktop-tile {
+    position: absolute;
+    display: grid;
+    grid-template-rows: 28px minmax(0, 1fr);
+    overflow: visible;
+    box-sizing: border-box;
+    padding: 1px;
+    border: 1px solid var(--fence-border);
+    border-radius: min(8px, var(--surface-radius));
+    color: var(--fence-text);
+    background: var(--fence-surface);
+    box-shadow: none;
+    backdrop-filter: blur(5px);
+}
+
+/* 使用统一边框表达 DOM 焦点，避免浏览器默认黑色描边覆盖选中状态。 */
+.desktop-tile:focus {
+    outline: none;
+}
+
+/* 当前接收高层键盘命令或具有可见 DOM 焦点的围栏。 */
+.desktop-tile:focus-visible,
+.desktop-tile[data-keyboard-focus="true"] {
+    border-color: var(--fence-focus-border);
+}
+
+/* 当前语义焦点格子临时置顶，持久布局层级保持原值。 */
+.desktop-tile[data-keyboard-focus="true"] {
+    z-index: 17000 !important;
+}
+
+/* 围栏折叠状态只呈现标题栏。 */
+.desktop-tile--collapsed {
+    grid-template-rows: 28px;
+    overflow: visible;
+}
+
+/* 悬浮标题和无标题组合不占内容轨道。 */
+.desktop-tile[data-title-mode="hover"]:not(.desktop-tile--collapsed),
+.desktop-tile[data-title-mode="none"] {
+    grid-template-rows: minmax(0, 1fr);
+}
+
+/* 围栏缩放命中边框。 */
+.desktop-tile__resize {
+    position: absolute;
+    z-index: 20;
+    touch-action: none;
+}
+
+/* 围栏北侧缩放边框。 */
+.desktop-tile__resize--n {
+    top: -4px;
+    right: 8px;
+    left: 8px;
+    height: 8px;
+    cursor: ns-resize;
+}
+
+/* 围栏东北缩放边框。 */
+.desktop-tile__resize--ne {
+    top: -5px;
+    right: -5px;
+    width: 12px;
+    height: 12px;
+    cursor: nesw-resize;
+}
+
+/* 围栏东侧缩放边框。 */
+.desktop-tile__resize--e {
+    top: 8px;
+    right: -4px;
+    bottom: 8px;
+    width: 8px;
+    cursor: ew-resize;
+}
+
+/* 围栏东南缩放边框。 */
+.desktop-tile__resize--se {
+    right: -5px;
+    bottom: -5px;
+    width: 12px;
+    height: 12px;
+    cursor: nwse-resize;
+}
+
+/* 围栏南侧缩放边框。 */
+.desktop-tile__resize--s {
+    right: 8px;
+    bottom: -4px;
+    left: 8px;
+    height: 8px;
+    cursor: ns-resize;
+}
+
+/* 围栏西南缩放边框。 */
+.desktop-tile__resize--sw {
+    bottom: -5px;
+    left: -5px;
+    width: 12px;
+    height: 12px;
+    cursor: nesw-resize;
+}
+
+/* 围栏西侧缩放边框。 */
+.desktop-tile__resize--w {
+    top: 8px;
+    bottom: 8px;
+    left: -4px;
+    width: 8px;
+    cursor: ew-resize;
+}
+
+/* 围栏西北缩放边框。 */
+.desktop-tile__resize--nw {
+    top: -5px;
+    left: -5px;
+    width: 12px;
+    height: 12px;
+    cursor: nwse-resize;
+}

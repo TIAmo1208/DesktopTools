@@ -1,0 +1,30 @@
+# 仅供固定版本 nightly-2026-09-08 的 rustfmt 使用；编译仍使用 stable。
+unstable_features = true
+edition = "2024"
+style_edition = "2024"
+
+# 对应 C++ 的 UseTab: Never、IndentWidth: 4 和 TabWidth: 4。
+hard_tabs = false
+tab_spaces = 4
+
+# rustfmt 不提供 ColumnLimit: 0 的等价项，以较高上限近似不限行宽。
+max_width = 1000
+use_small_heuristics = "Max"
+
+# 对应 Allman：声明和控制流的大括号另起一行。
+brace_style = "AlwaysNextLine"
+control_brace_style = "AlwaysNextLine"
+fn_single_line = true
+single_line_if_else_max_width = 100
+single_line_let_else_max_width = 100
+
+# 最多保留一个连续空行，不对齐连续字段或赋值。
+blank_lines_upper_bound = 1
+struct_field_align_threshold = 0
+enum_discrim_align_threshold = 0
+binop_separator = "Front"
+
+# 保持中文注释正文，不启用注释重排或文档示例格式化。
+wrap_comments = false
+normalize_comments = false
+format_code_in_doc_comments = false

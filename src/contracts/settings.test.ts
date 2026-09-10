@@ -3,6 +3,35 @@ import test from "node:test";
 
 import { parsePreferences, parseSettingsSnapshot } from "./settings.ts";
 
+test("界面动画使用默认值并严格校验布尔设置", () => {
+    const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 缺失字段使用当前默认值。
+    assert.equal(defaults.interfaceAnimations, true);
+    const disabled = parsePreferences({ ...defaults, interfaceAnimations: false }); // 关闭值必须经过保存回读保留。
+    assert.equal(parsePreferences(JSON.parse(JSON.stringify(disabled))).interfaceAnimations, false);
+    for (const value of [null, 0, "false"]) assert.throws(() => parsePreferences({ ...defaults, interfaceAnimations: value }));
+});
+
+// 桌面主题缺失时使用固定默认值，后续修改、系统色开关及序列化均不能串组。
+test("keeps desktop appearance independent from interface and menu appearance", () => {
+    const legacy = parsePreferences({ theme: "dark", doubleClickToOpen: true, accentColor: "#aabbcc", useWindowsAccentColor: true }); // 用户原有的非默认主题。
+    assert.deepEqual(legacy.desktopAppearance, { theme: "system", accentColor: "#2563eb", useWindowsAccentColor: false });
+    const changed = parsePreferences({ ...legacy, theme: "light", accentColor: "#087f5b", useWindowsAccentColor: false }); // 只修改界面与菜单。
+    assert.deepEqual(changed.desktopAppearance, legacy.desktopAppearance);
+    const desktopChanged = parsePreferences({ ...changed, desktopAppearance: { theme: "system", accentColor: "#b42318", useWindowsAccentColor: false } }); // 只修改桌面。
+    assert.equal(desktopChanged.theme, changed.theme);
+    assert.equal(desktopChanged.accentColor, changed.accentColor);
+    assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify(desktopChanged))), desktopChanged);
+    for (const desktopAppearance of [
+        null,
+        {},
+        { ...legacy.desktopAppearance, theme: "invalid" },
+        { ...legacy.desktopAppearance, accentColor: "red" },
+        { ...legacy.desktopAppearance, useWindowsAccentColor: "true" },
+    ]) {
+        assert.throws(() => parsePreferences({ ...legacy, desktopAppearance }));
+    }
+});
+
 // 偏好和启动状态必须通过实际边界校验，不能把字符串当作开关状态。
 test("validates application preferences and settings snapshots", () => {
     for (const theme of ["system", "light", "dark"]) {

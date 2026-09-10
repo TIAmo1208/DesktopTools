@@ -1,0 +1,112 @@
+/* 围栏标题原位编辑，沿用标题文本和主题表面。 */
+.desktop-tile-header__editor {
+    min-width: 0;
+    width: 100%;
+    color: inherit;
+    background: transparent;
+    border: 1px solid var(--color-focus);
+    font: inherit;
+}
+
+/* 围栏标题、成员数量与命令布局。 */
+.desktop-tile-header {
+    box-sizing: border-box;
+    height: 28px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    min-height: 28px;
+    padding: 2px 4px;
+    border-bottom: 0;
+    background: transparent;
+    cursor: move;
+    touch-action: none;
+}
+
+/* 悬浮标题覆盖顶部，隐藏时不拦截内容输入。 */
+.desktop-tile-header[data-title-mode="hover"] {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 14;
+    background: var(--fence-surface);
+}
+
+/* 隐藏标题退出鼠标和键盘命中，不改变内容布局。 */
+.desktop-tile-header[data-visible="false"] {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* 固定按钮偏好及悬浮标题显示完整工具区。 */
+.desktop-tile-header[data-button-mode="fixed"] .desktop-tile-header__commands,
+.desktop-tile-header[data-title-mode="hover"] .desktop-tile-header__commands {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* 围栏标题。 */
+.desktop-tile-header h2 {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    font-size: var(--interface-font-size);
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 围栏标题栏命令集合。 */
+.desktop-tile-header__commands {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--interface-transition-duration, 0ms) ease;
+}
+
+/* 标题区悬停或键盘聚焦时显示标题命令。 */
+.desktop-tile-header:hover .desktop-tile-header__commands,
+.desktop-tile-header:focus-within .desktop-tile-header__commands {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* 围栏标题栏命令。 */
+.desktop-tile-header__commands button {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    min-height: 24px;
+    box-sizing: border-box;
+    padding: 0;
+    border: 0;
+    border-radius: 3px;
+    color: var(--fence-text);
+    background: transparent;
+    font: inherit;
+    line-height: 0;
+    cursor: default;
+}
+
+/* 围栏标题栏 SVG 图标。 */
+.desktop-tile-header__commands button svg {
+    width: 16px;
+    height: 16px;
+    pointer-events: none;
+}
+
+/* 围栏标题栏命令悬停状态。 */
+.desktop-tile-header__commands button:hover {
+    background: rgb(255 255 255 / 14%);
+}
+
+/* 围栏标题栏命令键盘焦点。 */
+.desktop-tile-header__commands button:focus-visible {
+    outline: 2px solid var(--fence-text);
+    outline-offset: 1px;
+}

@@ -111,7 +111,7 @@ test("rejects an invalid persisted fence snapshot", () => {
 // 验证版本、完整性校验和布局数量通过备份摘要契约。
 test("parses a validated workspace backup summary", () => {
     const summary = parseWorkspaceBackupSummary({
-        schemaVersion: 3,
+        schemaVersion: 4,
         createdAtUnix: 1_788_198_400,
         path: "C:\\Backups\\workspace.json",
         layoutCount: 2,

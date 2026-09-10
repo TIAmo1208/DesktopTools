@@ -24,6 +24,7 @@ export interface ShellOperationItemResult {
     resultReference: string | null;
     succeeded: boolean;
     resultCode: number;
+    compensationBlocked?: string; // 成功文件不能安全自动补偿时的明确原因。
 }
 
 /** 用户触发的一次 Shell 操作结果与撤销属性。 */
@@ -32,12 +33,41 @@ export interface ShellOperationResult {
     completedAtUnixMicros: number;
     kind: ShellOperationKind;
     aborted: boolean;
+    operationError?: number; // 整体执行失败的 HRESULT，不覆盖逐项完成结果。
     reversible: boolean;
     permanent: boolean;
     effect: string | null;
     items: ShellOperationItemResult[];
     message: string;
 }
+
+/** 完整数据对象的单次准备凭据。 */
+export interface ShellDragPreparation {
+    token: number; // 当前进程内单次启动凭据。
+    threshold: { left: number; top: number }; // Windows 系统拖动阈值，单位 DIP。
+}
+
+/** 校验源端准备结果，null 表示整组保留内部布局拖动。 */
+export const parseShellDragPreparation = (value: unknown): ShellDragPreparation | null => {
+    if (value === null) return null;
+    if (typeof value !== "object" || !value) throw new DesktopItemContractError();
+    const candidate = value as Record<string, unknown>; // 未信任的原生准备载荷。
+    const threshold = candidate.threshold as Record<string, unknown> | undefined; // 阈值不能使用缺省值掩盖坏载荷。
+    if (
+        !Number.isSafeInteger(candidate.token) ||
+        (candidate.token as number) <= 0 ||
+        !threshold ||
+        typeof threshold !== "object" ||
+        typeof threshold.left !== "number" ||
+        !Number.isFinite(threshold.left) ||
+        threshold.left <= 0 ||
+        typeof threshold.top !== "number" ||
+        !Number.isFinite(threshold.top) ||
+        threshold.top <= 0
+    )
+        throw new DesktopItemContractError();
+    return { token: candidate.token as number, threshold: { left: threshold.left, top: threshold.top } };
+};
 
 /** 标识桌面项目契约边界的载荷错误。 */
 export class DesktopItemContractError extends Error {
@@ -94,6 +124,11 @@ export const parseShellOperationResult = (value: unknown): ShellOperationResult 
     if (typeof candidate.aborted !== "boolean" || typeof candidate.reversible !== "boolean" || typeof candidate.permanent !== "boolean")
         throw new DesktopItemContractError();
     if (candidate.effect !== null && typeof candidate.effect !== "string") throw new DesktopItemContractError();
+    if (
+        candidate.operationError !== undefined &&
+        (!Number.isInteger(candidate.operationError) || (candidate.operationError as number) < -2147483648 || (candidate.operationError as number) >= 0)
+    )
+        throw new DesktopItemContractError();
     if (!Array.isArray(candidate.items) || typeof candidate.message !== "string") throw new DesktopItemContractError();
     const items = candidate.items.map((item) => {
         if (typeof item !== "object" || item === null) throw new DesktopItemContractError();
@@ -101,11 +136,13 @@ export const parseShellOperationResult = (value: unknown): ShellOperationResult 
         if (typeof itemCandidate.sourceReference !== "string" || itemCandidate.sourceReference.length === 0) throw new DesktopItemContractError();
         if (itemCandidate.resultReference !== null && typeof itemCandidate.resultReference !== "string") throw new DesktopItemContractError();
         if (typeof itemCandidate.succeeded !== "boolean" || !Number.isSafeInteger(itemCandidate.resultCode)) throw new DesktopItemContractError();
+        if (itemCandidate.compensationBlocked !== undefined && typeof itemCandidate.compensationBlocked !== "string") throw new DesktopItemContractError();
         return {
             sourceReference: itemCandidate.sourceReference,
             resultReference: itemCandidate.resultReference as string | null,
             succeeded: itemCandidate.succeeded,
             resultCode: itemCandidate.resultCode as number,
+            ...(itemCandidate.compensationBlocked === undefined ? {} : { compensationBlocked: itemCandidate.compensationBlocked as string }),
         };
     }); // 已完成契约校验的项目结果集合。
     return {
@@ -113,6 +150,7 @@ export const parseShellOperationResult = (value: unknown): ShellOperationResult 
         completedAtUnixMicros: candidate.completedAtUnixMicros as number,
         kind: candidate.kind as ShellOperationKind,
         aborted: candidate.aborted,
+        ...(candidate.operationError === undefined ? {} : { operationError: candidate.operationError as number }),
         reversible: candidate.reversible,
         permanent: candidate.permanent,
         effect: candidate.effect as string | null,

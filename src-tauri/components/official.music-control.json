@@ -1,0 +1,7 @@
+{
+  "id": "official.music-control",
+  "name": "音乐控制",
+  "entry": "official:music-control",
+  "requiredCapabilities": ["read-current-media"],
+  "persistenceVersion": 1
+}

@@ -4,14 +4,26 @@ import { getComponentRuntimeSnapshot, invokeComponentCapability, listenComponent
 import type { ComponentHostEvent, ComponentInstanceSnapshot, ComponentRegistrationSnapshot, ComponentRuntimeSnapshot } from "../../contracts/component";
 import type { DesktopHostMonitor } from "../../contracts/desktopHost";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspaceRect, WorkspaceSnapshot } from "../../contracts/workspace";
-import { clientPointToPhysical, monitorAtPhysicalPoint, physicalPointToMonitorDip } from "../workspace/interaction/workspaceDrag";
-import { moveFence, resizeFence, snapFenceEdges, type FenceResizeDirection } from "../fences/fenceGeometry";
+
 import { usePreferences } from "../settings/PreferencesProvider";
 import "./OfficialComponentHost.css";
+import { MusicControl, MUSIC_CONTROL_MINIMUM_SIZE, type MusicControlMinimumSize } from "../music/MusicControl";
+import { executeMusicAction, getCurrentMusicSession, listenMusicSession } from "../../bridge/music";
+import { publishMessage } from "../notifications/messageNotification";
+import { DesktopTileBase } from "../tiles/DesktopTileBase";
+import { DesktopTileHeader } from "../tiles/DesktopTileHeader";
+import { DesktopTileViewport } from "../tiles/DesktopTileViewport";
+import { useDesktopTileGeometry } from "../tiles/useDesktopTileGeometry";
+import { useDesktopTileExpansion } from "../tiles/useDesktopTileExpansion";
+import type { TileAppearance, TileAppearanceChange } from "../../contracts/tile";
+import type { WorkspaceFocusTarget } from "../../contracts/workspace";
+import fenceToggleCollapseIcon from "../../../resources/fence-toggle-collapse.svg?raw";
+import fenceToggleExpandIcon from "../../../resources/fence-toggle-expand.svg?raw";
 
 /** 官方组件宿主接收的工作区实例和命令边界。 */
 interface OfficialComponentHostProps {
-    snapTargets: WorkspaceRect[]; // 当前显示器可对齐的围栏边界。
+    tileAppearances?: Record<string, TileAppearance>; // 共享宿主外观。
+    keyboardFocus?: WorkspaceFocusTarget; // 共享焦点和层级。
     debugContent?: ReactNode; // 调试格子的宿主信息，Release 不呈现。
     instances: ComponentInstanceSnapshot[];
     currentMonitor?: DesktopHostMonitor;
@@ -41,18 +53,6 @@ class ComponentErrorBoundary extends Component<{ children: ReactNode; instanceId
         return this.state.failed ? <p className="official-component__error">组件渲染失败</p> : this.props.children;
     }
 }
-
-/** 将权威组件边界约束到目标显示器工作区。 */
-const constrainBounds = (bounds: WorkspaceRect, monitor: DesktopHostMonitor): WorkspaceRect => {
-    const width = Math.min(bounds.width, monitor.workWidth / monitor.scaleFactor); // 目标显示器可容纳的组件宽度。
-    const height = Math.min(bounds.height, monitor.workHeight / monitor.scaleFactor); // 目标显示器可容纳的组件高度。
-    return {
-        left: Math.max(0, Math.min(bounds.left, monitor.workWidth / monitor.scaleFactor - width)),
-        top: Math.max(0, Math.min(bounds.top, monitor.workHeight / monitor.scaleFactor - height)),
-        width,
-        height,
-    };
-};
 
 /** 呈现原型已验证视觉路径对应的官方本地时间组件。 */
 const LocalClock = ({
@@ -112,9 +112,109 @@ const LocalClock = ({
     );
 };
 
+/** 读取当前 GSMTC 会话并绑定三项媒体动作。 */
+const MusicWidget = ({ onMinimumSizeChange }: { onMinimumSizeChange: (minimum: MusicControlMinimumSize) => void }) => {
+    const [snapshot, setSnapshot] = useState<import("../../contracts/music").MusicMediaSnapshot>(); // 当前媒体快照。
+    const generation = useRef(0); // 丢弃早于事件或卸载的读取结果。
+    const mounted = useRef(false); // 禁止卸载后的异步结果更新界面。
+    const failed = useRef(false); // 当前连接故障周期是否已经通知。
+    const refreshRetry = useRef<ReturnType<typeof setTimeout> | undefined>(undefined); // 故障后持续同步，即使恢复值未触发新事件。
+    const handleFailure = (error: unknown) => {
+        if (!mounted.current) return;
+        generation.current++;
+        setSnapshot(undefined);
+        const message =
+            error instanceof Error
+                ? error.message
+                : typeof error === "object" && error && "message" in error
+                  ? String(error.message)
+                  : typeof error === "string"
+                    ? error
+                    : "无法连接媒体控制"; // 兼容两个 transport 的错误载荷。
+        if (!failed.current) publishMessage({ type: "warning", content: message, source: "desktop-music-control" });
+        failed.current = true;
+        clearTimeout(refreshRetry.current);
+        refreshRetry.current = setTimeout(() => void refresh(), 1000);
+    };
+    const refresh = async () => {
+        if (!mounted.current) return;
+        clearTimeout(refreshRetry.current);
+        const request = ++generation.current; // 此次读取对应的本地代次。
+        try {
+            const current = await getCurrentMusicSession(); // 读取后只接受仍有效的结果。
+            if (!mounted.current || request !== generation.current) return;
+            failed.current = false;
+            setSnapshot(current);
+        } catch (error) {
+            if (request === generation.current) handleFailure(error);
+        }
+    };
+    useEffect(() => {
+        mounted.current = true;
+        let active = true; // 隔离同一组件重新挂载前的订阅。
+        let unlisten: (() => void) | undefined; // 已成功建立的订阅释放入口。
+        let retry: ReturnType<typeof setTimeout> | undefined; // 订阅建立失败后的有界重试间隔。
+        const connect = async () => {
+            try {
+                const stop = await listenMusicSession(
+                    (current) => {
+                        if (!active) return;
+                        generation.current++;
+                        clearTimeout(refreshRetry.current);
+                        failed.current = false;
+                        setSnapshot(current);
+                    },
+                    (error) => {
+                        if (active) handleFailure(error);
+                    },
+                ); // 先订阅再读取，避免建立期间漏更新。
+                if (!active) {
+                    stop();
+                    return;
+                }
+                unlisten = stop;
+                void refresh();
+            } catch (error) {
+                if (!active) return;
+                handleFailure(error);
+                retry = setTimeout(() => void connect(), 1000);
+            }
+        };
+        void connect();
+        return () => {
+            active = false;
+            mounted.current = false;
+            generation.current++;
+            clearTimeout(retry);
+            clearTimeout(refreshRetry.current);
+            unlisten?.();
+        };
+    }, []);
+    const execute = async (action: "previous" | "play" | "pause" | "next") => {
+        await executeMusicAction(action, snapshot?.sessionId ?? "");
+        await refresh();
+    };
+    return (
+        <MusicControl
+            onMinimumSizeChange={onMinimumSizeChange}
+            snapshot={snapshot}
+            actions={{
+                previous: () => execute("previous"),
+                playPause: () => execute(snapshot?.playback === "playing" ? "pause" : "play"),
+                next: () => execute("next"),
+            }}
+            onFailure={(message) => {
+                handleFailure(message);
+                void refresh();
+            }}
+        />
+    );
+};
+
 /** 呈现一个可聚焦、可拖动并隔离加载失败的组件实例。 */
 const ComponentSurface = ({
-    snapTargets,
+    appearance: savedAppearance,
+    keyboardFocus,
     debugContent,
     instance,
     registration,
@@ -126,7 +226,8 @@ const ComponentSurface = ({
     onBeginInputDrag,
     onEndInputDrag,
 }: {
-    snapTargets: WorkspaceRect[]; // 围栏及其他功能格子的对齐目标。
+    appearance?: TileAppearance; // 当前实例共享外观。
+    keyboardFocus?: WorkspaceFocusTarget; // 工作区语义焦点。
     debugContent?: ReactNode; // 已装配的调试内容。
     instance: ComponentInstanceSnapshot;
     registration?: ComponentRegistrationSnapshot;
@@ -139,165 +240,113 @@ const ComponentSurface = ({
     onEndInputDrag: OfficialComponentHostProps["onEndInputDrag"];
 }) => {
     const surfaceRef = useRef<HTMLElement>(null); // 当前组件实例表面。
-    const [previewBounds, setPreviewBounds] = useState<WorkspaceRect>(); // 连续拖动期间的临时边界。
-    const bounds = previewBounds ?? instance.bounds; // 当前呈现使用的预览或权威边界。
-    const { preferences } = usePreferences(); // 当前功能格子交互偏好。
-    const [failure, setFailure] = useState<string>(); // 保存失败保持旧布局并显示原因。
-    const cancelDrag = useRef<(() => void) | undefined>(undefined); // 卸载时释放原生输入拖动。
-    const minimum = instance.componentId === "official.debug-test" ? { width: 280, height: 154 } : { width: 164, height: 90 }; // 按内容定义最小可读尺寸。
-    useEffect(() => () => cancelDrag.current?.(), []);
-
-    /** 从组件标题开始连续拖动并在释放时提交一次布局事务。 */
-    const handleGeometry = async (event: PointerEvent<HTMLElement>, direction?: FenceResizeDirection) => {
-        if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button"))) return;
-        event.preventDefault();
-        event.stopPropagation();
-        const handle = event.currentTarget; // React 事件异步等待前保存当前节点。
-        const pointerId = event.pointerId; // 当前唯一指针。
-        const startPointer = { x: event.clientX, y: event.clientY }; // 拖动开始时的指针位置。
-        const startBounds = { ...instance.bounds }; // 拖动开始时的权威组件边界。
-        if (cancelDrag.current) return;
-        cancelDrag.current = () => undefined;
-        surfaceRef.current?.focus({ preventScroll: true });
-        setFailure(undefined);
-        await onInteraction({ type: "focus-surface", focus: { type: "component", componentId: instance.instanceId } }).catch(() => undefined);
-        try {
-            await onBeginInputDrag();
-        } catch {
-            cancelDrag.current = undefined;
-            return;
-        }
-        let preview = startBounds; // 指针移动期间持续更新的临时边界。
-        let finished = false; // 当前连续拖动结束标记。
-        try {
-            if (!handle.isConnected) throw new Error("格子已隐藏");
-            handle.setPointerCapture(pointerId);
-        } catch {
-            cancelDrag.current = undefined;
-            await onEndInputDrag().catch(() => undefined);
-            return;
-        }
-
-        // 使用当前指针位移更新组件预览位置。
-        const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
-            if (moveEvent.pointerId !== pointerId) return;
-            const viewport = { width: window.innerWidth, height: window.innerHeight }; // 当前宿主逻辑工作区。
-            const delta = { x: moveEvent.clientX - startPointer.x, y: moveEvent.clientY - startPointer.y }; // 指针位移。
-            preview = direction
-                ? resizeFence(direction, startBounds, delta, viewport, minimum)
-                : { ...startBounds, left: startBounds.left + delta.x, top: startBounds.top + delta.y };
-            if (
-                preferences?.componentSnap !== false &&
-                preview.left + preview.width / 2 >= 0 &&
-                preview.left + preview.width / 2 <= viewport.width &&
-                preview.top + preview.height / 2 >= 0 &&
-                preview.top + preview.height / 2 <= viewport.height
-            )
-                preview = snapFenceEdges(
-                    preview,
-                    snapTargets,
-                    viewport,
-                    8,
-                    direction
-                        ? { left: direction.includes("w"), right: direction.includes("e"), top: direction.includes("n"), bottom: direction.includes("s") }
-                        : undefined,
-                    minimum,
-                );
-            setPreviewBounds(preview);
-        };
-        // 提交释放位置或恢复权威边界。
-        const finishDrag = (finishEvent: globalThis.PointerEvent) => {
-            if (finishEvent.type === "pointerup" && finishEvent.pointerId !== pointerId) return;
-            if (finished) return;
-            finished = true;
-            handle.removeEventListener("pointermove", handlePointerMove);
-            handle.removeEventListener("pointerup", finishDrag);
-            handle.removeEventListener("pointercancel", finishDrag);
-            handle.removeEventListener("lostpointercapture", finishDrag);
-            document.removeEventListener("keydown", handleEscape);
-            window.removeEventListener("blur", handleCancel);
-            cancelDrag.current = undefined;
-            if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
-            if (finishEvent.type === "pointerup") {
-                const centerPhysical = currentMonitor
-                    ? clientPointToPhysical({ x: preview.left + preview.width / 2, y: preview.top + preview.height / 2 }, currentMonitor)
-                    : undefined; // 组件中心在 Windows 虚拟屏幕中的物理坐标。
-                const targetMonitor = centerPhysical ? monitorAtPhysicalPoint(centerPhysical, monitors) : currentMonitor; // 组件释放后的目标显示器。
-                const targetCenter = centerPhysical && targetMonitor ? physicalPointToMonitorDip(centerPhysical, targetMonitor) : undefined; // 组件中心在目标显示器中的 DIP。
-                const targetBounds = targetMonitor
-                    ? constrainBounds(
-                          {
-                              ...preview,
-                              left: (targetCenter?.left ?? preview.left + preview.width / 2) - preview.width / 2,
-                              top: (targetCenter?.top ?? preview.top + preview.height / 2) - preview.height / 2,
-                          },
-                          targetMonitor,
-                      )
-                    : preview; // 保持逻辑尺寸并约束到目标工作区的最终边界。
-                void onCommand({ type: "update-component-bounds", instanceId: instance.instanceId, bounds: targetBounds }, targetMonitor?.id)
-                    .catch((error: unknown) => setFailure(error instanceof Error ? error.message : "格子布局保存失败"))
-                    .finally(() => {
-                        setPreviewBounds(undefined);
-                        void onEndInputDrag().catch(() => undefined);
-                    });
-            } else {
-                setPreviewBounds(undefined);
-                void onEndInputDrag().catch(() => undefined);
-            }
-        };
-        // Escape、失焦及组件隐藏都取消当前预览。
-        const handleCancel = () => finishDrag(new globalThis.PointerEvent("pointercancel"));
-        const handleEscape = (keyEvent: KeyboardEvent) => {
-            if (keyEvent.key === "Escape") {
-                keyEvent.preventDefault();
-                handleCancel();
-            }
-        };
-        cancelDrag.current = handleCancel;
-        document.addEventListener("keydown", handleEscape);
-        window.addEventListener("blur", handleCancel);
-        handle.addEventListener("pointermove", handlePointerMove);
-        handle.addEventListener("pointerup", finishDrag);
-        handle.addEventListener("pointercancel", finishDrag);
-        handle.addEventListener("lostpointercapture", finishDrag);
-    };
+    const [editingTitle, setEditingTitle] = useState(false); // 双击标题进入编辑，允许空字符串。
+    const appearance: TileAppearance = savedAppearance ?? { title: null, titleMode: "fixed", buttonMode: "hover", collapsed: false, autoExpand: false }; // 未设置外观采用公共默认值。
+    const title =
+        appearance.title ??
+        (instance.componentId === "official.music-control" ? "音乐控制" : instance.componentId === "official.debug-test" ? "Debug 测试" : "本地时间"); // 空标题不回退。
+    const expansion = useDesktopTileExpansion(surfaceRef, appearance.collapsed, appearance.autoExpand, currentMonitor?.id); // 折叠不卸载内容。
+    const music = instance.componentId === "official.music-control"; // 音乐内容自适应外壳，同时限制最小可读尺寸。
+    const [contentMinimum, setContentMinimum] = useState(MUSIC_CONTROL_MINIMUM_SIZE); // 组件上报的最终内容需求，不解释内部布局。
+    const minimum = music
+        ? { width: contentMinimum.width + 24, height: contentMinimum.height + 24 + (appearance.titleMode === "fixed" ? 28 : 0) }
+        : instance.componentId === "official.debug-test"
+          ? { width: 280, height: 154 }
+          : { width: 164, height: 90 }; // 音乐包含内容、20px 留白和4px外壳占用。
+    const bounds = music
+        ? { ...instance.bounds, width: Math.max(instance.bounds.width, minimum.width), height: Math.max(instance.bounds.height, minimum.height) }
+        : instance.bounds; // 旧小布局先按有效下限呈现，下次几何提交保存修正值。
+    const { preferences } = usePreferences(); // 功能格子吸附偏好。
+    const [failure, setFailure] = useState<string>(); // 保存或输入错误反馈。
+    const handleFailure = (error: unknown) => {
+        const message = error instanceof Error ? error.message : "格子操作失败";
+        setFailure(message);
+        publishMessage({ type: "error", content: message, source: "desktop-tile" });
+    }; // 失败保持权威状态并通知。
+    const handleAppearance = (change: TileAppearanceChange) => {
+        void onCommand({ type: "set-tile-appearance", target: { type: "component", componentId: instance.instanceId }, change }).catch(handleFailure);
+    }; // 外观不混入组件 state。
+    const { handlePointerDown: handleGeometry, handleKeyDown: handleGeometryKey } = useDesktopTileGeometry({
+        surfaceRef,
+        bounds,
+        collapsed: expansion.collapsed,
+        title,
+        minimum,
+        snap: preferences?.componentSnap !== false,
+        currentMonitor,
+        monitors,
+        onFocus: () => {
+            surfaceRef.current?.focus({ preventScroll: true });
+            void onInteraction({ type: "focus-surface", focus: { type: "component", componentId: instance.instanceId } }).catch(handleFailure);
+        },
+        onCommit: (bounds, monitorId) => onCommand({ type: "update-component-bounds", instanceId: instance.instanceId, bounds }, monitorId),
+        onBeginInputDrag,
+        onEndInputDrag,
+        onFailure: handleFailure,
+    }); // 与围栏共用整体拖动、缩放、吸附、跨屏和取消恢复。
 
     const loading = !registration; // Component Runtime 首次同步前的短暂加载状态。
     const failed = registration?.status === "failed"; // 当前实例是否由后端隔离为加载失败。
     return (
-        <section
+        <DesktopTileBase
             ref={surfaceRef}
+            appearance={appearance}
+            collapsed={expansion.collapsed}
+            renaming={editingTitle}
+            onRenameStart={() => setEditingTitle(true)}
+            onAppearanceChange={handleAppearance}
+            onPointerEnter={expansion.onPointerEnter}
+            onPointerLeave={expansion.onPointerLeave}
+            data-keyboard-focus={keyboardFocus?.type === "component" && keyboardFocus.componentId === instance.instanceId ? "true" : undefined}
+            onResize={(event, direction) => void handleGeometry(event, direction)}
             className={`official-component${failed ? " official-component--failed" : ""}`}
-            style={{ left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height }}
+            style={{ left: bounds.left, top: bounds.top, width: bounds.width, height: expansion.collapsed ? 28 : bounds.height }}
             data-component-id={instance.instanceId}
             data-hit-id={instance.instanceId}
             data-hit-kind="component"
             data-hit-priority="60"
             tabIndex={0}
-            aria-label={loading ? "组件正在加载" : instance.componentId === "official.debug-test" ? "Debug 测试格子" : "本地时间格子"}
+            aria-label={loading ? "组件正在加载" : title}
             onPointerDown={(event) => event.stopPropagation()}
             onContextMenu={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
             }}
-            onKeyDown={(event) => {
-                if (event.target !== event.currentTarget || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
-                event.preventDefault();
-                event.stopPropagation();
-                const delta = {
-                    x: event.key === "ArrowLeft" ? -8 : event.key === "ArrowRight" ? 8 : 0,
-                    y: event.key === "ArrowUp" ? -8 : event.key === "ArrowDown" ? 8 : 0,
-                }; // 键盘移动或缩放步长。
-                const viewport = { width: window.innerWidth, height: window.innerHeight }; // 当前逻辑工作区。
-                const next = event.shiftKey ? resizeFence("se", instance.bounds, delta, viewport, minimum) : moveFence(instance.bounds, delta, viewport); // Shift 使用右下角缩放。
-                void onCommand({ type: "update-component-bounds", instanceId: instance.instanceId, bounds: next }).catch(() => setFailure("格子布局保存失败"));
-            }}
+            onKeyDown={handleGeometryKey}
             onFocus={() => void onInteraction({ type: "focus-surface", focus: { type: "component", componentId: instance.instanceId } }).catch(() => undefined)}
         >
-            <header className="official-component__header" onPointerDown={(event) => void handleGeometry(event)}>
-                <strong>{instance.componentId === "official.debug-test" ? "Debug 测试" : "本地时间"}</strong>
-            </header>
-            <div className="official-component__content">
+            <DesktopTileHeader
+                title={title}
+                editing={editingTitle}
+                onRenameStart={() => setEditingTitle(true)}
+                onRenameEnd={() => setEditingTitle(false)}
+                onPointerDown={(event) => void handleGeometry(event)}
+                onRename={(nextTitle) =>
+                    onCommand({
+                        type: "set-tile-appearance",
+                        target: { type: "component", componentId: instance.instanceId },
+                        change: { type: "title", value: nextTitle },
+                    }).catch((error) => {
+                        handleFailure(error);
+                        throw error;
+                    })
+                }
+                commands={
+                    <button
+                        type="button"
+                        title={appearance.collapsed ? "展开格子" : "折叠格子"}
+                        aria-label={appearance.collapsed ? "展开格子" : "折叠格子"}
+                        onClick={() => handleAppearance({ type: "collapsed", value: !appearance.collapsed })}
+                    >
+                        <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: appearance.collapsed ? fenceToggleExpandIcon : fenceToggleCollapseIcon }} />
+                    </button>
+                }
+            />
+            <DesktopTileViewport
+                scrollable={!music}
+                className={`official-component__content${music ? " official-component__content--music" : ""}`}
+                collapsed={expansion.collapsed}
+            >
                 <ComponentErrorBoundary instanceId={instance.instanceId}>
                     {loading ? (
                         <p className="official-component__status">正在加载组件...</p>
@@ -307,6 +356,8 @@ const ComponentSurface = ({
                         <LocalClock instance={instance} registration={registration} hostEvent={hostEvent} />
                     ) : registration.entry === "official:debug-test" ? (
                         debugContent
+                    ) : registration.entry === "official:music-control" ? (
+                        <MusicWidget onMinimumSizeChange={setContentMinimum} />
                     ) : (
                         <p className="official-component__error">组件前端入口不存在</p>
                     )}
@@ -316,22 +367,15 @@ const ComponentSurface = ({
                         {failure}
                     </p>
                 )}
-            </div>
-            {(["n", "ne", "e", "se", "s", "sw", "w", "nw"] as const).map((direction) => (
-                <div
-                    key={direction}
-                    className={`official-component__resize official-component__resize--${direction}`}
-                    aria-hidden="true"
-                    onPointerDown={(event) => void handleGeometry(event, direction)}
-                />
-            ))}
-        </section>
+            </DesktopTileViewport>
+        </DesktopTileBase>
     );
 };
 
 /** 同步 Component Runtime 并呈现当前显示器的全部官方组件实例。 */
 export const OfficialComponentHost = ({
-    snapTargets,
+    tileAppearances,
+    keyboardFocus,
     debugContent,
     instances,
     currentMonitor,
@@ -351,7 +395,9 @@ export const OfficialComponentHost = ({
             ? preferences?.clockEnabled !== false
             : instance.componentId === "official.debug-test"
               ? preferences?.debugEnabled !== false && runtime?.manifests.some((manifest) => manifest.id === "official.debug-test")
-              : true,
+              : instance.componentId === "official.music-control"
+                ? preferences?.musicEnabled === true
+                : true,
     ); // Release 没有 Debug 注册入口。
 
     useEffect(() => {
@@ -395,7 +441,8 @@ export const OfficialComponentHost = ({
             {visibleInstances.map((instance) => (
                 <ComponentSurface
                     key={instance.instanceId}
-                    snapTargets={[...snapTargets, ...visibleInstances.filter((other) => other.instanceId !== instance.instanceId).map((other) => other.bounds)]}
+                    appearance={tileAppearances?.[`component:${instance.instanceId}`]}
+                    keyboardFocus={keyboardFocus}
                     debugContent={debugContent}
                     instance={instance}
                     registration={registrations.get(instance.instanceId)}

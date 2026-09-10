@@ -1,7 +1,37 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DesktopItemContractError, parseDesktopItemSnapshot, parseShellOperationResult } from "./desktopItem.ts";
+import { DesktopItemContractError, parseDesktopItemSnapshot, parseShellOperationResult, parseShellDragPreparation } from "./desktopItem.ts";
+
+test("validates one-shot drag preparation and whole-selection fallback", () => {
+    assert.equal(parseShellDragPreparation(null), null);
+    assert.deepEqual(parseShellDragPreparation({ token: 1, threshold: { left: 4, top: 4 } }), { token: 1, threshold: { left: 4, top: 4 } });
+    for (const invalid of [undefined, {}, { token: 0, threshold: { left: 4, top: 4 } }, { token: 1, threshold: null }, { token: 1, threshold: { left: Infinity, top: 4 } }, { token: 1, threshold: { left: 4, top: 0 } }]) {
+        assert.throws(() => parseShellDragPreparation(invalid), DesktopItemContractError);
+    }
+});
+
+// 整体 HRESULT 与逐项成功事实同时跨越桥接边界，错误码只接受失败的有符号 32 位值。
+test("preserves partial results with an overall native error", () => {
+    const payload = {
+        operationId: 0,
+        completedAtUnixMicros: 0,
+        kind: "paste",
+        aborted: false,
+        operationError: -2147467259,
+        reversible: true,
+        permanent: false,
+        effect: "copy",
+        items: [{ sourceReference: "source", resultReference: "destination", succeeded: true, resultCode: 0 }],
+        message: "操作未全部完成",
+    }; // 原生完成一项后报告整体错误。
+    const result = parseShellOperationResult(payload); // 已校验的部分结果。
+    assert.equal(result.operationError, payload.operationError);
+    assert.deepEqual(result.items, payload.items);
+    for (const operationError of [0, 1, -2147483649, -1.5, "-1", null]) {
+        assert.throws(() => parseShellOperationResult({ ...payload, operationError }), DesktopItemContractError);
+    }
+});
 
 // 验证 Shell 快照保留可用项目与暂时解析失败项目。
 test("accepts available and recoverable desktop items", () => {

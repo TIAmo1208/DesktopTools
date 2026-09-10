@@ -24,6 +24,18 @@
     --color-error-surface: #fff1f0;
 }
 
+/* 装饰过渡仅在有效动画开关开启时生效，默认即时响应。 */
+:root[data-interface-animations="on"] {
+    --interface-transition-duration: 120ms;
+}
+
+/* 系统减少动态效果优先于应用偏好，不影响进度或实时拖动反馈。 */
+@media (prefers-reduced-motion: reduce) {
+    :root[data-interface-animations] {
+        --interface-transition-duration: 0ms;
+    }
+}
+
 /* 全局盒模型。 */
 * {
     box-sizing: border-box;

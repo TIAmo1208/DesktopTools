@@ -1,6 +1,8 @@
 import type { PointerEvent, RefObject } from "react";
 
 import type { DesktopHostMonitor } from "../../../contracts/desktopHost";
+import type { ShellDragPreparation } from "../../../contracts/desktopItem";
+import { prepareDesktopItemDrag, cancelDesktopItemDragPreparation } from "../../../bridge/desktopItems";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspacePoint, WorkspaceSnapshot } from "../../../contracts/workspace";
 import { listenVirtualDesktopSwitching } from "../../../bridge/virtualDesktop";
 import { selectionModeForPointer, shouldOpenItemOnPointerRelease } from "./workspaceInteraction";
@@ -15,6 +17,7 @@ import {
     resolveFenceAutoScroll,
     resolveFenceInsertion,
     resolveGridDrop,
+    resolveFreeDrop,
     resolveGridInsertion,
 } from "./workspaceDrag";
 
@@ -30,7 +33,7 @@ interface WorkspaceDragOptions {
     onInteraction: (command: WorkspaceInteractionCommand) => Promise<WorkspaceSnapshot>;
     onBeginInputDrag: () => Promise<void>;
     onEndInputDrag: () => Promise<void>;
-    onStartShellDrag: (itemIds: string[]) => Promise<void>;
+    onStartShellDrag: (token: number, pointerOffset: WorkspacePoint) => Promise<void>;
     onOpenItems: (itemIds: string[]) => Promise<void>; // 未形成拖动的单击打开动作。
     onFailure: (failure: string | undefined) => void;
 }
@@ -73,18 +76,6 @@ export const useWorkspaceDrag = ({
         const anchorIndex = dragItemIds.indexOf(anchorItemId); // 实际拖动项目在稳定集合中的位置。
         if (anchorIndex >= 0) dragItemIds.splice(anchorIndex, 1);
         dragItemIds.unshift(anchorItemId);
-
-        // Alt+拖动把同一选择集合交给系统 OLE，普通拖动继续使用布局事务。
-        if (event.altKey) {
-            try {
-                await onInteraction({ type: "focus-item", itemId: anchorItemId, selectionMode: pointerSelectionMode });
-                await onBeginInputDrag();
-                await onStartShellDrag(dragItemIds);
-            } finally {
-                await onEndInputDrag().catch(() => undefined);
-            }
-            return;
-        }
 
         const dragElements = new Map(
             allItemElements.flatMap((element) => {
@@ -149,13 +140,16 @@ export const useWorkspaceDrag = ({
         let gridPreview: Map<string, WorkspacePoint> | undefined; // 当前有效的未归类网格预览位置。
         let insertionBlocked = false; // 当前网格传播是否因容量不足而失败。
         let targetFenceId: string | undefined; // 当前指针命中的目标围栏。
+        let rejectedByTile = false; // 内容不支持文件时阻止穿透到下层围栏或桌面。
         let targetItemId: string | undefined; // 当前指针命中的目标围栏成员。
         let targetPlacement: "before" | "after" | undefined; // 当前围栏成员插入方向。
         let autoScrollFrame = 0; // 当前围栏自动滚动动画帧。
         let autoScrollSpeed = 0; // 当前围栏自动滚动每帧速度。
         let latestPointer: { x: number; y: number } | undefined; // 自动滚动持续更新预览使用的最近指针。
         let latestClientPointer = startPointer; // 跨显示器落位使用的最近逐屏客户区指针。
+        let freePlacement = event.altKey; // 内部回退也遵循释放时 Alt 自由定位。
         let finished = false; // 当前连续拖动结束标记。
+        let prepared: ShellDragPreparation | null = null; // 完整数据对象成功准备后才允许交接 OLE。
         let switchingSubscription: Promise<() => void> | undefined; // 当前拖动期间监听虚拟桌面切换的取消订阅。
 
         /** 将未归类项目 DOM 恢复到拖动开始时的位置。 */
@@ -201,6 +195,16 @@ export const useWorkspaceDrag = ({
         /** 根据当前指针更新围栏投放、手动顺序和自动滚动预览。 */
         const previewFenceDrop = (pointer: { x: number; y: number }): boolean => {
             clearFencePreview();
+            const tile = document
+                .elementsFromPoint(pointer.x, pointer.y)
+                .map((element) => element.closest<HTMLElement>(".desktop-tile"))
+                .find(Boolean); // 只判断最上层公共表面。
+            rejectedByTile = Boolean(tile && !tile.dataset.fenceId);
+            if (rejectedByTile) {
+                stopAutoScroll();
+                marker.hidden = true;
+                return true;
+            }
             const fenceElement = document
                 .elementsFromPoint(pointer.x, pointer.y)
                 .map((element) => element.closest<HTMLElement>("[data-fence-id]"))
@@ -212,7 +216,7 @@ export const useWorkspaceDrag = ({
             const fenceId = fenceElement.dataset.fenceId; // 当前目标围栏稳定标识。
             const fence = workspace.fences.find((candidate) => candidate.id === fenceId); // 当前目标围栏权威快照。
             const content = fenceId ? fenceContents.get(fenceId) : undefined; // 当前目标围栏内容滚动节点。
-            if (!fenceId || !fence || !content || fence.collapsed) {
+            if (!fenceId || !fence || !content || content.getClientRects().length === 0) {
                 stopAutoScroll();
                 return false;
             }
@@ -305,9 +309,15 @@ export const useWorkspaceDrag = ({
 
         /** 指针移动时更新组预览、围栏投放和网格传播。 */
         const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
+            if (finished) return;
+            freePlacement = moveEvent.altKey;
             latestClientPointer = { x: moveEvent.clientX, y: moveEvent.clientY };
             delta = { x: moveEvent.clientX - startPointer.x, y: moveEvent.clientY - startPointer.y };
             moved ||= Math.abs(delta.x) > 3 || Math.abs(delta.y) > 3;
+            if (prepared && (Math.abs(delta.x) >= prepared.threshold.left || Math.abs(delta.y) >= prepared.threshold.top)) {
+                void finishDrag("shell-drag", event.pointerId);
+                return;
+            }
             previews.forEach(({ itemId, preview, bounds }) => {
                 if (moved) {
                     preview.style.visibility = "visible";
@@ -340,7 +350,7 @@ export const useWorkspaceDrag = ({
             }
             restoreGridPreview();
             if (previewFenceDrop({ x: moveEvent.clientX, y: moveEvent.clientY })) return;
-            previewGridDrop({ x: moveEvent.clientX, y: moveEvent.clientY });
+            if (!freePlacement) previewGridDrop({ x: moveEvent.clientX, y: moveEvent.clientY });
         };
 
         /** 恢复拖动开始时的网格和围栏滚动状态。 */
@@ -353,7 +363,7 @@ export const useWorkspaceDrag = ({
         };
 
         /** 清理连续拖动产生的临时 DOM 和宿主状态。 */
-        const cleanupDrag = async () => {
+        const cleanupDrag = async (endInput = true) => {
             if (crossDrag) void publishCrossMonitorDrag(crossDrag, "end").catch(() => undefined);
             stopAutoScroll();
             clearFencePreview();
@@ -364,7 +374,7 @@ export const useWorkspaceDrag = ({
             });
             fenceContents.forEach((content) => delete content.dataset.dragScrolling);
             void switchingSubscription?.then((unlisten) => unlisten()).catch(() => undefined);
-            await onEndInputDrag().catch(() => undefined);
+            if (endInput) await onEndInputDrag().catch(() => undefined);
         };
 
         /** 结束连续拖动并提交一个布局事务或同步恢复。 */
@@ -377,6 +387,27 @@ export const useWorkspaceDrag = ({
             handle.removeEventListener("lostpointercapture", finishPointerDrag);
             window.removeEventListener("keydown", handleKeyDown);
             if (finishType !== "lostpointercapture" && handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+
+            if (finishType === "shell-drag" && prepared) {
+                const token = prepared.token; // 交接时只消费当前单次准备。
+                prepared = null;
+                restoreStartLayout();
+                await cleanupDrag(false);
+                try {
+                    await onInteraction({ type: "focus-item", itemId: anchorItemId, selectionMode: preservesSelection ? "preserve" : pointerSelectionMode });
+                    await onStartShellDrag(token, { left: pointerOffset.x, top: pointerOffset.y });
+                } catch (error: unknown) {
+                    onFailure(error instanceof Error ? error.message : "启动系统拖放失败");
+                } finally {
+                    await cancelDesktopItemDragPreparation(token).catch(() => undefined);
+                    await onEndInputDrag().catch(() => undefined);
+                }
+                return;
+            }
+            if (prepared) {
+                void cancelDesktopItemDragPreparation(prepared.token).catch(() => undefined);
+                prepared = null;
+            }
 
             if (finishType !== "pointerup" || !moved) {
                 restoreStartLayout();
@@ -397,6 +428,7 @@ export const useWorkspaceDrag = ({
             if (crossDrag && crossDrag.target !== crossDrag.source) {
                 try {
                     const drop = await resolveCrossMonitorDrop(crossDrag); // 释放点的目标围栏与插入位置。
+                    if (drop.rejected) throw new Error("此格子不接受文件投放");
                     targetFenceId = drop.fenceId;
                     beforeItemId = drop.beforeItemId ?? null;
                     if (drop.fenceId && drop.scrollTop !== undefined) fenceScrolls.push({ fenceId: drop.fenceId, scrollTop: drop.scrollTop });
@@ -407,6 +439,12 @@ export const useWorkspaceDrag = ({
                     await cleanupDrag();
                     return;
                 }
+            }
+            if (!remoteDrop && rejectedByTile) {
+                restoreStartLayout();
+                onFailure("此格子不接受文件投放");
+                await cleanupDrag();
+                return;
             }
             if (targetFenceId) {
                 const targetFence = workspace.fences.find((fence) => fence.id === targetFenceId); // 当前目标围栏权威快照。
@@ -436,11 +474,13 @@ export const useWorkspaceDrag = ({
                       ? { left: anchorPosition.left + delta.x, top: anchorPosition.top + delta.y }
                       : undefined; // 拖动锚点在目标显示器中的期望 DIP 位置。
                 const finalPositions =
-                    targetMonitor?.id === currentMonitor?.id && gridPreview
-                        ? gridPreview
-                        : desiredPosition
-                          ? resolveGridDrop(dragItemIds, desiredPosition, targetPositions, targetGrid ?? workspace.grid)
-                          : null; // 当前目标显示器未归类网格中的最终完整位置。
+                    freePlacement && desiredPosition
+                        ? resolveFreeDrop(dragItemIds, desiredPosition, targetPositions)
+                        : targetMonitor?.id === currentMonitor?.id && gridPreview
+                          ? gridPreview
+                          : desiredPosition
+                            ? resolveGridDrop(dragItemIds, desiredPosition, targetPositions, targetGrid ?? workspace.grid)
+                            : null; // 当前目标显示器未归类网格中的最终完整位置。
                 if (!finalPositions) insertionBlocked = true;
                 placements = finalPositions
                     ? dragItemIds.flatMap((itemId) => {
@@ -481,6 +521,7 @@ export const useWorkspaceDrag = ({
 
         /** 将原生指针结束事件转入单一拖动收尾路径。 */
         const finishPointerDrag = (finishEvent: globalThis.PointerEvent) => {
+            freePlacement = finishEvent.altKey;
             if (finishEvent.type === "pointerup" && currentMonitor && crossDrag) {
                 latestClientPointer = { x: finishEvent.clientX, y: finishEvent.clientY };
                 const physical = clientPointToPhysical(latestClientPointer, currentMonitor); // 释放事件可能晚于最后一帧移动。
@@ -506,6 +547,17 @@ export const useWorkspaceDrag = ({
             () => void finishDrag("virtual-desktop-switch", event.pointerId),
             () => undefined,
         );
+        void prepareDesktopItemDrag(dragItemIds)
+            .then((result) => {
+                if (!result) return; // 无法准备完整选择时保留原指针与布局路径。
+                if (finished) {
+                    void cancelDesktopItemDragPreparation(result.token).catch(() => undefined);
+                    return;
+                }
+                prepared = result;
+                if (Math.abs(delta.x) >= result.threshold.left || Math.abs(delta.y) >= result.threshold.top) void finishDrag("shell-drag", event.pointerId);
+            })
+            .catch(() => undefined); // 准备失败不破坏正在进行的整组内部拖动。
     };
 
     return handleItemPointerDown;

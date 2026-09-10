@@ -229,13 +229,13 @@
 }
 
 /* 浅色围栏选中表面避免深色底与深色文字叠加。 */
-:root[data-theme="light"] .desktop-item--fence[data-selected="true"] {
+:root[data-desktop-theme="light"] .desktop-item--fence[data-selected="true"] {
     border-color: color-mix(in srgb, var(--color-focus) 28%, transparent);
     background: color-mix(in srgb, var(--color-focus) 12%, transparent);
 }
 
 /* 浅色围栏的轻量悬停反馈。 */
-:root[data-theme="light"] .desktop-item--fence:hover:not([data-selected="true"]) {
+:root[data-desktop-theme="light"] .desktop-item--fence:hover:not([data-selected="true"]) {
     border-color: color-mix(in srgb, var(--color-focus) 15%, transparent);
     background: color-mix(in srgb, var(--color-focus) 6%, transparent);
 }

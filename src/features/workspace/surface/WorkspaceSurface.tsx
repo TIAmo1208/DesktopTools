@@ -11,6 +11,8 @@ import {
     startDesktopItemDrag,
 } from "../../../bridge/desktopItems";
 import type { DesktopItemSnapshot } from "../../../contracts/desktopItem";
+import { parseShellOperationResult } from "../../../contracts/desktopItem";
+import type { WorkspacePoint } from "../../../contracts/workspace";
 import { FenceWorkspace } from "../../fences/FenceWorkspace";
 import { useWorkspace } from "../state/useWorkspace";
 import { useDesktopHostSurface } from "./useDesktopHostSurface";
@@ -37,6 +39,22 @@ export const WorkspaceSurface = () => {
     // 正式透明宿主门槛与最小输入处理器。
     const desktopHost = useDesktopHostSurface(true, monitorIndex, desktopItemSnapshot, workspace.snapshot?.revision);
     useCrossMonitorPreview(desktopHost.host?.monitor.id, desktopItemSnapshot, workspace.snapshot);
+    useEffect(() => {
+        const handleDropResult = (event: Event) => {
+            const payload = (event as CustomEvent).detail; // 原生宿主转发的结构化投放结果。
+            if (payload?.phase !== "operation-result" || payload.target !== desktopHost.host?.monitor.id) return;
+            try {
+                const result = parseShellOperationResult(payload.result); // 与命令结果共用信任边界。
+                const blocked = result.items.filter((item) => item.compensationBlocked).length;
+                setDesktopItemFailure(undefined);
+                setDesktopItemStatus(result.message + (blocked ? `；${blocked} 项不能安全自动撤销` : ""));
+            } catch (error) {
+                setDesktopItemFailure(errorMessage(error));
+            }
+        };
+        window.addEventListener("desktop-tools-drag", handleDropResult);
+        return () => window.removeEventListener("desktop-tools-drag", handleDropResult);
+    }, [desktopHost.host?.monitor.id]);
     const projectedWorkspace = useMemo(
         () => projectWorkspaceSurface(workspace.snapshot, desktopHost.host?.monitor.id),
         [workspace.snapshot, desktopHost.host?.monitor.id],
@@ -102,7 +120,7 @@ export const WorkspaceSurface = () => {
     /** 执行系统粘贴。 */
     const handlePasteItems = () => runShellOperation(pasteDesktopItems);
     /** 将选择交给 OLE 拖放。 */
-    const handleStartShellDrag = (itemIds: string[]) => runShellOperation(() => startDesktopItemDrag(itemIds));
+    const handleStartShellDrag = (token: number, pointerOffset: WorkspacePoint) => runShellOperation(() => startDesktopItemDrag(token, pointerOffset));
 
     /** 使用当前或显式目标显示器提交逐屏布局事务。 */
     const handleWorkspaceCommand = async (command: Parameters<typeof workspace.applyCommand>[1], targetMonitorId?: string) => {

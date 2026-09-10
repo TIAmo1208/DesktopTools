@@ -10,9 +10,10 @@ import {
     recordDesktopHostRendererHeartbeat,
     updateDesktopHostHitMap,
 } from "../../../bridge/desktopHost";
-import type { DesktopHostSnapshot, HitRegion } from "../../../contracts/desktopHost";
+import type { DesktopHostSnapshot } from "../../../contracts/desktopHost";
 import type { DesktopItemSnapshot } from "../../../contracts/desktopItem";
 import { usePreferences } from "../../settings/PreferencesProvider";
+import { collectHitRegions } from "./workspaceSurfaceProjection";
 
 /** 将未知错误转换为正式宿主用户可见说明。 */
 const hostErrorMessage = (error: unknown): string => (error instanceof Error ? error.message : "桌面宿主请求失败");
@@ -21,21 +22,6 @@ const hostErrorMessage = (error: unknown): string => (error instanceof Error ? e
 const waitForTwoFrames = (): Promise<void> =>
     new Promise((resolve) => {
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    });
-
-/** 收集页面当前完整语义命中图。 */
-const collectHitRegions = (): HitRegion[] =>
-    [...document.querySelectorAll<HTMLElement>("[data-hit-id]")].map((element) => {
-        const bounds = element.getBoundingClientRect(); // 当前语义对象 CSS 像素边界。
-        return {
-            id: element.dataset.hitId ?? "",
-            kind: element.dataset.hitKind ?? "",
-            left: bounds.left,
-            top: bounds.top,
-            width: bounds.width,
-            height: bounds.height,
-            priority: Number(element.dataset.hitPriority ?? "0"),
-        };
     });
 
 /** 等待当前系统图像节点与 Shell 快照数量一致并完成解码。 */
@@ -127,8 +113,10 @@ export const useDesktopHostSurface = (enabled: boolean, monitorIndex: number, it
             if (
                 records.some(
                     (record) =>
-                        (record.target instanceof Element && record.target.closest(".fence-object-menu")) ||
-                        (record.type === "attributes" && record.target instanceof Element && record.target.matches(".fence")) ||
+                        (record.target instanceof Element && record.target.closest(".desktop-tile-menu")) ||
+                        (record.type === "attributes" &&
+                            record.target instanceof Element &&
+                            record.target.matches(".desktop-tile,.desktop-tile-header,.desktop-tile-viewport")) ||
                         [...record.addedNodes, ...record.removedNodes].some(
                             (node) => node instanceof Element && (node.matches("[data-hit-id]") || node.querySelector("[data-hit-id]")),
                         ),
@@ -140,14 +128,16 @@ export const useDesktopHostSurface = (enabled: boolean, monitorIndex: number, it
             childList: true,
             subtree: true,
             attributes: true,
-            attributeFilter: ["style"],
+            attributeFilter: ["style", "hidden", "data-keyboard-focus", "data-visible"],
         });
         observer.observe(document.documentElement);
+        document.addEventListener("scroll", publishHitMap, true);
         publishHitMap();
         return () => {
             cancelAnimationFrame(frame);
             observer.disconnect();
             menuObserver.disconnect();
+            document.removeEventListener("scroll", publishHitMap, true);
         };
     }, [enabled, host?.monitor.id, items, layoutRevision, preferences]);
 

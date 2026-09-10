@@ -20,6 +20,33 @@ const errorMessage = (error: unknown): string => (error instanceof Error ? error
 /** 呈现正式应用状态并验证 command/event 纵向链路。 */
 export const App = () => (new URLSearchParams(window.location.search).get("desktop-host") === "1" ? <WorkspaceSurface /> : <ApplicationStatusPage />);
 
+/** 仅用于评审音乐 UX 的本地预览入口，不连接真实媒体会话。 */
+/* const MusicPreview = () => {
+    const snapshots: Array<[string, MusicMediaSnapshot | undefined]> = [
+        ["正常播放", { title: "Midnight City", artist: "M83", source: "播放器 A", playback: "playing", canPrevious: true, canPlayPause: true, canNext: true }],
+        ["已暂停", { title: "Midnight City", artist: "M83", source: "播放器 A", playback: "paused", canPrevious: true, canPlayPause: true, canNext: true }],
+        ["无会话", undefined],
+        ["能力受限", { title: "浏览器视频", artist: "", source: "浏览器", playback: "playing", canPrevious: false, canPlayPause: true, canNext: false }],
+    ];
+    return (
+        <main style={{ display: "grid", gap: 24, padding: 32, color: "var(--color-text)", background: "var(--color-background)", minHeight: "100vh" }}>
+            <h1>音乐控制 UX 预览</h1>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16 }}>
+                {snapshots.map(([label, snapshot]) => (
+                    <section key={label}>
+                        <h2 style={{ fontSize: 13, margin: "0 0 8px" }}>{label}</h2>
+                        <MusicControl
+                            snapshot={snapshot}
+                            actions={{ previous: async () => undefined, playPause: async () => undefined, next: async () => undefined }}
+                            onFailure={(message) => console.warn(message)}
+                        />
+                    </section>
+                ))}
+            </div>
+        </main>
+    );
+}; */
+
 /** 呈现诊断页面的应用与桌面项目状态。 */
 const ApplicationStatusPage = () => {
     // 当前已发布的应用状态快照。

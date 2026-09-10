@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { APPLICATION_FONTS, type ApplicationPreferences } from "../../contracts/settings";
+import { APPLICATION_FONTS, type ApplicationPreferences, type ApplicationTheme, type DesktopAppearance } from "../../contracts/settings";
 import "./AppearanceSettings.css";
 import { SettingsSwitch } from "./SettingsSwitch";
 
@@ -25,42 +25,77 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences }: App
 
     return (
         <fieldset className="appearance-settings" disabled={unavailable} aria-label="外观偏好">
-            <div className="appearance-settings__row">
-                <span className="appearance-settings__label">使用Windows主题色</span>
-                <SettingsSwitch
-                    label="使用Windows主题色"
-                    checked={preferences?.useWindowsAccentColor ?? false}
-                    disabled={unavailable}
-                    onChange={(checked) => onPreferences({ useWindowsAccentColor: checked })}
-                />
-            </div>
-            <div className="appearance-settings__row">
-                <span className="appearance-settings__label">主题色</span>
-                <div className="appearance-settings__colors">
-                    {ACCENTS.map((color) => (
-                        <button
-                            key={color}
-                            className="appearance-settings__swatch"
-                            type="button"
-                            disabled={preferences?.useWindowsAccentColor}
-                            style={{ backgroundColor: color }}
-                            title={color}
-                            aria-label={`主题色 ${color}`}
-                            aria-pressed={preferences?.accentColor.toLowerCase() === color}
-                            onClick={() => onPreferences({ accentColor: color })}
-                        />
-                    ))}
-                    <input
-                        className="appearance-settings__color"
-                        type="color"
-                        disabled={preferences?.useWindowsAccentColor}
-                        aria-label="自定义主题色"
-                        title="自定义主题色"
-                        value={preferences?.accentColor ?? "#2563eb"}
-                        onChange={(event) => onPreferences({ accentColor: event.currentTarget.value })}
-                    />
-                </div>
-            </div>
+            {(
+                [
+                    ["desktop", "桌面网格主题"],
+                    ["interface", "界面与菜单主题"],
+                ] as const
+            ).map(([scope, title]) => {
+                const appearance = scope === "desktop" ? preferences?.desktopAppearance : preferences; // 当前分组的已保存外观。
+                /** 仅更新当前分组，保留另一组及已保存的自定义颜色。 */
+                const handleAppearance = (patch: Partial<DesktopAppearance>) => {
+                    if (!preferences) return;
+                    onPreferences(scope === "desktop" ? { desktopAppearance: { ...preferences.desktopAppearance, ...patch } } : patch);
+                };
+                return (
+                    <section className="appearance-settings__group" key={scope} aria-labelledby={`${scope}-appearance-title`}>
+                        <h2 className="appearance-settings__heading" id={`${scope}-appearance-title`}>
+                            {title}
+                        </h2>
+                        <div className="appearance-settings__row">
+                            <label className="appearance-settings__label" htmlFor={`${scope}-theme`}>
+                                深浅模式
+                            </label>
+                            <select
+                                id={`${scope}-theme`}
+                                className="appearance-settings__theme"
+                                value={appearance?.theme ?? "system"}
+                                onChange={(event) => handleAppearance({ theme: event.currentTarget.value as ApplicationTheme })}
+                            >
+                                <option value="system">跟随系统</option>
+                                <option value="light">浅色</option>
+                                <option value="dark">深色</option>
+                            </select>
+                        </div>
+                        <div className="appearance-settings__row">
+                            <span className="appearance-settings__label">使用 Windows 主题色</span>
+                            <SettingsSwitch
+                                label={`${title}：使用 Windows 主题色`}
+                                checked={appearance?.useWindowsAccentColor ?? false}
+                                disabled={unavailable}
+                                onChange={(checked) => handleAppearance({ useWindowsAccentColor: checked })}
+                            />
+                        </div>
+                        <div className="appearance-settings__row">
+                            <span className="appearance-settings__label">主题色</span>
+                            <div className="appearance-settings__colors">
+                                {ACCENTS.map((color) => (
+                                    <button
+                                        key={color}
+                                        className="appearance-settings__swatch"
+                                        type="button"
+                                        disabled={appearance?.useWindowsAccentColor}
+                                        style={{ backgroundColor: color }}
+                                        title={color}
+                                        aria-label={`${title}：主题色 ${color}`}
+                                        aria-pressed={appearance?.accentColor.toLowerCase() === color}
+                                        onClick={() => handleAppearance({ accentColor: color })}
+                                    />
+                                ))}
+                                <input
+                                    className="appearance-settings__color"
+                                    type="color"
+                                    disabled={appearance?.useWindowsAccentColor}
+                                    aria-label={`${title}：自定义主题色`}
+                                    title="自定义主题色"
+                                    value={appearance?.accentColor ?? "#2563eb"}
+                                    onChange={(event) => handleAppearance({ accentColor: event.currentTarget.value })}
+                                />
+                            </div>
+                        </div>
+                    </section>
+                );
+            })}
             <div className="appearance-settings__row">
                 <label className="appearance-settings__label" htmlFor="appearance-radius">
                     圆角

@@ -10,11 +10,20 @@ import {
     resolveFenceAutoScroll,
     resolveFenceInsertion,
     resolveGridDrop,
+    resolveFreeDrop,
     resolveGridInsertion,
 } from "./workspaceDrag.ts";
 
 // 当前拖动算法测试使用的三行两列网格。
 const grid = { left: 0, top: 0, columnWidth: 80, rowHeight: 100, rows: 3, columns: 2 };
+
+test("preserves free-position group offsets and keeps the whole group in bounds", () => {
+    const positions = new Map([["anchor", { left: 80, top: 100 }], ["left", { left: 0, top: 100 }]]); // 锚点不在整组最左侧。
+    const result = resolveFreeDrop(["anchor", "left"], { left: 13, top: 27 }, positions);
+    assert.deepEqual(result?.get("anchor"), { left: 80, top: 27 });
+    assert.deepEqual(result?.get("left"), { left: 0, top: 27 });
+    assert.equal(resolveFreeDrop(["missing"], { left: 0, top: 0 }, positions), null);
+});
 
 /** 验证组插入按主导轴和稳定传播顺序移动项目。 */
 test("propagates a dragged group through the desktop grid", () => {

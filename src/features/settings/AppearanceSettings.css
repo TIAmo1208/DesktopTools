@@ -8,6 +8,22 @@
     border: 0;
 }
 
+/* 两组主题沿用纵向设置行，各自拥有可访问标题。 */
+.appearance-settings__group {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    padding: 1px;
+    margin-bottom: 12px;
+}
+
+/* 分组标题保持现有字号，以字重区分信息层级。 */
+.appearance-settings__heading {
+    margin: 12px 0;
+    font: inherit;
+    font-weight: 600;
+}
+
 /* 单项设置的名称与输入控件编排。 */
 .appearance-settings__row {
     display: flex;
@@ -62,6 +78,7 @@
 
 /* 数字和字体选择采用原生输入行为。 */
 .appearance-settings__number,
+.appearance-settings__theme,
 .appearance-settings__font {
     min-height: 38px;
     max-width: 100%;
@@ -71,6 +88,11 @@
     color: var(--color-text);
     background: var(--color-subtle);
     font: inherit;
+}
+
+/* 深浅模式使用现有主题选择器宽度。 */
+.appearance-settings__theme {
+    width: 176px;
 }
 
 /* 数字输入的稳定轨道。 */

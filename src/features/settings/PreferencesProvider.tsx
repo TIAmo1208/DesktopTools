@@ -7,22 +7,36 @@ import type { ApplicationPreferences } from "../../contracts/settings";
 interface PreferencesContextValue {
     preferences?: ApplicationPreferences; // 仅在真实后端加载成功后提供的偏好。
     failure?: string; // 加载或订阅错误说明。
+    reducedMotion: boolean; // 当前系统是否要求减少动态效果。
+    animationsEnabled: boolean; // 用户偏好与系统限制合并后的有效状态。
     onPreferences: (preferences: ApplicationPreferences) => void; // 接收保存成功的权威偏好。
 }
 
 // 每个独立窗口只订阅一次偏好状态。
-const PreferencesContext = createContext<PreferencesContextValue>({ onPreferences: () => undefined });
+const PreferencesContext = createContext<PreferencesContextValue>({ onPreferences: () => undefined, reducedMotion: false, animationsEnabled: false });
 
 /** 读取设置窗口或逐屏宿主共用的偏好。 */
 export const usePreferences = () => useContext(PreferencesContext);
 
 /** 同步后端偏好和系统主题，不改变透明宿主背景。 */
 export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
+    const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches); // 首次渲染即遵守系统偏好。
     const [preferences, setPreferences] = useState<ApplicationPreferences>(); // 当前窗口收到的权威偏好。
     const [failure, setFailure] = useState<string>(); // 当前偏好加载错误。
     const [windowsAccentColor, setWindowsAccentColor] = useState<string>(); // 系统颜色独立于持久化的自定义颜色。
     const [accentFailure, setAccentFailure] = useState<string>(); // 系统强调色读取或订阅错误。
     const revision = useRef(0); // 当前窗口已接收偏好的顺序，防止启动读取回退已保存值。
+    const animationsEnabled = (preferences?.interfaceAnimations ?? true) && !reducedMotion; // 缺失设置采用当前默认值。
+    useEffect(() => {
+        const query = window.matchMedia("(prefers-reduced-motion: reduce)"); // 持续监听系统设置。
+        const handleMotion = () => setReducedMotion(query.matches); // 系统改变后立即更新有效状态。
+        handleMotion();
+        query.addEventListener("change", handleMotion);
+        return () => query.removeEventListener("change", handleMotion);
+    }, []);
+    useEffect(() => {
+        document.documentElement.dataset.interfaceAnimations = animationsEnabled ? "on" : "off";
+    }, [animationsEnabled]);
     /** 接收命令保存或重试读取成功的偏好。 */
     const handlePreferences = useCallback((next: ApplicationPreferences) => {
         revision.current++;
@@ -55,7 +69,7 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
     }, [handlePreferences]);
 
     useEffect(() => {
-        if (!preferences?.useWindowsAccentColor) return;
+        if (!preferences?.useWindowsAccentColor && !preferences?.desktopAppearance.useWindowsAccentColor) return;
         let active = true; // 当前系统颜色订阅是否有效。
         let received = false; // 防止启动读取覆盖较新的系统事件。
         /** 接收系统颜色，不写入自定义颜色配置。 */
@@ -80,7 +94,7 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
             active = false;
             void subscription.then((unlisten) => unlisten()).catch(() => undefined);
         };
-    }, [preferences?.useWindowsAccentColor]);
+    }, [preferences?.useWindowsAccentColor, preferences?.desktopAppearance.useWindowsAccentColor]);
 
     useEffect(() => {
         const systemTheme = window.matchMedia("(prefers-color-scheme: dark)"); // 当前 Windows 系统主题媒体查询。
@@ -88,11 +102,13 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
         const handleTheme = () => {
             const theme = preferences?.theme ?? "system"; // 加载期间沿用系统主题。
             document.documentElement.dataset.theme = theme === "system" ? (systemTheme.matches ? "dark" : "light") : theme;
+            const desktopTheme = preferences?.desktopAppearance.theme ?? "system"; // 桌面独立解析系统深浅模式。
+            document.documentElement.dataset.desktopTheme = desktopTheme === "system" ? (systemTheme.matches ? "dark" : "light") : desktopTheme;
         };
         handleTheme();
         systemTheme.addEventListener("change", handleTheme);
         return () => systemTheme.removeEventListener("change", handleTheme);
-    }, [preferences?.theme]);
+    }, [preferences?.theme, preferences?.desktopAppearance.theme]);
 
     useEffect(() => {
         if (!preferences) return;
@@ -100,6 +116,9 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
         const accent = preferences.useWindowsAccentColor ? (windowsAccentColor ?? preferences.accentColor) : preferences.accentColor; // 系统读取失败时保留有效自定义颜色。
         root.style.setProperty("--color-focus", accent);
         root.style.setProperty("--color-accent", accent);
+        root.style.setProperty("--interface-accent", accent);
+        const desktop = preferences.desktopAppearance; // 桌面主题保持独立，系统读取失败时保留该组自定义色。
+        root.style.setProperty("--desktop-accent", desktop.useWindowsAccentColor ? (windowsAccentColor ?? desktop.accentColor) : desktop.accentColor);
         root.style.setProperty("--surface-radius", `${preferences.cornerRadius}px`);
         root.style.setProperty("--interface-font", `"${preferences.fontFamily}", "Segoe UI", sans-serif`);
         root.style.setProperty("--interface-font-size", `${preferences.fontSize}px`);
@@ -116,7 +135,13 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
 
     return (
         <PreferencesContext.Provider
-            value={{ preferences, failure: failure ?? (preferences?.useWindowsAccentColor ? accentFailure : undefined), onPreferences: handlePreferences }}
+            value={{
+                preferences,
+                reducedMotion,
+                animationsEnabled,
+                failure: failure ?? (preferences?.useWindowsAccentColor || preferences?.desktopAppearance.useWindowsAccentColor ? accentFailure : undefined),
+                onPreferences: handlePreferences,
+            }}
         >
             {children}
         </PreferencesContext.Provider>

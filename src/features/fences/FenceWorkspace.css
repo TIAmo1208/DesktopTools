@@ -1,5 +1,7 @@
 /* 正式透明宿主中的完整围栏工作区。 */
 .fence-workspace {
+    --color-accent: var(--desktop-accent, #2563eb);
+    --color-focus: var(--color-accent);
     --fence-border: rgb(210 224 227 / 38%);
     --fence-surface: rgb(32 38 40 / 58%);
     --fence-text: #e8eff0;
@@ -34,140 +36,9 @@
     pointer-events: none;
 }
 
-/* 原型围栏对象菜单。 */
-.fence-object-menu {
-    position: fixed;
-    z-index: 21000;
-    display: grid;
-    width: 164px;
-    margin: 0;
-    padding: 4px;
-    border: 1px solid rgb(184 205 210 / 44%);
-    border-radius: var(--surface-radius);
-    color: var(--fence-text);
-    background: var(--fence-menu-surface, rgb(32 38 41 / 96%));
-    box-shadow: var(--fence-menu-shadow, 2px 3px 8px rgb(0 0 0 / 42%));
-    font-size: var(--interface-font-size);
-    line-height: 18px;
-    list-style: none;
-}
-
-/* 原型围栏对象菜单命令。 */
-.fence-object-menu button {
-    position: relative;
-    width: 100%;
-    min-height: 28px;
-    box-sizing: border-box;
-    padding: 4px 9px 4px 33px;
-    border: 1px solid transparent;
-    border-radius: 2px;
-    color: inherit;
-    background: transparent;
-    font: inherit;
-    line-height: 18px;
-    text-align: left;
-    cursor: default;
-}
-
-/* 菜单统一保留图标列，未提供图标的命令使用相同文字起点。 */
-.fence-object-menu__icon {
-    position: absolute;
-    left: 9px;
-    top: 50%;
-    width: 16px;
-    height: 16px;
-    transform: translateY(-50%);
-}
-
-/* 菜单图标继承命令色调和禁用状态。 */
-.fence-object-menu__icon svg {
-    display: block;
-    width: 16px;
-    height: 16px;
-}
-
-/* 排序选项在同一行保留方向标签空间。 */
-.fence-object-menu--sort button {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-/* 当前排序选项与键盘焦点。 */
-.fence-object-menu--sort button[aria-checked="true"],
-.fence-object-menu--sort button:hover,
-.fence-object-menu--sort button:focus-visible {
-    background: var(--fence-menu-hover, var(--fence-border));
-}
-
-/* 排序方向标签弱化但保留可读性。 */
-.fence-object-menu__direction {
-    opacity: 0.7;
-}
-
-/* 原型围栏对象菜单悬停状态。 */
-.fence-object-menu:not(.fence-object-menu--sort) button:hover:enabled {
-    background: var(--fence-menu-hover, rgb(75 101 108 / 72%));
-}
-
-/* 普通菜单键盘焦点与悬停采用同一主题表面。 */
-.fence-object-menu button:focus-visible {
-    outline: 1px solid var(--color-focus);
-    outline-offset: -1px;
-    background: var(--fence-menu-hover, var(--fence-border));
-}
-
-/* 原型围栏对象菜单禁用状态。 */
-.fence-object-menu button:disabled {
-    cursor: default;
-    opacity: 0.48;
-}
-
 /* 跨屏拖入目标复用现有焦点强调色。 */
 .fence--remote-drop-target {
     outline: 2px solid var(--color-focus);
-}
-
-/* 围栏标题原位编辑，沿用标题文本和主题表面。 */
-.fence__title-editor {
-    min-width: 0;
-    width: 100%;
-    color: inherit;
-    background: transparent;
-    border: 1px solid var(--color-focus);
-    font: inherit;
-}
-
-/* 工作区命令或持久化错误。 */
-.fence-workspace__error {
-    position: absolute;
-    top: 56px;
-    right: 14px;
-    z-index: 10000;
-    max-width: 360px;
-    margin: 0;
-    padding: 8px 10px;
-    border-left: 3px solid #fda29b;
-    color: #ffffff;
-    background: rgb(76 26 26 / 92%);
-    font-size: 12px;
-}
-
-/* Shell 操作成功、取消和不可逆属性提示。 */
-.fence-workspace__status {
-    position: fixed;
-    right: 16px;
-    bottom: 16px;
-    z-index: 21000;
-    max-width: min(480px, calc(100vw - 32px));
-    margin: 0;
-    padding: 8px 12px;
-    border: 1px solid rgb(255 255 255 / 28%);
-    border-radius: 4px;
-    color: #ffffff;
-    background: rgb(32 32 32 / 88%);
-    box-shadow: 0 4px 18px rgb(0 0 0 / 30%);
-    font-size: 12px;
 }
 
 /* 未归类桌面项目定位表面。 */
@@ -179,38 +50,6 @@
     list-style: none;
 }
 
-/* 单个围栏表面。 */
-.fence {
-    position: absolute;
-    display: grid;
-    grid-template-rows: 28px minmax(0, 1fr);
-    overflow: visible;
-    box-sizing: border-box;
-    border: 1px solid var(--fence-border);
-    border-radius: min(8px, var(--surface-radius));
-    color: var(--fence-text);
-    background: var(--fence-surface);
-    box-shadow: none;
-    backdrop-filter: blur(5px);
-}
-
-/* 使用统一边框表达 DOM 焦点，避免浏览器默认黑色描边覆盖选中状态。 */
-.fence:focus {
-    outline: none;
-}
-
-/* 当前接收高层键盘命令或具有可见 DOM 焦点的围栏。 */
-.fence:focus-visible,
-.fence[data-keyboard-focus="true"] {
-    border-color: var(--fence-focus-border);
-}
-
-/* 围栏折叠状态只呈现标题栏。 */
-.fence--collapsed {
-    grid-template-rows: 28px;
-    overflow: visible;
-}
-
 /* 围栏接收项目时的投放状态。 */
 .fence--drop-target {
     border-color: var(--color-accent);
@@ -219,86 +58,9 @@
         0 10px 28px rgb(0 0 0 / 24%);
 }
 
-/* 围栏标题、成员数量与命令布局。 */
-.fence__header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 2px;
-    min-width: 0;
-    min-height: 28px;
-    padding: 2px 4px;
-    border-bottom: 1px solid rgb(210 224 227 / 18%);
-    background: transparent;
-    cursor: move;
-    touch-action: none;
-}
-
-/* 围栏标题。 */
-.fence__header h2 {
-    min-width: 0;
-    margin: 0;
-    overflow: hidden;
-    font-size: var(--interface-font-size);
-    font-weight: 650;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* 围栏标题栏命令集合。 */
-.fence__commands {
-    display: flex;
-    gap: 2px;
-}
-
-/* 围栏标题栏命令。 */
-.fence__commands button {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    min-height: 24px;
-    box-sizing: border-box;
-    padding: 0;
-    border: 0;
-    border-radius: 3px;
-    color: var(--fence-text);
-    background: transparent;
-    font: inherit;
-    line-height: 0;
-    cursor: default;
-}
-
 /* 无排序时只弱化图标，不改变按钮命中尺寸。 */
 .fence__sort[data-sort-active="false"] span {
     opacity: 0.48;
-}
-
-/* 围栏标题栏 SVG 图标。 */
-.fence__commands button svg {
-    width: 16px;
-    height: 16px;
-    pointer-events: none;
-}
-
-/* 围栏标题栏命令悬停状态。 */
-.fence__commands button:hover {
-    background: rgb(255 255 255 / 14%);
-}
-
-/* 围栏标题栏命令键盘焦点。 */
-.fence__commands button:focus-visible {
-    outline: 2px solid var(--fence-text);
-    outline-offset: 1px;
-}
-
-/* 围栏内容区承载项目和覆盖式滚动条。 */
-.fence__body {
-    position: relative;
-    display: grid;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
 }
 
 /* 围栏滚动成员区。 */
@@ -308,84 +70,9 @@
     grid-auto-rows: var(--fence-grid-height, 90px);
     align-content: start;
     gap: var(--fence-grid-row-gap, 8px) var(--fence-grid-column-gap, 6px);
-    min-height: 0;
     margin: 0;
     padding: 8px;
-    overflow: auto;
-    overscroll-behavior: contain;
-    scrollbar-width: none;
     list-style: none;
-}
-
-/* 隐藏围栏内容区原生滚动条。 */
-.fence__items::-webkit-scrollbar {
-    display: none;
-    width: 0;
-    height: 0;
-}
-
-/* 围栏右侧覆盖式滚动条。 */
-.fence__scrollbar {
-    position: absolute;
-    z-index: 13;
-    top: 2px;
-    right: 0;
-    bottom: 6px;
-    display: grid;
-    grid-template-rows: 12px minmax(0, 1fr) 12px;
-    width: 12px;
-    color: rgb(218 228 230 / 66%);
-}
-
-/* 没有可滚动内容时隐藏覆盖式滚动条。 */
-.fence__scrollbar[hidden] {
-    display: none;
-}
-
-/* 覆盖式滚动条箭头按钮。 */
-.fence__scroll-button {
-    display: grid;
-    place-items: center;
-    width: 12px;
-    height: 12px;
-    padding: 0;
-    border: 0;
-    color: inherit;
-    background: transparent;
-    cursor: default;
-}
-
-/* 覆盖式滚动条箭头图标。 */
-.fence__scroll-button svg {
-    width: 10px;
-    height: 10px;
-    pointer-events: none;
-}
-
-/* 覆盖式滚动条轨道。 */
-.fence__scroll-track {
-    position: relative;
-    min-height: 0;
-    background: transparent;
-}
-
-/* 覆盖式滚动条滑块。 */
-.fence__scroll-thumb {
-    position: absolute;
-    top: 0;
-    left: 2px;
-    width: 8px;
-    min-height: 18px;
-    border-radius: 999px;
-    background: rgb(218 228 230 / 66%);
-    cursor: default;
-    touch-action: none;
-}
-
-/* 覆盖式滚动条滑块键盘焦点。 */
-.fence__scroll-thumb:focus-visible {
-    outline: 1px solid rgb(186 230 238 / 90%);
-    outline-offset: 1px;
 }
 
 /* 列表布局围栏成员区。 */
@@ -395,99 +82,19 @@
     gap: 4px;
 }
 
-/* 围栏缩放命中边框。 */
-.fence__resize {
-    position: absolute;
-    z-index: 2;
-    touch-action: none;
-}
-
-/* 围栏北侧缩放边框。 */
-.fence__resize--n {
-    top: -4px;
-    right: 8px;
-    left: 8px;
-    height: 8px;
-    cursor: ns-resize;
-}
-
-/* 围栏东北缩放边框。 */
-.fence__resize--ne {
-    top: -5px;
-    right: -5px;
-    width: 12px;
-    height: 12px;
-    cursor: nesw-resize;
-}
-
-/* 围栏东侧缩放边框。 */
-.fence__resize--e {
-    top: 8px;
-    right: -4px;
-    bottom: 8px;
-    width: 8px;
-    cursor: ew-resize;
-}
-
-/* 围栏东南缩放边框。 */
-.fence__resize--se {
-    right: -5px;
-    bottom: -5px;
-    width: 12px;
-    height: 12px;
-    cursor: nwse-resize;
-}
-
-/* 围栏南侧缩放边框。 */
-.fence__resize--s {
-    right: 8px;
-    bottom: -4px;
-    left: 8px;
-    height: 8px;
-    cursor: ns-resize;
-}
-
-/* 围栏西南缩放边框。 */
-.fence__resize--sw {
-    bottom: -5px;
-    left: -5px;
-    width: 12px;
-    height: 12px;
-    cursor: nesw-resize;
-}
-
-/* 围栏西侧缩放边框。 */
-.fence__resize--w {
-    top: 8px;
-    bottom: 8px;
-    left: -4px;
-    width: 8px;
-    cursor: ew-resize;
-}
-
-/* 围栏西北缩放边框。 */
-.fence__resize--nw {
-    top: -5px;
-    left: -5px;
-    width: 12px;
-    height: 12px;
-    cursor: nwse-resize;
-}
-
-/* 浅色系统主题围栏变量。 */
-:root[data-theme="light"] .fence-workspace {
+/* 桌面独立浅色主题围栏变量。 */
+:root[data-desktop-theme="light"] .fence-workspace {
+    color-scheme: light;
     --fence-border: rgb(55 66 69 / 22%);
-    --fence-surface: rgb(245 248 249 / 58%);
+    --fence-surface: rgb(185 185 185 / 58%);
     --fence-text: #202526;
-    --fence-menu-surface: rgb(245 248 249 / 96%);
-    --fence-menu-hover: rgb(55 66 69 / 8%);
-    --fence-menu-shadow: 2px 3px 8px rgb(0 0 0 / 14%);
     --fence-item-text-shadow: none;
     --fence-focus-border: var(--color-focus);
 }
 
-/* 深色系统主题围栏变量。 */
-:root[data-theme="dark"] .fence-workspace {
+/* 桌面独立深色主题围栏变量。 */
+:root[data-desktop-theme="dark"] .fence-workspace {
+    color-scheme: dark;
     --fence-border: rgb(210 224 227 / 38%);
     --fence-surface: rgb(32 38 40 / 58%);
     --fence-text: #e8eff0;

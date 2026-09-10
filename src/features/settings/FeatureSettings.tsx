@@ -30,28 +30,35 @@ export const FeatureSettings = ({
                     {(
                         [
                             { id: "clock", key: "clockEnabled", label: "本地时间" },
+                            { id: "music", key: "musicEnabled", label: "音乐控制" },
                             ...(debugBuild ? [{ id: "debug", key: "debugEnabled", label: "Debug 测试" }] : []),
                         ] as const
                     ).map((feature) => (
                         <div className="feature-settings__row feature-settings__row--link" key={feature.id}>
-                            <button
-                                className="feature-settings__open"
-                                type="button"
-                                title={`${feature.label}设置`}
-                                aria-label={`${feature.label}设置`}
-                                onClick={() => setDetail(feature.id as "clock" | "debug")}
-                            >
-                                {feature.label}
-                            </button>
+                            {feature.id === "music" ? (
+                                <span>{feature.label}</span>
+                            ) : (
+                                <button
+                                    className="feature-settings__open"
+                                    type="button"
+                                    title={`${feature.label}设置`}
+                                    aria-label={`${feature.label}设置`}
+                                    onClick={() => setDetail(feature.id as "clock" | "debug")}
+                                >
+                                    {feature.label}
+                                </button>
+                            )}
                             <SettingsSwitch
                                 label={feature.label}
                                 disabled={unavailable}
-                                checked={Boolean(preferences?.[feature.key as "clockEnabled" | "debugEnabled"])}
+                                checked={Boolean(preferences?.[feature.key as "clockEnabled" | "musicEnabled" | "debugEnabled"])}
                                 onChange={(checked) => onPreferences({ [feature.key]: checked })}
                             />
-                            <span className="feature-settings__chevron" aria-hidden="true">
-                                {"\uE76C"}
-                            </span>
+                            {feature.id !== "music" && (
+                                <span className="feature-settings__chevron" aria-hidden="true">
+                                    {"\uE76C"}
+                                </span>
+                            )}
                         </div>
                     ))}
                     <div className="feature-settings__row">

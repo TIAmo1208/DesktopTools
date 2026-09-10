@@ -24,6 +24,8 @@ export interface CrossMonitorDrag {
 
 /** 目标屏使用实际滚动 DOM 计算出的投放结果。 */
 export interface CrossMonitorDrop {
+    snapTargets?: WorkspaceRect[]; // 目标宿主实际可见格子的 DIP 边界，不包含拖动预览。
+    rejected?: boolean; // 当前最上层格子不接受文件，禁止退化为背景投放。
     fenceId?: string; // 可接收项目的围栏。
     beforeItemId?: string | null; // 目标插入后继。
     scrollTop?: number; // 自动滚动后的最终位置。
@@ -40,7 +42,7 @@ export const publishCrossMonitorDrag = (drag: CrossMonitorDrag, phase: "move" | 
             if (activeDrag) void invokeRuntime("relay_workspace_drag", { payload: { ...activeDrag, phase: "move" } }).catch(() => undefined);
         }, 500);
     }
-    if (phase === "end" && activeDrag?.session === drag.session) {
+    if ((phase === "end" || phase === "drop") && activeDrag?.session === drag.session) {
         clearInterval(heartbeat);
         heartbeat = undefined;
         activeDrag = undefined;

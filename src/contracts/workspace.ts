@@ -1,4 +1,5 @@
 import { parseComponentInstanceSnapshot, type ComponentInstanceSnapshot } from "./component.ts";
+import { parseTileAppearances, type TileAppearance, type TileAppearanceChange } from "./tile.ts";
 import { parseShellOperationResult, type ShellOperationResult } from "./desktopItem.ts";
 
 /** 围栏允许的最小宽度，单位为 DIP。 */
@@ -95,6 +96,7 @@ export interface WorkspaceInteractionSnapshot {
 
 /** Rust 发布给 React 的不可变工作区快照。 */
 export interface WorkspaceSnapshot {
+    tileAppearances?: Record<string, TileAppearance>; // 按稳定身份共享的宿主外观。
     schemaVersion: number;
     revision: number;
     grid: WorkspaceGrid;
@@ -148,6 +150,7 @@ export type WorkspaceInteractionCommand =
 
 /** React 可以提交给工作区领域的完整命令集合。 */
 export type WorkspaceCommand =
+    | { type: "set-tile-appearance"; target: Extract<WorkspaceFocusTarget, { type: "fence" | "component" }>; change: TileAppearanceChange }
     | { type: "create-fence"; title: string; bounds: WorkspaceRect }
     | { type: "update-fence-bounds"; fenceId: string; bounds: WorkspaceRect }
     | { type: "set-fence-collapsed"; fenceId: string; collapsed: boolean }
@@ -279,7 +282,7 @@ export const parseWorkspaceSnapshot = (value: unknown): WorkspaceSnapshot => {
         // 等待字段校验的围栏载荷。
         const fenceCandidate = fence as Record<string, unknown>;
         if (typeof fenceCandidate.id !== "string" || fenceCandidate.id.length === 0) throw new WorkspaceContractError();
-        if (typeof fenceCandidate.title !== "string" || fenceCandidate.title.length === 0) throw new WorkspaceContractError();
+        if (typeof fenceCandidate.title !== "string") throw new WorkspaceContractError();
         if (!Array.isArray(fenceCandidate.members) || fenceCandidate.members.some((member) => typeof member !== "string" || member.length === 0))
             throw new WorkspaceContractError();
         if (fenceCandidate.layoutMode !== "tile" && fenceCandidate.layoutMode !== "list") throw new WorkspaceContractError();
@@ -346,6 +349,7 @@ export const parseWorkspaceSnapshot = (value: unknown): WorkspaceSnapshot => {
         : []; // 已完成契约校验的逐屏网格集合。
     const components = Array.isArray(candidate.components) ? candidate.components.map(parseComponentInstanceSnapshot) : []; // 已完成契约校验的组件实例集合。
     return {
+        tileAppearances: parseTileAppearances(candidate.tileAppearances),
         schemaVersion: 1,
         revision: candidate.revision as number,
         grid: parseGrid(candidate.grid),
@@ -361,14 +365,14 @@ export const parseWorkspaceSnapshot = (value: unknown): WorkspaceSnapshot => {
 export const parseWorkspaceBackupSummary = (value: unknown): WorkspaceBackupSummary => {
     if (typeof value !== "object" || value === null) throw new WorkspaceContractError();
     const candidate = value as Record<string, unknown>; // 等待字段校验的备份摘要。
-    if (candidate.schemaVersion !== 3) throw new WorkspaceContractError();
+    if (candidate.schemaVersion !== 4) throw new WorkspaceContractError();
     if (!Number.isSafeInteger(candidate.createdAtUnix) || (candidate.createdAtUnix as number) < 0) throw new WorkspaceContractError();
     if (typeof candidate.path !== "string" || candidate.path.length === 0) throw new WorkspaceContractError();
     if (!Number.isSafeInteger(candidate.layoutCount) || (candidate.layoutCount as number) <= 0) throw new WorkspaceContractError();
     if (!Number.isSafeInteger(candidate.archiveCount) || (candidate.archiveCount as number) < 0) throw new WorkspaceContractError();
     if (typeof candidate.checksum !== "string" || !candidate.checksum.startsWith("fnv1a64:")) throw new WorkspaceContractError();
     return {
-        schemaVersion: 3,
+        schemaVersion: 4,
         createdAtUnix: candidate.createdAtUnix as number,
         path: candidate.path,
         layoutCount: candidate.layoutCount as number,

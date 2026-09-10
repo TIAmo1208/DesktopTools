@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 /// 桌面接管启动门槛。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReadinessGate {
+pub enum ReadinessGate
+{
     /// 独立 guardian 已完成握手。
     Guardian,
     /// React 页面已完成双帧呈现。
@@ -20,7 +21,8 @@ pub enum ReadinessGate {
 /// 正式透明桌面宿主的接管阶段。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum TakeoverPhase {
+pub enum TakeoverPhase
+{
     /// 宿主和门槛正在准备。
     Starting,
     /// 全部门槛已通过并等待提交。
@@ -38,7 +40,8 @@ pub enum TakeoverPhase {
 /// 一台正式宿主使用的显示器身份、物理边界、工作区与 DPI。
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DesktopHostMonitor {
+pub struct DesktopHostMonitor
+{
     /// Windows 显示设备提供的稳定身份。
     pub id: String,
     /// Windows 显示设备的用户可见名称。
@@ -70,7 +73,8 @@ pub struct DesktopHostMonitor {
 /// 一台显示器宿主的独立上下文快照。
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DesktopHostContextSnapshot {
+pub struct DesktopHostContextSnapshot
+{
     /// 当前宿主对应的显示器状态。
     pub monitor: DesktopHostMonitor,
     /// 当前宿主独立的六项启动门槛。
@@ -80,7 +84,8 @@ pub struct DesktopHostContextSnapshot {
 /// 正式桌面接管的六项门槛状态。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DesktopHostReadiness {
+pub struct DesktopHostReadiness
+{
     /// guardian 就绪状态。
     pub guardian: bool,
     /// 页面双帧就绪状态。
@@ -98,7 +103,8 @@ pub struct DesktopHostReadiness {
 /// 发布给 React 的正式宿主不可变快照。
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DesktopHostSnapshot {
+pub struct DesktopHostSnapshot
+{
     /// 当前桌面接管阶段。
     pub phase: TakeoverPhase,
     /// Explorer 桌面项目接管是否已经提交。
@@ -110,7 +116,8 @@ pub struct DesktopHostSnapshot {
 /// React 发布的一个语义交互命中区域。
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HitRegion {
+pub struct HitRegion
+{
     /// 前端语义对象稳定标识。
     pub id: String,
     /// 前端语义对象类型。
@@ -130,7 +137,8 @@ pub struct HitRegion {
 /// React 双帧完成后发布的宿主准备证据。
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FrontendHostReadiness {
+pub struct FrontendHostReadiness
+{
     /// 当前页面所属的显示器稳定身份。
     pub monitor_id: String,
     /// 当前页面视口宽度。
@@ -150,7 +158,8 @@ pub struct FrontendHostReadiness {
 /// 正式宿主 command 返回的结构化错误。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DesktopHostError {
+pub struct DesktopHostError
+{
     /// 可稳定检索的错误码。
     pub code: String,
     /// 用户可见的中文错误说明。
@@ -158,30 +167,16 @@ pub struct DesktopHostError {
 }
 
 /// 创建正式宿主 command 使用的稳定错误。
-impl DesktopHostError {
+impl DesktopHostError
+{
     /// 创建宿主状态暂时不可用错误。
-    pub fn state_unavailable() -> Self {
-        Self {
-            code: "desktop-host-state-unavailable".to_string(),
-            message: "桌面宿主状态暂时不可用".to_string(),
-        }
-    }
+    pub fn state_unavailable() -> Self { Self { code: "desktop-host-state-unavailable".to_string(), message: "桌面宿主状态暂时不可用".to_string() } }
 
     /// 创建宿主输入参数错误。
-    pub fn invalid_readiness(message: impl Into<String>) -> Self {
-        Self {
-            code: "invalid-desktop-host-readiness".to_string(),
-            message: message.into(),
-        }
-    }
+    pub fn invalid_readiness(message: impl Into<String>) -> Self { Self { code: "invalid-desktop-host-readiness".to_string(), message: message.into() } }
 
     /// 创建 Windows 宿主操作错误。
-    pub fn platform_failed(error: &impl std::fmt::Display) -> Self {
-        Self {
-            code: "desktop-host-platform-failed".to_string(),
-            message: format!("桌面宿主操作失败: {error}"),
-        }
-    }
+    pub fn platform_failed(error: &impl std::fmt::Display) -> Self { Self { code: "desktop-host-platform-failed".to_string(), message: format!("桌面宿主操作失败: {error}") } }
 }
 
 /// 正式宿主快照变化事件名称。

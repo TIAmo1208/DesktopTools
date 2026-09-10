@@ -4,12 +4,13 @@ import applicationIcon from "../../../resources/application.png";
 import { getDesktopHostSnapshot } from "../../bridge/desktopHost";
 import { getSettings, openLogs, savePreferences, setAutostart, settingsErrorMessage } from "../../bridge/settings";
 import type { DesktopHostSnapshot, TakeoverPhase } from "../../contracts/desktopHost";
-import type { ApplicationPreferences, ApplicationTheme, SettingsSnapshot } from "../../contracts/settings";
+import type { ApplicationPreferences, SettingsSnapshot } from "../../contracts/settings";
 import { usePreferences } from "./PreferencesProvider";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { GridSettings } from "./GridSettings";
 import { FeatureSettings } from "./FeatureSettings";
 import { SettingsSwitch } from "./SettingsSwitch";
+import { SettingsInfo } from "./SettingsInfo";
 import { invokeRuntime } from "../../bridge/runtime";
 import "./SettingsPage.css";
 
@@ -18,6 +19,7 @@ const PAGES = [
     { id: "general", label: "常规", icon: "\uE80F" },
     { id: "appearance", label: "外观", icon: "\uE790" },
     { id: "features", label: "功能格子", icon: "\uE80A" },
+    { id: "performance", label: "性能", icon: "\uE9D9" },
     { id: "diagnostics", label: "诊断与维护", icon: "\uE90F" },
     { id: "about", label: "关于", icon: "\uE946" },
 ] as const;
@@ -34,7 +36,7 @@ const PHASE_LABELS: Record<TakeoverPhase, string> = {
 
 /** 设置窗口页面及真实配置操作，不装配桌面工作区交互。 */
 export const SettingsPage = () => {
-    const { preferences, failure: preferencesFailure, onPreferences } = usePreferences(); // 当前窗口共用的偏好状态。
+    const { preferences, failure: preferencesFailure, onPreferences, reducedMotion } = usePreferences(); // 当前窗口共用的偏好及系统动画限制。
     const [page, setPage] = useState<(typeof PAGES)[number]["id"]>("general"); // 当前设置导航页面。
     const [collapsed, setCollapsed] = useState(false); // 窄侧栏状态。
     const [gridDetail, setGridDetail] = useState<"desktopGrid" | "fenceGrid">(); // 外观下当前打开的网格二级菜单。
@@ -294,25 +296,6 @@ export const SettingsPage = () => {
                 )}
                 {page === "appearance" && !gridDetail && (
                     <div className="settings__rows">
-                        <div className="settings__row">
-                            <span className="settings__icon" aria-hidden="true">
-                                {"\uE790"}
-                            </span>
-                            <label className="settings__row-title" htmlFor="theme">
-                                应用主题
-                            </label>
-                            <select
-                                id="theme"
-                                className="settings__select"
-                                value={preferences?.theme ?? "system"}
-                                disabled={busy || !preferences}
-                                onChange={(event) => handlePreferences({ theme: event.currentTarget.value as ApplicationTheme })}
-                            >
-                                <option value="system">跟随系统</option>
-                                <option value="light">浅色</option>
-                                <option value="dark">深色</option>
-                            </select>
-                        </div>
                         <AppearanceSettings preferences={preferences} disabled={busy} onPreferences={handlePreferences} />
                         {(
                             [
@@ -334,6 +317,28 @@ export const SettingsPage = () => {
                 )}
                 {page === "features" && (
                     <FeatureSettings preferences={preferences} disabled={busy} debugBuild={snapshot?.debugBuild ?? false} onPreferences={handlePreferences} />
+                )}
+                {page === "performance" && (
+                    <div className="settings__rows">
+                        <div className="settings__row">
+                            <span className="settings__row-title">
+                                <label htmlFor="interface-animations">界面动画</label>
+                                <SettingsInfo label="界面动画" description="启用布局切换与状态过渡动画" />
+                            </span>
+                            <SettingsSwitch
+                                id="interface-animations"
+                                label="界面动画"
+                                checked={preferences?.interfaceAnimations ?? true}
+                                disabled={busy || !preferences}
+                                onChange={(checked) => handlePreferences({ interfaceAnimations: checked })}
+                            />
+                        </div>
+                        {reducedMotion && (
+                            <p className="settings__status" role="status">
+                                系统已启用减少动态效果，当前动画已关闭
+                            </p>
+                        )}
+                    </div>
                 )}
                 {page === "diagnostics" && (
                     <div className="settings__rows">

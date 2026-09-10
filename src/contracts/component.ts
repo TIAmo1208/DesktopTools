@@ -1,7 +1,7 @@
 import type { WorkspaceRect } from "./workspace";
 
 /** 官方组件可以声明并由宿主授权的能力。 */
-export type ComponentCapability = "read-host-time";
+export type ComponentCapability = "read-host-time" | "read-current-media";
 
 /** 一个官方组件的版本化清单。 */
 export interface ComponentManifest {
@@ -112,7 +112,7 @@ export const parseComponentInstanceSnapshot = (value: unknown): ComponentInstanc
 
 /** 校验组件能力名称。 */
 const parseCapability = (value: unknown): ComponentCapability => {
-    if (value !== "read-host-time") throw new ComponentContractError();
+    if (value !== "read-host-time" && value !== "read-current-media") throw new ComponentContractError();
     return value;
 };
 

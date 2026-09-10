@@ -12,15 +12,19 @@ pub const COMPONENT_HOST_EVENT: &str = "component-host-event";
 /// 官方组件可以声明并由宿主授权的能力。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ComponentCapability {
+pub enum ComponentCapability
+{
     /// 读取宿主提供的本地 Unix 时间。
     ReadHostTime,
+    /// 读取系统当前媒体会话。
+    ReadCurrentMedia,
 }
 
 /// 一个官方组件的版本化清单。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ComponentManifest {
+pub struct ComponentManifest
+{
     /// 组件包稳定身份。
     pub id: String,
     /// 用户可见组件名称。
@@ -36,7 +40,8 @@ pub struct ComponentManifest {
 /// 工作区持久化的一个组件实例。
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ComponentInstanceSnapshot {
+pub struct ComponentInstanceSnapshot
+{
     /// 工作区内部稳定实例标识。
     pub instance_id: String,
     /// 已注册清单的组件包身份。
@@ -61,7 +66,8 @@ pub struct ComponentInstanceSnapshot {
 /// 一个组件实例当前的隔离加载状态。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ComponentLoadStatus {
+pub enum ComponentLoadStatus
+{
     /// 清单、能力和状态版本均已通过校验。
     Ready,
     /// 当前实例加载失败但不影响其他实例。
@@ -71,7 +77,8 @@ pub enum ComponentLoadStatus {
 /// Component Runtime 发布给前端的一个实例注册结果。
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ComponentRegistrationSnapshot {
+pub struct ComponentRegistrationSnapshot
+{
     /// 工作区组件实例稳定身份。
     pub instance_id: String,
     /// 实例引用的组件包身份。
@@ -89,7 +96,8 @@ pub struct ComponentRegistrationSnapshot {
 /// 一个未能进入官方组件注册表的清单失败结果。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ComponentRegistrationFailure {
+pub struct ComponentRegistrationFailure
+{
     /// 能够解析时保留的组件身份。
     pub component_id: String,
     /// 用户可见中文失败原因。
@@ -99,7 +107,8 @@ pub struct ComponentRegistrationFailure {
 /// Component Runtime 的不可变注册表和实例快照。
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ComponentRuntimeSnapshot {
+pub struct ComponentRuntimeSnapshot
+{
     /// 注册表或实例集合变化时递增的修订号。
     pub revision: u64,
     /// 当前成功注册的全部官方组件清单。
@@ -113,7 +122,8 @@ pub struct ComponentRuntimeSnapshot {
 /// 宿主定时发布给已授权组件的事件。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ComponentHostEvent {
+pub struct ComponentHostEvent
+{
     /// 当前进程内递增的宿主事件序号。
     pub sequence: u64,
     /// 宿主事件稳定类型。
@@ -125,7 +135,8 @@ pub struct ComponentHostEvent {
 /// 一次受能力检查保护的组件宿主调用结果。
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ComponentCapabilityResult {
+pub struct ComponentCapabilityResult
+{
     /// 完成调用的组件实例身份。
     pub instance_id: String,
     /// 本次实际授权并执行的能力。
@@ -137,7 +148,8 @@ pub struct ComponentCapabilityResult {
 /// Component Runtime command 返回的结构化错误。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ComponentRuntimeError {
+pub struct ComponentRuntimeError
+{
     /// 可稳定检索的错误码。
     pub code: String,
     /// 用户可见的中文错误说明。
@@ -145,45 +157,26 @@ pub struct ComponentRuntimeError {
 }
 
 /// 创建组件清单、实例和能力边界错误。
-impl ComponentRuntimeError {
+impl ComponentRuntimeError
+{
     /// 创建组件清单校验错误。
-    pub fn invalid_manifest(message: impl Into<String>) -> Self {
-        Self {
-            code: "invalid-component-manifest".to_string(),
-            message: message.into(),
-        }
-    }
+    pub fn invalid_manifest(message: impl Into<String>) -> Self { Self { code: "invalid-component-manifest".to_string(), message: message.into() } }
 
     /// 创建组件实例校验错误。
-    pub fn invalid_instance(message: impl Into<String>) -> Self {
-        Self {
-            code: "invalid-component-instance".to_string(),
-            message: message.into(),
-        }
-    }
+    pub fn invalid_instance(message: impl Into<String>) -> Self { Self { code: "invalid-component-instance".to_string(), message: message.into() } }
 
     /// 创建未声明或未授权能力错误。
-    pub fn capability_denied(capability: ComponentCapability) -> Self {
-        Self {
-            code: "component-capability-denied".to_string(),
-            message: format!("组件能力未声明或未授权: {capability:?}"),
-        }
-    }
+    pub fn capability_denied(capability: ComponentCapability) -> Self { Self { code: "component-capability-denied".to_string(), message: format!("组件能力未声明或未授权: {capability:?}") } }
 
     /// 创建组件运行时状态锁错误。
-    pub fn state_unavailable() -> Self {
-        Self {
-            code: "component-runtime-state-unavailable".to_string(),
-            message: "组件运行时状态暂时不可用".to_string(),
-        }
-    }
+    pub fn state_unavailable() -> Self { Self { code: "component-runtime-state-unavailable".to_string(), message: "组件运行时状态暂时不可用".to_string() } }
 }
 
 /// 将组件运行时错误写入标准错误传播链。
-impl std::fmt::Display for ComponentRuntimeError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
+impl std::fmt::Display for ComponentRuntimeError
+{
+    /// 输出错误的用户可见说明。
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { formatter.write_str(&self.message) }
 }
 
 /// 允许组件运行时错误进入标准 Rust 错误传播链。

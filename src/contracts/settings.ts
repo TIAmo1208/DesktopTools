@@ -1,5 +1,12 @@
-/** 应用和透明桌面共享的用户主题。 */
+/** 两组外观各自选择的深浅模式。 */
 export type ApplicationTheme = "system" | "light" | "dark";
+
+/** 桌面网格独立保存的主题与强调色。 */
+export interface DesktopAppearance {
+    theme: ApplicationTheme; // 桌面深浅模式。
+    accentColor: string; // 桌面自定义强调色。
+    useWindowsAccentColor: boolean; // 桌面是否使用 Windows 强调色。
+}
 
 /** 独立网格的格子尺寸与空白，单位为 DIP。 */
 export interface GridPreferences {
@@ -34,9 +41,10 @@ export const APPLICATION_FONTS = ["Segoe UI Variable", "Segoe UI", "Microsoft Ya
 /** 已由 Rust 保存的应用偏好。 */
 export interface ApplicationPreferences {
     configDirectory: string; // 下次启动使用的配置目录。
-    theme: ApplicationTheme; // 当前用户选择的主题。
+    theme: ApplicationTheme; // 应用界面与自绘菜单的深浅模式。
+    desktopAppearance: DesktopAppearance; // 独立于界面与菜单的桌面主题。
     doubleClickToOpen: boolean; // 是否通过双击打开桌面项目。
-    accentColor: string; // 选中与焦点的共享强调色。
+    accentColor: string; // 应用界面与自绘菜单的强调色。
     useWindowsAccentColor: boolean; // 跟随 Windows 强调色，保留自定义颜色。
     cornerRadius: number; // 普通表面圆角。
     fontFamily: string; // 当前选择的界面字体。
@@ -44,11 +52,13 @@ export interface ApplicationPreferences {
     desktopGrid: GridPreferences; // 未归类桌面网格。
     fenceGrid: GridPreferences; // 围栏内网格。
     clockEnabled: boolean; // 时间格子显隐。
+    musicEnabled: boolean; // 音乐格子显隐。
     clockHour12: boolean; // 十二小时制。
     clockShowSeconds: boolean; // 显示秒数。
     debugEnabled: boolean; // Debug 格子显隐。
     debugShowDetails: boolean; // 显示详细状态。
     componentSnap: boolean; // 功能格子边缘对齐。
+    interfaceAnimations: boolean; // 界面装饰动画偏好，实际启用还需满足系统动态效果设置。
 }
 
 /** 设置页读取的真实应用和 Windows 状态。 */
@@ -74,10 +84,27 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     const fontFamily = candidate.fontFamily === undefined ? "Segoe UI Variable" : candidate.fontFamily; // 旧配置缺省时的字体。
     const fontSize = candidate.fontSize === undefined ? 13 : candidate.fontSize; // 旧配置缺省时的字号。
     if (typeof accentColor !== "string" || !/^#[0-9a-f]{6}$/i.test(accentColor)) throw new Error("主题色数据无效");
+    const desktop =
+        candidate.desktopAppearance === undefined ? { theme: "system", accentColor: "#2563eb", useWindowsAccentColor: false } : candidate.desktopAppearance; // 桌面主题缺失时使用固定默认值。
+    if (typeof desktop !== "object" || desktop === null) throw new Error("桌面网格主题数据无效");
+    const desktopAppearance = desktop as Record<string, unknown>; // 桌面主题的待校验字段。
+    if (desktopAppearance.theme !== "system" && desktopAppearance.theme !== "light" && desktopAppearance.theme !== "dark")
+        throw new Error("桌面网格深浅模式无效");
+    if (typeof desktopAppearance.accentColor !== "string" || !/^#[0-9a-f]{6}$/i.test(desktopAppearance.accentColor)) throw new Error("桌面网格主题色无效");
+    if (typeof desktopAppearance.useWindowsAccentColor !== "boolean") throw new Error("桌面网格 Windows 主题色开关无效");
     if (typeof cornerRadius !== "number" || !Number.isInteger(cornerRadius) || cornerRadius < 0 || cornerRadius > 12) throw new Error("圆角数据无效");
     if (typeof fontSize !== "number" || !Number.isInteger(fontSize) || fontSize < 12 || fontSize > 18) throw new Error("字号数据无效");
     if (typeof fontFamily !== "string" || !APPLICATION_FONTS.some((font) => font === fontFamily)) throw new Error("字体数据无效");
-    const features = { clockEnabled: true, clockHour12: false, clockShowSeconds: true, debugEnabled: true, debugShowDetails: true, componentSnap: true }; // 旧配置默认行为。
+    const features = {
+        clockEnabled: true,
+        musicEnabled: false,
+        clockHour12: false,
+        clockShowSeconds: true,
+        debugEnabled: true,
+        debugShowDetails: true,
+        componentSnap: true,
+        interfaceAnimations: true,
+    }; // 旧配置默认行为。
     for (const key of Object.keys(features) as (keyof typeof features)[]) {
         if (candidate[key] === undefined) continue;
         if (typeof candidate[key] !== "boolean") throw new Error("功能格子配置无效");
@@ -85,6 +112,11 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     }
     return {
         theme: candidate.theme,
+        desktopAppearance: {
+            theme: desktopAppearance.theme,
+            accentColor: desktopAppearance.accentColor,
+            useWindowsAccentColor: desktopAppearance.useWindowsAccentColor,
+        },
         configDirectory,
         doubleClickToOpen: candidate.doubleClickToOpen,
         accentColor,
