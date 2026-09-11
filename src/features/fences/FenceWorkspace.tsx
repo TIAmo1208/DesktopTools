@@ -169,7 +169,17 @@ const FencePanel = ({
         onCommit: (bounds, monitorId) => onCommand({ type: "update-fence-bounds", fenceId: fence.id, bounds }, monitorId),
         onBeginInputDrag,
         onEndInputDrag,
-        onFailure: (error) => publishMessage({ type: "error", content: error instanceof Error ? error.message : "格子几何操作失败", source: "desktop-tile" }),
+        onFailure: (error) =>
+            publishMessage({
+                type: "error",
+                content:
+                    error instanceof Error
+                        ? error.message
+                        : error && typeof error === "object" && "message" in error
+                          ? String(error.message)
+                          : "格子几何操作失败",
+                source: "desktop-tile",
+            }),
     }); // 公共几何沿用原型调用路径。
 
     /** 将当前原生滚动位置立即提交到权威工作区。 */
@@ -423,6 +433,11 @@ export const FenceWorkspace = ({
         contextMenuOpenRef.current = true;
         try {
             return await onContextMenu(target, clientX, clientY);
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : error && typeof error === "object" && "message" in error ? String(error.message) : "原生菜单请求失败"; // 不再让外层静默 catch 隐藏真实失败。
+            publishMessage({ type: "error", content: message, source: "workspace-menu" });
+            throw error;
         } finally {
             contextMenuOpenRef.current = false;
             if (target.type !== "background") workspaceRef.current?.focus({ preventScroll: true });

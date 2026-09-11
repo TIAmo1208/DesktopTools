@@ -16,7 +16,7 @@ use super::workspace::{reconcile_workspace_environment, reconcile_workspace_item
 
 /// 枚举真实 Shell 桌面项目并发布新的不可变快照。
 #[tauri::command]
-pub fn get_desktop_item_snapshot(app: AppHandle, state: State<'_, DesktopItemState>, workspace: State<'_, WorkspaceState>, runtime: State<'_, Arc<DesktopHostRuntime>>) -> Result<DesktopItemSnapshot, DesktopItemError> { execute_get_desktop_item_snapshot(&app, &state, &workspace, &runtime) }
+pub async fn get_desktop_item_snapshot(app: AppHandle, state: State<'_, DesktopItemState>, workspace: State<'_, WorkspaceState>, runtime: State<'_, Arc<DesktopHostRuntime>>) -> Result<DesktopItemSnapshot, DesktopItemError> { execute_get_desktop_item_snapshot(&app, &state, &workspace, &runtime) }
 
 /// 两种 transport 共用的命令执行与事件发布。
 pub(crate) fn execute_get_desktop_item_snapshot(app: &AppHandle, state: &DesktopItemState, workspace: &WorkspaceState, runtime: &DesktopHostRuntime) -> Result<DesktopItemSnapshot, DesktopItemError>
@@ -80,7 +80,23 @@ pub(crate) fn execute_paste_desktop_items(state: &DesktopItemState, workspace: &
 
 /// 使用完整选择集合启动系统 OLE 拖放。
 #[tauri::command]
-pub async fn start_desktop_item_drag(state: State<'_, DesktopItemState>, token: u64, pointer_offset: crate::contracts::WorkspacePoint) -> Result<ShellOperationResult, DesktopItemError> { state.drag(token, pointer_offset) }
+pub async fn start_desktop_item_drag(app: AppHandle, state: State<'_, DesktopItemState>, token: u64, pointer_offset: crate::contracts::WorkspacePoint) -> Result<ShellOperationResult, DesktopItemError> { execute_start_desktop_item_drag(&app, &state, token, pointer_offset) }
+
+/// 两个 transport 均在宿主 UI STA 运行 OLE，准备数据通过 COM 引用封送。
+pub(crate) fn execute_start_desktop_item_drag(app: &AppHandle, state: &DesktopItemState, token: u64, pointer_offset: crate::contracts::WorkspacePoint) -> Result<ShellOperationResult, DesktopItemError>
+{
+    let prepared = state.take_prepared_drag(token)?; // 准备凭据已消费，Shell STA 不等待 UI 拖放。
+    let (reply, response) = std::sync::mpsc::channel(); // transport 工作线程等待原生结果，不阻塞 UI 消息循环。
+    app.run_on_main_thread(move || {
+        let result = prepared.data.resolve().map_err(|error| format!("解析源拖放数据失败：{error}")).and_then(|data| crate::platform::windows::start_desktop_item_drag(data, &prepared.references, pointer_offset)); // 仅在当前 UI apartment 使用代理。
+        let _ = reply.send(result);
+    })
+    .map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
+    let mut result = response.recv().map_err(|error| DesktopItemError::shell_operation_failed(&error))?.map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 不推测文件成功或取消结果。
+    result.completed_at_unix_micros = crate::tools::time::next_timeline_timestamp();
+    crate::log_info!("拖放：宿主 OLE 交接结束，凭据={token}，效果={}，取消={}", result.effect.as_deref().unwrap_or("无"), u8::from(result.aborted));
+    Ok(result)
+}
 
 /// 准备完整选择集合，返回空值表示沿用内部布局拖动。
 #[tauri::command]
@@ -93,7 +109,7 @@ pub fn cancel_desktop_item_drag_preparation(state: State<'_, DesktopItemState>, 
 /// 在正确语义目标显示原生菜单并提交选中的产品命令。
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn show_workspace_context_menu(app: AppHandle, state: State<'_, DesktopItemState>, workspace: State<'_, WorkspaceState>, runtime: State<'_, Arc<DesktopHostRuntime>>, monitor_id: String, target: WorkspaceContextMenuTarget, client_x: f64, client_y: f64) -> Result<WorkspaceSnapshot, DesktopItemError> { execute_show_workspace_context_menu(&app, &state, &workspace, &runtime, monitor_id, target, client_x, client_y) }
+pub async fn show_workspace_context_menu(app: AppHandle, state: State<'_, DesktopItemState>, workspace: State<'_, WorkspaceState>, runtime: State<'_, Arc<DesktopHostRuntime>>, monitor_id: String, target: WorkspaceContextMenuTarget, client_x: f64, client_y: f64) -> Result<WorkspaceSnapshot, DesktopItemError> { execute_show_workspace_context_menu(&app, &state, &workspace, &runtime, monitor_id, target, client_x, client_y) }
 
 /// 两种 transport 共用的命令执行与事件发布。
 #[allow(clippy::too_many_arguments)]
@@ -108,6 +124,7 @@ pub(crate) fn execute_show_workspace_context_menu(app: &AppHandle, state: &Deskt
 /// 为 Tauri 与本地 transport 共享原生菜单领域协调。
 pub(crate) fn show_workspace_context_menu_state(state: &DesktopItemState, workspace: &WorkspaceState, runtime: &DesktopHostRuntime, monitor_id: &str, target: WorkspaceContextMenuTarget, client_x: f64, client_y: f64) -> Result<WorkspaceSnapshot, DesktopItemError>
 {
+    crate::log_info!("菜单：收到请求，显示器={monitor_id}，目标={target:?}，位置=({client_x},{client_y})");
     let host_snapshot = runtime.snapshot().map_err(|error| DesktopItemError::shell_operation_failed(&error.message))?; // 当前宿主环境。
     let monitor = host_snapshot.hosts.iter().find(|host| host.monitor.id == monitor_id).map(|host| &host.monitor).ok_or_else(|| DesktopItemError::shell_operation_failed(&"当前显示器宿主不存在"))?; // 目标显示器。
     let snapshot = workspace.snapshot().map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 菜单打开前的事实。

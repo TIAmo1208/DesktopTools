@@ -86,7 +86,7 @@ export interface WorkspaceFenceScroll {
 export type WorkspaceFocusTarget =
     { type: "background" } | { type: "item"; itemId: string } | { type: "fence"; fenceId: string } | { type: "component"; componentId: string };
 
-/** 当前虚拟桌面的运行期选择、锚点和键盘焦点。 */
+/** 当前工作区的运行期选择、锚点和键盘焦点。 */
 export interface WorkspaceInteractionSnapshot {
     revision: number;
     selectedItemIds: string[];
@@ -112,15 +112,12 @@ export interface WorkspaceBackupSummary {
     schemaVersion: number;
     createdAtUnix: number;
     path: string;
-    layoutCount: number;
-    archiveCount: number;
     checksum: string;
 }
 
 /** 完整工作区备份事务式还原结果。 */
 export interface WorkspaceRestoreResult {
     snapshot: WorkspaceSnapshot;
-    restoredLayoutCount: number;
     message: string;
 }
 
@@ -365,18 +362,14 @@ export const parseWorkspaceSnapshot = (value: unknown): WorkspaceSnapshot => {
 export const parseWorkspaceBackupSummary = (value: unknown): WorkspaceBackupSummary => {
     if (typeof value !== "object" || value === null) throw new WorkspaceContractError();
     const candidate = value as Record<string, unknown>; // 等待字段校验的备份摘要。
-    if (candidate.schemaVersion !== 4) throw new WorkspaceContractError();
+    if (candidate.schemaVersion !== 5) throw new WorkspaceContractError();
     if (!Number.isSafeInteger(candidate.createdAtUnix) || (candidate.createdAtUnix as number) < 0) throw new WorkspaceContractError();
     if (typeof candidate.path !== "string" || candidate.path.length === 0) throw new WorkspaceContractError();
-    if (!Number.isSafeInteger(candidate.layoutCount) || (candidate.layoutCount as number) <= 0) throw new WorkspaceContractError();
-    if (!Number.isSafeInteger(candidate.archiveCount) || (candidate.archiveCount as number) < 0) throw new WorkspaceContractError();
     if (typeof candidate.checksum !== "string" || !candidate.checksum.startsWith("fnv1a64:")) throw new WorkspaceContractError();
     return {
-        schemaVersion: 4,
+        schemaVersion: 5,
         createdAtUnix: candidate.createdAtUnix as number,
         path: candidate.path,
-        layoutCount: candidate.layoutCount as number,
-        archiveCount: candidate.archiveCount as number,
         checksum: candidate.checksum,
     };
 };
@@ -385,11 +378,9 @@ export const parseWorkspaceBackupSummary = (value: unknown): WorkspaceBackupSumm
 export const parseWorkspaceRestoreResult = (value: unknown): WorkspaceRestoreResult => {
     if (typeof value !== "object" || value === null) throw new WorkspaceContractError();
     const candidate = value as Record<string, unknown>; // 等待字段校验的完整还原结果。
-    if (!Number.isSafeInteger(candidate.restoredLayoutCount) || (candidate.restoredLayoutCount as number) <= 0) throw new WorkspaceContractError();
     if (typeof candidate.message !== "string") throw new WorkspaceContractError();
     return {
         snapshot: parseWorkspaceSnapshot(candidate.snapshot),
-        restoredLayoutCount: candidate.restoredLayoutCount as number,
         message: candidate.message,
     };
 };

@@ -8,9 +8,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-static SHELL_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false); // 当前 Shell STA 正在运行源端拖放，不能重入请求队列。
+static SHELL_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false); // 宿主 UI STA 正在运行源端拖放，环境协调不得跨越本次会话。
 
-/// 判断源端拖放是否占用了当前 Shell STA。
+/// 判断宿主是否正在运行源端 OLE 拖放。
 pub(crate) fn shell_drag_active() -> bool { SHELL_DRAG_ACTIVE.load(Ordering::Acquire) }
 
 use super::desktop_sources::{SYSTEM_ICONS, SourceConfigWatch, visible_icons};
@@ -284,21 +284,64 @@ impl FileOperationProgressSink_Impl
 
 /// 使用系统默认光标驱动 OLE 拖放生命周期。
 #[implement(IDropSource)]
-struct ShellDragSource;
+struct ShellDragSource
+{
+    drop_started: Arc<AtomicBool>, // QueryContinueDrag 确认投放后关闭释放丢失检查。
+}
 
-/// 实现 OLE 拖动继续、取消和释放规则。
-#[allow(non_snake_case)]
+/// 仅观察原生按键和捕获，不访问或转移 Shell COM 对象。
+fn watch_source_drag_release(source_thread: u32, drop_started: Arc<AtomicBool>) -> Result<(Sender<()>, JoinHandle<()>), String>
+{
+    let (stop, receiver) = mpsc::channel(); // OLE 返回后立即结束检查。
+    let worker = thread::Builder::new()
+        .name("desktop-tools-drag-release".into())
+        .spawn(move || {
+            use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE, VK_LBUTTON};
+            use windows::Win32::UI::WindowsAndMessaging::{GUITHREADINFO, GetGUIThreadInfo, GetWindowThreadProcessId, WM_KEYDOWN};
+            while matches!(receiver.recv_timeout(std::time::Duration::from_millis(50)), Err(mpsc::RecvTimeoutError::Timeout))
+            {
+                if drop_started.load(Ordering::Acquire) || unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0
+                {
+                    continue;
+                }
+                let mut info = GUITHREADINFO { cbSize: size_of::<GUITHREADINFO>() as u32, ..Default::default() }; // 当前源 STA 的 OLE 捕获窗口。
+                if unsafe { GetGUIThreadInfo(source_thread, &mut info) }.is_err() || info.hwndCapture.is_invalid()
+                {
+                    continue;
+                }
+                if unsafe { GetWindowThreadProcessId(info.hwndCapture, None) } != source_thread || drop_started.load(Ordering::Acquire)
+                {
+                    continue;
+                }
+                // 只取消尚未进入 Drop 的失联源；窗口定向消息不会留给后续菜单，不在旧位置补做投放。
+                match unsafe { PostMessageW(Some(info.hwndCapture), WM_KEYDOWN, WPARAM(VK_ESCAPE.0 as usize), LPARAM(0)) }
+                {
+                    Ok(()) =>
+                    {
+                        crate::log_warn!("拖放：源会话未收到鼠标释放，已请求取消");
+                        break;
+                    }
+                    Err(error) => crate::log_error!("拖放：取消丢失释放消息的源会话失败，错误={error}"),
+                }
+            }
+        })
+        .map_err(|error| format!("启动拖放释放检查失败：{error}"))?; // 创建失败不启动无法恢复的 OLE 会话。
+    Ok((stop, worker))
+}
+
+/// 使用 OLE 传入的按键决定正常释放，检查线程仅补充丢失消息的取消。
 impl IDropSource_Impl for ShellDragSource_Impl
 {
     /// 根据 Escape 和鼠标按键决定继续、取消或完成 OLE 拖动。
     fn QueryContinueDrag(&self, escape_pressed: BOOL, key_state: MODIFIERKEYS_FLAGS) -> HRESULT
     {
-        if escape_pressed.as_bool() || super::drop_target::source_drag_cancelled()
+        if escape_pressed.as_bool()
         {
             return DRAGDROP_S_CANCEL;
         }
         if (key_state & MK_LBUTTON).0 == 0
         {
+            self.drop_started.store(true, Ordering::Release);
             return DRAGDROP_S_DROP;
         }
         S_OK
@@ -1059,14 +1102,18 @@ pub(crate) fn transfer_desktop_data(owner: &ShellMenuOwner, data_object: &IDataO
 }
 
 /// 使用 Shell IDataObject 启动跨 Desktop Tools、Explorer 和其他程序的 OLE 拖放。
-pub fn start_desktop_item_drag(data_object: IDataObject, references: &[String], pointer_offset: crate::contracts::WorkspacePoint, environment: u64) -> Result<ShellOperationResult, String>
+pub fn start_desktop_item_drag(data_object: IDataObject, references: &[String], pointer_offset: crate::contracts::WorkspacePoint) -> Result<ShellOperationResult, String>
 {
     validate_reference_selection(references)?;
-    let drop_source: IDropSource = ShellDragSource.into(); // 使用系统默认光标的 OLE 拖动源。
+    let drop_started = Arc::new(AtomicBool::new(false)); // 目标已经开始 Drop 后不得取消真实文件操作。
+    let drop_source: IDropSource = ShellDragSource { drop_started: Arc::clone(&drop_started) }.into(); // 使用系统默认光标的 OLE 拖动源。
     let allowed = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK; // 外部目标可以协商的完整系统效果集合。
     let mut effect = DROPEFFECT_NONE; // DoDragDrop 返回的最终系统效果。
-    let session = super::drop_target::SourceDragGuard::register(&data_object, references, pointer_offset, environment).map_err(|error| format!("登记系统拖动会话失败：{error}"))?; // 原生目标只认可本次完整数据对象。
+    let session = super::drop_target::SourceDragGuard::register(&data_object, references, pointer_offset).map_err(|error| format!("登记系统拖动会话失败：{error}"))?; // 原生目标只认可本次完整数据对象。
+    let source_thread = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }; // COM 与 OLE 所属 STA。
+    let (stop_release_watch, release_watch) = watch_source_drag_release(source_thread, Arc::clone(&drop_started))?; // 松键检查不依赖可能失去消息的源循环。
     SHELL_DRAG_ACTIVE.store(true, Ordering::Release);
+    crate::log_info!("拖放：OLE 源会话开始，项目数量={}", references.len());
     let status = if unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(windows::Win32::UI::Input::KeyboardAndMouse::VK_LBUTTON.0 as i32) } < 0
     {
         unsafe { DoDragDrop(&data_object, &drop_source, allowed, &mut effect) }
@@ -1075,7 +1122,14 @@ pub fn start_desktop_item_drag(data_object: IDataObject, references: &[String], 
     {
         DRAGDROP_S_CANCEL
     }; // 异步交接期间已经松开鼠标则取消，不能在新位置补做一次投放。
+    drop_started.store(true, Ordering::Release);
+    let _ = stop_release_watch.send(()); // 不让检查线程延续到下一个用户操作。
+    if release_watch.join().is_err()
+    {
+        crate::log_error!("拖放：释放检查线程异常结束");
+    }
     SHELL_DRAG_ACTIVE.store(false, Ordering::Release);
+    crate::log_info!("拖放：OLE 源会话结束，状态={status:?}");
     if status.is_err() && !session.layout_committed()
     {
         return Err(format!("系统 OLE 拖放失败: {status:?}"));
@@ -1857,6 +1911,60 @@ unsafe fn icon_data_url(icon: HICON) -> Option<String>
 #[cfg(test)]
 mod tests
 {
+    /// 真实 OLE 循环遗漏松键时能自行退出，已经开始 Drop 的期间不被检查线程取消。
+    #[test]
+    #[ignore = "需要交互式 Windows 桌面，短暂建立真实 OLE 会话但不执行文件投放"]
+    fn lost_source_release_exits_ole_without_cancelling_started_drop()
+    {
+        use super::*;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+        /// 模拟始终丢失松键的源，绝不返回 Drop。
+        #[implement(IDropSource)]
+        struct LostReleaseSource;
+        impl IDropSource_Impl for LostReleaseSource_Impl
+        {
+            fn QueryContinueDrag(&self, escape: BOOL, _: MODIFIERKEYS_FLAGS) -> HRESULT { if escape.as_bool() { DRAGDROP_S_CANCEL } else { S_OK } }
+            fn GiveFeedback(&self, _: DROPEFFECT) -> HRESULT { DRAGDROP_S_USEDEFAULTCURSORS }
+        }
+        initialize_shell_apartment().unwrap();
+        assert!(unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } >= 0, "测试开始时必须松开鼠标");
+        let path = std::env::temp_dir().join(format!("desktop-tools-release-{}.txt", std::process::id())); // 不触碰用户文件。
+        std::fs::write(&path, "release probe").unwrap();
+        let item: IShellItem = unsafe { windows::Win32::UI::Shell::SHCreateItemFromParsingName(&windows::core::HSTRING::from(path.to_string_lossy().as_ref()), None) }.unwrap(); // 临时文件真实 Shell 身份。
+        let data: IDataObject = unsafe { item.BindToHandler(None, &windows::Win32::UI::Shell::BHID_DataObject) }.unwrap(); // 原生数据对象留在本 STA。
+        let source: IDropSource = LostReleaseSource.into(); // 不允许写文件的模拟源。
+        let source_thread = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }; // 本次 OLE 所属线程。
+        let drop_started = Arc::new(AtomicBool::new(true)); // 先模拟目标正在执行，检查线程必须等待。
+        let (stop, worker) = watch_source_drag_release(source_thread, Arc::clone(&drop_started)).unwrap(); // 与产品相同的释放检查。
+        let begin = std::time::Instant::now(); // 检测不得过早取消，也不能永久不返回。
+        let allow_cancel = thread::spawn(move || {
+            thread::sleep(std::time::Duration::from_millis(200));
+            drop_started.store(false, Ordering::Release);
+        }); // 随后模拟尚未交付的失联源。
+        let (stop_fallback, receiver) = mpsc::channel::<()>(); // 失败时独立解除系统拖放，防止测试本身挂死。
+        let fallback = thread::spawn(move || {
+            if receiver.recv_timeout(std::time::Duration::from_secs(2)).is_err()
+            {
+                let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(source_thread, windows::Win32::UI::WindowsAndMessaging::WM_KEYDOWN, WPARAM(27), LPARAM(0)) };
+            }
+        }); // 原生源循环不保证处理 WM_TIMER，兜底同样不依赖它。
+        let mut effect = DROPEFFECT_NONE; // 本例没有投放结果。
+        let status = unsafe { DoDragDrop(&data, &source, DROPEFFECT_COPY, &mut effect) };
+        let elapsed = begin.elapsed(); // 正式检查应在允许取消后很快结束。
+        let _ = stop.send(());
+        let _ = stop_fallback.send(());
+        worker.join().unwrap();
+        allow_cancel.join().unwrap();
+        fallback.join().unwrap();
+        drop(source);
+        drop(data);
+        drop(item);
+        uninitialize_shell_apartment();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(status, DRAGDROP_S_CANCEL);
+        assert!(elapsed >= std::time::Duration::from_millis(180) && elapsed < std::time::Duration::from_secs(1), "释放检查未遵守投放阶段或没有及时退出：{elapsed:?}");
+    }
+
     /// 文件执行边界必须在任何磁盘操作前拒绝链接、无效果和组合效果。
     #[test]
     fn desktop_transfer_rejects_unsupported_effects()

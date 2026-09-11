@@ -6,7 +6,6 @@ use super::{WorkspaceError, WorkspaceItemPlacement, WorkspacePoint, WorkspaceSna
 #[derive(Clone, Debug)]
 pub(crate) struct DropTarget
 {
-    pub desktop_id: String,                        // 释放时的虚拟桌面；删除后只保留共享内容意图。
     pub monitor_id: String,                        // 原空间目标显示器。
     pub revision: u64,                             // 开始传输前必须一致的布局版本。
     pub fence_id: Option<String>,                  // 全局稳定围栏身份；None 表示未归类。
@@ -21,33 +20,21 @@ pub(crate) struct DropTarget
 #[derive(Clone, Debug)]
 pub(crate) struct DropLayoutChange
 {
-    pub desktop_id: String,           // 空间恢复只作用于原视图。
     pub before: WorkspaceSnapshot,    // 实际提交之前的状态，不回滚等待期间其他操作。
     pub after: WorkspaceSnapshot,     // 本次已持久化的状态。
     pub layout_only_ids: Vec<String>, // 没有执行文件传输的已有项目。
     pub item_ids: Vec<String>,        // 实际完成归属提交的准确结果身份。
-    pub spatial: bool,                // 源视图已经删除时没有可恢复的空间写入。
 }
 
 impl super::WorkspaceState
 {
-    /// 按准确文件完成映射恢复共享归属，原视图仍存在时才恢复其未被后续操作改变的位置。
+    /// 按准确文件完成映射恢复共享归属，只恢复未被后续操作改变的位置。
     pub(crate) fn restore_drop_layout(&self, change: &DropLayoutChange, mappings: &[(String, String, String, bool)], files: &crate::contracts::DesktopItemSnapshot) -> Result<Vec<String>, WorkspaceError>
     {
-        let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 当前共享投影权威。
-        let mut desktops = self.virtual_desktops.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 原视图可能已被删除。
-        let mut next_desktops = desktops.clone(); // 持久化成功前不改变内存。
-        let mut candidate = if desktops.current_id == change.desktop_id
-        {
-            current.clone()
-        }
-        else
-        {
-            desktops.layouts.get(&change.desktop_id).cloned().unwrap_or_else(|| current.clone())
-        };
-        super::shared::project(&current, &mut candidate)?;
-        let original_positions = candidate.unclassified_items.clone(); // 只用于放弃有冲突的空间恢复，不回滚共享归属。
-        let spatial = change.spatial && (desktops.current_id == change.desktop_id || desktops.layouts.contains_key(&change.desktop_id));
+        let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 当前工作区权威。
+        let imported = self.explorer_layout_imported.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 与布局共同保存的导入状态。
+        let mut candidate = current.clone(); // 只恢复当前统一布局。
+        let original_positions = candidate.unclassified_items.clone(); // 空间冲突时保留后续操作结果。
         let active = files.items.iter().map(|item| item.stable_reference.as_str()).collect::<HashSet<_>>(); // 只使用本次明确枚举的实际身份。
         let mut restored = Vec::new(); // 归属检查成功的原历史身份。
         let mut retired = HashSet::new(); // 文件已离开桌面的准确旧引用，不清扫其他新增文件。
@@ -90,8 +77,7 @@ impl super::WorkspaceState
                 let successor = fence.members.iter().skip(index + 1).find_map(|id| target.members.iter().position(|current| current == id)).unwrap_or(target.members.len()); // 后继不存在时追加，保留其他并发成员。
                 target.members.insert(successor, actual.clone());
             }
-            if spatial
-                && let Some(item) = candidate.unclassified_items.iter_mut().find(|item| &item.stable_reference == actual)
+            if let Some(item) = candidate.unclassified_items.iter_mut().find(|item| &item.stable_reference == actual)
                 && let Some(wanted) = desired.unclassified_items.iter().find(|item| &item.stable_reference == original)
                 && let Some(applied) = expected.unclassified_items.iter().find(|item| &item.stable_reference == original)
             {
@@ -112,13 +98,9 @@ impl super::WorkspaceState
             }
             snapshot.unclassified_items.retain(|item| !retired.contains(&item.stable_reference));
             snapshot.normalize_interaction();
-        }; // 成功移动的源引用也从所有活动视图移除，避免共享投影重新补齐。
+        }; // 只清理成功移出工作区的准确引用。
         clean(&mut candidate);
-        for layout in next_desktops.layouts.values_mut()
-        {
-            clean(layout);
-        }
-        if spatial && !restored.is_empty()
+        if !restored.is_empty()
         {
             let redo = mappings.first().is_some_and(|mapping| mapping.3); // 一轮历史只恢复一个方向。
             let (desired, expected) = if redo { (&change.after, &change.before) } else { (&change.before, &change.after) };
@@ -157,34 +139,17 @@ impl super::WorkspaceState
         self.sort_fences(&mut candidate)?;
         candidate.revision = current.revision.max(candidate.revision).saturating_add(1);
         candidate.validate()?;
-        let mut next = current.clone();
-        clean(&mut next);
-        if desktops.current_id == change.desktop_id
-        {
-            next = candidate.clone();
-        }
-        else
-        {
-            if spatial
-            {
-                next_desktops.layouts.insert(change.desktop_id.clone(), candidate.clone());
-            }
-            super::shared::project(&candidate, &mut next)?;
-        }
-        super::shared::publish(&candidate, &mut next_desktops)?;
-        let store = super::save_workspace_store(&self.persistence_path, &next, &next_desktops).map_err(|error| WorkspaceError::persistence_failed(&error))?;
-        *current = next;
-        *desktops = next_desktops;
-        self.schedule_auto_snapshot(&desktops.current_id, store);
+        let store = super::save_workspace_store(&self.persistence_path, &candidate, *imported).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 原子保存后才发布状态。
+        *current = candidate;
+        self.schedule_auto_snapshot(store);
         Ok(restored)
     }
 
-    /// 在磁盘传输前模拟完整成功集合及所有共享投影，容量不足不启动文件操作。
+    /// 在磁盘传输前模拟完整成功集合，容量不足不启动文件操作。
     pub(crate) fn preflight_drop(&self, target: &DropTarget, existing: &[String], new_count: usize) -> Result<(), WorkspaceError>
     {
         let current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?;
-        let desktops = self.virtual_desktops.lock().map_err(|_| WorkspaceError::state_unavailable())?;
-        if current.revision != target.revision || desktops.current_id != target.desktop_id
+        if current.revision != target.revision
         {
             return Err(WorkspaceError::invalid_command("投放视图已经失效"));
         }
@@ -205,77 +170,26 @@ impl super::WorkspaceState
             ids.push(id);
         }
         candidate.apply_drop(target, &ids)?;
-        let mut projected = desktops.clone();
-        super::shared::publish(&candidate, &mut projected)?;
         Ok(())
     }
 
-    /// 文件事实协调后一次保存归属与原视图空间；由 Shell 联合历史记录一次用户操作。
+    /// 文件事实协调后一次保存准确归属，由 Shell 联合历史记录本次操作。
     pub(crate) fn commit_external_drop(&self, target: &DropTarget, item_ids: &[String], layout_only_ids: &[String]) -> Result<(WorkspaceSnapshot, DropLayoutChange), WorkspaceError>
     {
-        let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?;
-        let mut desktops = self.virtual_desktops.lock().map_err(|_| WorkspaceError::state_unavailable())?;
-        let mut next_desktops = desktops.clone();
-        let mut next = current.clone(); // 保存失败不改变任何活动视图。
-        let origin = if desktops.current_id == target.desktop_id
-        {
-            Some(current.clone())
-        }
-        else
-        {
-            desktops.layouts.get(&target.desktop_id).cloned()
-        }; // 不复活已经删除的虚拟桌面。
-        let spatial = origin.is_some();
-        let mut candidate = origin.unwrap_or_else(|| current.clone());
-        super::shared::project(&current, &mut candidate)?; // 源视图使用最新共享成员和准确文件集合。
-        let before = candidate.clone();
-        if spatial
-        {
-            candidate.apply_drop(target, item_ids)?;
-        }
-        else
-        {
-            if item_ids.is_empty() || item_ids.iter().any(|id| !candidate.unclassified_items.iter().any(|item| &item.stable_reference == id))
-            {
-                return Err(WorkspaceError::invalid_command("投放项目已经失效"));
-            }
-            for fence in &mut candidate.fences
-            {
-                fence.members.retain(|id| !item_ids.contains(id));
-            }
-            if let Some(fence_id) = &target.fence_id
-            {
-                let fence = candidate.fence_mut(fence_id)?;
-                let index = target.before_item_id.as_ref().and_then(|id| fence.members.iter().position(|member| member == id)).unwrap_or(fence.members.len());
-                fence.members.splice(index..index, item_ids.iter().cloned());
-            }
-        }
+        let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 文件传输期间的后续操作必须保留。
+        let imported = self.explorer_layout_imported.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 共同保存的导入状态。
+        let before = current.clone(); // 实际提交前状态，用于部分补偿。
+        let mut candidate = before.clone(); // 保存前不改变内存。
+        candidate.apply_drop(target, item_ids)?;
         self.sort_fences(&mut candidate)?;
-        candidate.revision = candidate.revision.saturating_add(1);
+        candidate.revision = current.revision.saturating_add(1);
         candidate.validate()?;
-        if desktops.current_id == target.desktop_id
-        {
-            next = candidate.clone();
-        }
-        else
-        {
-            if spatial
-            {
-                next_desktops.layouts.insert(target.desktop_id.clone(), candidate.clone());
-            }
-            super::shared::project(&candidate, &mut next)?;
-        }
-        super::shared::publish(&candidate, &mut next_desktops)?;
-        let mut histories = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?;
-        let store = super::save_workspace_store(&self.persistence_path, &next, &next_desktops).map_err(|error| WorkspaceError::persistence_failed(&error))?;
-        for history in histories.values_mut()
-        {
-            history.redo.clear();
-        }
-        *current = next.clone();
-        *desktops = next_desktops;
-        self.schedule_auto_snapshot(&desktops.current_id, store);
-        Ok((next, DropLayoutChange { desktop_id: target.desktop_id.clone(), before, after: candidate, layout_only_ids: layout_only_ids.to_vec(), item_ids: item_ids.to_vec(), spatial }))
+        let mut history = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 保存前确认重做分支可清理。
+        let store = super::save_workspace_store(&self.persistence_path, &candidate, *imported).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 持久化后再提交联合历史结果。
+        history.redo.clear();
+        *current = candidate.clone();
+        self.schedule_auto_snapshot(store);
+        Ok((candidate.clone(), DropLayoutChange { before, after: candidate, layout_only_ids: layout_only_ids.to_vec(), item_ids: item_ids.to_vec() }))
     }
 }
 
@@ -294,7 +208,7 @@ impl WorkspaceSnapshot
         }
         else
         {
-            self.grid_drop_placements_at(ids, &target.monitor_id, target.position, target.free, target.insertion.as_ref())?
+            self.grid_drop_placements_at(ids, &target.monitor_id, target.position, target.free, target.insertion.as_ref(), None)?
         };
         self.apply(super::WorkspaceCommand::CommitItemDrag { anchor_item_id: ids[0].clone(), item_ids: ids.to_vec(), placements, target_fence_id: target.fence_id.clone(), before_item_id: target.before_item_id.clone(), fence_scrolls: target.scrolls.clone() }, Some(&target.monitor_id))?;
         self.validate()
@@ -302,10 +216,10 @@ impl WorkspaceSnapshot
 
     /// 沿用前端 resolveGridDrop 的最近槽位与组内几何规则，原生释放不等待页面答复。
     #[cfg(test)]
-    pub(crate) fn grid_drop_placements(&self, item_ids: &[String], monitor_id: &str, desired: WorkspacePoint, free: bool) -> Result<Vec<WorkspaceItemPlacement>, WorkspaceError> { self.grid_drop_placements_at(item_ids, monitor_id, desired, free, None) }
+    pub(crate) fn grid_drop_placements(&self, item_ids: &[String], monitor_id: &str, desired: WorkspacePoint, free: bool) -> Result<Vec<WorkspaceItemPlacement>, WorkspaceError> { self.grid_drop_placements_at(item_ids, monitor_id, desired, free, None, None) }
 
     /// 组吸附与四向传播共用来源槽位，所有被挤开的项目在同一领域事务提交。
-    pub(crate) fn grid_drop_placements_at(&self, item_ids: &[String], monitor_id: &str, desired: WorkspacePoint, free: bool, insertion: Option<&(String, String)>) -> Result<Vec<WorkspaceItemPlacement>, WorkspaceError>
+    pub(crate) fn grid_drop_placements_at(&self, item_ids: &[String], monitor_id: &str, desired: WorkspacePoint, free: bool, insertion: Option<&(String, String)>, source_positions: Option<&[WorkspacePoint]>) -> Result<Vec<WorkspaceItemPlacement>, WorkspaceError>
     {
         super::validate_point(desired)?;
         if item_ids.is_empty() || item_ids.iter().collect::<HashSet<_>>().len() != item_ids.len()
@@ -315,6 +229,25 @@ impl WorkspaceSnapshot
         let members = self.fences.iter().flat_map(|fence| fence.members.iter()).collect::<HashSet<_>>(); // 围栏来源占位不阻挡桌面落点，提交时由领域修复占位。
         let positions = self.unclassified_items.iter().filter(|item| item_ids.contains(&item.stable_reference) || (!members.contains(&item.stable_reference) && item.projection_monitor_id.as_deref().unwrap_or(&item.monitor_id) == monitor_id)).map(|item| (&item.stable_reference, item.projection_position.unwrap_or(item.position))).collect::<Vec<_>>(); // 与前端目标屏投影相同的稳定输入顺序。
         let sources = item_ids.iter().map(|id| positions.iter().find(|(candidate, _)| *candidate == id).map(|(_, point)| *point).ok_or_else(|| WorkspaceError::invalid_command("拖动项目不存在"))).collect::<Result<Vec<_>, _>>()?; // 完整选择必须可解析。
+        let sources = if let Some(rendered) = source_positions
+        {
+            if rendered.len() != item_ids.len()
+            {
+                return Err(WorkspaceError::invalid_command("拖动来源几何不完整"));
+            }
+            for point in rendered
+            {
+                if !point.left.is_finite() || !point.top.is_finite()
+                {
+                    return Err(WorkspaceError::invalid_command("拖动来源几何无效"));
+                }
+            }
+            rendered.to_vec()
+        }
+        else
+        {
+            sources
+        }; // 内部来源优先使用拖动开始时的真实排列，外部投放保留领域规则。
         if free
         {
             let left = sources.iter().map(|position| position.left - sources[0].left).fold(0.0, f64::min); // 组内最左偏移。
@@ -440,7 +373,11 @@ impl WorkspaceSnapshot
         let anchor = source_slot(0); // 第一个项目是拖动锚点。
         let offsets = (0..item_ids.len())
             .map(|index| {
-                let slot = source_slot(index);
+                if source_positions.is_some()
+                {
+                    return (((sources[index].left - sources[0].left) / grid.column_width).round() as i64, ((sources[index].top - sources[0].top) / grid.row_height).round() as i64);
+                }
+                let slot = source_slot(index); // 没有渲染来源时沿用规范网格。
                 (slot.0 - anchor.0, slot.1 - anchor.1)
             })
             .collect::<Vec<_>>(); // 组内相对行列。
@@ -475,34 +412,45 @@ mod tests
 {
     use super::*;
 
-    /// 混合结果只消费指定身份；释放后切换或删除原视图仍提交共享目标，联合恢复不吞掉并发项目。
+    /// 原生内部投放按围栏可见排列落位，不恢复分散的旧桌面坐标。
+    #[test]
+    fn internal_drop_uses_rendered_group_geometry()
+    {
+        let mut snapshot = WorkspaceSnapshot::default(); // 最小目标工作区。
+        snapshot.grid = super::super::WorkspaceGrid { left: 0.0, top: 0.0, column_width: 80.0, row_height: 100.0, rows: 10, columns: 10 };
+        snapshot.unclassified_items = [("a", 0.0, 0.0), ("b", 640.0, 800.0)].into_iter().map(|(id, left, top)| super::super::UnclassifiedItemSnapshot { stable_reference: id.into(), monitor_id: "screen".into(), projection_monitor_id: None, projection_position: None, position: WorkspacePoint { left, top }, z_index: 0 }).collect();
+        let ids = ["a".into(), "b".into()]; // 原子拖动集合。
+        let rendered = [WorkspacePoint { left: -10.0, top: -10.0 }, WorkspacePoint { left: 64.0, top: -10.0 }]; // 原生 Enter 缓存的围栏排列。
+        let result = snapshot.grid_drop_placements_at(&ids, "screen", WorkspacePoint { left: 160.0, top: 300.0 }, false, None, Some(&rendered)).unwrap(); // OLE 正式落位入口。
+        assert_eq!(result[0].position, WorkspacePoint { left: 160.0, top: 300.0 });
+        assert_eq!(result[1].position, WorkspacePoint { left: 240.0, top: 300.0 });
+        assert!(snapshot.grid_drop_placements_at(&ids, "screen", WorkspacePoint { left: 0.0, top: 0.0 }, false, None, Some(&rendered[..1])).is_err());
+    }
+
+    /// 混合结果只消费指定身份；释放后文件传输仍使用固定目标，联合恢复不吞掉并发项目。
     #[test]
     fn released_drop_keeps_shared_target_and_restores_only_confirmed_items()
     {
         use crate::contracts::{DesktopHostMonitor, DesktopItem, DesktopItemAvailability, DesktopItemSnapshot, WorkspaceCommand, WorkspaceRect};
-        for remove_origin in [false, true]
         {
             let root = std::env::temp_dir().join(format!("desktop-tools-drop-{}-{}", std::process::id(), crate::tools::time::next_timeline_timestamp())); // 所有写入仅位于本例独占目录。
             std::fs::create_dir(&root).unwrap();
             let path = root.join("workspace.json");
-            let desktops = ["a".to_string(), "b".to_string()];
             let monitors = [DesktopHostMonitor { id: "screen".into(), name: "screen".into(), primary: true, x: 0, y: 0, width: 1200, height: 800, work_x: 0, work_y: 0, work_width: 1200, work_height: 800, scale_factor: 1.0, dpi: 96 }];
-            let mut state = super::super::WorkspaceState::load_for_virtual_desktops(path.clone(), "a", &desktops).unwrap();
-            state.reconcile_virtual_desktops("a", &desktops, &monitors, &["existing".into()]).unwrap();
+            let mut state = super::super::WorkspaceState::load(path.clone()).unwrap();
+            state.reconcile_host_monitors(&monitors, &["existing".into()], &[], &[]).unwrap();
             let created = state.apply(WorkspaceCommand::CreateFence { title: " ".into(), bounds: WorkspaceRect { left: 40.0, top: 40.0, width: 320.0, height: 240.0 } }).unwrap();
             let fence = created.fences[0].id.clone();
-            let target = DropTarget { desktop_id: "a".into(), monitor_id: "screen".into(), revision: created.revision, fence_id: Some(fence.clone()), before_item_id: None, position: WorkspacePoint { left: 0.0, top: 0.0 }, free: false, insertion: None, scrolls: Vec::new() };
+            let target = DropTarget { monitor_id: "screen".into(), revision: created.revision, fence_id: Some(fence.clone()), before_item_id: None, position: WorkspacePoint { left: 0.0, top: 0.0 }, free: false, insertion: None, scrolls: Vec::new() };
             let disk = std::fs::read(&path).unwrap();
             state.preflight_drop(&target, &["existing".into()], 1).unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), disk);
             assert!(state.preflight_drop(&target, &["existing".into()], 1000).is_err());
-            let active = if remove_origin { vec!["b".into()] } else { desktops.to_vec() };
             let ids = ["existing".into(), "new".into(), "concurrent".into()]; // 新文件成功和其他程序并发新增使用不同准确身份。
-            state.reconcile_virtual_desktops("b", &active, &monitors, &ids).unwrap();
-            assert!(state.preflight_drop(&target, &["existing".into()], 1).is_err()); // 释放前切换必须拒绝。
+            state.reconcile_host_monitors(&monitors, &ids, &[], &[]).unwrap();
+            assert!(state.preflight_drop(&target, &["existing".into()], 1).is_err()); // 释放前布局版本变化必须拒绝。
             let (committed, change) = state.commit_external_drop(&target, &["existing".into(), "new".into()], &["existing".into()]).unwrap(); // 释放后完成可以使用固定共享目标。
             assert_eq!(committed.fences[0].members, ["existing", "new"]);
-            assert_eq!(change.spatial, !remove_origin);
             let files = DesktopItemSnapshot { revision: 1, items: ["existing", "concurrent"].into_iter().map(|id| DesktopItem { stable_reference: id.into(), display_name: id.into(), system_image: None, availability: DesktopItemAvailability::Available }).collect() };
             let mappings = [("existing".into(), "existing".into(), "existing".into(), false), ("new".into(), "new".into(), "recycle-new".into(), false)];
             state.persistence_path = path.join("blocked.json");
@@ -514,7 +462,6 @@ mod tests
             assert!(undone.fences[0].members.is_empty());
             assert!(undone.unclassified_items.iter().any(|item| item.stable_reference == "concurrent"));
             assert!(!undone.unclassified_items.iter().any(|item| item.stable_reference == "new"));
-            assert!(!state.virtual_desktops.lock().unwrap().layouts.contains_key("a") || !remove_origin);
             drop(state);
             std::fs::remove_dir_all(root).unwrap();
         }
@@ -564,11 +511,11 @@ mod tests
         let ids = ["a".into(), "b".into()];
         let insertion = ("target".into(), "up".into());
         let desired = WorkspacePoint { left: 0.0, top: 200.0 };
-        let positions = snapshot.grid_drop_placements_at(&ids, "screen", desired, false, Some(&insertion)).unwrap();
+        let positions = snapshot.grid_drop_placements_at(&ids, "screen", desired, false, Some(&insertion), None).unwrap();
         assert_eq!(positions.iter().find(|item| item.item_id == "a").unwrap().position, WorkspacePoint { left: 0.0, top: 200.0 });
         assert_eq!(positions.iter().find(|item| item.item_id == "b").unwrap().position, WorkspacePoint { left: 80.0, top: 0.0 });
         assert_eq!(positions.iter().find(|item| item.item_id == "target").unwrap().position, WorkspacePoint { left: 80.0, top: 100.0 });
-        assert_eq!(snapshot.grid_drop_placements_at(&ids, "screen", desired, true, Some(&insertion)).unwrap().len(), 2);
-        assert!(snapshot.grid_drop_placements_at(&ids, "screen", desired, false, Some(&("target".into(), "diagonal".into()))).is_err());
+        assert_eq!(snapshot.grid_drop_placements_at(&ids, "screen", desired, true, Some(&insertion), None).unwrap().len(), 2);
+        assert!(snapshot.grid_drop_placements_at(&ids, "screen", desired, false, Some(&("target".into(), "diagonal".into())), None).is_err());
     }
 }

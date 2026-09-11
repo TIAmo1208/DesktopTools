@@ -14,6 +14,16 @@ import {
     resolveGridInsertion,
 } from "./workspaceDrag.ts";
 
+/** 围栏内一排项目拖出时忽略离散的旧桌面槽位。 */
+test("fence drag preserves rendered row instead of old desktop slots", () => {
+    const grid = { left: 0, top: 0, columnWidth: 80, rowHeight: 100, rows: 10, columns: 10 }; // 目标桌面网格。
+    const old = new Map([["a", { left: 0, top: 0 }], ["b", { left: 640, top: 800 }]]); // 无关的历史占位。
+    const rendered = new Map([["a", { left: 300, top: 200 }], ["b", { left: 374, top: 200 }]]); // 围栏当前平铺排列。
+    const result = resolveGridDrop(["a", "b"], { left: 160, top: 300 }, old, grid, rendered)!; // 实际内部回退使用的计算入口。
+    assert.deepEqual(result.get("a"), { left: 160, top: 300 });
+    assert.deepEqual(result.get("b"), { left: 240, top: 300 });
+});
+
 // 当前拖动算法测试使用的三行两列网格。
 const grid = { left: 0, top: 0, columnWidth: 80, rowHeight: 100, rows: 3, columns: 2 };
 

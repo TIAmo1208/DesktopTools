@@ -3,6 +3,16 @@ import test from "node:test";
 import { parseWorkspaceSnapshot } from "../../../contracts/workspace.ts";
 import { projectWorkspaceSurface, projectHitRegions } from "./workspaceSurfaceProjection.ts";
 
+/** 围栏跨屏后，保留的源桌面槽位不能变成第二份可见项目。 */
+test("fence members appear only on the fence monitor", () => {
+    const snapshot = { fences: [{ id: "f", monitorId: "B", members: ["x"], bounds: {} }], unclassifiedItems: [{ stableReference: "x", monitorId: "A", position: { left: 0, top: 0 } }], components: [], monitorGrids: [], interaction: { selectedItemIds: ["x"], selectionAnchorId: "x", keyboardFocus: { type: "item", itemId: "x" } } } as Parameters<typeof projectWorkspaceSurface>[0]; // 保留源槽位的真实投影输入。
+    const source = projectWorkspaceSurface(snapshot, "A")!; // 围栏原来所在的屏幕。
+    const target = projectWorkspaceSurface(snapshot, "B")!; // 围栏当前所在的屏幕。
+    assert.deepEqual(source.unclassifiedItems, []);
+    assert.deepEqual(source.interaction.selectedItemIds, []);
+    assert.deepEqual(target.fences.flatMap((fence) => fence.members), ["x"]);
+});
+
 test("native hit regions follow stacking and exclude scrolled-out members", () => {
     const item = { id: "member", kind: "desktop-item", left: 10, top: -20, width: 40, height: 60, priority: 70, stackingOrder: 1001, clip: { left: 0, top: 20, width: 200, height: 100 } }; // 只露出底部二十 DIP 的成员。
     const regions = projectHitRegions([item, { ...item, id: "hidden", top: -100 }, { ...item, id: "front", kind: "fence", top: 0, priority: 50, stackingOrder: 1002, clip: undefined }], 200, 120);
@@ -34,5 +44,5 @@ test("projects a disconnected display without mutating global selection or owner
     assert.deepEqual(snapshot, original);
     assert.equal(projectWorkspaceSurface(snapshot, "C")!.unclassifiedItems[0].stableReference, "remote");
     assert.equal(projectWorkspaceSurface(undefined, "A"), undefined);
-    assert.equal(projectWorkspaceSurface(snapshot, undefined), snapshot);
+    assert.equal(projectWorkspaceSurface(snapshot, undefined), undefined);
 });

@@ -25,7 +25,7 @@ pub struct ComponentRuntimeState
     manifests: HashMap<String, ComponentManifest>,
     /// 单个清单失败但不阻塞其他组件的结果。
     failures: Vec<ComponentRegistrationFailure>,
-    /// 当前活动虚拟桌面的实例注册结果。
+    /// 统一工作区的实例注册结果。
     instances: Mutex<Vec<ComponentRegistrationSnapshot>>,
     /// 注册表或实例集合变化时递增的修订号。
     revision: AtomicU64,
@@ -68,7 +68,7 @@ impl ComponentRuntimeState
         instances
     }
 
-    /// 校验并注册当前活动虚拟桌面的全部组件实例。
+    /// 校验并注册统一工作区的全部组件实例。
     pub fn snapshot(&self, instances: &[ComponentInstanceSnapshot]) -> Result<ComponentRuntimeSnapshot, ComponentRuntimeError>
     {
         let registrations = instances.iter().filter(|instance| cfg!(debug_assertions) || instance.component_id != "official.debug-test").map(|instance| self.registration_snapshot(instance)).collect::<Vec<_>>(); // 当前布局中每个实例互相隔离的注册结果。

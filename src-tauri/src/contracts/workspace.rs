@@ -8,7 +8,7 @@ use super::desktop_item::ShellOperationResult;
 pub const WORKSPACE_SCHEMA_VERSION: u32 = 1;
 
 /// 当前完整工作区备份文件的 Schema 版本。
-pub const WORKSPACE_BACKUP_SCHEMA_VERSION: u32 = 4;
+pub const WORKSPACE_BACKUP_SCHEMA_VERSION: u32 = 5;
 
 /// 围栏允许的最小宽度，单位为 DIP。
 pub const FENCE_MIN_WIDTH: f64 = 164.0;
@@ -203,7 +203,7 @@ pub struct FenceSnapshot
     pub scroll_top: f64,
     /// 围栏当前折叠状态。
     pub collapsed: bool,
-    /// 折叠时悬停临时展开；旧备份缺省关闭且保持原校验和。
+    /// 折叠时悬停临时展开；缺省关闭。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_expand: bool,
     /// 最近一次展开时的内容高度。
@@ -288,7 +288,7 @@ pub enum WorkspaceFocusTarget
     },
 }
 
-/// 当前虚拟桌面的运行期选择、锚点和键盘焦点。
+/// 统一工作区的运行期选择、锚点和键盘焦点。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceInteractionSnapshot
@@ -303,7 +303,7 @@ pub struct WorkspaceInteractionSnapshot
     pub keyboard_focus: WorkspaceFocusTarget,
 }
 
-/// 为应用启动和虚拟桌面切换提供空交互状态。
+/// 为应用启动和备份还原提供空交互状态。
 impl Default for WorkspaceInteractionSnapshot
 {
     /// 创建未选择项目且焦点位于背景的交互状态。
@@ -332,10 +332,10 @@ pub struct WorkspaceSnapshot
     pub fences: Vec<FenceSnapshot>,
     /// 桌面项目保留的未归类位置。
     pub unclassified_items: Vec<UnclassifiedItemSnapshot>,
-    /// 当前虚拟桌面持久化的完整组件实例集合。
+    /// 统一工作区持久化的完整组件实例集合。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<ComponentInstanceSnapshot>,
-    /// 当前虚拟桌面的运行期交互状态。
+    /// 统一工作区的运行期交互状态。
     #[serde(default)]
     pub interaction: WorkspaceInteractionSnapshot,
 }
@@ -351,10 +351,6 @@ pub struct WorkspaceBackupSummary
     pub created_at_unix: i64,
     /// 当前备份文件路径。
     pub path: String,
-    /// 备份包含的活动虚拟桌面布局数量。
-    pub layout_count: usize,
-    /// 备份包含的删除布局归档数量。
-    pub archive_count: usize,
     /// 备份载荷的完整性校验值。
     pub checksum: String,
 }
@@ -364,10 +360,8 @@ pub struct WorkspaceBackupSummary
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceRestoreResult
 {
-    /// 还原后当前 Windows 虚拟桌面的权威布局。
+    /// 还原后统一工作区的权威布局。
     pub snapshot: WorkspaceSnapshot,
-    /// 本次从备份恢复的活动布局数量。
-    pub restored_layout_count: usize,
     /// 用户可见的中文还原结果说明。
     pub message: String,
 }
@@ -377,9 +371,9 @@ pub struct WorkspaceRestoreResult
 #[serde(rename_all = "kebab-case")]
 pub enum WorkspaceHistoryKind
 {
-    /// 当前虚拟桌面的布局事务。
+    /// 统一工作区的布局事务。
     Layout,
-    /// 所有虚拟桌面共享的 Shell 文件操作。
+    /// 工作区共享的 Shell 文件操作。
     Shell,
     /// 当前方向没有可执行历史。
     None,
@@ -390,7 +384,7 @@ pub enum WorkspaceHistoryKind
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceHistoryResult
 {
-    /// 命令完成后的当前虚拟桌面布局。
+    /// 命令完成后的统一工作区布局。
     pub snapshot: WorkspaceSnapshot,
     /// 本轮实际处理的历史单元类型。
     pub kind: WorkspaceHistoryKind,
@@ -614,10 +608,10 @@ pub enum WorkspaceCommand
         /// 组件拥有的 JSON 状态。
         state: Value,
     },
-    /// 撤销当前虚拟桌面的最近布局事务。
+    /// 撤销统一工作区的最近布局事务。
     #[serde(rename = "undo-layout")]
     UndoLayout,
-    /// 重做当前虚拟桌面的最近布局事务。
+    /// 重做统一工作区的最近布局事务。
     #[serde(rename = "redo-layout")]
     RedoLayout,
 }

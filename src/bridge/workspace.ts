@@ -78,7 +78,7 @@ export const listWorkspaceAutoSnapshots = async (): Promise<WorkspaceBackupSumma
     return response.map(parseWorkspaceBackupSummary);
 };
 
-/** 补齐缺失虚拟桌面并事务式还原完整工作区备份。 */
+/** 事务式还原统一工作区备份。 */
 export const restoreWorkspaceBackup = async (path: string): Promise<WorkspaceRestoreResult> => {
     const response = await invokeRuntime<unknown>("restore_workspace_backup", { path }).catch((error: unknown) => {
         throw parseApplicationCommandError(error);

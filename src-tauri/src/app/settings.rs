@@ -24,14 +24,20 @@ pub fn resolve_config_directory(value: &str) -> Result<PathBuf, String>
     Ok(path)
 }
 
+/// 在保存偏好或关联布局前完成格式与实际路径校验。
+pub(crate) fn validate_preferences(preferences: &ApplicationPreferences) -> Result<PathBuf, String>
+{
+    preferences.validate()?;
+    resolve_config_directory(&preferences.config_directory)
+}
+
 /// 在加载任何写入线程前切换数据目录；固定引导文件只记录当前生效位置。
 pub fn prepare_config_directory(bootstrap: &std::path::Path) -> std::io::Result<PathBuf>
 {
     let pointer = bootstrap.join("config-location.json"); // 不随配置目录迁移的启动定位文件。
     let source: PathBuf = load_json(&pointer)?.unwrap_or_else(|| bootstrap.to_path_buf()); // 兼容旧版固定数据目录。
     let preferences: ApplicationPreferences = load_json(&source.join("settings.json"))?.unwrap_or_default(); // 从当前目录读取待迁移意图。
-    preferences.validate().map_err(std::io::Error::other)?;
-    let target = resolve_config_directory(&preferences.config_directory).map_err(std::io::Error::other)?; // 下次启动目标。
+    let target = validate_preferences(&preferences).map_err(std::io::Error::other)?; // 下次启动目标。
     if source == target
     {
         return Ok(source);
@@ -118,7 +124,7 @@ impl SettingsState
     pub fn load(path: PathBuf) -> std::io::Result<Self>
     {
         let preferences: ApplicationPreferences = load_json(&path)?.unwrap_or_default(); // 当前已恢复的偏好或首次启动默认值。
-        preferences.validate().map_err(std::io::Error::other)?;
+        validate_preferences(&preferences).map_err(std::io::Error::other)?;
         Ok(Self { path, preferences: Mutex::new(preferences) })
     }
 
@@ -128,7 +134,7 @@ impl SettingsState
     /// 保存成功后替换内存状态，失败时保留原值。
     pub fn save(&self, preferences: ApplicationPreferences) -> Result<ApplicationPreferences, String>
     {
-        preferences.validate()?;
+        validate_preferences(&preferences)?;
         let mut current = self.preferences.lock().map_err(|_| "设置状态不可用".to_string())?; // 当前串行提交锁。
         save_json_atomic(&self.path, &preferences).map_err(|error| format!("保存设置失败：{error}"))?;
         *current = preferences;
@@ -142,6 +148,24 @@ mod tests
 {
     use super::*;
     use crate::contracts::settings::ApplicationTheme;
+
+    /// 格式正确的相对路径在应用层拒绝，文件和权威偏好保持原样。
+    #[test]
+    fn invalid_resolved_directory_preserves_saved_preferences()
+    {
+        let directory = std::env::temp_dir().join(format!("desktop-tools-path-validation-{}", std::process::id())); // 独占测试目录。
+        let path = directory.join("settings.json"); // 本次检查的真实保存入口。
+        std::fs::create_dir_all(&directory).unwrap();
+        let state = SettingsState::load(path.clone()).unwrap(); // 当前有效配置。
+        let original = state.save(state.preferences().unwrap()).unwrap(); // 建立已保存事实。
+        let bytes = std::fs::read(&path).unwrap(); // 失败前的文件内容。
+        let invalid = ApplicationPreferences { config_directory: "relative-directory".into(), ..original.clone() }; // 格式层不解释实际路径。
+        assert!(invalid.validate().is_ok());
+        assert!(state.save(invalid).is_err());
+        assert_eq!(state.preferences().unwrap(), original);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     /// 缺失的桌面主题使用固定默认值，两组分别保存并在失败后保留权威状态。
     #[test]

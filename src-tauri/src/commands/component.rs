@@ -23,14 +23,14 @@ pub fn invoke_component_capability(state: State<'_, ComponentRuntimeState>, work
 /// 两种 transport 共用的命令执行与事件发布。
 pub(crate) fn execute_invoke_component_capability(state: &ComponentRuntimeState, workspace: &WorkspaceState, instance_id: String, capability: ComponentCapability) -> Result<ComponentCapabilityResult, ComponentRuntimeError>
 {
-    let workspace = workspace.snapshot().map_err(|error| ComponentRuntimeError::invalid_instance(error.message))?; // 当前活动虚拟桌面组件实例来源。
+    let workspace = workspace.snapshot().map_err(|error| ComponentRuntimeError::invalid_instance(error.message))?; // 统一工作区组件实例来源。
     state.invoke_capability(&workspace.components, &instance_id, capability)
 }
 
 /// 返回 Tauri 与本地 transport 共享的组件运行时快照。
 pub(crate) fn component_runtime_snapshot(state: &ComponentRuntimeState, workspace: &WorkspaceState) -> Result<ComponentRuntimeSnapshot, ComponentRuntimeError>
 {
-    let workspace = workspace.snapshot().map_err(|error| ComponentRuntimeError::invalid_instance(error.message))?; // 当前活动虚拟桌面的持久组件集合。
+    let workspace = workspace.snapshot().map_err(|error| ComponentRuntimeError::invalid_instance(error.message))?; // 统一工作区的持久组件集合。
     state.snapshot(&workspace.components)
 }
 

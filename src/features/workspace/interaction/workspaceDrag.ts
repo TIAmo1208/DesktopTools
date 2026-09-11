@@ -180,6 +180,7 @@ export const resolveGridDrop = (
     desiredPosition: WorkspacePoint,
     positions: Map<string, WorkspacePoint>,
     grid: WorkspaceGrid,
+    renderedPositions?: Map<string, WorkspacePoint>, // 来源当前可见排列，围栏项目不能使用旧桌面占位。
 ): Map<string, WorkspacePoint> | null => {
     if (draggedIds.length === 0) return null;
     const capacity = grid.rows * grid.columns; // 当前未归类网格容量。
@@ -200,6 +201,9 @@ export const resolveGridDrop = (
         const anchorColumn = anchorIndex === undefined ? Math.round((anchorPosition.left - grid.left) / grid.columnWidth) : Math.floor(anchorIndex / grid.rows); // 来源锚点列索引。
         const anchorRow = anchorIndex === undefined ? Math.round((anchorPosition.top - grid.top) / grid.rowHeight) : anchorIndex % grid.rows; // 来源锚点行索引。
         const offsets = draggedIds.map((itemId) => {
+            const renderedAnchor = renderedPositions?.get(draggedIds[0]); // 当前拖动锚点的真实位置。
+            const rendered = renderedPositions?.get(itemId); // 当前项目的真实位置。
+            if (renderedAnchor && rendered) return { itemId, column: Math.round((rendered.left - renderedAnchor.left) / grid.columnWidth), row: Math.round((rendered.top - renderedAnchor.top) / grid.rowHeight) };
             const position = positions.get(itemId); // 当前组成员的来源网格位置。
             const assignedIndex = assignedSlots.get(itemId);
             return position

@@ -1,10 +1,10 @@
 import type { PointerEvent, RefObject } from "react";
+import { createDesktopItemPreview } from "../../desktop-items/desktopItemPreview";
 
 import type { DesktopHostMonitor } from "../../../contracts/desktopHost";
 import type { ShellDragPreparation } from "../../../contracts/desktopItem";
 import { prepareDesktopItemDrag, cancelDesktopItemDragPreparation } from "../../../bridge/desktopItems";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspacePoint, WorkspaceSnapshot } from "../../../contracts/workspace";
-import { listenVirtualDesktopSwitching } from "../../../bridge/virtualDesktop";
 import { selectionModeForPointer, shouldOpenItemOnPointerRelease } from "./workspaceInteraction";
 import { usePreferences } from "../../settings/PreferencesProvider";
 import { publishCrossMonitorDrag, resolveCrossMonitorDrop, type CrossMonitorDrag } from "./crossMonitorDrag";
@@ -68,7 +68,7 @@ export const useWorkspaceDrag = ({
         const workspaceElement = workspaceRef.current; // 当前完整工作区交互表面。
         if (!workspaceElement) return;
         const allItemElements = Array.from(workspaceElement.querySelectorAll<HTMLElement>("[data-item-id]")); // 当前宿主中全部可见项目节点。
-        const globalSelectedItemIds = new Set(completeWorkspace?.interaction.selectedItemIds ?? selectedItemIds); // 当前虚拟桌面跨显示器完整选择集合。
+        const globalSelectedItemIds = new Set(completeWorkspace?.interaction.selectedItemIds ?? selectedItemIds); // 当前工作区跨显示器完整选择集合。
         const preservesSelection = globalSelectedItemIds.has(anchorItemId) && !event.ctrlKey && !event.shiftKey; // 当前普通按下是否沿用已有组选择。
         const pointerSelectionMode = preservesSelection ? "replace" : selectionModeForPointer(event); // 未形成拖动时提交的点击选择规则。
         const requestedIds = preservesSelection ? globalSelectedItemIds : new Set([anchorItemId]); // 当前拖动使用的跨屏选择集合。
@@ -84,6 +84,12 @@ export const useWorkspaceDrag = ({
             }),
         ); // 当前拖动集合对应的可见 DOM 节点。
         const startPositions = new Map((completeWorkspace ?? workspace).unclassifiedItems.map((item) => [item.stableReference, item.position])); // 拖动开始时冻结的跨屏全部来源位置。
+        const renderedPositions = new Map(
+            Array.from(dragElements, ([id, element]) => {
+                const bounds = element.getBoundingClientRect(); // 围栏排列独立于保留的桌面来源占位。
+                return [id, { left: bounds.left, top: bounds.top }] as const;
+            }),
+        ); // 本地回退与原生 OLE 使用相同的真实来源几何。
         const fenceContents = new Map(
             Array.from(workspaceElement.querySelectorAll<HTMLElement>("[data-fence-content-id]")).flatMap((element) => {
                 const fenceId = element.dataset.fenceContentId; // 当前滚动内容对应的围栏标识。
@@ -110,22 +116,13 @@ export const useWorkspaceDrag = ({
             const element = dragElements.get(itemId); // 当前拖动项目对应的原始 DOM 节点。
             if (!element) return [];
             const bounds = element.getBoundingClientRect(); // 当前拖动项目的初始客户区边界。
-            const preview = element.cloneNode(true) as HTMLElement; // 当前跟随指针且不参与命中的项目预览。
-            preview.removeAttribute("data-hit-id");
-            preview.removeAttribute("data-fence-member-id");
-            preview.classList.add("desktop-item--drag-preview");
-            const appearance = window.getComputedStyle(element); // 脱离围栏后仍需保留的真实文字与主题。
-            for (const property of ["--fence-text", "--fence-item-text-shadow"]) preview.style.setProperty(property, appearance.getPropertyValue(property));
+            const preview = createDesktopItemPreview(element); // 桌面项目模块提供本地与跨屏共用的预览内容。
             Object.assign(preview.style, {
                 visibility: "hidden",
-                color: appearance.color,
-                textShadow: appearance.textShadow,
-                position: "fixed",
                 left: bounds.left + "px",
                 top: bounds.top + "px",
                 width: bounds.width + "px",
                 height: bounds.height + "px",
-                zIndex: "20000",
             });
             document.body.append(preview);
             return [{ itemId, preview, bounds }];
@@ -150,7 +147,6 @@ export const useWorkspaceDrag = ({
         let freePlacement = event.altKey; // 内部回退也遵循释放时 Alt 自由定位。
         let finished = false; // 当前连续拖动结束标记。
         let prepared: ShellDragPreparation | null = null; // 完整数据对象成功准备后才允许交接 OLE。
-        let switchingSubscription: Promise<() => void> | undefined; // 当前拖动期间监听虚拟桌面切换的取消订阅。
 
         /** 将未归类项目 DOM 恢复到拖动开始时的位置。 */
         const restoreGridPreview = () => {
@@ -373,7 +369,6 @@ export const useWorkspaceDrag = ({
                 dragElements.get(itemId)?.classList.remove("desktop-item--dragging");
             });
             fenceContents.forEach((content) => delete content.dataset.dragScrolling);
-            void switchingSubscription?.then((unlisten) => unlisten()).catch(() => undefined);
             if (endInput) await onEndInputDrag().catch(() => undefined);
         };
 
@@ -475,11 +470,11 @@ export const useWorkspaceDrag = ({
                       : undefined; // 拖动锚点在目标显示器中的期望 DIP 位置。
                 const finalPositions =
                     freePlacement && desiredPosition
-                        ? resolveFreeDrop(dragItemIds, desiredPosition, targetPositions)
+                        ? resolveFreeDrop(dragItemIds, desiredPosition, new Map([...targetPositions, ...renderedPositions]))
                         : targetMonitor?.id === currentMonitor?.id && gridPreview
                           ? gridPreview
                           : desiredPosition
-                            ? resolveGridDrop(dragItemIds, desiredPosition, targetPositions, targetGrid ?? workspace.grid)
+                            ? resolveGridDrop(dragItemIds, desiredPosition, targetPositions, targetGrid ?? workspace.grid, renderedPositions)
                             : null; // 当前目标显示器未归类网格中的最终完整位置。
                 if (!finalPositions) insertionBlocked = true;
                 placements = finalPositions
@@ -543,10 +538,6 @@ export const useWorkspaceDrag = ({
         handle.addEventListener("pointercancel", finishPointerDrag);
         handle.addEventListener("lostpointercapture", finishPointerDrag);
         window.addEventListener("keydown", handleKeyDown);
-        switchingSubscription = listenVirtualDesktopSwitching(
-            () => void finishDrag("virtual-desktop-switch", event.pointerId),
-            () => undefined,
-        );
         void prepareDesktopItemDrag(dragItemIds)
             .then((result) => {
                 if (!result) return; // 无法准备完整选择时保留原指针与布局路径。

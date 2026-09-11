@@ -111,28 +111,23 @@ test("rejects an invalid persisted fence snapshot", () => {
 // 验证版本、完整性校验和布局数量通过备份摘要契约。
 test("parses a validated workspace backup summary", () => {
     const summary = parseWorkspaceBackupSummary({
-        schemaVersion: 4,
+        schemaVersion: 5,
         createdAtUnix: 1_788_198_400,
         path: "C:\\Backups\\workspace.json",
-        layoutCount: 2,
-        archiveCount: 1,
         checksum: "fnv1a64:0123456789abcdef",
     });
 
-    assert.equal(summary.layoutCount, 2);
     assert.equal(summary.checksum, "fnv1a64:0123456789abcdef");
 });
 
-// 验证完整还原结果同时携带权威快照和恢复布局数量。
+// 验证完整还原结果同时携带权威快照和还原结果。
 test("parses a transactional workspace restore result", () => {
     const result = parseWorkspaceRestoreResult({
         snapshot: emptyWorkspace,
-        restoredLayoutCount: 2,
-        message: "工作区还原完成：2 个布局",
+        message: "工作区还原完成",
     });
 
     assert.equal(result.snapshot.revision, 2);
-    assert.equal(result.restoredLayoutCount, 2);
 });
 
 // 验证统一 Shell 历史结果保留部分恢复说明和完成时间。

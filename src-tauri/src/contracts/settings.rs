@@ -99,7 +99,19 @@ impl ApplicationPreferences
     /// 拒绝无效颜色、越界数值及不能安全应用的字体。
     pub fn validate(&self) -> Result<(), String>
     {
-        crate::app::settings::resolve_config_directory(&self.config_directory)?;
+        let directory = self.config_directory.trim(); // 契约只校验文本，不读取当前用户环境。
+        let suffix = if directory.get(..9).is_some_and(|prefix| prefix.eq_ignore_ascii_case("%APPDATA%"))
+        {
+            &directory[9..]
+        }
+        else
+        {
+            directory
+        }; // 只允许约定的变量前缀。
+        if directory.is_empty() || suffix.contains(['%', '\0', '*', '?', '"', '<', '>', '|'])
+        {
+            return Err("配置目录不能为空，且不能包含未知变量或特殊字符".to_string());
+        }
         self.desktop_grid.validate()?;
         self.fence_grid.validate()?;
         for color in [&self.accent_color, &self.desktop_appearance.accent_color]

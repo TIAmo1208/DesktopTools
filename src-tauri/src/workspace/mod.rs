@@ -2,14 +2,13 @@ use std::collections::HashMap;
 mod drop;
 pub(crate) use drop::{DropLayoutChange, DropTarget};
 mod appearance;
-mod shared;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -19,27 +18,22 @@ use crate::contracts::settings::{ApplicationPreferences, GridPreferences};
 use crate::contracts::{ComponentInstanceSnapshot, DesktopHostMonitor, FENCE_MIN_HEIGHT, FENCE_MIN_WIDTH, FenceLayoutMode, FenceSnapshot, FenceSortMode, UnclassifiedItemSnapshot, WORKSPACE_BACKUP_SCHEMA_VERSION, WORKSPACE_GRID_BOTTOM_MARGIN, WORKSPACE_GRID_LEFT, WORKSPACE_GRID_TOP, WORKSPACE_SCHEMA_VERSION, WorkspaceBackupSummary, WorkspaceCommand, WorkspaceError, WorkspaceFenceScroll, WorkspaceFocusTarget, WorkspaceGrid, WorkspaceInteractionCommand, WorkspaceInteractionSnapshot, WorkspaceItemPlacement, WorkspaceMonitorGrid, WorkspacePoint, WorkspaceRect, WorkspaceRestoreResult, WorkspaceSelectionMode, WorkspaceSnapshot};
 use crate::persistence::{load_json, save_json_atomic};
 
-/// 多虚拟桌面工作区持久化格式版本。
+/// 统一工作区持久化格式版本。
 const WORKSPACE_STORE_VERSION: u32 = WORKSPACE_BACKUP_SCHEMA_VERSION;
 
 /// 自动快照在布局空闲后的合并等待时间。
-const SHARED_HISTORY_KEY: &str = "__shared_fence_contents__"; // 共享内容的跨桌面历史作用域。
-
 const AUTO_SNAPSHOT_IDLE: Duration = Duration::from_secs(2);
 
-/// 每个虚拟桌面保留的最近自动快照数量。
+/// 统一工作区保留的最近自动快照数量。
 const AUTO_SNAPSHOT_LIMIT: usize = 20;
 
 /// 同一进程内自动快照文件名的递增唯一序号。
 static NEXT_AUTO_SNAPSHOT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// 已删除虚拟桌面布局归档保留秒数。
-const LAYOUT_ARCHIVE_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
-
 /// 一次协调使用的环境事实；采集时间由调用方决定，不宣称跨运行时原子采集。
 pub(crate) struct WorkspaceEnvironment<'a>
 {
-    pub transfer_assignments: bool,                 // 确定的投放新增位置作用于所有活动视图，不重导入 Explorer 布局。
+    pub transfer_assignments: bool,                 // 确定的投放新增位置作用于工作区，不重导入 Explorer 布局。
     pub monitors: &'a [DesktopHostMonitor],         // 当前逐屏物理环境。
     pub items: &'a [crate::contracts::DesktopItem], // 同次 Shell 观察的引用与名称。
     pub assignments: &'a [(String, String)],        // 初次导入可用的 Explorer 归属。
@@ -49,28 +43,26 @@ pub(crate) struct WorkspaceEnvironment<'a>
 /// 持有正式桌面内容工作区的权威布局和持久化位置。
 pub struct WorkspaceState
 {
-    grid_preferences: Mutex<GridPreferences>, // 全部虚拟桌面共用的网格生成参数。
+    grid_preferences: Mutex<GridPreferences>, // 全部显示器共用的网格生成参数。
     /// Shell 最近发布的显示名称，仅供排序，不写入布局文件。
     item_names: Mutex<HashMap<String, String>>,
     /// command 共享的当前工作区快照。
     snapshot: Mutex<WorkspaceSnapshot>,
-    /// 当前活动身份、其他活动布局与 30 天删除归档。
-    virtual_desktops: Mutex<WorkspaceVirtualDesktops>,
-    /// 每个虚拟桌面独立的会话布局撤销与重做栈。
-    history: Mutex<HashMap<String, WorkspaceHistory>>,
+    /// 首次 Explorer 布局导入状态，与布局共同保存。
+    explorer_layout_imported: Mutex<bool>,
+    /// 统一的会话布局撤销与重做栈。
+    history: Mutex<WorkspaceHistory>,
     /// 每次成功布局事务使用的原子 JSON 文件。
     persistence_path: PathBuf,
     /// 等待 2 秒空闲合并写入的完整工作区自动快照发送端。
-    auto_snapshot_sender: Option<Sender<AutoSnapshotRequest>>,
+    auto_snapshot_sender: Option<Sender<PersistedWorkspaceStore>>,
     /// 应用退出前刷新待处理快照的后台线程。
     auto_snapshot_worker: Option<JoinHandle<()>>,
     /// 还原前同步快照和自动快照共用的目录。
     auto_snapshot_directory: PathBuf,
-    /// 新虚拟桌面初始化使用的官方默认实例集合。
-    default_components: Vec<ComponentInstanceSnapshot>,
 }
 
-/// 保存当前虚拟桌面的会话布局历史。
+/// 保存统一工作区的会话布局历史。
 #[derive(Clone, Default)]
 struct WorkspaceHistory
 {
@@ -84,10 +76,6 @@ struct WorkspaceHistory
 #[derive(Clone)]
 struct WorkspaceHistoryEntry
 {
-    /// 产生空间变化的虚拟桌面，共享归属可从任何桌面撤销。
-    origin_id: String,
-    /// 当前方向操作前的对应空间状态，用于只恢复实际修改的坐标。
-    opposite_layout: WorkspaceSnapshot,
     /// 当前方向恢复后应成为活动状态的布局。
     layout: WorkspaceSnapshot,
     /// 当前历史单元最近进入该方向的 Unix 微秒时间。
@@ -105,71 +93,13 @@ pub(crate) struct WorkspaceLayoutHistoryResult
     pub changed_count: usize,
 }
 
-/// 当前活动布局之外的虚拟桌面运行状态。
-#[derive(Clone)]
-struct WorkspaceVirtualDesktops
-{
-    /// 唯一全局围栏内容，桌面快照只作为运行期投影。
-    shared_fences: Vec<shared::SharedFence>,
-    /// 当前 Windows 虚拟桌面稳定身份。
-    current_id: String,
-    /// 其他活动虚拟桌面的独立布局。
-    layouts: HashMap<String, WorkspaceSnapshot>,
-    /// 已删除虚拟桌面的 30 天布局归档。
-    archives: Vec<WorkspaceLayoutArchive>,
-    /// Explorer 原始图标布局是否已经完成一次性首次导入。
-    explorer_layout_imported: bool,
-}
-
-/// 持久化文件中的一个活动虚拟桌面布局。
+/// 统一工作区持久载荷，不保存 Windows 虚拟桌面身份。
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PersistedVirtualDesktopLayout
-{
-    /// Windows 分配的稳定虚拟桌面身份。
-    virtual_desktop_id: String,
-    /// 当前桌面完整独立布局。
-    #[serde(with = "shared::spatial")]
-    layout: WorkspaceSnapshot,
-}
-
-/// 已删除虚拟桌面的可恢复布局归档。
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceLayoutArchive
-{
-    /// Desktop Tools 分配的稳定归档标识。
-    pub archive_id: String,
-    /// 删除前 Windows 虚拟桌面身份。
-    pub source_virtual_desktop_id: String,
-    /// 归档创建 Unix 时间戳。
-    pub archived_at_unix: i64,
-    /// 归档自动过期 Unix 时间戳。
-    pub expires_at_unix: i64,
-    /// 删除前完整独立布局。
-    #[serde(with = "shared::spatial")]
-    layout: WorkspaceSnapshot,
-}
-
-/// 原子持久化的完整工作区备份载荷。
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PersistedWorkspacePayload
 {
-    /// 共享外观只保存一份，缺省表示所有格子沿用默认值。
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    tile_appearances: std::collections::BTreeMap<String, crate::contracts::TileAppearance>,
-    /// 全部虚拟桌面共用的成员表，当前格式必须显式提供。
-    shared_fences: Vec<shared::SharedFence>,
-    /// 保存时 Windows 当前虚拟桌面身份。
-    current_virtual_desktop_id: String,
-    /// 当前全部活动虚拟桌面布局。
-    layouts: Vec<PersistedVirtualDesktopLayout>,
-    /// 仍在 30 天保留期内的删除归档。
-    archives: Vec<WorkspaceLayoutArchive>,
-    /// Explorer 原始图标布局是否已经完成一次性首次导入。
-    #[serde(default)]
-    explorer_layout_imported: bool,
+    layout: WorkspaceSnapshot,      // 包含成员、外观和组件的唯一布局。
+    explorer_layout_imported: bool, // 首次 Explorer 布局导入状态。
 }
 
 /// 带版本、创建时间和完整性校验的工作区文件。
@@ -177,69 +107,42 @@ struct PersistedWorkspacePayload
 #[serde(rename_all = "camelCase")]
 struct PersistedWorkspaceStore
 {
-    /// 多虚拟桌面存储格式版本。
+    /// 统一工作区存储格式版本。
     store_version: u32,
     /// 文件创建 Unix 时间戳。
     created_at_unix: i64,
     /// 规范化载荷的 FNV-1a 完整性校验值。
     checksum: String,
-    /// 当前完整活动布局、归档和首次导入状态。
+    /// 完整布局和首次导入状态。
     payload: PersistedWorkspacePayload,
-}
-
-/// 等待空闲窗口写入磁盘的完整工作区快照。
-struct AutoSnapshotRequest
-{
-    /// 当前布局事务所属虚拟桌面身份。
-    virtual_desktop_id: String,
-    /// 已完成完整性校验计算的完整工作区文件。
-    store: PersistedWorkspaceStore,
 }
 
 /// 提供工作区 command 使用的领域操作。
 impl WorkspaceState
 {
-    /// 从原子 JSON 快照启动工作区，首次启动使用空布局。
+    /// 测试使用无默认组件的工作区。
     #[cfg(test)]
-    pub fn load(persistence_path: PathBuf) -> Result<Self, WorkspaceError> { Self::load_for_virtual_desktops(persistence_path, "default", &["default".to_string()]) }
+    pub fn load(persistence_path: PathBuf) -> Result<Self, WorkspaceError> { Self::load_with_components(persistence_path, &[]) }
 
-    /// 按当前 Windows 虚拟桌面环境恢复全部独立布局。
-    #[cfg(test)]
-    pub fn load_for_virtual_desktops(persistence_path: PathBuf, current_virtual_desktop_id: &str, virtual_desktop_ids: &[String]) -> Result<Self, WorkspaceError> { Self::load_for_virtual_desktops_with_components(persistence_path, current_virtual_desktop_id, virtual_desktop_ids, &[]) }
-
-    /// 按当前 Windows 虚拟桌面环境和官方默认组件恢复全部独立布局。
-    pub fn load_for_virtual_desktops_with_components(persistence_path: PathBuf, current_virtual_desktop_id: &str, virtual_desktop_ids: &[String], default_components: &[ComponentInstanceSnapshot]) -> Result<Self, WorkspaceError>
+    /// 恢复唯一工作区；缺失文件使用默认值，旧格式明确报错。
+    pub fn load_with_components(persistence_path: PathBuf, default_components: &[ComponentInstanceSnapshot]) -> Result<Self, WorkspaceError>
     {
-        validate_id(current_virtual_desktop_id, "当前虚拟桌面标识无效")?;
-        let value = load_json::<serde_json::Value>(&persistence_path).map_err(|error| WorkspaceError::restore_failed(&error))?; // 磁盘中等待格式识别的工作区 JSON。
-        let (mut snapshot, mut virtual_desktops) = restore_workspace_store(value, current_virtual_desktop_id, virtual_desktop_ids, default_components)?; // 已读取共享内容并补齐官方组件的多虚拟桌面运行状态。
-        let source = std::iter::once(&snapshot).chain(virtual_desktops.layouts.values()).find(|layout| !layout.fences.is_empty()).cloned().unwrap_or_else(|| snapshot.clone()); // 已保存的共享内容表面。
-        shared::project(&source, &mut snapshot)?;
-        shared::publish(&snapshot, &mut virtual_desktops)?;
-        snapshot.interaction = WorkspaceInteractionSnapshot::default();
-        // 升级已有布局时按稳定身份补齐新增官方格子，不覆盖已有位置、尺寸或状态。
-        for layout in std::iter::once(&mut snapshot).chain(virtual_desktops.layouts.values_mut()).chain(virtual_desktops.archives.iter_mut().map(|archive| &mut archive.layout))
+        let value = load_json::<serde_json::Value>(&persistence_path).map_err(|error| WorkspaceError::restore_failed(&error))?; // 当前保存文件。
+        let (mut snapshot, explorer_layout_imported) = match value
         {
-            for component in default_components
+            Some(value) =>
             {
-                if !layout.components.iter().any(|existing| existing.instance_id == component.instance_id)
-                {
-                    layout.components.push(component.clone());
-                }
+                let store = decode_workspace_store(value)?; // 已校验的完整工作区。
+                (store.payload.layout, store.payload.explorer_layout_imported)
             }
-        }
+            None => (default_workspace_snapshot(default_components), false),
+        }; // 不查询或分区 Windows 虚拟桌面。
+        snapshot.interaction = WorkspaceInteractionSnapshot::default();
         snapshot.validate()?;
-        for layout in virtual_desktops.layouts.values_mut()
-        {
-            layout.interaction = WorkspaceInteractionSnapshot::default();
-            layout.validate()?;
-        }
-        purge_expired_archives(&mut virtual_desktops.archives, Utc::now().timestamp());
-        crate::log_info!("工作区：多虚拟桌面快照恢复完成，当前桌面={}，活动布局={}，归档={}，修订={}，路径={}", virtual_desktops.current_id, virtual_desktops.layouts.len() + 1, virtual_desktops.archives.len(), snapshot.revision, persistence_path.display());
-        let auto_snapshot_directory = persistence_path.with_extension("snapshots"); // 当前工作区文件独占的自动快照目录。
-        let (auto_snapshot_sender, auto_snapshot_worker) = start_auto_snapshot_worker(auto_snapshot_directory.clone()).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 2 秒合并写入线程。
-
-        Ok(Self { grid_preferences: Mutex::new(GridPreferences::default()), item_names: Mutex::new(HashMap::new()), snapshot: Mutex::new(snapshot), virtual_desktops: Mutex::new(virtual_desktops), history: Mutex::new(HashMap::new()), persistence_path, auto_snapshot_sender: Some(auto_snapshot_sender), auto_snapshot_worker: Some(auto_snapshot_worker), auto_snapshot_directory, default_components: default_components.to_vec() })
+        crate::log_info!("工作区：统一布局恢复完成，修订={}，围栏={}，组件={}，路径={}", snapshot.revision, snapshot.fences.len(), snapshot.components.len(), persistence_path.display());
+        let auto_snapshot_directory = persistence_path.with_extension("snapshots"); // 当前工作区快照目录。
+        let (auto_snapshot_sender, auto_snapshot_worker) = start_auto_snapshot_worker(auto_snapshot_directory.clone()).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 空闲合并线程。
+        Ok(Self { grid_preferences: Mutex::new(GridPreferences::default()), item_names: Mutex::new(HashMap::new()), snapshot: Mutex::new(snapshot), explorer_layout_imported: Mutex::new(explorer_layout_imported), history: Mutex::new(WorkspaceHistory::default()), persistence_path, auto_snapshot_sender: Some(auto_snapshot_sender), auto_snapshot_worker: Some(auto_snapshot_worker), auto_snapshot_directory })
     }
 
     /// 更新 Shell 权威显示名称供后续布局事务排序。
@@ -266,10 +169,10 @@ impl WorkspaceState
         monitor_grids(monitors, preferences)
     }
 
-    /// 校验全部活动布局的容量，再保存布局及偏好；偏好写入失败时恢复旧布局文件。
+    /// 校验工作区网格容量，再保存布局及偏好；偏好写入失败时恢复旧布局文件。
     pub fn save_preferences(&self, settings: &SettingsState, preferences: ApplicationPreferences, monitors: &[DesktopHostMonitor]) -> Result<ApplicationPreferences, String>
     {
-        preferences.validate()?;
+        crate::app::settings::validate_preferences(&preferences)?;
         let mut grid_preferences = self.grid_preferences.lock().map_err(|_| "网格状态不可用")?; // 阻止网格配置并发提交。
         if *grid_preferences == preferences.desktop_grid
         {
@@ -277,24 +180,20 @@ impl WorkspaceState
         }
         let grids = monitor_grids(monitors, preferences.desktop_grid).map_err(|error| error.message)?; // 当前显示器的新网格。
         let mut current = self.snapshot.lock().map_err(|_| "工作区状态不可用")?; // 当前活动布局锁。
-        let mut desktops = self.virtual_desktops.lock().map_err(|_| "虚拟桌面状态不可用")?; // 其他活动布局锁。
+        let imported = self.explorer_layout_imported.lock().map_err(|_| "工作区导入状态不可用")?; // 与布局共同保存的首次导入状态。
         let mut next = current.clone(); // 保存失败时不影响可见布局。
-        let mut next_desktops = desktops.clone(); // 非活动虚拟桌面候选布局。
-        for layout in std::iter::once(&mut next).chain(next_desktops.layouts.values_mut())
-        {
-            reflow_grid_items(layout, &grids).map_err(|error| error.message)?;
-            layout.monitor_grids = grids.clone();
-            layout.grid = grids.iter().find(|entry| monitors.iter().any(|monitor| monitor.primary && monitor.id == entry.monitor_id)).or(grids.first()).ok_or("工作区缺少显示器")?.grid;
-            layout.revision += 1;
-            layout.validate().map_err(|error| error.message)?;
-        }
-        let store = save_workspace_store(&self.persistence_path, &next, &next_desktops).map_err(|error| format!("保存网格布局失败：{error}"))?; // 完整布局先写入磁盘。
+        reflow_grid_items(&mut next, &grids).map_err(|error| error.message)?;
+        next.monitor_grids = grids.clone();
+        next.grid = grids.iter().find(|entry| monitors.iter().any(|monitor| monitor.primary && monitor.id == entry.monitor_id)).or(grids.first()).ok_or("工作区缺少显示器")?.grid;
+        next.revision += 1;
+        next.validate().map_err(|error| error.message)?;
+        let store = save_workspace_store(&self.persistence_path, &next, *imported).map_err(|error| format!("保存网格布局失败：{error}"))?; // 先保存布局，再保存偏好。
         let saved = match settings.save(preferences)
         {
             Ok(saved) => saved,
             Err(error) =>
             {
-                if let Err(rollback) = save_workspace_store(&self.persistence_path, &current, &desktops)
+                if let Err(rollback) = save_workspace_store(&self.persistence_path, &current, *imported)
                 {
                     crate::log_error!("设置：网格布局回滚失败，错误：{rollback}");
                     return Err(format!("{error}；布局文件回滚失败：{rollback}"));
@@ -304,8 +203,7 @@ impl WorkspaceState
         }; // 仅两份文件均写入成功后更新运行状态。
         *grid_preferences = saved.desktop_grid;
         *current = next;
-        *desktops = next_desktops;
-        self.schedule_auto_snapshot(&desktops.current_id, store);
+        self.schedule_auto_snapshot(store);
         crate::log_info!("设置：桌面网格已应用，宽度：{}，高度：{}，横向间距：{}，纵向间距：{}", saved.desktop_grid.width, saved.desktop_grid.height, saved.desktop_grid.column_gap, saved.desktop_grid.row_gap);
         Ok(saved)
     }
@@ -345,24 +243,18 @@ impl WorkspaceState
         Ok(snapshot.clone())
     }
 
-    /// 返回当前 Windows 虚拟桌面稳定身份。
-    pub fn current_virtual_desktop_id(&self) -> Result<String, WorkspaceError> { self.virtual_desktops.lock().map(|state| state.current_id.clone()).map_err(|_| WorkspaceError::state_unavailable()) }
-
-    /// 返回仍在保留期内的删除布局归档。
-    pub fn layout_archives(&self) -> Result<Vec<WorkspaceLayoutArchive>, WorkspaceError> { self.virtual_desktops.lock().map(|state| state.archives.clone()).map_err(|_| WorkspaceError::state_unavailable()) }
-
     /// 将当前完整工作区写入用户指定的手动备份文件。
     pub fn write_manual_backup(&self, path: &Path) -> Result<WorkspaceBackupSummary, WorkspaceError>
     {
         validate_backup_path(path)?;
         let current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 手动备份中的当前活动布局。
-        let virtual_desktops = self.virtual_desktops.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 手动备份中的其他活动布局与归档。
-        let store = build_workspace_store(&current, &virtual_desktops).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 等待原子写入的完整备份文件。
+        let imported = self.explorer_layout_imported.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 与布局共同保存的首次导入状态。
+        let store = build_workspace_store(&current, *imported).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 等待原子写入的完整备份文件。
         save_json_atomic(path, &store).map_err(|error| {
             crate::log_error!("工作区：手动备份写入失败，路径={}，错误={error}", path.display());
             WorkspaceError::persistence_failed(&error)
         })?;
-        crate::log_info!("工作区：手动备份已写入，布局={}，归档={}，路径={}", store.payload.layouts.len(), store.payload.archives.len(), path.display());
+        crate::log_info!("工作区：手动备份已写入，路径={}", path.display());
         Ok(workspace_backup_summary(path, &store))
     }
 
@@ -371,7 +263,7 @@ impl WorkspaceState
     {
         validate_backup_path(path)?;
         let store = load_workspace_backup(path)?; // 只读临时副本中的已校验当前格式文件。
-        crate::log_info!("工作区：备份校验完成，Schema={}，布局={}，归档={}，路径={}", store.store_version, store.payload.layouts.len(), store.payload.archives.len(), path.display());
+        crate::log_info!("工作区：备份校验完成，Schema={}，路径={}", store.store_version, path.display());
         Ok(workspace_backup_summary(path, &store))
     }
 
@@ -402,224 +294,43 @@ impl WorkspaceState
         Ok(summaries)
     }
 
-    /// 返回备份中当前 Windows 环境尚不存在的虚拟桌面布局身份。
-    pub(crate) fn missing_backup_virtual_desktop_ids(&self, path: &Path, current_virtual_desktop_id: &str, virtual_desktop_ids: &[String]) -> Result<Vec<String>, WorkspaceError>
+    /// 保存还原前恢复点，再原子替换统一工作区。
+    pub(crate) fn restore_backup(&self, path: &Path, monitors: &[DesktopHostMonitor], item_ids: &[String]) -> Result<WorkspaceRestoreResult, WorkspaceError>
     {
-        let store = load_workspace_backup(path)?; // 已完成格式和完整性校验的备份候选。
-        let active_ids = virtual_desktop_ids.iter().map(String::as_str).chain(std::iter::once(current_virtual_desktop_id)).collect::<std::collections::HashSet<_>>(); // 当前 Windows 保留不变的完整虚拟桌面集合。
-        Ok(store.payload.layouts.iter().map(|entry| entry.virtual_desktop_id.clone()).filter(|desktop_id| !active_ids.contains(desktop_id.as_str())).collect())
-    }
-
-    /// 还原前同步快照，并以候选副本原子替换完整工作区。
-    pub(crate) fn restore_backup(&self, path: &Path, current_virtual_desktop_id: &str, virtual_desktop_ids: &[String], desktop_id_mappings: &[(String, String)], monitors: &[DesktopHostMonitor], item_ids: &[String]) -> Result<WorkspaceRestoreResult, WorkspaceError>
-    {
-        validate_id(current_virtual_desktop_id, "当前虚拟桌面标识无效")?;
         if monitors.is_empty()
         {
             return Err(WorkspaceError::invalid_command("工作区缺少显示器"));
         }
-        let store = load_workspace_backup(path)?; // 未修改当前状态的已校验备份候选。
-        let mapping = desktop_id_mappings.iter().map(|(source, target)| (source.as_str(), target.as_str())).collect::<std::collections::HashMap<_, _>>(); // 备份身份到新建 Windows 桌面身份的稳定映射。
-        let mut active_ids = virtual_desktop_ids.iter().cloned().collect::<std::collections::HashSet<_>>(); // 还原时 Windows 当前完整桌面集合。
-        active_ids.insert(current_virtual_desktop_id.to_string());
-        let mut restored_layouts = HashMap::new(); // 等待按当前 Windows 身份提交的备份布局。
-        for mut entry in store.payload.layouts
+        let store = load_workspace_backup(path)?; // 通过格式和完整性校验的备份。
+        let mut candidate = store.payload.layout; // 保留备份的完整布局。
+        let grids = self.monitor_grids(monitors)?; // 当前逐屏网格。
+        let primary = monitors.iter().find(|monitor| monitor.primary).unwrap_or(&monitors[0]); // 新增引用进入主显示器。
+        let grid = grids.iter().find(|entry| entry.monitor_id == primary.id).expect("主显示器网格已创建").grid; // 主显示器网格。
+        let mut restored_ids = item_ids.to_vec(); // 实际项目及备份中暂时不可解析的引用。
+        for item in &candidate.unclassified_items
         {
-            if entry.layout.components.is_empty()
+            if !restored_ids.contains(&item.stable_reference)
             {
-                entry.layout.components = self.default_components.clone();
-            }
-            let target_id = if active_ids.contains(&entry.virtual_desktop_id)
-            {
-                entry.virtual_desktop_id.clone()
-            }
-            else
-            {
-                mapping.get(entry.virtual_desktop_id.as_str()).filter(|target| active_ids.contains(**target)).map(|target| (*target).to_string()).ok_or_else(|| WorkspaceError::restore_failed(&"备份虚拟桌面映射缺失"))?
-            }; // 保留现有身份或使用还原前新建桌面的最终身份。
-            if restored_layouts.insert(target_id, entry.layout).is_some()
-            {
-                return Err(WorkspaceError::restore_failed(&"备份虚拟桌面映射重复"));
+                restored_ids.push(item.stable_reference.clone());
             }
         }
-        let restored_layout_count = restored_layouts.len(); // 本次真正来自备份的活动布局数量。
-        for desktop_id in &active_ids
-        {
-            restored_layouts.entry(desktop_id.clone()).or_insert_with(|| default_workspace_snapshot(&self.default_components));
-        }
-
-        let monitor_grids = self.monitor_grids(monitors)?; // 当前逐屏环境对应的持久网格集合。
-        let primary_monitor_id = monitors.iter().find(|monitor| monitor.primary).unwrap_or(&monitors[0]).id.clone(); // 当前主显示器身份。
-        let primary_grid = monitor_grids.iter().find(|entry| entry.monitor_id == primary_monitor_id).expect("主显示器网格已创建").grid; // 新增项目使用的主显示器网格。
-        for layout in restored_layouts.values_mut()
-        {
-            layout.interaction = WorkspaceInteractionSnapshot::default();
-            let mut restored_item_ids = item_ids.to_vec(); // 保持当前 Shell 枚举顺序的可解析项目集合。
-            let mut restored_item_set = restored_item_ids.iter().cloned().collect::<std::collections::HashSet<_>>(); // 当前已经加入恢复集合的项目引用。
-            for item in &layout.unclassified_items
-            {
-                if restored_item_set.insert(item.stable_reference.clone())
-                {
-                    restored_item_ids.push(item.stable_reference.clone());
-                }
-            } // 备份中暂时无法解析的引用按原布局顺序追加并保留。
-            reconcile_layout_snapshot(layout, &monitor_grids, primary_grid, monitors, &restored_item_ids, &[], &[], &primary_monitor_id)?;
-            self.sort_fences(layout)?;
-        }
-        let source = restored_layouts.values().find(|layout| !layout.fences.is_empty()).cloned(); // 备份中的完整共享表面。
-        if let Some(source) = source
-        {
-            for layout in restored_layouts.values_mut()
-            {
-                shared::project(&source, layout)?;
-            }
-        }
-        let mut candidate_current = restored_layouts.remove(current_virtual_desktop_id).expect("当前虚拟桌面已建立候选布局"); // 还原后仍保持当前 Windows 桌面的活动布局。
-        candidate_current.interaction = WorkspaceInteractionSnapshot::default();
-        let mut archives = store.payload.archives; // 备份中等待补齐官方默认组件的删除布局归档。
-        for archive in &mut archives
-        {
-            if archive.layout.components.is_empty()
-            {
-                archive.layout.components = self.default_components.clone();
-            }
-        }
-        let mut candidate_virtual_desktops = WorkspaceVirtualDesktops { shared_fences: store.payload.shared_fences, current_id: current_virtual_desktop_id.to_string(), layouts: restored_layouts, archives, explorer_layout_imported: store.payload.explorer_layout_imported }; // 尚未影响当前状态的完整候选工作区。
-        purge_expired_archives(&mut candidate_virtual_desktops.archives, Utc::now().timestamp());
-
-        let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 等待事务式替换的当前活动布局。
-        candidate_current.revision = candidate_current.revision.max(current.revision).saturating_add(1); // 还原不能复用旧 Renderer 几何版本。
-        let mut virtual_desktops = self.virtual_desktops.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 等待事务式替换的当前其他布局与归档。
-        let mut history = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 原子保存前确认会话历史可以同步重置。
-        let before_store = build_workspace_store(&current, &virtual_desktops).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 还原前完整工作区快照。
-        write_auto_snapshot(&self.auto_snapshot_directory, current_virtual_desktop_id, &before_store).map_err(|error| WorkspaceError::persistence_failed(&error))?;
-        let committed_store = save_workspace_store(&self.persistence_path, &candidate_current, &candidate_virtual_desktops).map_err(|error| {
-            crate::log_error!("工作区：备份事务式还原保存失败，错误={error}");
-            WorkspaceError::persistence_failed(&error)
-        })?; // 原子写入成功前内存状态保持不变。
-        *current = candidate_current.clone();
-        *virtual_desktops = candidate_virtual_desktops;
-        history.clear();
-        self.schedule_auto_snapshot(current_virtual_desktop_id, committed_store);
-        crate::log_info!("工作区：完整备份已还原，布局={}，归档={}，当前桌面={}，路径={}", restored_layout_count, virtual_desktops.archives.len(), current_virtual_desktop_id, path.display());
-        Ok(WorkspaceRestoreResult { snapshot: candidate_current, restored_layout_count, message: format!("工作区还原完成：{restored_layout_count} 个布局") })
-    }
-
-    /// 协调 Windows 当前虚拟桌面集合、活动身份、新建默认布局和删除归档。
-    pub fn reconcile_virtual_desktops(&self, current_virtual_desktop_id: &str, virtual_desktop_ids: &[String], monitors: &[DesktopHostMonitor], item_ids: &[String]) -> Result<WorkspaceSnapshot, WorkspaceError>
-    {
-        validate_id(current_virtual_desktop_id, "当前虚拟桌面标识无效")?;
-        if monitors.is_empty()
-        {
-            return Err(WorkspaceError::invalid_command("工作区缺少显示器"));
-        }
-        let mut active_ids = virtual_desktop_ids.iter().cloned().collect::<std::collections::HashSet<_>>(); // Windows 当前完整虚拟桌面身份集合。
-        active_ids.insert(current_virtual_desktop_id.to_string());
-        let monitor_grids = self.monitor_grids(monitors)?; // 新建默认布局使用相同的网格偏好。
-        let primary_monitor_id = monitors.iter().find(|monitor| monitor.primary).unwrap_or(&monitors[0]).id.clone(); // 新布局全部项目进入的当前主显示器身份。
-        let primary_grid = monitor_grids.iter().find(|entry| entry.monitor_id == primary_monitor_id).expect("主显示器网格已创建").grid; // 新布局兼容网格。
-        let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 当前活动虚拟桌面布局。
-        let mut virtual_desktops = self.virtual_desktops.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 其他活动布局与删除归档。
-        let mut next_current = current.clone(); // 保存失败时不影响当前活动布局的候选副本。
-        let mut next_virtual_desktops = virtual_desktops.clone(); // 保存失败时不影响其他布局与归档的候选副本。
-        let mut histories = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 原子保存前确认历史集合可以同步协调。
-        let previous_current_id = next_virtual_desktops.current_id.clone(); // 切换前当前虚拟桌面身份。
-        if previous_current_id != current_virtual_desktop_id
-        {
-            next_virtual_desktops.layouts.insert(previous_current_id.clone(), next_current.clone());
-            next_current = next_virtual_desktops.layouts.remove(current_virtual_desktop_id).unwrap_or_else(|| default_workspace_snapshot(&self.default_components));
-            next_virtual_desktops.current_id = current_virtual_desktop_id.to_string();
-            next_current.revision = next_current.revision.max(current.revision).saturating_add(1); // 切换后保持当前视图版本单调，旧页面不能确认新桌面的落点。
-        }
-
-        shared::project(&current, &mut next_current)?;
-        let now = Utc::now().timestamp(); // 删除归档创建和过期清理使用的当前时间。
-        let removed_ids = next_virtual_desktops.layouts.keys().filter(|desktop_id| !active_ids.contains(*desktop_id)).cloned().collect::<Vec<_>>(); // 本轮 Windows 已删除的非活动桌面身份。
-        for desktop_id in removed_ids
-        {
-            if let Some(layout) = next_virtual_desktops.layouts.remove(&desktop_id)
-            {
-                next_virtual_desktops.archives.push(archive_layout(desktop_id, layout, now));
-            }
-        }
-        purge_expired_archives(&mut next_virtual_desktops.archives, now);
-
-        for desktop_id in &active_ids
-        {
-            if desktop_id == current_virtual_desktop_id || next_virtual_desktops.layouts.contains_key(desktop_id)
-            {
-                continue;
-            }
-            let mut layout = default_workspace_snapshot(&self.default_components); // 新虚拟桌面的官方默认布局。
-            reconcile_layout_snapshot(&mut layout, &monitor_grids, primary_grid, monitors, item_ids, &[], &[], &primary_monitor_id)?;
-            next_virtual_desktops.layouts.insert(desktop_id.clone(), layout);
-        }
-        reconcile_layout_snapshot(&mut next_current, &monitor_grids, primary_grid, monitors, item_ids, &[], &[], &primary_monitor_id)?;
-        if self.sort_fences(&mut next_current)?
-        {
-            next_current.revision += 1;
-        }
-        for layout in next_virtual_desktops.layouts.values_mut()
-        {
-            reconcile_layout_snapshot(layout, &monitor_grids, primary_grid, monitors, item_ids, &[], &[], &primary_monitor_id)?;
-            if self.sort_fences(layout)?
-            {
-                layout.revision += 1;
-            }
-        }
-        shared::publish(&next_current, &mut next_virtual_desktops)?;
-        let store = save_workspace_store(&self.persistence_path, &next_current, &next_virtual_desktops).map_err(|error| {
-            crate::log_error!("工作区：虚拟桌面协调保存失败，错误={error}");
-            WorkspaceError::persistence_failed(&error)
-        })?; // 当前完整虚拟桌面协调后的持久文件。
-        *current = next_current.clone();
-        *virtual_desktops = next_virtual_desktops;
-        histories.retain(|desktop_id, _| desktop_id == SHARED_HISTORY_KEY || active_ids.contains(desktop_id));
-        self.schedule_auto_snapshot(current_virtual_desktop_id, store);
-        crate::log_debug!("工作区：虚拟桌面已协调，当前={}，活动布局={}，归档={}，切换={}", current_virtual_desktop_id, virtual_desktops.layouts.len() + 1, virtual_desktops.archives.len(), u8::from(previous_current_id != current_virtual_desktop_id));
-        Ok(next_current)
-    }
-
-    /// 将一个删除布局归档绑定到 Windows 新创建的虚拟桌面身份。
-    pub fn restore_layout_archive(&self, archive_id: &str, new_virtual_desktop_id: &str, monitors: &[DesktopHostMonitor], item_ids: &[String]) -> Result<WorkspaceSnapshot, WorkspaceError>
-    {
-        validate_id(archive_id, "布局归档标识无效")?;
-        validate_id(new_virtual_desktop_id, "新虚拟桌面标识无效")?;
-        if monitors.is_empty()
-        {
-            return Err(WorkspaceError::invalid_command("工作区缺少显示器"));
-        }
-        let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 当前活动布局。
-        let mut virtual_desktops = self.virtual_desktops.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 当前活动布局集合与归档。
-        let mut next_current = current.clone(); // 保存失败时保持当前活动布局不变的候选副本。
-        let mut next_virtual_desktops = virtual_desktops.clone(); // 保存失败时保持归档和其他布局不变的候选副本。
-        let archive_index = next_virtual_desktops.archives.iter().position(|archive| archive.archive_id == archive_id).ok_or_else(|| WorkspaceError::invalid_command("布局归档不存在"))?; // 当前恢复目标归档索引。
-        let mut layout = next_virtual_desktops.archives.remove(archive_index).layout; // 删除归档中恢复的完整布局。
-        layout.interaction = WorkspaceInteractionSnapshot::default();
-        let monitor_grids = self.monitor_grids(monitors)?; // 恢复目标当前逐屏网格。
-        let primary_monitor_id = monitors.iter().find(|monitor| monitor.primary).unwrap_or(&monitors[0]).id.clone(); // 恢复布局当前主显示器身份。
-        let primary_grid = monitor_grids.iter().find(|entry| entry.monitor_id == primary_monitor_id).expect("主显示器网格已创建").grid; // 恢复布局兼容网格。
-        reconcile_layout_snapshot(&mut layout, &monitor_grids, primary_grid, monitors, item_ids, &[], &[], &primary_monitor_id)?;
-        shared::project(&current, &mut layout)?;
-        self.sort_fences(&mut layout)?;
-        if next_virtual_desktops.current_id == new_virtual_desktop_id
-        {
-            layout.revision = layout.revision.max(current.revision).saturating_add(1); // 当前视图归档恢复也使旧几何失效。
-            next_current = layout;
-        }
-        else
-        {
-            next_virtual_desktops.layouts.insert(new_virtual_desktop_id.to_string(), layout);
-        }
-        let store = save_workspace_store(&self.persistence_path, &next_current, &next_virtual_desktops).map_err(|error| {
-            crate::log_error!("工作区：布局归档恢复保存失败，错误={error}");
-            WorkspaceError::persistence_failed(&error)
-        })?; // 归档绑定后的完整持久文件。
-        let current_id = next_virtual_desktops.current_id.clone(); // 自动快照所属的当前虚拟桌面身份。
-        *current = next_current.clone();
-        *virtual_desktops = next_virtual_desktops;
-        self.schedule_auto_snapshot(&current_id, store);
-        Ok(next_current)
+        candidate.interaction = WorkspaceInteractionSnapshot::default();
+        reconcile_layout_snapshot(&mut candidate, &grids, grid, monitors, &restored_ids, &[], &[], &primary.id)?;
+        self.sort_fences(&mut candidate)?;
+        let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 保存前保持现有布局。
+        let mut imported = self.explorer_layout_imported.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 共同提交的导入状态。
+        let mut history = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 保存前确认历史可以重置。
+        candidate.revision = candidate.revision.max(current.revision).saturating_add(1);
+        candidate.validate()?;
+        let before = build_workspace_store(&current, *imported).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 还原前恢复点。
+        write_auto_snapshot(&self.auto_snapshot_directory, &before).map_err(|error| WorkspaceError::persistence_failed(&error))?;
+        let committed = save_workspace_store(&self.persistence_path, &candidate, store.payload.explorer_layout_imported).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 保存失败不更新内存。
+        *current = candidate.clone();
+        *imported = store.payload.explorer_layout_imported;
+        *history = WorkspaceHistory::default();
+        self.schedule_auto_snapshot(committed);
+        crate::log_info!("工作区：统一备份已还原，路径={}", path.display());
+        Ok(WorkspaceRestoreResult { snapshot: candidate, message: "工作区还原完成".to_string() })
     }
 
     /// 将宿主网格与 Shell 完整项目集合原子协调进 Workspace。
@@ -655,72 +366,50 @@ impl WorkspaceState
         }
         let monitor_grids = self.monitor_grids(monitors)?; // 当前全部显示器对应的独立 DIP 网格。
         let primary_monitor_id = monitors.iter().find(|monitor| monitor.primary).unwrap_or(&monitors[0]).id.clone(); // 临时投射使用的主显示器身份。
-        let primary_grid = monitor_grids.iter().find(|entry| entry.monitor_id == primary_monitor_id).expect("主显示器网格已创建").grid; // 保留给旧调用方的主显示器兼容网格。
+        let primary_grid = monitor_grids.iter().find(|entry| entry.monitor_id == primary_monitor_id).expect("主显示器网格已创建").grid; // 默认投放使用的主显示器网格。
         // 等待项目协调的当前活动工作区快照。
         let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?;
-        let mut virtual_desktops = self.virtual_desktops.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 当前其他活动虚拟桌面布局与归档。
+        let mut imported = self.explorer_layout_imported.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 与布局共同保存的首次导入状态。
         let mut histories = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 等待同步 Shell 重命名引用的全部布局历史。
         let mut names = self.item_names.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 与布局同时提交的名称表。
         let next_names = observed_names.unwrap_or_else(|| names.clone()); // 测试兼容入口沿用现有名称。
         // 保持当前快照可回滚的项目协调副本。
         let mut next = current.clone();
-        let mut next_virtual_desktops = virtual_desktops.clone(); // 保存失败时保持其他布局和首次导入状态不变的候选副本。
+        let mut next_imported = *imported; // 持久化前不更新首次导入状态。
         let mut next_histories = histories.clone(); // 保存失败时保持会话历史引用不变的候选副本。
-        let current_assignments = if next_virtual_desktops.explorer_layout_imported && !transfer_assignments
-        {
-            &[][..]
-        }
-        else
-        {
-            assignments
-        }; // 投放新增位置与首次 Explorer 导入分开。
-        let mut changed = reconcile_layout_snapshot(&mut next, &monitor_grids, primary_grid, monitors, item_ids, current_assignments, renames, &primary_monitor_id)?; // 当前活动虚拟桌面的 Shell 与显示器协调结果。
+        let current_assignments = if next_imported && !transfer_assignments { &[][..] } else { assignments }; // 投放新增位置与首次 Explorer 导入分开。
+        let mut changed = reconcile_layout_snapshot(&mut next, &monitor_grids, primary_grid, monitors, item_ids, current_assignments, renames, &primary_monitor_id)?; // 统一工作区的 Shell 与显示器协调结果。
         if Self::sort_fences_with_names(&mut next, &next_names)
         {
             next.revision += 1;
             changed = true;
         }
-        for layout in next_virtual_desktops.layouts.values_mut()
+        if !next_imported
         {
-            changed |= reconcile_layout_snapshot(layout, &monitor_grids, primary_grid, monitors, item_ids, if transfer_assignments { assignments } else { &[] }, renames, &primary_monitor_id)?;
-            if Self::sort_fences_with_names(layout, &next_names)
-            {
-                layout.revision += 1;
-                changed = true;
-            }
-        }
-        if !next_virtual_desktops.explorer_layout_imported
-        {
-            next_virtual_desktops.explorer_layout_imported = true;
+            next_imported = true;
             changed = true;
         }
-        for history in next_histories.values_mut()
+        for entry in next_histories.undo.iter_mut().chain(next_histories.redo.iter_mut())
         {
-            for entry in history.undo.iter_mut().chain(history.redo.iter_mut())
-            {
-                entry.layout.remap_item_references(renames)?;
-                entry.opposite_layout.remap_item_references(renames)?;
-                entry.layout.validate()?;
-            }
-        } // Shell 精确重命名同步到每个虚拟桌面的撤销与重做快照。
+            entry.layout.remap_item_references(renames)?;
+            entry.layout.validate()?;
+        } // 精确重命名同步到同一撤销和重做历史。
         if !changed
         {
             *histories = next_histories;
             *names = next_names;
             return Ok(current.clone());
         }
-        shared::publish(&next, &mut next_virtual_desktops)?;
-        let store = save_workspace_store(&self.persistence_path, &next, &next_virtual_desktops).map_err(|error| {
+        let store = save_workspace_store(&self.persistence_path, &next, next_imported).map_err(|error| {
             crate::log_error!("工作区：桌面项目协调保存失败，错误={error}");
             WorkspaceError::persistence_failed(&error)
         })?; // Shell 与显示器协调后的完整持久文件。
-        let current_id = next_virtual_desktops.current_id.clone(); // 自动快照所属的当前虚拟桌面身份。
         *current = next.clone();
-        *virtual_desktops = next_virtual_desktops;
+        *imported = next_imported;
         *histories = next_histories;
         *names = next_names;
-        self.schedule_auto_snapshot(&current_id, store);
-        crate::log_debug!("工作区：全部虚拟桌面逐屏项目位置已协调，活动布局={}，修订={}，项目={}，显示器={}", virtual_desktops.layouts.len() + 1, next.revision, next.unclassified_items.len(), next.monitor_grids.len());
+        self.schedule_auto_snapshot(store);
+        crate::log_debug!("工作区：逐屏项目位置已协调，修订={}，项目={}，显示器={}", next.revision, next.unclassified_items.len(), next.monitor_grids.len());
         Ok(next)
     }
 
@@ -754,8 +443,7 @@ impl WorkspaceState
         {
             return Err(WorkspaceError::invalid_command("投放布局版本已经失效"));
         }
-        let mut virtual_desktops = self.virtual_desktops.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 当前布局事务所属虚拟桌面和其他持久布局。
-        let virtual_desktop_id = virtual_desktops.current_id.clone(); // 当前布局事务所属的虚拟桌面身份。
+        let imported = self.explorer_layout_imported.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 与布局共同保存的首次导入状态。
         // 保持当前快照可回滚的事务副本。
         let mut next = current.clone();
         // 布局事务前的运行期交互状态。
@@ -782,37 +470,18 @@ impl WorkspaceState
         next.revision += 1;
         next.validate()?;
         let mut histories = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 原子保存前确认会话历史可以同步提交。
-        let mut next_desktops = virtual_desktops.clone(); // 保存失败时共享内容与其他桌面保持原状态。
-        shared::publish(&next, &mut next_desktops)?;
-        let store = save_workspace_store(&self.persistence_path, &next, &next_desktops).map_err(|error| {
+        let store = save_workspace_store(&self.persistence_path, &next, *imported).map_err(|error| {
             crate::log_error!("工作区：原子快照保存失败，命令={command_name}，错误={error}");
             WorkspaceError::persistence_failed(&error)
         })?; // 当前布局事务完成后的完整工作区文件。
-        // 保存成功后更新当前虚拟桌面独立的会话布局历史。
-        let history_key = if shared::contents(&current) != shared::contents(&next)
-        {
-            SHARED_HISTORY_KEY
-        }
-        else
-        {
-            &virtual_desktop_id
-        }; // 内容变化使用跨桌面历史。
+        // 保存成功后加入统一撤销时间线。
         if records_history
         {
-            for history in histories.values_mut()
-            {
-                history.redo.clear();
-            }
+            histories.undo.push(WorkspaceHistoryEntry { layout: layout_snapshot(&current), timeline_at_unix_micros: crate::tools::time::next_timeline_timestamp() });
+            histories.redo.clear();
         }
-        let history = histories.entry(history_key.to_string()).or_default(); // 当前事务对应的历史作用域。
-        if records_history
-        {
-            history.undo.push(WorkspaceHistoryEntry { origin_id: virtual_desktop_id.clone(), opposite_layout: layout_snapshot(&next), layout: layout_snapshot(&current), timeline_at_unix_micros: crate::tools::time::next_timeline_timestamp() });
-            history.redo.clear();
-        }
-        *virtual_desktops = next_desktops;
         *current = next.clone();
-        self.schedule_auto_snapshot(&virtual_desktop_id, store);
+        self.schedule_auto_snapshot(store);
         crate::log_debug!("工作区：布局事务已提交，命令={command_name}，修订={}，围栏={}", next.revision, next.fences.len());
         Ok(next)
     }
@@ -822,11 +491,8 @@ impl WorkspaceState
     {
         // 等待历史恢复的当前权威工作区快照。
         let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?;
-        let mut virtual_desktops = self.virtual_desktops.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 当前历史恢复需要一同保存的其他布局。
-        let virtual_desktop_id = virtual_desktops.current_id.clone(); // 当前历史恢复所属的虚拟桌面身份。
-        let mut histories = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 当前全部虚拟桌面会话历史。
-        let history_key = shared::history_key(&histories, &virtual_desktop_id, redo); // 当前桌面空间历史与全局内容历史按时间选择。
-        let history = histories.entry(history_key.clone()).or_default(); // 本次恢复的历史作用域。
+        let imported = self.explorer_layout_imported.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 与布局共同保存的首次导入状态。
+        let mut history = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 当前统一会话历史。
         let target = if redo { history.redo.last().cloned() } else { history.undo.last().cloned() }; // 当前撤销方向对应的最近历史布局。
         let Some(entry) = target
         else
@@ -835,36 +501,17 @@ impl WorkspaceState
             return Ok(WorkspaceLayoutHistoryResult { snapshot: current.clone(), restored_count: 0, changed_count: 0 });
         };
 
-        // 使用历史布局和当前选择焦点生成下一份权威快照。
-        let origin = if entry.origin_id == virtual_desktop_id
-        {
-            current.clone()
-        }
-        else
-        {
-            virtual_desktops.layouts.get(&entry.origin_id).cloned().unwrap_or_else(|| current.clone())
-        }; // 原操作桌面的当前空间状态。
-        let mut restored_origin = None; // 其他桌面的空间修改与当前共享内容一起提交。
-        let mut target = entry.layout.clone(); // 历史按当前项目事实恢复，空间历史不能覆盖共享内容。
-        if history_key != SHARED_HISTORY_KEY
-        {
-            shared::project(&current, &mut target)?;
-        }
-        else
-        {
-            let restored = shared::restore(&entry.layout, &entry.opposite_layout, &origin)?; // 只恢复该共享操作实际改变的空间信息。
-            if entry.origin_id == virtual_desktop_id
-            {
-                target = restored;
-            }
-            else
-            {
-                target = current.clone();
-                shared::project(&restored, &mut target)?;
-                restored_origin = Some(restored);
-            }
-        }
+        let mut target = entry.layout.clone(); // 历史布局仍按当前文件事实过滤。
         target.tile_appearances.clone_from(&current.tile_appearances);
+        // 布局历史不回滚组件内容在拖动之后保存的私有状态。
+        for component in &mut target.components
+        {
+            if let Some(active) = current.components.iter().find(|active| active.instance_id == component.instance_id)
+            {
+                component.state.clone_from(&active.state);
+                component.state_version = active.state_version;
+            }
+        }
         appearance::project(&mut target);
         reflow_grid_items(&mut target, &current.monitor_grids)?;
         let (mut next, restored_count, changed_count) = merge_layout_history_target(target, &current); // 保留外部新增项目并排除已离开工作区的历史引用。
@@ -886,20 +533,13 @@ impl WorkspaceState
             next.interaction.revision = current.interaction.revision.saturating_add(1);
         }
         next.validate()?;
-        let mut next_desktops = virtual_desktops.clone(); // 保存失败时共享内容与其他桌面保持原状态。
-        if let Some(restored) = &restored_origin
-            && let Some(layout) = next_desktops.layouts.get_mut(&entry.origin_id)
-        {
-            *layout = restored.clone();
-        }
-        shared::publish(&next, &mut next_desktops)?;
-        let store = save_workspace_store(&self.persistence_path, &next, &next_desktops).map_err(|error| {
+        let store = save_workspace_store(&self.persistence_path, &next, *imported).map_err(|error| {
             crate::log_error!("工作区：布局历史保存失败，错误={error}");
             WorkspaceError::persistence_failed(&error)
         })?; // 当前历史恢复后的完整工作区文件。
 
         // 历史恢复成功后移动对应撤销单元。
-        let current_layout = WorkspaceHistoryEntry { origin_id: entry.origin_id, layout: layout_snapshot(&origin), opposite_layout: layout_snapshot(restored_origin.as_ref().unwrap_or(&next)), timeline_at_unix_micros: crate::tools::time::next_timeline_timestamp() }; // 当前方向完成后进入相反方向的布局历史单元。
+        let current_layout = WorkspaceHistoryEntry { layout: layout_snapshot(&current), timeline_at_unix_micros: crate::tools::time::next_timeline_timestamp() }; // 当前方向完成后进入相反方向的布局历史单元。
         if redo
         {
             history.redo.pop();
@@ -910,41 +550,30 @@ impl WorkspaceState
             history.undo.pop();
             history.redo.push(current_layout);
         }
-        *virtual_desktops = next_desktops;
         *current = next.clone();
-        self.schedule_auto_snapshot(&virtual_desktop_id, store);
+        self.schedule_auto_snapshot(store);
         crate::log_debug!("工作区：布局历史已恢复，方向={}，修订={}", if redo { "重做" } else { "撤销" }, next.revision);
         Ok(WorkspaceLayoutHistoryResult { snapshot: next, restored_count, changed_count })
     }
 
-    /// 返回当前虚拟桌面在指定方向最近的布局历史时间。
+    /// 返回统一布局历史在指定方向的最近完成时间。
     pub(crate) fn latest_layout_history_time(&self, redo: bool) -> Result<Option<i64>, WorkspaceError>
     {
-        let virtual_desktop_id = self.current_virtual_desktop_id()?; // 当前统一时间线所属虚拟桌面身份。
-        let histories = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 当前全部虚拟桌面会话历史。
-        let history_key = shared::history_key(&histories, &virtual_desktop_id, redo); // 选择全局内容或当前空间的最近单元。
-        let Some(history) = histories.get(&history_key)
-        else
-        {
-            return Ok(None);
-        };
+        let history = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 当前会话唯一历史。
         Ok(if redo { history.redo.last() } else { history.undo.last() }.map(|entry| entry.timeline_at_unix_micros))
     }
 
-    /// 新 Shell 操作提交后清除当前虚拟桌面的布局重做分支。
+    /// 新 Shell 操作提交后清除布局重做分支。
     pub(crate) fn clear_redo_history(&self) -> Result<(), WorkspaceError>
     {
-        for history in self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?.values_mut()
-        {
-            history.redo.clear();
-        }
+        self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?.redo.clear();
         Ok(())
     }
 
-    /// 将最新完整工作区状态提交给 2 秒空闲合并线程。
-    fn schedule_auto_snapshot(&self, virtual_desktop_id: &str, store: PersistedWorkspaceStore)
+    /// 将最新完整工作区交给空闲合并线程。
+    fn schedule_auto_snapshot(&self, store: PersistedWorkspaceStore)
     {
-        if self.auto_snapshot_sender.as_ref().expect("自动快照发送端在工作区生命周期内存在").send(AutoSnapshotRequest { virtual_desktop_id: virtual_desktop_id.to_string(), store }).is_err()
+        if self.auto_snapshot_sender.as_ref().expect("自动快照发送端在工作区生命周期内存在").send(store).is_err()
         {
             crate::log_warn!("工作区：自动快照线程已经停止");
         }
@@ -995,52 +624,36 @@ impl Drop for WorkspaceState
     }
 }
 
-/// 启动按虚拟桌面独立合并的自动快照写入线程。
-fn start_auto_snapshot_worker(directory: PathBuf) -> std::io::Result<(Sender<AutoSnapshotRequest>, JoinHandle<()>)>
+/// 启动统一工作区自动快照线程，空闲或退出时刷新最后一次提交。
+fn start_auto_snapshot_worker(directory: PathBuf) -> std::io::Result<(Sender<PersistedWorkspaceStore>, JoinHandle<()>)>
 {
-    let (sender, receiver) = mpsc::channel::<AutoSnapshotRequest>(); // 布局提交线程到磁盘快照线程的请求通道。
+    let (sender, receiver) = mpsc::channel::<PersistedWorkspaceStore>(); // 布局提交到磁盘快照的通道。
     let worker = thread::Builder::new().name("desktop-tools-workspace-snapshot".to_string()).spawn(move || {
-        let mut pending = HashMap::<String, (Instant, PersistedWorkspaceStore)>::new(); // 每个虚拟桌面最后一次待合并状态。
+        let mut pending = None; // 空闲窗口内最后一份完整布局。
         loop
         {
-            let request = if pending.is_empty()
+            let request = if pending.is_some()
             {
-                receiver.recv().map_err(|_| RecvTimeoutError::Disconnected)
+                receiver.recv_timeout(AUTO_SNAPSHOT_IDLE)
             }
             else
             {
-                let now = Instant::now(); // 当前最早快照截止时间计算基准。
-                let timeout = pending.values().map(|(deadline, _)| deadline.saturating_duration_since(now)).min().unwrap_or(AUTO_SNAPSHOT_IDLE); // 下一份快照到期前的精确等待时间。
-                receiver.recv_timeout(timeout)
-            };
+                receiver.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            }; // 每次提交重新开始空闲计时。
             match request
             {
-                Ok(request) =>
+                Ok(store) => pending = Some(store),
+                Err(error) =>
                 {
-                    pending.insert(request.virtual_desktop_id, (Instant::now() + AUTO_SNAPSHOT_IDLE, request.store));
-                }
-                Err(RecvTimeoutError::Timeout) =>
-                {}
-                Err(RecvTimeoutError::Disconnected) =>
-                {
-                    for (desktop_id, (_, store)) in pending.drain()
+                    if let Some(store) = pending.take()
+                        && let Err(error) = write_auto_snapshot(&directory, &store)
                     {
-                        if let Err(error) = write_auto_snapshot(&directory, &desktop_id, &store)
-                        {
-                            crate::log_error!("工作区：退出前自动快照写入失败，桌面={}，错误={error}", desktop_id);
-                        }
+                        crate::log_error!("工作区：自动快照写入失败，错误={error}");
                     }
-                    break;
-                }
-            }
-            let now = Instant::now(); // 本轮已经到期的虚拟桌面快照判断基准。
-            let due = pending.iter().filter(|(_, (deadline, _))| *deadline <= now).map(|(desktop_id, _)| desktop_id.clone()).collect::<Vec<_>>(); // 本轮需要落盘的虚拟桌面身份。
-            for desktop_id in due
-            {
-                let (_, store) = pending.remove(&desktop_id).expect("到期自动快照仍在待处理集合");
-                if let Err(error) = write_auto_snapshot(&directory, &desktop_id, &store)
-                {
-                    crate::log_error!("工作区：自动快照写入失败，桌面={}，错误={error}", desktop_id);
+                    if error == RecvTimeoutError::Disconnected
+                    {
+                        break;
+                    }
                 }
             }
         }
@@ -1049,22 +662,22 @@ fn start_auto_snapshot_worker(directory: PathBuf) -> std::io::Result<(Sender<Aut
 }
 
 /// 原子写入一份完整工作区自动快照并保留当前桌面最近 20 份。
-fn write_auto_snapshot(directory: &Path, virtual_desktop_id: &str, store: &PersistedWorkspaceStore) -> std::io::Result<PathBuf>
+fn write_auto_snapshot(directory: &Path, store: &PersistedWorkspaceStore) -> std::io::Result<PathBuf>
 {
     fs::create_dir_all(directory)?;
-    let prefix = format!("{:016x}-", stable_hash(virtual_desktop_id.as_bytes())); // 避免 Windows 身份直接进入文件名的稳定前缀。
+    let prefix = "workspace-"; // 统一快照集合的文件前缀。
     let timestamp = Utc::now().timestamp_micros(); // 自动快照按创建时间排序的 Unix 微秒值。
     let sequence = NEXT_AUTO_SNAPSHOT_ID.fetch_add(1, Ordering::Relaxed); // 同一时钟刻度内避免覆盖的进程内序号。
     let path = directory.join(format!("{prefix}{timestamp}-{sequence}.json")); // 当前完整工作区自动快照路径。
     save_json_atomic(&path, store)?;
-    let mut snapshots = fs::read_dir(directory)?.filter_map(Result::ok).map(|entry| entry.path()).filter(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".json"))).collect::<Vec<_>>(); // 当前虚拟桌面全部自动快照文件。
+    let mut snapshots = fs::read_dir(directory)?.filter_map(Result::ok).map(|entry| entry.path()).filter(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with(prefix) && name.ends_with(".json"))).collect::<Vec<_>>(); // 统一工作区全部自动快照文件。
     snapshots.sort();
     let remove_count = snapshots.len().saturating_sub(AUTO_SNAPSHOT_LIMIT); // 超出最近 20 份配额的旧文件数量。
     for obsolete in snapshots.into_iter().take(remove_count)
     {
         fs::remove_file(obsolete)?;
     }
-    crate::log_debug!("工作区：自动快照已写入，桌面={}，路径={}", virtual_desktop_id, path.display());
+    crate::log_debug!("工作区：自动快照已写入，路径={}", path.display());
     Ok(path)
 }
 
@@ -1087,7 +700,7 @@ fn load_workspace_backup(path: &Path) -> Result<PersistedWorkspaceStore, Workspa
 }
 
 /// 生成命令边界使用的已校验备份摘要。
-fn workspace_backup_summary(path: &Path, store: &PersistedWorkspaceStore) -> WorkspaceBackupSummary { WorkspaceBackupSummary { schema_version: store.store_version, created_at_unix: store.created_at_unix, path: path.to_string_lossy().into_owned(), layout_count: store.payload.layouts.len(), archive_count: store.payload.archives.len(), checksum: store.checksum.clone() } }
+fn workspace_backup_summary(path: &Path, store: &PersistedWorkspaceStore) -> WorkspaceBackupSummary { WorkspaceBackupSummary { schema_version: store.store_version, created_at_unix: store.created_at_unix, path: path.to_string_lossy().into_owned(), checksum: store.checksum.clone() } }
 
 /// 校验用户传入的备份路径可以明确指向 JSON 文件。
 fn validate_backup_path(path: &Path) -> Result<(), WorkspaceError>
@@ -1097,18 +710,6 @@ fn validate_backup_path(path: &Path) -> Result<(), WorkspaceError>
         return Err(WorkspaceError::invalid_command("工作区备份路径必须指向 .json 文件"));
     }
     Ok(())
-}
-
-/// 使用固定 FNV-1a 64 位算法生成文件名安全的稳定身份散列。
-fn stable_hash(bytes: &[u8]) -> u64
-{
-    let mut hash = 0xcbf29ce484222325_u64; // FNV-1a 64 位偏移基数。
-    for byte in bytes
-    {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }
 
 /// 从正式宿主显示器状态生成逐屏工作区网格。
@@ -1141,7 +742,7 @@ fn reflow_grid_items(layout: &mut WorkspaceSnapshot, grids: &[WorkspaceMonitorGr
     Ok(())
 }
 
-/// 将一次 Shell 与显示器环境变化协调到单个虚拟桌面布局。
+/// 将一次 Shell 与显示器环境变化协调到统一工作区布局。
 #[allow(clippy::too_many_arguments)]
 fn reconcile_layout_snapshot(layout: &mut WorkspaceSnapshot, monitor_grids: &[WorkspaceMonitorGrid], primary_grid: WorkspaceGrid, monitors: &[DesktopHostMonitor], item_ids: &[String], assignments: &[(String, String)], renames: &[(String, String)], primary_monitor_id: &str) -> Result<bool, WorkspaceError>
 {
@@ -1166,101 +767,30 @@ fn reconcile_layout_snapshot(layout: &mut WorkspaceSnapshot, monitor_grids: &[Wo
     Ok(true)
 }
 
-/// 恢复当前格式的全局内容和逐虚拟桌面空间布局。
-fn restore_workspace_store(value: Option<serde_json::Value>, current_virtual_desktop_id: &str, virtual_desktop_ids: &[String], default_components: &[ComponentInstanceSnapshot]) -> Result<(WorkspaceSnapshot, WorkspaceVirtualDesktops), WorkspaceError>
-{
-    let now = Utc::now().timestamp(); // 当前离线删除布局归档使用的 Unix 时间。
-    let mut active_ids = virtual_desktop_ids.iter().cloned().collect::<std::collections::HashSet<_>>(); // 当前 Windows 仍存在的虚拟桌面身份。
-    active_ids.insert(current_virtual_desktop_id.to_string());
-    let has_persisted_value = value.is_some(); // 当前是否存在已保存的工作区。
-    let mut layouts = HashMap::new(); // 等待按当前 Windows 身份协调的持久布局。
-    let mut archives = Vec::new(); // 已恢复或离线删除产生的布局归档。
-    let mut shared_fences = Vec::new(); // 当前文件中的唯一全局内容。
-    let mut shared_source = None; // 在桌面身份筛选前保留共享内容的完整投影。
-    let mut explorer_layout_imported = has_persisted_value; // 已保存文件的首次导入状态由载荷确定。
-    if let Some(value) = value
-    {
-        let store = decode_workspace_store(value)?; // 已校验的当前格式文件。
-        shared_source = store.payload.layouts.iter().find(|entry| entry.virtual_desktop_id == store.payload.current_virtual_desktop_id).map(|entry| entry.layout.clone());
-        explorer_layout_imported = store.payload.explorer_layout_imported;
-        shared_fences = store.payload.shared_fences;
-        for mut entry in store.payload.layouts
-        {
-            if entry.layout.components.is_empty()
-            {
-                entry.layout.components = default_components.to_vec();
-            }
-            if active_ids.contains(&entry.virtual_desktop_id)
-            {
-                layouts.insert(entry.virtual_desktop_id, entry.layout);
-            }
-            else
-            {
-                archives.push(archive_layout(entry.virtual_desktop_id, entry.layout, now));
-            }
-        }
-        archives.extend(store.payload.archives.into_iter().map(|mut archive| {
-            if archive.layout.components.is_empty()
-            {
-                archive.layout.components = default_components.to_vec();
-            }
-            archive
-        }));
-    }
-    for desktop_id in &active_ids
-    {
-        layouts.entry(desktop_id.clone()).or_insert_with(|| default_workspace_snapshot(default_components));
-    }
-    if let Some(source) = shared_source
-    {
-        for layout in layouts.values_mut()
-        {
-            shared::project(&source, layout)?;
-        }
-    }
-    let snapshot = layouts.remove(current_virtual_desktop_id).unwrap_or_else(|| default_workspace_snapshot(default_components)); // 当前 Windows 桌面激活的独立布局。
-    Ok((snapshot, WorkspaceVirtualDesktops { shared_fences, current_id: current_virtual_desktop_id.to_string(), layouts, archives, explorer_layout_imported }))
-}
-
-/// 只读取当前共享内容格式，不迁移或兼容旧布局。
+/// 只读取当前统一格式，不迁移旧布局。
 fn decode_workspace_store(value: serde_json::Value) -> Result<PersistedWorkspaceStore, WorkspaceError>
 {
     if value.get("storeVersion").and_then(serde_json::Value::as_u64) != Some(u64::from(WORKSPACE_STORE_VERSION))
     {
-        return Err(WorkspaceError::restore_failed(&"工作区格式不受支持，仅接受共享围栏格式"));
+        return Err(WorkspaceError::restore_failed(&"工作区格式不受支持，仅接受当前统一工作区格式"));
     }
-    let mut store: PersistedWorkspaceStore = serde_json::from_value(value).map_err(|error| WorkspaceError::restore_failed(&format!("工作区格式无效: {error}")))?; // 严格读取当前结构。
+    let store: PersistedWorkspaceStore = serde_json::from_value(value).map_err(|error| WorkspaceError::restore_failed(&error))?; // 当前结构必须完整。
     validate_workspace_store(&store)?;
-    for entry in &mut store.payload.layouts
-    {
-        entry.layout.tile_appearances.clone_from(&store.payload.tile_appearances);
-        appearance::project(&mut entry.layout);
-    }
-    let templates = store.payload.layouts.iter().flat_map(|entry| entry.layout.fences.iter()).cloned().collect::<Vec<_>>(); // 共享围栏的有效空间表面。
-    for entry in &mut store.payload.layouts
-    {
-        for fence in &mut entry.layout.fences
-        {
-            fence.members = store.payload.shared_fences.iter().find(|shared| shared.id == fence.id).ok_or_else(|| WorkspaceError::restore_failed(&"空间围栏缺少共享身份"))?.members.clone();
-        }
-        for shared in &store.payload.shared_fences
-        {
-            if !entry.layout.fences.iter().any(|fence| fence.id == shared.id)
-            {
-                let mut fence = templates.iter().find(|fence| fence.id == shared.id).ok_or_else(|| WorkspaceError::restore_failed(&"共享围栏缺少空间表面"))?.clone(); // 缺少表面时采用已有默认表面。
-                fence.members.clone_from(&shared.members);
-                entry.layout.fences.push(fence);
-            }
-        }
-        entry.layout.validate().map_err(|error| WorkspaceError::restore_failed(&error.message))?;
-    }
     Ok(store)
 }
 
-/// 校验完整工作区文件的版本、校验值、身份和每份布局。
+/// 校验当前版本、完整性以及唯一布局中的身份和外观。
 fn validate_workspace_store(store: &PersistedWorkspaceStore) -> Result<(), WorkspaceError>
 {
-    for (key, appearance) in &store.payload.tile_appearances
+    if store.store_version != WORKSPACE_STORE_VERSION
+    {
+        return Err(WorkspaceError::restore_failed(&"工作区备份 Schema 版本无效"));
+    }
+    if workspace_store_checksum(store.store_version, store.created_at_unix, &store.payload)? != store.checksum
+    {
+        return Err(WorkspaceError::restore_failed(&"工作区备份完整性校验失败"));
+    }
+    for (key, appearance) in &store.payload.layout.tile_appearances
     {
         validate_id(key, "格子外观身份无效")?;
         if !key.starts_with("fence:") && !key.starts_with("component:")
@@ -1272,86 +802,19 @@ fn validate_workspace_store(store: &PersistedWorkspaceStore) -> Result<(), Works
             validate_title(title)?;
         }
     }
-    if store.store_version != WORKSPACE_STORE_VERSION
-    {
-        return Err(WorkspaceError::restore_failed(&"工作区备份 Schema 版本无效"));
-    }
-    let checksum = workspace_store_checksum(store.store_version, store.created_at_unix, &store.payload)?; // 当前版本、创建时间和载荷重新计算的完整性校验值。
-    if checksum != store.checksum
-    {
-        return Err(WorkspaceError::restore_failed(&"工作区备份完整性校验失败"));
-    }
-    let mut shared_ids = std::collections::HashSet::new(); // 共享围栏必须具有全局唯一身份。
-    let mut shared_members = std::collections::HashSet::new(); // 每个项目只能有一个全局围栏归属。
-    for fence in &store.payload.shared_fences
-    {
-        validate_id(&fence.id, "共享围栏标识无效")?;
-        if !shared_ids.insert(&fence.id)
-        {
-            return Err(WorkspaceError::restore_failed(&"共享围栏身份重复"));
-        }
-        for member in &fence.members
-        {
-            validate_id(member, "共享成员标识无效")?;
-            if !shared_members.insert(member)
-            {
-                return Err(WorkspaceError::restore_failed(&"共享成员归属重复"));
-            }
-        }
-    }
-    validate_id(&store.payload.current_virtual_desktop_id, "备份当前虚拟桌面标识无效").map_err(|error| WorkspaceError::restore_failed(&error.message))?;
-    let mut desktop_ids = std::collections::HashSet::new(); // 备份中已经出现的活动桌面身份。
-    for entry in &store.payload.layouts
-    {
-        validate_id(&entry.virtual_desktop_id, "备份虚拟桌面标识无效").map_err(|error| WorkspaceError::restore_failed(&error.message))?;
-        if !desktop_ids.insert(entry.virtual_desktop_id.as_str())
-        {
-            return Err(WorkspaceError::restore_failed(&"工作区备份包含重复虚拟桌面"));
-        }
-        let mut layout = entry.layout.clone(); // 校验时排除不应持久化的运行期交互状态。
-        layout.interaction = WorkspaceInteractionSnapshot::default();
-        layout.validate().map_err(|error| WorkspaceError::restore_failed(&error.message))?;
-    }
-    if !desktop_ids.contains(store.payload.current_virtual_desktop_id.as_str())
-    {
-        return Err(WorkspaceError::restore_failed(&"工作区备份缺少当前虚拟桌面布局"));
-    }
-    let mut archive_ids = std::collections::HashSet::new(); // 备份中已经出现的归档标识。
-    for archive in &store.payload.archives
-    {
-        validate_id(&archive.archive_id, "布局归档标识无效").map_err(|error| WorkspaceError::restore_failed(&error.message))?;
-        validate_id(&archive.source_virtual_desktop_id, "布局归档来源桌面标识无效").map_err(|error| WorkspaceError::restore_failed(&error.message))?;
-        if archive.expires_at_unix <= archive.archived_at_unix || !archive_ids.insert(archive.archive_id.as_str())
-        {
-            return Err(WorkspaceError::restore_failed(&"工作区布局归档状态无效"));
-        }
-        archive.layout.validate().map_err(|error| WorkspaceError::restore_failed(&error.message))?;
-    }
-    Ok(())
+    store.payload.layout.validate().map_err(|error| WorkspaceError::restore_failed(&error.message))
 }
 
-/// 将已删除虚拟桌面布局转换为 30 天可恢复归档。
-fn archive_layout(source_virtual_desktop_id: String, layout: WorkspaceSnapshot, archived_at_unix: i64) -> WorkspaceLayoutArchive { WorkspaceLayoutArchive { archive_id: format!("archive-{source_virtual_desktop_id}-{archived_at_unix}"), source_virtual_desktop_id, archived_at_unix, expires_at_unix: archived_at_unix + LAYOUT_ARCHIVE_RETENTION_SECONDS, layout: persisted_layout(&layout) } }
-
-/// 移除已经超过 30 天保留期的布局归档。
-fn purge_expired_archives(archives: &mut Vec<WorkspaceLayoutArchive>, now_unix: i64) { archives.retain(|archive| archive.expires_at_unix > now_unix); }
-
-/// 保存排除运行期选择与焦点的工作区布局快照。
-fn save_workspace_store(path: &std::path::Path, snapshot: &WorkspaceSnapshot, virtual_desktops: &WorkspaceVirtualDesktops) -> std::io::Result<PersistedWorkspaceStore>
+/// 保存排除运行期选择与焦点的统一布局。
+fn save_workspace_store(path: &Path, snapshot: &WorkspaceSnapshot, explorer_layout_imported: bool) -> std::io::Result<PersistedWorkspaceStore>
 {
-    let store = build_workspace_store(snapshot, virtual_desktops)?; // 已排序并计算完整性字段的当前工作区文件。
+    let store = build_workspace_store(snapshot, explorer_layout_imported)?; // 完整性字段计算后原子落盘。
     save_json_atomic(path, &store)?;
     Ok(store)
 }
 
-/// 从当前内存状态生成稳定排序的完整工作区文件。
-fn build_workspace_store(snapshot: &WorkspaceSnapshot, virtual_desktops: &WorkspaceVirtualDesktops) -> std::io::Result<PersistedWorkspaceStore>
-{
-    let mut layouts = virtual_desktops.layouts.iter().map(|(virtual_desktop_id, layout)| PersistedVirtualDesktopLayout { virtual_desktop_id: virtual_desktop_id.clone(), layout: persisted_layout(layout) }).collect::<Vec<_>>(); // 当前全部非活动虚拟桌面布局。
-    layouts.push(PersistedVirtualDesktopLayout { virtual_desktop_id: virtual_desktops.current_id.clone(), layout: persisted_layout(snapshot) });
-    layouts.sort_by(|first, second| first.virtual_desktop_id.cmp(&second.virtual_desktop_id));
-    workspace_store_from_payload(PersistedWorkspacePayload { tile_appearances: snapshot.tile_appearances.clone(), shared_fences: virtual_desktops.shared_fences.clone(), current_virtual_desktop_id: virtual_desktops.current_id.clone(), layouts, archives: virtual_desktops.archives.clone(), explorer_layout_imported: virtual_desktops.explorer_layout_imported }).map_err(|error| std::io::Error::other(error.message))
-}
+/// 构造不含系统桌面身份的唯一工作区文件。
+fn build_workspace_store(snapshot: &WorkspaceSnapshot, explorer_layout_imported: bool) -> std::io::Result<PersistedWorkspaceStore> { workspace_store_from_payload(PersistedWorkspacePayload { layout: persisted_layout(snapshot), explorer_layout_imported }).map_err(|error| std::io::Error::other(error.message)) }
 
 /// 为当前格式载荷补齐版本、时间与完整性校验值。
 fn workspace_store_from_payload(payload: PersistedWorkspacePayload) -> Result<PersistedWorkspaceStore, WorkspaceError>
@@ -1654,7 +1117,7 @@ impl WorkspaceSnapshot
         else
         {
             return Ok(String::new());
-        }; // 当前布局命令使用的持久显示器身份；旧空快照等待首次宿主协调补全。
+        }; // 当前布局命令使用的持久显示器身份；空快照等待首次宿主协调补全。
         if !self.monitor_grids.iter().any(|entry| entry.monitor_id == monitor_id)
         {
             return Err(WorkspaceError::invalid_command("布局命令显示器不存在"));
@@ -2464,7 +1927,7 @@ fn project_component_rect(bounds: WorkspaceRect, viewport_width: f64, viewport_h
 #[cfg(test)]
 mod tests
 {
-    use super::{AUTO_SNAPSHOT_LIMIT, LAYOUT_ARCHIVE_RETENTION_SECONDS, PersistedVirtualDesktopLayout, PersistedWorkspacePayload, WorkspaceLayoutArchive, WorkspaceState, decode_workspace_store, merge_layout_history_target, purge_expired_archives, workspace_store_from_payload, write_auto_snapshot};
+    use super::{AUTO_SNAPSHOT_LIMIT, PersistedWorkspacePayload, WorkspaceState, decode_workspace_store, merge_layout_history_target, workspace_store_from_payload, write_auto_snapshot};
     use crate::contracts::{ComponentInstanceSnapshot, DesktopHostMonitor, UnclassifiedItemSnapshot, WorkspaceCommand, WorkspaceFocusTarget, WorkspaceInteractionCommand, WorkspaceItemPlacement, WorkspacePoint, WorkspaceRect, WorkspaceSelectionMode, WorkspaceSnapshot};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2479,51 +1942,61 @@ mod tests
     /// 创建当前测试使用的工作区状态。
     fn workspace_state(path: std::path::PathBuf) -> WorkspaceState { WorkspaceState::load(path).expect("测试工作区应可启动") }
 
-    /// 验证共享成员跨桌面可见，空间独立，局部撤销不覆盖共享内容，持久化只保存一份成员。
+    /// 环境重复观察不改变统一布局、选择或撤销，保存和还原只包含同一布局。
     #[test]
-    fn shared_members_preserve_spatial_layout_and_global_history()
+    fn unified_workspace_preserves_layout_interaction_and_history()
     {
-        let path = snapshot_path("shared-members"); // 独立测试文件。
-        let ids = ["a".to_string(), "b".to_string()]; // 两个 Windows 虚拟桌面。
-        let items = ["one".to_string(), "two".to_string()]; // 完整 Shell 项目集合。
-        let monitors = [monitor("DISPLAY1", true, 0, 1.0)]; // 测试显示器。
-        let state = WorkspaceState::load_for_virtual_desktops(path.clone(), "a", &ids).unwrap(); // 当前共享工作区。
-        state.reconcile_virtual_desktops("a", &ids, &monitors, &items).unwrap();
-        let initial_bounds = WorkspaceRect { left: 40.0, top: 40.0, width: 320.0, height: 240.0 }; // A 的初始表面。
-        let created = state.apply(WorkspaceCommand::CreateFence { title: "共享".into(), bounds: initial_bounds }).unwrap(); // 全局创建的围栏。
-        let fence_id = created.fences[0].id.clone(); // 两个桌面共用的身份。
+        let path = snapshot_path("unified-workspace"); // 独占持久文件。
+        let backup = snapshot_path("unified-backup"); // 独占手动备份。
+        let mut state = WorkspaceState::load(path.clone()).unwrap(); // 唯一工作区不接收系统桌面身份。
+        let monitors = [monitor("DISPLAY1", true, 0, 1.0)]; // 固定物理显示器。
+        let items = ["one".to_string(), "two".to_string()]; // 固定 Shell 事实。
+        state.reconcile_host_monitors(&monitors, &items, &[], &[]).unwrap();
+        let bounds = WorkspaceRect { left: 40.0, top: 40.0, width: 320.0, height: 240.0 }; // 初始围栏位置。
+        let created = state.apply(WorkspaceCommand::CreateFence { title: "统一".into(), bounds }).unwrap(); // 创建唯一围栏。
+        let fence_id = created.fences[0].id.clone(); // 后续事务使用稳定身份。
         state.apply(WorkspaceCommand::MoveItemToFence { item_id: "one".into(), fence_id: fence_id.clone(), before_item_id: None }).unwrap();
-        let b = state.reconcile_virtual_desktops("b", &ids, &monitors, &items).unwrap(); // B 可直接观察到共享成员。
-        assert_eq!(b.fences[0].members, ["one"]);
-        let b_bounds = WorkspaceRect { left: 500.0, ..initial_bounds }; // B 的独立空间调整。
-        state.apply(WorkspaceCommand::UpdateFenceBounds { fence_id: fence_id.clone(), bounds: b_bounds }).unwrap();
-        let a = state.reconcile_virtual_desktops("a", &ids, &monitors, &items).unwrap(); // A 保留自身空间。
-        assert_eq!(a.fences[0].bounds, initial_bounds);
-        state.apply(WorkspaceCommand::MoveItemToFence { item_id: "two".into(), fence_id: fence_id.clone(), before_item_id: None }).unwrap();
-        state.reconcile_virtual_desktops("b", &ids, &monitors, &items).unwrap();
-        let undone = state.apply(WorkspaceCommand::UndoLayout).unwrap(); // 从 B 撤销 A 的共享成员操作。
-        assert_eq!(undone.fences[0].members, ["one"]);
-        assert_eq!(undone.fences[0].bounds, b_bounds);
-        let spatial_undo = state.apply(WorkspaceCommand::UndoLayout).unwrap(); // 局部历史不能恢复过时成员。
-        assert_eq!(spatial_undo.fences[0].members, ["one"]);
-        assert_eq!(spatial_undo.fences[0].bounds, initial_bounds);
-        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(); // 磁盘只保存一个共享成员表。
-        assert_eq!(value["storeVersion"], 4);
-        assert_eq!(value["payload"]["sharedFences"][0]["members"], serde_json::json!(["one"]));
-        for layout in value["payload"]["layouts"].as_array().unwrap()
+        let moved_bounds = WorkspaceRect { left: 500.0, ..bounds }; // 成员操作后的空间事务。
+        state.apply(WorkspaceCommand::UpdateFenceBounds { fence_id: fence_id.clone(), bounds: moved_bounds }).unwrap();
+        state.apply_interaction_on_monitor("DISPLAY1", WorkspaceInteractionCommand::FocusItem { item_id: "two".into(), selection_mode: WorkspaceSelectionMode::Replace }).unwrap();
+        let before = state.snapshot().unwrap(); // 选择、位置、成员共同保留。
+        let time = state.latest_layout_history_time(false).unwrap(); // 环境重复观察不产生历史。
+        for _ in 0..3
         {
-            assert!(layout["layout"]["fences"][0].get("members").is_none());
+            assert_eq!(state.reconcile_host_monitors(&monitors, &items, &[], &[]).unwrap(), before);
         }
+        assert_eq!(state.latest_layout_history_time(false).unwrap(), time);
+        let undone = state.apply(WorkspaceCommand::UndoLayout).unwrap(); // 空间先于成员撤销。
+        assert_eq!(undone.fences[0].bounds, bounds);
+        assert_eq!(undone.fences[0].members, ["one"]);
+        assert_eq!(undone.interaction.selected_item_ids, ["two"]);
+        assert!(state.apply(WorkspaceCommand::UndoLayout).unwrap().fences[0].members.is_empty());
+        state.apply(WorkspaceCommand::RedoLayout).unwrap();
+        let restored = state.apply(WorkspaceCommand::RedoLayout).unwrap(); // 同一时间线重做恢复布局。
+        assert_eq!(restored.fences, before.fences);
+        state.write_manual_backup(&backup).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(); // 磁盘唯一布局。
+        assert_eq!(value["storeVersion"], 5);
+        assert_eq!(value["payload"]["layout"]["fences"][0]["members"], serde_json::json!(["one"]));
+        assert!(value["payload"].get("layouts").is_none());
+        assert!(value["payload"].get("currentVirtualDesktopId").is_none());
+        state.apply(WorkspaceCommand::UpdateFenceBounds { fence_id, bounds }).unwrap();
+        let modified = state.snapshot().unwrap(); // 注入保存失败后应完整保留。
+        let history_time = state.latest_layout_history_time(false).unwrap(); // 失败不能清空历史。
+        state.persistence_path = path.join("blocked.json");
+        assert!(state.restore_backup(&backup, &monitors, &items).is_err());
+        assert_eq!(state.snapshot().unwrap(), modified);
+        assert_eq!(state.latest_layout_history_time(false).unwrap(), history_time);
+        state.persistence_path = path.clone();
+        assert_eq!(state.restore_backup(&backup, &monitors, &items).unwrap().snapshot.fences, before.fences);
+        assert!(state.latest_layout_history_time(false).unwrap().is_none());
         drop(state);
-        let restored = WorkspaceState::load_for_virtual_desktops(path.clone(), "b", &ids).unwrap(); // 新结构直接读取，无迁移。
-        assert_eq!(restored.snapshot().unwrap().fences[0].members, ["one"]);
-        let remaining = restored.reconcile_virtual_desktops("a", &["a".into()], &monitors, &items).unwrap(); // 删除 B 不删除共享围栏。
-        assert_eq!(remaining.fences[0].members, ["one"]);
-        drop(restored);
-        let replacement = WorkspaceState::load_for_virtual_desktops(path.clone(), "replacement", &["replacement".into()]).unwrap(); // 全部原桌面离线删除后仍恢复共享内容。
-        assert_eq!(replacement.snapshot().unwrap().fences[0].members, ["one"]);
-        drop(replacement);
+        let reopened = WorkspaceState::load(path.clone()).unwrap(); // 重启不依赖系统桌面身份。
+        assert_eq!(reopened.snapshot().unwrap().fences, before.fences);
+        assert!(reopened.snapshot().unwrap().interaction.selected_item_ids.is_empty());
+        drop(reopened);
         std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(backup).unwrap();
     }
 
     /// 验证环境观察失败时名称、布局和磁盘保持原状态，重试可整体提交。
@@ -2653,14 +2126,19 @@ mod tests
         let path = snapshot_path("component-layout"); // 当前测试使用的持久工作区文件。
         let snapshot_directory = path.with_extension("snapshots"); // 当前测试可能生成的自动快照目录。
         let default_component = ComponentInstanceSnapshot { instance_id: "official.local-clock.default".to_string(), component_id: "official.local-clock".to_string(), monitor_id: String::new(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 0.0, top: 0.0, width: 220.0, height: 116.0 }, state_version: 1, state: serde_json::json!({"format": "24-hour"}) }; // 组件运行时注册的官方默认实例。
-        let desktops = ["desktop-1".to_string()]; // 当前测试唯一的虚拟桌面身份。
-        let state = WorkspaceState::load_for_virtual_desktops_with_components(path.clone(), "desktop-1", &desktops, std::slice::from_ref(&default_component)).expect("包含官方组件的工作区应可启动");
+        let state = WorkspaceState::load_with_components(path.clone(), std::slice::from_ref(&default_component)).expect("包含官方组件的工作区应可启动");
         state.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0), monitor("DISPLAY2", false, 1920, 1.25)], &[], &[], &[]).expect("官方组件应可进入主显示器默认布局");
         state.apply_on_monitor(Some("DISPLAY2"), WorkspaceCommand::UpdateComponentBounds { instance_id: default_component.instance_id.clone(), bounds: WorkspaceRect { left: 140.0, top: 96.0, width: 240.0, height: 128.0 } }).expect("组件应可迁移到第二显示器");
         state.apply_on_monitor(Some("DISPLAY2"), WorkspaceCommand::UpdateComponentState { instance_id: default_component.instance_id.clone(), state_version: 1, state: serde_json::json!({"format": "12-hour"}) }).expect("组件版本化状态应可保存");
+        let undone = state.apply(WorkspaceCommand::UndoLayout).unwrap(); // 只撤销空间移动。
+        assert_eq!(undone.components[0].monitor_id, "DISPLAY1");
+        assert_eq!(undone.components[0].state["format"], "12-hour");
+        let redone = state.apply(WorkspaceCommand::RedoLayout).unwrap(); // 同一历史恢复位置，不覆盖私有状态。
+        assert_eq!(redone.components[0].monitor_id, "DISPLAY2");
+        assert_eq!(redone.components[0].state["format"], "12-hour");
         drop(state);
 
-        let restored = WorkspaceState::load_for_virtual_desktops_with_components(path.clone(), "desktop-1", &desktops, std::slice::from_ref(&default_component)).expect("组件布局应可从工作区文件恢复");
+        let restored = WorkspaceState::load_with_components(path.clone(), std::slice::from_ref(&default_component)).expect("组件布局应可从工作区文件恢复");
         let restored_snapshot = restored.snapshot().expect("恢复后的组件快照应可读取");
         assert_eq!(restored_snapshot.components[0].monitor_id, "DISPLAY2");
         assert_eq!(restored_snapshot.components[0].bounds.width, 240.0);
@@ -2719,19 +2197,19 @@ mod tests
         std::fs::remove_file(path).unwrap();
     }
 
-    /// 验证共享成员只存一份，空间表面经当前格式完整性校验后重建。
+    /// 验证围栏成员随唯一布局保存，并通过当前格式完整性校验。
     #[test]
-    fn current_shared_fence_store_round_trips()
+    fn current_fence_store_round_trips()
     {
         let path = snapshot_path("shared-fence-store"); // 本测试独占的当前格式备份。
         let state = workspace_state(path.clone()); // 创建默认无排序围栏的工作区。
         state.apply(WorkspaceCommand::CreateFence { title: "旧围栏".to_string(), bounds: WorkspaceRect { left: 0.0, top: 0.0, width: 320.0, height: 240.0 } }).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(); // 当前规范化备份载荷。
         assert!(!serde_json::to_string(&value).unwrap().contains("sortMode"));
-        assert!(value["payload"]["sharedFences"].is_array());
-        assert!(value["payload"]["layouts"][0]["layout"]["fences"][0].get("members").is_none());
-        let store = decode_workspace_store(value).unwrap(); // 当前格式校验并重建成员投影。
-        assert_eq!(store.payload.layouts[0].layout.fences[0].sort_mode, crate::contracts::FenceSortMode::None);
+        assert!(value["payload"].get("sharedFences").is_none());
+        assert_eq!(value["payload"]["layout"]["fences"][0]["members"], serde_json::json!([]));
+        let store = decode_workspace_store(value).unwrap(); // 当前格式校验并读取完整成员。
+        assert_eq!(store.payload.layout.fences[0].sort_mode, crate::contracts::FenceSortMode::None);
         drop(state);
         std::fs::remove_file(path).unwrap();
     }
@@ -3081,92 +2559,17 @@ mod tests
         std::fs::remove_file(path).expect("测试快照应可清理");
     }
 
-    /// 验证虚拟桌面布局、选择和焦点隔离，删除后归档并可绑定新身份恢复。
-    #[test]
-    fn virtual_desktop_layouts_are_isolated_archived_and_restored()
-    {
-        let path = snapshot_path("virtual-desktop-layouts"); // 当前测试使用的多布局持久化文件。
-        let desktop_ids = ["desktop-a".to_string(), "desktop-b".to_string()]; // Windows 初始活动虚拟桌面身份。
-        let state = WorkspaceState::load_for_virtual_desktops(path.clone(), "desktop-a", &desktop_ids).expect("多虚拟桌面工作区应可启动");
-        let monitors = [monitor("DISPLAY1", true, 0, 1.0)]; // 当前测试使用的单显示器环境。
-        let item_ids = ["first".to_string(), "second".to_string()]; // 每个桌面共享的完整 Shell 项目集合。
-        state.reconcile_virtual_desktops("desktop-a", &desktop_ids, &monitors, &item_ids).expect("初始虚拟桌面集合应可协调");
-        state.apply_on_monitor(Some("DISPLAY1"), WorkspaceCommand::CreateFence { title: "桌面 A".to_string(), bounds: WorkspaceRect { left: 80.0, top: 80.0, width: 320.0, height: 240.0 } }).expect("桌面 A 围栏应可创建");
-        state.apply_interaction_on_monitor("DISPLAY1", WorkspaceInteractionCommand::FocusItem { item_id: "first".to_string(), selection_mode: WorkspaceSelectionMode::Replace }).expect("桌面 A 选择应可建立");
-
-        let desktop_b = state.reconcile_virtual_desktops("desktop-b", &desktop_ids, &monitors, &item_ids).expect("切换到桌面 B 应激活独立布局");
-        assert_eq!(desktop_b.fences.len(), 1);
-        assert_eq!(desktop_b.fences[0].title, "桌面 A");
-        assert!(desktop_b.interaction.selected_item_ids.is_empty());
-        state.apply_on_monitor(Some("DISPLAY1"), WorkspaceCommand::CreateFence { title: "桌面 B".to_string(), bounds: WorkspaceRect { left: 160.0, top: 120.0, width: 360.0, height: 260.0 } }).expect("桌面 B 围栏应可创建");
-        state.apply_interaction_on_monitor("DISPLAY1", WorkspaceInteractionCommand::FocusItem { item_id: "second".to_string(), selection_mode: WorkspaceSelectionMode::Replace }).expect("桌面 B 选择应可建立");
-
-        let desktop_a = state.reconcile_virtual_desktops("desktop-a", &desktop_ids, &monitors, &item_ids).expect("切回桌面 A 应恢复独立状态");
-        assert_eq!(desktop_a.fences[0].title, "桌面 A");
-        assert_eq!(desktop_a.interaction.selected_item_ids, ["first"]);
-
-        state.reconcile_virtual_desktops("desktop-a", &["desktop-a".to_string()], &monitors, &item_ids).expect("删除桌面 B 后布局应进入归档");
-        let archive = state.layout_archives().expect("布局归档应可读取").into_iter().find(|archive| archive.source_virtual_desktop_id == "desktop-b").expect("桌面 B 布局应存在归档");
-        state.restore_layout_archive(&archive.archive_id, "desktop-c", &monitors, &item_ids).expect("布局归档应可绑定新桌面身份");
-        let desktop_c = state.reconcile_virtual_desktops("desktop-c", &["desktop-a".to_string(), "desktop-c".to_string()], &monitors, &item_ids).expect("新桌面身份应激活恢复布局");
-        assert_eq!(desktop_c.fences.len(), 2);
-        assert!(desktop_c.fences.iter().any(|fence| fence.title == "桌面 B"));
-        assert!(desktop_c.interaction.selected_item_ids.is_empty());
-
-        std::fs::remove_file(path).expect("测试快照应可清理");
-    }
-
-    /// 验证每个虚拟桌面拥有独立撤销历史。
-    #[test]
-    fn virtual_desktop_layout_history_is_independent()
-    {
-        let path = snapshot_path("virtual-desktop-history"); // 当前测试使用的多布局历史文件。
-        let desktop_ids = ["desktop-a".to_string(), "desktop-b".to_string()]; // 当前活动虚拟桌面身份。
-        let state = WorkspaceState::load_for_virtual_desktops(path.clone(), "desktop-a", &desktop_ids).expect("多布局历史工作区应可启动");
-        let monitors = [monitor("DISPLAY1", true, 0, 1.0)]; // 当前测试显示器。
-        state.reconcile_virtual_desktops("desktop-a", &desktop_ids, &monitors, &[]).expect("虚拟桌面集合应可初始化");
-        state.apply_on_monitor(Some("DISPLAY1"), WorkspaceCommand::CreateFence { title: "A".to_string(), bounds: WorkspaceRect { left: 80.0, top: 80.0, width: 320.0, height: 240.0 } }).expect("桌面 A 事务应可提交");
-        state.reconcile_virtual_desktops("desktop-b", &desktop_ids, &monitors, &[]).expect("应可切换到桌面 B");
-        state.apply_on_monitor(Some("DISPLAY1"), WorkspaceCommand::CreateFence { title: "B".to_string(), bounds: WorkspaceRect { left: 120.0, top: 100.0, width: 320.0, height: 240.0 } }).expect("桌面 B 事务应可提交");
-        let undone_b = state.apply_on_monitor(Some("DISPLAY1"), WorkspaceCommand::UndoLayout).expect("桌面 B 应撤销自身事务");
-        assert_eq!(undone_b.fences.len(), 1);
-        assert_eq!(undone_b.fences[0].title, "A");
-
-        state.reconcile_virtual_desktops("desktop-a", &desktop_ids, &monitors, &[]).expect("应可切回桌面 A");
-        assert_eq!(state.snapshot().expect("桌面 A 布局应可读取").fences[0].title, "A");
-        let undone_a = state.apply_on_monitor(Some("DISPLAY1"), WorkspaceCommand::UndoLayout).expect("桌面 A 应撤销自身事务");
-        assert!(undone_a.fences.is_empty());
-
-        std::fs::remove_file(path).expect("测试快照应可清理");
-    }
-
-    /// 验证删除布局归档只保留 30 天窗口内的记录。
-    #[test]
-    fn deleted_layout_archives_expire_after_thirty_days()
-    {
-        let now = 1_000_000; // 当前测试使用的固定 Unix 时间。
-        let mut archives = vec![WorkspaceLayoutArchive { archive_id: "expired".to_string(), source_virtual_desktop_id: "desktop-a".to_string(), archived_at_unix: now - LAYOUT_ARCHIVE_RETENTION_SECONDS - 1, expires_at_unix: now - 1, layout: Default::default() }, WorkspaceLayoutArchive { archive_id: "active".to_string(), source_virtual_desktop_id: "desktop-b".to_string(), archived_at_unix: now, expires_at_unix: now + LAYOUT_ARCHIVE_RETENTION_SECONDS, layout: Default::default() }]; // 当前包含过期和有效记录的布局归档集合。
-
-        purge_expired_archives(&mut archives, now);
-        assert_eq!(archives.len(), 1);
-        assert_eq!(archives[0].archive_id, "active");
-    }
-
     /// 验证当前备份格式拒绝被修改但未更新校验值的载荷。
     #[test]
     fn current_backup_rejects_tampered_payload()
     {
         let store = workspace_store_from_payload(PersistedWorkspacePayload {
-            tile_appearances: Default::default(), // 测试载荷使用默认外观。
-            shared_fences: Vec::new(),            // 测试不包含共享围栏。
-            current_virtual_desktop_id: "desktop-a".to_string(),
-            layouts: vec![PersistedVirtualDesktopLayout { virtual_desktop_id: "desktop-a".to_string(), layout: Default::default() }],
-            archives: Vec::new(),
+            layout: WorkspaceSnapshot::default(), // 唯一布局。
             explorer_layout_imported: true,
         })
         .expect("当前备份应可创建"); // 已计算完整性校验值的原始备份。
         let mut value = serde_json::to_value(store).expect("备份应可序列化"); // 等待模拟损坏的 JSON 载荷。
-        value["payload"]["layouts"][0]["layout"]["revision"] = serde_json::json!(9);
+        value["payload"]["layout"]["revision"] = serde_json::json!(9);
 
         let error = decode_workspace_store(value).expect_err("校验值未同步的备份应被拒绝");
 
@@ -3178,38 +2581,27 @@ mod tests
     #[test]
     fn legacy_workspace_formats_are_rejected()
     {
-        let value = serde_json::json!({
-            "storeVersion": 2,
-            "currentVirtualDesktopId": "desktop-a",
-            "layouts": [{
-                "virtualDesktopId": "desktop-a",
-                "layout": WorkspaceSnapshot::default()
-            }],
-            "archives": [],
-            "explorerLayoutImported": true
-        }); // Ticket 10 实际写入的旧多布局结构。
-
-        assert!(decode_workspace_store(value).is_err());
+        for version in 1..5
+        {
+            let value = serde_json::json!({"storeVersion": version}); // 所有旧版本直接拒绝。
+            assert!(decode_workspace_store(value).is_err());
+        }
         assert!(decode_workspace_store(serde_json::to_value(WorkspaceSnapshot::default()).unwrap()).is_err());
     }
 
-    /// 验证每个虚拟桌面的自动快照只保留最近 20 份。
+    /// 验证统一工作区的自动快照只保留最近 20 份。
     #[test]
-    fn automatic_snapshots_keep_the_latest_twenty_per_virtual_desktop()
+    fn automatic_snapshots_keep_the_latest_twenty()
     {
         let directory = snapshot_path("auto-snapshot-limit").with_extension("snapshots"); // 当前测试独占的自动快照目录。
         let store = workspace_store_from_payload(PersistedWorkspacePayload {
-            tile_appearances: Default::default(), // 测试载荷使用默认外观。
-            shared_fences: Vec::new(),            // 测试不包含共享围栏。
-            current_virtual_desktop_id: "desktop-a".to_string(),
-            layouts: vec![PersistedVirtualDesktopLayout { virtual_desktop_id: "desktop-a".to_string(), layout: Default::default() }],
-            archives: Vec::new(),
+            layout: WorkspaceSnapshot::default(), // 唯一布局。
             explorer_layout_imported: true,
         })
         .expect("自动快照载荷应可创建");
         for _ in 0..AUTO_SNAPSHOT_LIMIT + 3
         {
-            write_auto_snapshot(&directory, "desktop-a", &store).expect("自动快照应可写入");
+            write_auto_snapshot(&directory, &store).expect("自动快照应可写入");
         }
 
         let count = std::fs::read_dir(&directory).expect("自动快照目录应可读取").count();
@@ -3229,10 +2621,10 @@ mod tests
         state.write_manual_backup(&backup_path).expect("手动备份应可写入");
         let before = state.snapshot().expect("还原前工作区应可读取"); // 损坏还原必须保持的当前状态。
         let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&backup_path).expect("手动备份应可读取")).expect("手动备份应为 JSON");
-        value["payload"]["layouts"][0]["layout"]["revision"] = serde_json::json!(77);
+        value["payload"]["layout"]["revision"] = serde_json::json!(77);
         std::fs::write(&backup_path, serde_json::to_vec_pretty(&value).expect("损坏备份应可序列化")).expect("损坏备份应可写入");
 
-        let result = state.restore_backup(&backup_path, "default", &["default".to_string()], &[], &[monitor("DISPLAY1", true, 0, 1.0)], &["project".to_string()]);
+        let result = state.restore_backup(&backup_path, &[monitor("DISPLAY1", true, 0, 1.0)], &["project".to_string()]);
 
         assert_eq!(result.expect_err("损坏备份应被拒绝").code, "workspace-restore-failed");
         assert_eq!(state.snapshot().expect("失败后工作区应可读取"), before);

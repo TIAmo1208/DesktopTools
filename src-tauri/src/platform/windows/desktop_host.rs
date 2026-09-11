@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS, ICoreWebView2Controller3};
 use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{BI_RGB, BITMAPINFO, BITMAPINFOHEADER, ClientToScreen, CombineRgn, CreateCompatibleDC, CreateDIBSection, CreateRectRgn, DIB_RGB_COLORS, DeleteDC, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC, HGDIOBJ, HMONITOR, MONITORINFO, MONITORINFOEXW, RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW, RGN_OR, RedrawWindow, ScreenToClient, SelectObject, SetWindowRgn};
@@ -209,9 +209,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
         let monitor = monitor.clone(); // 释放坐标所属宿主的物理空间与 DPI。
         let accepted = std::cell::Cell::new(false); // Enter 对完整来源集合的接受性结果。
         let preferred_effect = std::cell::Cell::new(windows::Win32::System::Ole::DROPEFFECT_COPY); // 源首选效果或实际卷关系决定的默认值。
-        let source_desktop = std::cell::RefCell::new(None); // 会话只在进入时的虚拟桌面内有效。
         let internal_source = std::cell::Cell::new(false); // Enter 已核实的进程内 COM 身份。
-        let drag_environment = std::cell::Cell::new(0); // 外部会话也不能跨越虚拟桌面切换。
         let preview = std::cell::RefCell::new(None::<serde_json::Value>); // 复用已有跨宿主预览事件，文件来源仍由原生决定。
         let target = super::drop_target::create_drop_target(
             Some(target_window),
@@ -222,8 +220,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                 {
                     DropPhase::Enter(data, keys, point, effect) =>
                     {
-                        *source_desktop.borrow_mut() = app.state::<crate::workspace::WorkspaceState>().current_virtual_desktop_id().ok();
-                        drag_environment.set(super::drop_target::drag_environment_revision());
+                        crate::log_info!("拖放：原生进入，显示器={}，位置=({},{})", monitor.id, point.x, point.y);
                         internal_source.set(super::drop_target::source_drag_session(data).is_some());
                         accepted.set((internal_source.get() || super::drop_target::filesystem_drop(data)) && (keys & windows::Win32::System::SystemServices::MK_RBUTTON).0 == 0);
                         if !accepted.get()
@@ -236,7 +233,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                         {
                             preferred_effect.set(super::shell::default_drop_effect(data, &super::drop_target::filesystem_drop_items(data).unwrap_or_default()));
                         }
-                        let revision = app.state::<crate::workspace::WorkspaceState>().snapshot().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?.revision; // 原生要求页面确认相同布局版本。
+                        let revision = crate::app::desktop_drop::snapshot(&app).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?.revision; // 原生要求页面确认相同布局版本。
                         let payload = serde_json::json!({"session": format!("ole-{}", crate::tools::time::next_timeline_timestamp()), "sequence": 1, "revision": revision, "modifiers": keys.0, "source": "ole", "target": monitor.id, "phase": "move", "kind": "items", "itemIds": item_ids, "visuals": [], "origin": {"left": 0, "top": 0}, "pointer": {"left": (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, "top": (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor}}); // 原生坐标只用于预览，Drop 不等待页面回传。
                         let mut payload = payload;
                         payload["external"] = serde_json::json!(source_session.is_none());
@@ -261,14 +258,11 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                         super::drop_target::set_preview_session(payload["session"].as_str().expect("原生会话字符串"), true);
                         let _ = relay_workspace_drag(payload.clone());
                         *preview.borrow_mut() = Some(payload);
+                        crate::log_info!("拖放：原生进入处理完成，显示器={}", monitor.id);
                         Ok(super::drop_target::negotiated_effect(effect, keys, preferred_effect.get(), internal_source.get()))
                     }
                     DropPhase::Over(keys, point, effect) =>
                     {
-                        if app.state::<crate::workspace::WorkspaceState>().current_virtual_desktop_id().ok() != *source_desktop.borrow() || source_desktop.borrow().is_none() || drag_environment.get() != super::drop_target::drag_environment_revision()
-                        {
-                            accepted.set(false);
-                        }
                         if !accepted.get()
                         {
                             return Ok(DROPEFFECT_NONE);
@@ -276,7 +270,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                         if let Some(payload) = preview.borrow_mut().as_mut()
                         {
                             let pointer = serde_json::json!({"left": (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, "top": (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor}); // 当前工作区指针。
-                            let revision = serde_json::json!(app.state::<crate::workspace::WorkspaceState>().snapshot().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?.revision); // 当前领域版本。
+                            let revision = serde_json::json!(crate::app::desktop_drop::snapshot(&app).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?.revision); // 当前领域版本。
                             if payload["pointer"] != pointer || payload["revision"] != revision || payload["modifiers"] != serde_json::json!(keys.0)
                             {
                                 payload["sequence"] = serde_json::json!(payload["sequence"].as_u64().unwrap_or(0).saturating_add(1));
@@ -300,51 +294,29 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                     }
                     DropPhase::Drop(data, keys, point, mut effect) =>
                     {
-                        if app.state::<crate::workspace::WorkspaceState>().current_virtual_desktop_id().ok() != *source_desktop.borrow() || source_desktop.borrow().is_none() || drag_environment.get() != super::drop_target::drag_environment_revision()
-                        {
-                            accepted.set(false);
-                        }
                         if !accepted.get()
                         {
                             return Ok(DROPEFFECT_NONE);
                         }
                         if let Some(session) = super::drop_target::source_drag_session(data)
                         {
-                            let workspace = app.state::<crate::workspace::WorkspaceState>(); // 内部回落只访问布局，不请求正被 DoDragDrop 占用的 Shell STA。
-                            let snapshot = workspace.snapshot().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?; // 释放时的当前归属。
+                            let snapshot = crate::app::desktop_drop::snapshot(&app).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 应用层提供释放时布局版本。
                             let geometry = preview.borrow().as_ref().and_then(|payload| super::drop_target::confirmed_preview(payload["session"].as_str()?, payload["sequence"].as_u64()?, snapshot.revision, &monitor, point)); // 不同步等待页面，拒绝未确认或过期落点。
                             let Some(geometry) = geometry
                             else
                             {
                                 return Ok(DROPEFFECT_NONE);
                             };
-                            let regions = geometry.regions; // 原生根据已渲染且版本匹配的几何重新命中。
-                            let fence_id = drop_fence_at(point, &monitor, &regions, &snapshot); // 围栏归属与桌面空间落位使用同一个布局事务。
-                            let item_ids = session.item_ids.clone(); // 完整组一起提交，未知项目由领域事务拒绝。
-                            let before_item_id = fence_id.as_ref().and_then(|id| snapshot.fences.iter().find(|fence| &fence.id == id)).and_then(|fence| drop_before_item_at(point, &monitor, &regions, fence, &item_ids)); // 释放点原生解析手动插入后继。
-                            let desired = crate::contracts::WorkspacePoint { left: ((f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor).max(0.0), top: ((f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor).max(0.0) }; // 目标工作区的 DIP 释放点。
-                            let region = regions.iter().filter(|region| desired.left >= region.left && desired.left < region.left + region.width && desired.top >= region.top && desired.top < region.top + region.height).max_by_key(|region| region.priority); // 组件或过期围栏上方不能穿透投放到背景。
-                            if fence_id.is_none() && !region.is_some_and(|region| region.kind == "workspace-background" || (region.kind == "desktop-item" && snapshot.unclassified_items.iter().any(|item| item.stable_reference == region.id)))
+                            let source_positions = preview.borrow().as_ref().and_then(|payload| payload["visuals"].as_array()).map(|visuals| visuals.iter().filter_map(|visual| Some(crate::contracts::WorkspacePoint { left: visual["bounds"]["left"].as_f64()?, top: visual["bounds"]["top"].as_f64()? })).collect::<Vec<_>>()).unwrap_or_default(); // Enter 已冻结的真实来源排列，不使用旧桌面占位。
+                            let committed = crate::app::desktop_drop::commit_internal(&app, snapshot, crate::app::desktop_drop::DropInput { monitor_id: monitor.id.clone(), pointer: crate::contracts::WorkspacePoint { left: (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, top: (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor }, regions: geometry.regions, scrolls: geometry.fence_scrolls }, session.item_ids.clone(), &session.pointer_offset, keys.0 & windows::Win32::System::Ole::MK_ALT != 0, &source_positions).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 应用层只提交布局，原生会话保留独立完成标记。
+                            if committed
                             {
-                                return Ok(DROPEFFECT_NONE);
+                                session.layout_committed.store(true, std::sync::atomic::Ordering::Release);
+                                if let Some(payload) = preview.borrow_mut().as_mut()
+                                {
+                                    payload["committed"] = serde_json::json!(true);
+                                }
                             }
-                            let desired = crate::contracts::WorkspacePoint { left: (desired.left - session.pointer_offset.left).max(0.0), top: (desired.top - session.pointer_offset.top).max(0.0) }; // 命中使用指针，落位使用锚点表面左上。
-                            let placements = if fence_id.is_some()
-                            {
-                                Vec::new()
-                            }
-                            else
-                            {
-                                snapshot.grid_drop_placements_at(&item_ids, &monitor.id, desired, keys.0 & windows::Win32::System::Ole::MK_ALT != 0, drop_grid_insertion_at(point, &monitor, &regions, &item_ids).as_ref()).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?
-                            }; // 内部 Alt 自由定位，普通落点保留组内网格几何。
-                            let snapshot = workspace.apply_on_monitor_at_revision(Some(&monitor.id), crate::contracts::WorkspaceCommand::CommitItemDrag { anchor_item_id: item_ids[0].clone(), item_ids, placements, target_fence_id: fence_id, before_item_id, fence_scrolls: geometry.fence_scrolls }, Some(snapshot.revision)).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?;
-                            session.layout_committed.store(true, std::sync::atomic::Ordering::Release);
-                            if let Some(payload) = preview.borrow_mut().as_mut()
-                            {
-                                payload["committed"] = serde_json::json!(true);
-                            }
-                            let _ = app.state::<crate::shell::DesktopItemState>().clear_redo_history();
-                            let _ = app.emit(crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, &snapshot);
                             return Ok(DROPEFFECT_NONE);
                         }
                         if internal_source.get()
@@ -363,116 +335,43 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                             {
                                 return Ok(DROPEFFECT_NONE);
                             }; // 完整来源必须在释放时仍可解析。
-                            let workspace = app.state::<crate::workspace::WorkspaceState>();
                             let state = app.state::<crate::shell::DesktopItemState>();
-                            let snapshot = workspace.snapshot().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?;
+                            let snapshot = crate::app::desktop_drop::snapshot(&app).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?;
                             let geometry = preview.borrow().as_ref().and_then(|payload| super::drop_target::confirmed_preview(payload["session"].as_str()?, payload["sequence"].as_u64()?, snapshot.revision, &monitor, point));
                             let Some(geometry) = geometry
                             else
                             {
                                 return Ok(DROPEFFECT_NONE);
                             }; // 缺少当前渲染确认不开始文件传输。
-                            let fence_id = drop_fence_at(point, &monitor, &geometry.regions, &snapshot);
-                            let position = crate::contracts::WorkspacePoint { left: ((f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor).max(0.0), top: ((f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor).max(0.0) };
-                            let region = geometry.regions.iter().filter(|region| position.left >= region.left && position.left < region.left + region.width && position.top >= region.top && position.top < region.top + region.height).max_by_key(|region| region.priority);
-                            if fence_id.is_none() && !region.is_some_and(|region| region.kind == "workspace-background" || (region.kind == "desktop-item" && snapshot.unclassified_items.iter().any(|item| item.stable_reference == region.id)))
-                            {
-                                return Ok(DROPEFFECT_NONE);
-                            }
-                            let copy_all = keys.0 & windows::Win32::System::SystemServices::MK_CONTROL.0 != 0; // Ctrl 对已有项目和新来源都执行复制。
-                            let existing = sources.iter().filter(|id| !copy_all && snapshot.unclassified_items.iter().any(|item| &item.stable_reference == *id)).cloned().collect::<Vec<_>>();
-                            let transfers = sources.iter().filter(|id| !existing.contains(id)).cloned().collect::<Vec<_>>();
-                            let before_item_id = fence_id.as_ref().and_then(|id| snapshot.fences.iter().find(|fence| &fence.id == id)).and_then(|fence| drop_before_item_at(point, &monitor, &geometry.regions, fence, &existing));
-                            let insertion = if fence_id.is_none()
-                            {
-                                drop_grid_insertion_at(point, &monitor, &geometry.regions, &existing)
-                            }
+                            let Some(plan) = crate::app::desktop_drop::prepare_external(&app, snapshot, crate::app::desktop_drop::DropInput { monitor_id: monitor.id.clone(), pointer: crate::contracts::WorkspacePoint { left: (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, top: (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor }, regions: geometry.regions, scrolls: geometry.fence_scrolls }, sources, keys.0 & windows::Win32::System::SystemServices::MK_CONTROL.0 != 0).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?
                             else
                             {
-                                None
-                            }; // 桌面四向插入与围栏顺序互斥。
-                            let drop_target = crate::workspace::DropTarget { desktop_id: workspace.current_virtual_desktop_id().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?, monitor_id: monitor.id.clone(), revision: snapshot.revision, fence_id, before_item_id, position, free: false, insertion, scrolls: geometry.fence_scrolls };
-                            workspace.preflight_drop(&drop_target, &existing, transfers.len()).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?;
+                                return Ok(DROPEFFECT_NONE);
+                            }; // 应用层完成准确来源拆分与传输前预检。
+                            let has_transfers = !plan.transfers.is_empty(); // OLE 完成反馈只反映真实文件传输。
                             if let Some(payload) = preview.borrow_mut().as_mut()
                             {
                                 payload["phase"] = serde_json::json!("pending");
                                 let _ = relay_workspace_drag(payload.clone());
                             }
-                            let mut completed = if transfers.is_empty()
+                            let completed = if !has_transfers
                             {
                                 crate::contracts::ShellOperationResult { operation_id: 0, completed_at_unix_micros: 0, kind: crate::contracts::ShellOperationKind::Paste, aborted: false, operation_error: None, reversible: true, permanent: false, effect: None, items: Vec::new(), message: "已有桌面项目仅调整布局".into() }
                             }
                             else
                             {
-                                let result = state.begin_drop_transfer(data, effect, transfers.clone()).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?;
+                                let result = state.begin_drop_transfer(data, effect, plan.transfers.clone()).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?;
                                 super::drop_target::wait_transfer(result).unwrap_or_else(|error| crate::contracts::ShellOperationResult { operation_id: 0, completed_at_unix_micros: 0, kind: crate::contracts::ShellOperationKind::Paste, aborted: false, operation_error: Some(windows::Win32::Foundation::E_FAIL.0), reversible: false, permanent: false, effect: Some(if effect == DROPEFFECT_MOVE { "移动" } else { "复制" }.into()), items: Vec::new(), message: format!("文件结果无法完整确认：{error}") })
                             };
-                            let succeeded = completed.items.iter().any(|item| item.succeeded); // 只有文件实际成功才返回文件传输效果。
-                            let mut layout_change = None;
-                            let disposition = (|| -> Result<(), String> {
-                                let items = if transfers.is_empty() { state.snapshot() } else { state.refresh() }.map_err(|error| error.message)?;
-                                if !transfers.is_empty()
-                                {
-                                    let runtime = app.state::<std::sync::Arc<crate::host::DesktopHostRuntime>>();
-                                    let monitors = runtime.snapshot().map_err(|error| error.message)?.hosts.into_iter().map(|host| host.monitor).collect::<Vec<_>>();
-                                    let placement_monitor = drop_target.fence_id.as_ref().and_then(|id| snapshot.fences.iter().find(|fence| &fence.id == id)).map(|fence| &fence.monitor_id).unwrap_or(&drop_target.monitor_id);
-                                    let assignments = completed.items.iter().filter(|item| transfers.contains(&item.source_reference)).filter_map(|item| item.result_reference.as_ref()).filter(|id| !snapshot.unclassified_items.iter().any(|item| &item.stable_reference == *id)).map(|id| (id.clone(), placement_monitor.clone())).collect::<Vec<_>>(); // 只分配此次准确结果，不收走并发创建。
-                                    workspace.reconcile_environment(crate::workspace::WorkspaceEnvironment { transfer_assignments: true, monitors: &monitors, items: &items.items, assignments: &assignments, renames: &[] }).map_err(|error| error.message)?;
-                                }
-                                let mut ids = Vec::new(); // 保持来源相对顺序，合并结果身份只提交一次。
-                                if !completed.aborted
-                                {
-                                    for source in &sources
-                                    {
-                                        let result = if existing.contains(source)
-                                        {
-                                            Some(source.clone())
-                                        }
-                                        else
-                                        {
-                                            completed.items.iter().find(|item| &item.source_reference == source && item.succeeded).and_then(|item| item.result_reference.clone()).filter(|id| items.items.iter().any(|item| &item.stable_reference == id))
-                                        };
-                                        if let Some(id) = result
-                                        {
-                                            if !ids.contains(&id)
-                                            {
-                                                ids.push(id);
-                                            }
-                                        }
-                                    }
-                                } // 用户取消不提交已有归属，已完成文件保留在未归类。
-                                let final_snapshot = if ids.is_empty()
-                                {
-                                    workspace.snapshot().map_err(|error| error.message)?
-                                }
-                                else
-                                {
-                                    let (snapshot, change) = workspace.commit_external_drop(&drop_target, &ids, &existing).map_err(|error| error.message)?;
-                                    layout_change = Some(change);
-                                    if let Some(payload) = preview.borrow_mut().as_mut()
-                                    {
-                                        payload["committed"] = serde_json::json!(true);
-                                    }
-                                    snapshot
-                                };
-                                let _ = app.emit(crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, &items);
-                                let _ = app.emit(crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, &final_snapshot);
-                                Ok(())
-                            })();
-                            if let Err(error) = disposition
+                            let (succeeded, committed, result) = crate::app::desktop_drop::complete_external(&app, plan, completed); // 原生只交付文件事实，不解释布局结果归属。
+                            if committed
                             {
-                                completed.message.push_str(&format!("；文件保持实际状态，布局未提交：{error}"));
-                                crate::log_error!("拖放：{}", completed.message);
-                                if let Ok(items) = state.snapshot()
+                                if let Some(payload) = preview.borrow_mut().as_mut()
                                 {
-                                    let _ = app.emit(crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, &items);
-                                }
-                                if let Ok(snapshot) = workspace.snapshot()
-                                {
-                                    let _ = app.emit(crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, &snapshot);
+                                    payload["committed"] = serde_json::json!(true);
                                 }
                             }
-                            if effect == DROPEFFECT_MOVE && !transfers.is_empty()
+                            if effect == DROPEFFECT_MOVE && has_transfers
                             {
                                 let _ = super::shell::set_drop_effect(data, windows::Win32::UI::Shell::CFSTR_PERFORMEDDROPEFFECT, DROPEFFECT_NONE);
                                 if succeeded
@@ -480,14 +379,9 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                     let _ = super::shell::set_drop_effect(data, windows::Win32::UI::Shell::CFSTR_LOGICALPERFORMEDDROPEFFECT, DROPEFFECT_MOVE);
                                 }
                             }
-                            match state.record_drop_transfer(completed, layout_change)
+                            if let Some(result) = result
                             {
-                                Ok(result) =>
-                                {
-                                    crate::log_info!("拖放：{}", result.message);
-                                    let _ = relay_workspace_drag(serde_json::json!({"phase": "operation-result", "target": monitor.id, "result": result}));
-                                }
-                                Err(error) => crate::log_error!("拖放：记录结果失败：{}", error.message),
+                                let _ = relay_workspace_drag(serde_json::json!({"phase": "operation-result", "target": monitor.id, "result": result}));
                             }
                             return Ok(if succeeded && effect == DROPEFFECT_COPY { DROPEFFECT_COPY } else { DROPEFFECT_NONE });
                         }
@@ -501,13 +395,12 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                             payload["phase"] = serde_json::json!("end");
                             let _ = relay_workspace_drag(payload);
                         }
-                        source_desktop.borrow_mut().take();
                         internal_source.set(false);
                         Ok(DROPEFFECT_NONE)
                     }
                 }
             }),
-        ); // 宿主拥有 OLE 生命周期；文件与布局路由在此处理边界接入。
+        ); // 宿主拥有 OLE 生命周期与文件协议，布局业务由应用层组织。
         let _ = unsafe { RevokeDragDrop(target_window) };
         match unsafe { RegisterDragDrop(target_window, &target) }
         {
@@ -522,88 +415,6 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
     }
     crate::log_info!("Shell：宿主 OLE 投放目标已注册，窗口数量：{}", targets.len());
     Ok((targets, true))
-}
-
-/// 将屏幕释放坐标映射到当前宿主中实际存在的共享围栏。
-fn drop_fence_at(point: &windows::Win32::Foundation::POINTL, monitor: &DesktopHostMonitor, regions: &[HitRegion], snapshot: &crate::contracts::WorkspaceSnapshot) -> Option<String>
-{
-    let x = (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor; // 转为当前宿主 DIP。
-    let y = (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor; // 保留负屏幕坐标转换。
-    let region = regions.iter().filter(|region| x >= region.left && x < region.left + region.width && y >= region.top && y < region.top + region.height).max_by_key(|region| region.priority)?; // 与宿主一致选择顶层语义区域。
-    if region.kind == "fence"
-    {
-        snapshot.fences.iter().find(|fence| fence.id == region.id).map(|fence| fence.id.clone())
-    }
-    else if region.kind == "desktop-item"
-    {
-        snapshot.fences.iter().find(|fence| fence.members.contains(&region.id)).map(|fence| fence.id.clone())
-    }
-    else
-    {
-        None
-    }
-}
-
-/// 桌面项目按原型主导轴和中心死区确定四向插入，几何来自本次已渲染确认。
-fn drop_grid_insertion_at(point: &windows::Win32::Foundation::POINTL, monitor: &DesktopHostMonitor, regions: &[HitRegion], dragged: &[String]) -> Option<(String, String)>
-{
-    let x = (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor; // 屏幕物理坐标转目标 DIP。
-    let y = (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor;
-    let region = regions.iter().filter(|region| x >= region.left && x < region.left + region.width && y >= region.top && y < region.top + region.height).max_by_key(|region| region.priority)?;
-    if region.kind != "desktop-item" || dragged.contains(&region.id)
-    {
-        return None;
-    }
-    let dx = x - region.left - region.width / 2.0;
-    let dy = y - region.top - region.height / 2.0;
-    let direction = if dx.abs() >= dy.abs()
-    {
-        if dx.abs() <= region.width * 0.25
-        {
-            return None;
-        }
-        if dx < 0.0 { "left" } else { "right" }
-    }
-    else
-    {
-        if dy.abs() <= region.height * 0.25
-        {
-            return None;
-        }
-        if dy < 0.0 { "up" } else { "down" }
-    };
-    Some((region.id.clone(), direction.into()))
-}
-
-/// 按围栏布局轴解析当前可见成员的前后插入点。
-fn drop_before_item_at(point: &windows::Win32::Foundation::POINTL, monitor: &DesktopHostMonitor, regions: &[HitRegion], fence: &crate::contracts::FenceSnapshot, dragged: &[String]) -> Option<String>
-{
-    if fence.sort_mode != crate::contracts::FenceSortMode::None
-    {
-        return None;
-    }
-    let x = (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor; // 释放点工作区横坐标。
-    let y = (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor; // 释放点工作区纵坐标。
-    let region = regions.iter().filter(|region| x >= region.left && x < region.left + region.width && y >= region.top && y < region.top + region.height).max_by_key(|region| region.priority)?; // 只使用实际顶层可见目标。
-    if region.kind != "desktop-item" || dragged.contains(&region.id)
-    {
-        return None;
-    }
-    let members = fence.members.iter().filter(|id| !dragged.contains(id)).collect::<Vec<_>>(); // 插入次序先移除完整拖动组。
-    let index = members.iter().position(|id| **id == region.id)?; // 目标必须仍属于当前围栏。
-    let (distance, span) = if fence.layout_mode == crate::contracts::FenceLayoutMode::List
-    {
-        (y - region.top - region.height / 2.0, region.height)
-    }
-    else
-    {
-        (x - region.left - region.width / 2.0, region.width)
-    }; // 列表使用纵轴，平铺使用横轴。
-    if distance.abs() <= span * 0.25
-    {
-        return None;
-    }
-    members.get(index + usize::from(distance > 0.0)).map(|id| (*id).clone())
 }
 
 /// 判断两个 HWND 是否属于同一个 Explorer 进程。
@@ -1029,6 +840,17 @@ mod desktop_dev_tests
 {
     use super::{allowed_desktop_origin, desktop_page_url};
 
+    /// 完整围栏图像超过普通消息上限时，两层必须接受相同的有界载荷。
+    #[test]
+    fn tile_drag_payload_uses_shared_budget()
+    {
+        let payload = serde_json::json!({"phase": "move", "kind": "fence", "visuals": [{"content": "x".repeat(70000)}]}); // 超过旧 64 KB 门槛的围栏预览。
+        assert!(payload.to_string().len() > 65536);
+        assert!(payload.to_string().len() < super::drag_payload_limit(&payload));
+        assert_eq!(super::drag_payload_limit(&serde_json::json!({"kind": "items"})), 65536);
+        assert_eq!(super::drag_payload_limit(&serde_json::json!({"phase": "ole-preview"})), 1048576);
+    }
+
     /// 开发路径与原生命令来源独立，正式模式不接收开发来源。
     #[test]
     fn development_url_and_origin_are_scoped()
@@ -1154,6 +976,10 @@ pub fn reconcile_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, comman
     {
         if let Some(host) = retained.iter().find(|host| host.monitor.id == monitor.id)
         {
+            if unsafe { GetParent(raw_hwnd(host.hwnd)).unwrap_or_default() } != raw_hwnd(shell.explorer_host)
+            {
+                attach_host(host.hwnd, shell, monitor)?;
+            } // Win+D 可以迁移 Explorer 父窗口，仍有效的 WebView 与 OLE 生命周期不重建。
             result.push(host.clone());
             continue;
         }
@@ -1195,6 +1021,19 @@ pub fn reload_desktop_host(monitor_id: &str) -> Result<(), String>
 }
 
 /// 在宿主 UI 线程转发有界拖动消息；内容只作为 CustomEvent 数据，不插入 HTML。
+pub(crate) fn drag_payload_limit(payload: &serde_json::Value) -> usize
+{
+    if payload.get("phase").and_then(serde_json::Value::as_str) == Some("ole-preview") || payload.get("kind").and_then(serde_json::Value::as_str) == Some("fence")
+    {
+        1024 * 1024
+    }
+    else
+    {
+        65536
+    }
+}
+
+/// 在宿主线程转发通过同一大小限制的拖动消息。
 pub fn relay_workspace_drag(payload: serde_json::Value) -> Result<(), String>
 {
     if payload.get("phase").and_then(serde_json::Value::as_str) == Some("ole-preview")
@@ -1202,7 +1041,8 @@ pub fn relay_workspace_drag(payload: serde_json::Value) -> Result<(), String>
         return super::drop_target::publish_preview(serde_json::from_value(payload).map_err(|error| format!("拖放预览格式无效：{error}"))?);
     }
     let encoded = serde_json::to_string(&payload).map_err(|error| error.to_string())?; // 安全编码的事件数据。
-    if encoded.len() > 65536
+    let limit = drag_payload_limit(&payload); // 命令入口与实际转发共用同一个载荷预算。
+    if encoded.len() > limit
     {
         return Err("跨屏拖动消息过大".into());
     }
@@ -1408,33 +1248,6 @@ mod tests
     use crate::contracts::{DesktopHostMonitor, DesktopItem, DesktopItemAvailability, HitRegion};
     use std::collections::HashMap;
     use windows::Win32::Foundation::POINT;
-
-    /// 验证负坐标、工作区偏移、DPI、遮挡和失效成员不会误命中围栏。
-    #[test]
-    fn drop_fence_uses_physical_coordinates_and_current_membership()
-    {
-        let monitor = DesktopHostMonitor { id: "left".into(), name: "left".into(), primary: false, x: -1920, y: -1080, width: 1920, height: 1080, work_x: -1900, work_y: -1040, work_width: 1900, work_height: 1040, scale_factor: 2.0, dpi: 192 }; // 带任务栏偏移的负坐标显示器。
-        let mut snapshot: crate::contracts::WorkspaceSnapshot = serde_json::from_value(serde_json::json!({
-            "schemaVersion": 1, "revision": 0, "unclassifiedItems": [],
-            "fences": [{ "id": "fence", "title": "", "bounds": { "left": 0, "top": 0, "width": 200, "height": 200 }, "members": ["member"], "layoutMode": "tile", "scrollTop": 0, "collapsed": false, "lastExpandedHeight": 200, "zIndex": 1 }]
-        }))
-        .unwrap(); // 当前共享归属的最小快照。
-        let mut regions = vec![HitRegion { id: "fence".into(), kind: "fence".into(), left: 10.0, top: 20.0, width: 100.0, height: 100.0, priority: 1 }]; // 宿主发布的 DIP 围栏区域。
-        let point = windows::Win32::Foundation::POINTL { x: -1860, y: -980 }; // 对应工作区 DIP (20, 30)。
-        assert_eq!(super::drop_fence_at(&point, &monitor, &regions, &snapshot).as_deref(), Some("fence"));
-        assert_eq!(super::drop_fence_at(&windows::Win32::Foundation::POINTL { x: -1680, y: -980 }, &monitor, &regions, &snapshot), None);
-        regions.push(HitRegion { id: "member".into(), kind: "desktop-item".into(), priority: 2, ..regions[0].clone() });
-        assert_eq!(super::drop_before_item_at(&point, &monitor, &regions, &snapshot.fences[0], &[]).as_deref(), Some("member"));
-        assert_eq!(super::drop_before_item_at(&point, &monitor, &regions, &snapshot.fences[0], &["member".into()]), None);
-        assert_eq!(super::drop_fence_at(&point, &monitor, &regions, &snapshot).as_deref(), Some("fence"));
-        snapshot.fences[0].members.clear();
-        assert_eq!(super::drop_fence_at(&point, &monitor, &regions, &snapshot), None);
-        regions[1].kind = "component".into();
-        assert_eq!(super::drop_fence_at(&point, &monitor, &regions, &snapshot), None);
-        regions.pop();
-        snapshot.fences.clear();
-        assert_eq!(super::drop_fence_at(&point, &monitor, &regions, &snapshot), None);
-    }
 
     /// 验证透明桌面背景保留输入能力且不参与渲染像素门槛。
     #[test]

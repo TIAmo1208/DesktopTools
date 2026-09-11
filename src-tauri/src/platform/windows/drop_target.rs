@@ -75,22 +75,11 @@ pub(crate) fn confirmed_preview(session: &str, sequence: u64, revision: u64, mon
 
 /// 当前源会话由进程登记，不从外部数据格式或项目路径推断内部身份。
 static SOURCE_DRAG: std::sync::Mutex<Option<std::sync::Arc<SourceDragSession>>> = std::sync::Mutex::new(None);
-static DRAG_ENVIRONMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0); // 切回原桌面也不复活旧会话。
-
-/// 读取源与目标共用的虚拟桌面切换代数。
-pub(crate) fn drag_environment_revision() -> u64 { DRAG_ENVIRONMENT.load(std::sync::atomic::Ordering::Acquire) }
-
-/// 虚拟桌面切换立即失效尚未释放的全部拖放会话。
-pub(crate) fn invalidate_drag_sessions() { DRAG_ENVIRONMENT.fetch_add(1, std::sync::atomic::Ordering::AcqRel); }
-
-/// 源端消息循环据此返回明确取消，不触碰已释放后正在传输的文件。
-pub(crate) fn source_drag_cancelled() -> bool { SOURCE_DRAG.lock().map(|current| current.as_ref().is_some_and(|session| session.environment != drag_environment_revision())).unwrap_or(true) }
 
 /// 保持完整 Shell 数据对象身份及内部布局完成事实。
 pub(crate) struct SourceDragSession
 {
     pub pointer_offset: crate::contracts::WorkspacePoint, // 指针相对锚点表面的 DIP 偏移，跨屏保持。
-    environment: u64,                                     // 源登记时的切换代数。
     data: windows::core::AgileReference<IDataObject>,     // 在目标 apartment 重新解析真实 COM 身份。
     pub item_ids: Vec<String>,                            // 源端已经校验的完整选择，顺序以锚点开头。
     pub layout_committed: std::sync::atomic::AtomicBool,  // 内部完成不通过文件移动效果反馈。
@@ -102,7 +91,7 @@ pub(crate) struct SourceDragGuard(std::sync::Arc<SourceDragSession>);
 impl SourceDragGuard
 {
     /// 开始唯一源会话；登记失败时不能启动无法识别的内部回落。
-    pub(crate) fn register(data: &IDataObject, item_ids: &[String], pointer_offset: crate::contracts::WorkspacePoint, environment: u64) -> windows::core::Result<Self>
+    pub(crate) fn register(data: &IDataObject, item_ids: &[String], pointer_offset: crate::contracts::WorkspacePoint) -> windows::core::Result<Self>
     {
         if !pointer_offset.left.is_finite() || !pointer_offset.top.is_finite() || pointer_offset.left < 0.0 || pointer_offset.top < 0.0
         {
@@ -118,7 +107,7 @@ impl SourceDragGuard
         {
             return Err(windows::Win32::Foundation::E_UNEXPECTED.into());
         }
-        let session = std::sync::Arc::new(SourceDragSession { data, pointer_offset, environment, item_ids: item_ids.to_vec(), layout_committed: std::sync::atomic::AtomicBool::new(false) }); // 使用准备时的代数，交接期间切换也保持旧会话失效。
+        let session = std::sync::Arc::new(SourceDragSession { data, pointer_offset, item_ids: item_ids.to_vec(), layout_committed: std::sync::atomic::AtomicBool::new(false) }); // 完整数据对象在本次 OLE 会话内有效。
         *current = Some(session.clone());
         Ok(Self(session))
     }
@@ -147,10 +136,6 @@ pub(crate) fn source_drag_session(data: &IDataObject) -> Option<std::sync::Arc<S
 {
     use windows::core::Interface;
     let session = SOURCE_DRAG.lock().ok()?.clone()?; // COM 解析之前释放登记锁，避免重入死锁。
-    if session.environment != drag_environment_revision()
-    {
-        return None;
-    }
     let expected = session.data.resolve().ok()?.cast::<windows::core::IUnknown>().ok()?; // 目标 apartment 中的规范 IUnknown。
     let actual = data.cast::<windows::core::IUnknown>().ok()?; // OLE 回调实际给出的规范身份。
     (expected == actual).then_some(session)
@@ -471,8 +456,8 @@ mod tests
             let data: IDataObject = unsafe { item.BindToHandler(None, &BHID_DataObject) }.unwrap(); // 真实 Shell 数据对象。
             assert!(filesystem_drop(&data));
             let pointer_offset = crate::contracts::WorkspacePoint { left: 12.0, top: 24.0 }; // 指针偏移同样跟随可信源会话。
-            let session = SourceDragGuard::register(&data, &["source".to_string()], pointer_offset, drag_environment_revision()).unwrap(); // 真实源登记同时验证跨 STA 身份和内部反馈。
-            assert!(SourceDragGuard::register(&data, &["second".to_string()], pointer_offset, drag_environment_revision()).is_err());
+            let session = SourceDragGuard::register(&data, &["source".to_string()], pointer_offset).unwrap(); // 真实源登记同时验证跨 STA 身份和内部反馈。
+            assert!(SourceDragGuard::register(&data, &["second".to_string()], pointer_offset).is_err());
             let other_data: IDataObject = unsafe { item.BindToHandler(None, &BHID_DataObject) }.unwrap(); // 相同来源内容不能代替已登记 COM 身份。
             assert!(source_drag_session(&other_data).is_none());
             let agile = windows::core::AgileReference::new(&data).unwrap(); // 真实跨 apartment 代理。
@@ -494,11 +479,7 @@ mod tests
             assert_eq!(wait_transfer(receiver).unwrap_err(), "封送已验证");
             worker.join().unwrap();
             assert!(session.layout_committed());
-            assert!(!source_drag_cancelled());
-            invalidate_drag_sessions();
-            invalidate_drag_sessions(); // 切换后切回也必须保持旧源失效。
-            assert!(source_drag_cancelled());
-            assert!(source_drag_session(&data).is_none());
+            assert!(source_drag_session(&data).is_some());
             drop(session);
             assert!(source_drag_session(&data).is_none());
             let phases = Rc::new(RefCell::new(Vec::new())); // 验证每阶段只通知一次。

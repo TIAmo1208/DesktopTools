@@ -4,6 +4,7 @@ import type { DesktopItemSnapshot } from "../../contracts/desktopItem";
 import { usePreferences } from "../settings/PreferencesProvider";
 import { projectDesktopItems, type DesktopItemViewModel } from "./desktopItemViewModel";
 import "./DesktopItemGrid.css";
+import { registerDesktopItemImage } from "./desktopItemReadiness";
 
 /** 定义桌面项目网格接收的快照与错误状态。 */
 interface DesktopItemGridProps {
@@ -76,7 +77,7 @@ export const DesktopItemTile = ({
             onContextMenu={onItemContextMenu}
         >
             <div className="desktop-item__image" aria-hidden="true">
-                {item.imageSource && <img src={item.imageSource} alt="" draggable={false} />}
+                {item.imageSource && <img ref={registerDesktopItemImage} src={item.imageSource} alt="" draggable={false} />}
             </div>
             {renaming ? (
                 <input

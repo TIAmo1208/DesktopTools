@@ -113,7 +113,7 @@ pub struct ComponentRuntimeSnapshot
     pub revision: u64,
     /// 当前成功注册的全部官方组件清单。
     pub manifests: Vec<ComponentManifest>,
-    /// 当前活动虚拟桌面的实例注册结果。
+    /// 统一工作区的实例注册结果。
     pub instances: Vec<ComponentRegistrationSnapshot>,
     /// 不影响其他组件运行的清单加载失败集合。
     pub failures: Vec<ComponentRegistrationFailure>,

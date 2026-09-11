@@ -3,11 +3,10 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, State};
 
-use crate::contracts::{DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, DesktopItemSnapshot, VIRTUAL_DESKTOP_SNAPSHOT_CHANGED_EVENT, WORKSPACE_SNAPSHOT_CHANGED_EVENT, WorkspaceBackupSummary, WorkspaceCommand, WorkspaceError, WorkspaceHistoryKind, WorkspaceHistoryResult, WorkspaceInteractionCommand, WorkspaceRestoreResult, WorkspaceSnapshot};
+use crate::contracts::{DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, DesktopItemSnapshot, WORKSPACE_SNAPSHOT_CHANGED_EVENT, WorkspaceBackupSummary, WorkspaceCommand, WorkspaceError, WorkspaceHistoryKind, WorkspaceHistoryResult, WorkspaceInteractionCommand, WorkspaceRestoreResult, WorkspaceSnapshot};
 use crate::host::DesktopHostRuntime;
 use crate::platform::windows::desktop_item_monitor_assignments;
 use crate::shell::DesktopItemState;
-use crate::virtual_desktop::VirtualDesktopState;
 use crate::workspace::WorkspaceState;
 
 /// 返回当前不可变工作区快照。
@@ -48,7 +47,7 @@ pub async fn redo_workspace(app: AppHandle, workspace: State<'_, WorkspaceState>
 #[tauri::command]
 pub fn write_workspace_backup(workspace: State<'_, WorkspaceState>, path: String) -> Result<WorkspaceBackupSummary, WorkspaceError> { workspace.write_manual_backup(&PathBuf::from(path)) }
 
-/// 只读迁移并校验手动备份或自动快照。
+/// 只读校验当前格式的手动备份或自动快照。
 #[tauri::command]
 pub fn inspect_workspace_backup(workspace: State<'_, WorkspaceState>, path: String) -> Result<WorkspaceBackupSummary, WorkspaceError> { workspace.inspect_backup(&PathBuf::from(path)) }
 
@@ -56,22 +55,22 @@ pub fn inspect_workspace_backup(workspace: State<'_, WorkspaceState>, path: Stri
 #[tauri::command]
 pub fn list_workspace_auto_snapshots(workspace: State<'_, WorkspaceState>) -> Result<Vec<WorkspaceBackupSummary>, WorkspaceError> { workspace.auto_snapshot_summaries() }
 
-/// 补齐缺失虚拟桌面并事务式还原完整工作区备份。
+/// 事务式还原统一工作区备份。
 #[tauri::command]
-pub fn restore_workspace_backup(app: AppHandle, virtual_desktops: State<'_, VirtualDesktopState>, workspace: State<'_, WorkspaceState>, desktop_items: State<'_, DesktopItemState>, runtime: State<'_, Arc<DesktopHostRuntime>>, path: String) -> Result<WorkspaceRestoreResult, WorkspaceError> { execute_restore_workspace_backup(&app, &virtual_desktops, &workspace, &desktop_items, &runtime, path) }
+pub fn restore_workspace_backup(app: AppHandle, workspace: State<'_, WorkspaceState>, desktop_items: State<'_, DesktopItemState>, runtime: State<'_, Arc<DesktopHostRuntime>>, path: String) -> Result<WorkspaceRestoreResult, WorkspaceError> { execute_restore_workspace_backup(&app, &workspace, &desktop_items, &runtime, path) }
 
 /// 两种 transport 共用的命令执行与事件发布。
-pub(crate) fn execute_restore_workspace_backup(app: &AppHandle, virtual_desktops: &VirtualDesktopState, workspace: &WorkspaceState, desktop_items: &DesktopItemState, runtime: &DesktopHostRuntime, path: String) -> Result<WorkspaceRestoreResult, WorkspaceError>
+pub(crate) fn execute_restore_workspace_backup(app: &AppHandle, workspace: &WorkspaceState, desktop_items: &DesktopItemState, runtime: &DesktopHostRuntime, path: String) -> Result<WorkspaceRestoreResult, WorkspaceError>
 {
-    let result = virtual_desktops.restore_workspace_backup(&PathBuf::from(path), workspace, runtime, desktop_items)?; // Windows 桌面补齐和工作区原子替换均已完成的还原结果。
+    let monitors = runtime.snapshot().map_err(|error| WorkspaceError::restore_failed(&error.message))?.hosts.into_iter().map(|host| host.monitor).collect::<Vec<_>>(); // 当前逐屏环境。
+    let item_ids = desktop_items.snapshot().map_err(|error| WorkspaceError::restore_failed(&error.message))?.items.into_iter().map(|item| item.stable_reference).collect::<Vec<_>>(); // 当前可解析的 Shell 引用。
+    let result = workspace.restore_backup(&PathBuf::from(path), &monitors, &item_ids)?; // 工作区原子替换完成。
     desktop_items.clear_operation_history().map_err(|error| WorkspaceError::history_failed(&error.message))?;
-    let virtual_desktop_snapshot = virtual_desktops.snapshot(workspace).map_err(|error| WorkspaceError::restore_failed(&error.message))?; // 还原后的最终 Windows 虚拟桌面环境。
     app.emit(WORKSPACE_SNAPSHOT_CHANGED_EVENT, &result.snapshot).map_err(|error| WorkspaceError::restore_failed(&error))?;
-    app.emit(VIRTUAL_DESKTOP_SNAPSHOT_CHANGED_EVENT, virtual_desktop_snapshot).map_err(|error| WorkspaceError::restore_failed(&error))?;
     Ok(result)
 }
 
-/// 在当前虚拟桌面布局历史与共享 Shell 历史之间执行最近有效单元。
+/// 在统一布局历史与共享 Shell 历史之间执行最近有效单元。
 pub(crate) fn apply_workspace_history(app: &AppHandle, workspace: &WorkspaceState, desktop_items: &DesktopItemState, runtime: &DesktopHostRuntime, redo: bool) -> Result<WorkspaceHistoryResult, WorkspaceError>
 {
     let layout_time = workspace.latest_layout_history_time(redo)?; // 当前方向最近布局单元时间。

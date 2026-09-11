@@ -9,7 +9,7 @@ use windows::Win32::System::Ole::DROPEFFECT;
 use windows::core::AgileReference;
 
 use crate::contracts::{DesktopItem, DesktopItemAvailability, DesktopItemError, DesktopItemSnapshot, ShellOperationKind, ShellOperationResult};
-use crate::platform::windows::{NativeMenuCommand, NativeMenuTarget, ShellChangeEvent, ShellChangeWatcher, ShellCompensationAction, ShellMenuOwner, compensate_desktop_items, delete_desktop_items, enumerate_desktop_items, initialize_shell_apartment, open_desktop_items, paste_desktop_items, rename_desktop_item, set_desktop_item_clipboard, show_native_context_menu, start_desktop_item_drag, start_shell_change_watcher, uninitialize_shell_apartment};
+use crate::platform::windows::{NativeMenuCommand, NativeMenuTarget, ShellChangeEvent, ShellChangeWatcher, ShellCompensationAction, ShellMenuOwner, compensate_desktop_items, delete_desktop_items, enumerate_desktop_items, initialize_shell_apartment, open_desktop_items, paste_desktop_items, rename_desktop_item, set_desktop_item_clipboard, show_native_context_menu, start_shell_change_watcher, uninitialize_shell_apartment};
 
 /// 表示发送到专用 Shell STA 线程的请求。
 enum ShellRequest
@@ -71,13 +71,11 @@ enum ShellRequest
         effect: DROPEFFECT,                                  // 已协商的复制或移动效果。
         reply: Sender<Result<ShellOperationResult, String>>, // 宿主通过消息泵等待的结果通道。
     },
-    /// 使用 Shell IDataObject 启动系统 OLE 拖放。
-    Drag
+    /// 消费准备凭据并封送完整数据，真正拖放由接收输入的宿主 UI STA 执行。
+    TakePreparedDrag
     {
-        token: u64,                     // 原子消费的准备凭据。
-        pointer_offset: WorkspacePoint, // 指针相对锚点的 DIP 偏移。
-        /// 等待系统拖放结果的同步通道。
-        reply: SyncSender<Result<ShellOperationResult, String>>,
+        token: u64,                                           // 只能使用一次的准备凭据。
+        reply: SyncSender<Result<PreparedShellDrag, String>>, // 不在 Shell STA 等待拖放结束。
     },
     /// 使用新的 IFileOperation 执行统一时间线补偿。
     Compensate
@@ -106,6 +104,13 @@ enum ShellRequest
     },
     /// 关闭专用 Shell STA 线程。
     Shutdown,
+}
+
+/// 原子消费后的拖放输入，COM 引用必须在接收方 STA 重新解析。
+pub(crate) struct PreparedShellDrag
+{
+    pub data: AgileReference<IDataObject>, // 原始完整数据对象的合法封送引用。
+    pub references: Vec<String>,           // 与原数据对象一致的完整来源身份。
 }
 
 /// 持有专用 Shell STA 线程及其请求通道。
@@ -147,24 +152,42 @@ impl ShellStaRuntime
                     }
                 };
                 let _ = ready.send(Ok(()));
-                let mut prepared_drag: Option<(u64, u64, Vec<String>, IDataObject)> = None; // 当前唯一未消费准备，COM 对象始终留在所属 STA。
+                let mut prepared_drag: Option<(u64, Vec<String>, IDataObject)> = None; // 当前唯一未消费准备，COM 对象始终留在所属 STA。
                 let mut next_drag_token = 0_u64; // 当前进程内递增的准备凭据。
                 let mut transfers = Vec::<JoinHandle<()>>::new(); // 长文件操作使用独立 STA，菜单、打开和源拖动继续响应。
 
-                while let Ok(request) = receiver.recv()
+                'requests: loop
                 {
+                    use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT};
+                    let mut message = MSG::default(); // 空闲时也必须处理 Shell COM 回调与剪贴板消息。
+                    while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool()
+                    {
+                        if message.message == WM_QUIT
+                        {
+                            break 'requests;
+                        }
+                        unsafe {
+                            let _ = TranslateMessage(&message);
+                            DispatchMessageW(&message);
+                        }
+                    }
+                    let request = match receiver.recv_timeout(std::time::Duration::from_millis(10))
+                    {
+                        Ok(request) => request,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }; // 有限等待不会饿死 STA 的消息泵。
                     match request
                     {
                         ShellRequest::PrepareDrag { references, reply } =>
                         {
                             prepared_drag = None;
-                            let environment = crate::platform::windows::drop_target::drag_environment_revision(); // 准备过程也受桌面切换边界约束。
                             let result = match crate::platform::windows::desktop_data_object(windows::Win32::Foundation::HWND::default(), &references)
                             {
                                 Ok(data) =>
                                 {
                                     next_drag_token += 1;
-                                    prepared_drag = Some((next_drag_token, environment, references, data));
+                                    prepared_drag = Some((next_drag_token, references, data));
                                     use windows::Win32::UI::HiDpi::GetSystemMetricsForDpi;
                                     use windows::Win32::UI::WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG};
                                     Ok(Some(ShellDragPreparation { token: next_drag_token, threshold: WorkspacePoint { left: unsafe { GetSystemMetricsForDpi(SM_CXDRAG, 96) }.max(1) as f64, top: unsafe { GetSystemMetricsForDpi(SM_CYDRAG, 96) }.max(1) as f64 } }))
@@ -238,19 +261,12 @@ impl ShellStaRuntime
                                 }
                             }
                         }
-                        ShellRequest::Drag { token, pointer_offset, reply } =>
+                        ShellRequest::TakePreparedDrag { token, reply } =>
                         {
                             let result = if prepared_drag.as_ref().is_some_and(|prepared| prepared.0 == token)
                             {
-                                let (_, environment, references, data) = prepared_drag.take().expect("准备凭据已核实"); // 启动之前消费，不能重放。
-                                if environment == crate::platform::windows::drop_target::drag_environment_revision()
-                                {
-                                    start_desktop_item_drag(data, &references, pointer_offset, environment)
-                                }
-                                else
-                                {
-                                    Err("拖动准备因虚拟桌面切换失效".to_string())
-                                }
+                                let (_, references, data) = prepared_drag.take().expect("准备凭据已核实"); // 启动之前消费，不能重放。
+                                AgileReference::new(&data).map(|data| PreparedShellDrag { data, references }).map_err(|error| format!("封送源拖放数据失败：{error}"))
                             }
                             else
                             {
@@ -282,7 +298,9 @@ impl ShellStaRuntime
                         }
                         ShellRequest::ShowMenu { target, screen_x, screen_y, product_commands, reply } =>
                         {
+                            crate::log_info!("菜单：Shell STA 开始处理，位置=({screen_x},{screen_y})");
                             let _ = reply.send(show_native_context_menu(&mut menu_owner, target, screen_x, screen_y, &product_commands));
+                            crate::log_info!("菜单：Shell STA 处理结束");
                         }
                         ShellRequest::Shutdown => break,
                     }
@@ -352,11 +370,11 @@ impl ShellStaRuntime
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
-    /// 在专用 STA 线程启动系统 OLE 拖放。
-    fn drag(&self, token: u64, pointer_offset: WorkspacePoint) -> Result<ShellOperationResult, String>
+    /// 在所属 STA 原子消费凭据并建立可跨 apartment 解析的引用。
+    fn take_prepared_drag(&self, token: u64) -> Result<PreparedShellDrag, String>
     {
-        let (reply, response) = mpsc::sync_channel(0); // 等待系统 OLE 拖放结果的同步通道。
-        self.sender.send(ShellRequest::Drag { token, pointer_offset, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        let (reply, response) = mpsc::sync_channel(0); // 只等待准备，不占用整个拖放生命周期。
+        self.sender.send(ShellRequest::TakePreparedDrag { token, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
@@ -567,17 +585,8 @@ impl DesktopItemState
     /// 文件处理完成后登记可补偿事实，由宿主继续协调共享归属。
     pub(crate) fn record_drop_transfer(&self, result: ShellOperationResult, layout: Option<crate::workspace::DropLayoutChange>) -> Result<ShellOperationResult, DesktopItemError> { self.record_operation_with_layout(result, layout) }
 
-    /// 使用当前完整选择集合启动系统 OLE 拖放。
-    pub fn drag(&self, token: u64, pointer_offset: WorkspacePoint) -> Result<ShellOperationResult, DesktopItemError>
-    {
-        let mut result = self.runtime.drag(token, pointer_offset).map_err(|error| {
-            crate::log_error!("Shell：系统 OLE 拖放失败，错误：{error}");
-            DesktopItemError::shell_operation_failed(&error)
-        })?; // 系统目标协商后的最终拖放结果。
-        result.completed_at_unix_micros = crate::tools::time::next_timeline_timestamp();
-        crate::log_debug!("Shell：系统 OLE 拖放结束，凭据={}，效果={}，取消={}", token, result.effect.as_deref().unwrap_or("无"), u8::from(result.aborted));
-        Ok(result)
-    }
+    /// 向应用层交接完整源数据，Shell STA 继续泵送跨 apartment 调用。
+    pub(crate) fn take_prepared_drag(&self, token: u64) -> Result<PreparedShellDrag, DesktopItemError> { self.runtime.take_prepared_drag(token).map_err(|error| DesktopItemError::shell_operation_failed(&error)) }
 
     /// 完整选择不可用时保留内部拖动；仅成功准备才返回可启动凭据。
     pub fn prepare_drag(&self, item_ids: &[String]) -> Result<Option<ShellDragPreparation>, DesktopItemError>

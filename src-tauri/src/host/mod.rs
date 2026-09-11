@@ -230,6 +230,10 @@ impl DesktopHostRuntime
             // 等待前端证据写入的正式宿主状态。
             let mut data = self.data.lock().map_err(|_| DesktopHostError::state_unavailable())?;
             let context = host_context_mut(&mut data, &monitor_id)?; // 等待写入前端证据的逐屏上下文。
+            if context.host.hwnd != host.hwnd
+            {
+                return Ok(snapshot_from(&data));
+            } // 重建期间旧 HWND 的结果不能污染新宿主门槛。
             context.hit_regions = report.hit_regions;
             context.readiness.page = true;
             context.readiness.system_images = true;
@@ -303,25 +307,6 @@ impl DesktopHostRuntime
 
     /// 返回 Shell 变化协调是否需要等待当前拖动结束。
     pub fn is_input_drag_active(&self) -> bool { self.data.lock().map(|data| data.hosts.iter().any(|context| context.input_drag_active)).unwrap_or(false) }
-
-    /// 取消全部逐屏连续拖动并恢复最近完整命中图。
-    pub fn cancel_input_drags(&self) -> Result<DesktopHostSnapshot, DesktopHostError>
-    {
-        let hosts = {
-            let data = self.data.lock().map_err(|_| DesktopHostError::state_unavailable())?;
-            data.hosts.iter().filter(|context| context.input_drag_active).map(|context| (context.host.clone(), context.hit_regions.clone())).collect::<Vec<_>>()
-        }; // 当前需要恢复命中图的逐屏拖动宿主。
-        for (host, hit_regions) in hosts
-        {
-            apply_host_hit_regions(&host, hit_regions).map_err(|error| DesktopHostError::platform_failed(&error))?;
-        }
-        let mut data = self.data.lock().map_err(|_| DesktopHostError::state_unavailable())?;
-        for context in &mut data.hosts
-        {
-            context.input_drag_active = false;
-        }
-        Ok(snapshot_from(&data))
-    }
 
     /// 记录 React 项目点击回传，供正式宿主输入诊断使用。
     pub fn record_input_probe(&self, monitor_id: &str, item_id: &str) -> Result<DesktopHostSnapshot, DesktopHostError>
@@ -591,13 +576,15 @@ impl DesktopHostRuntime
     }
 
     /// 在 UI 线程按最新 Shell 和显示器状态完整重建逐屏宿主。
-    fn rebuild_environment(self: &Arc<Self>, app: &AppHandle, mut latest_shell: ShellDesktopState, latest_monitors: Vec<crate::contracts::DesktopHostMonitor>) -> Result<(), String>
+    fn rebuild_environment(self: &Arc<Self>, app: &AppHandle, _observed_shell: ShellDesktopState, latest_monitors: Vec<crate::contracts::DesktopHostMonitor>) -> Result<(), String>
     {
+        let mut latest_shell = discover_shell_desktop()?; // 主线程执行时重新发现，不能重建到排队期间已失效的 Win+D 中间父窗口。
         let (previous_shell, previous_monitors, original_visibility, was_committed) = {
             let data = self.data.lock().map_err(|_| "桌面宿主状态暂时不可用".to_string())?;
             (data.shell, data.hosts.iter().map(|context| context.host.monitor.clone()).collect::<Vec<_>>(), data.coordinator.original_items_visible, data.coordinator.is_committed())
         }; // 重建前用于分类变化和保留接管状态的环境快照。
         let shell_changed = shell_hosts_changed(previous_shell, latest_shell); // Explorer 桌面宿主身份是否变化。
+        let shell_replaced = previous_shell.def_view != latest_shell.def_view || previous_shell.list_view != latest_shell.list_view; // 父窗口迁移不等于 Explorer 视图被替换。
         let topology_changed = monitor_topology_changed(&previous_monitors, &latest_monitors); // 显示器持久身份或物理边界是否变化。
         latest_shell.original_items_visible = original_visibility;
         let command_handler: NativeCommandHandler = {
@@ -607,7 +594,7 @@ impl DesktopHostRuntime
         }; // 重建后全部 WebView2 共用的命令边界。
         let previous_hosts = {
             let data = self.data.lock().map_err(|_| "桌面宿主状态暂时不可用".to_string())?; // 复用前的原生宿主身份。
-            if shell_changed
+            if shell_replaced
             {
                 Vec::new()
             }
@@ -632,14 +619,14 @@ impl DesktopHostRuntime
             data.hosts = hosts
                 .into_iter()
                 .map(|host| {
-                    if let Some(index) = previous_contexts.iter().position(|context| !shell_changed && context.host.hwnd == host.hwnd && context.host.monitor == host.monitor)
+                    if let Some(index) = previous_contexts.iter().position(|context| !shell_replaced && context.host.hwnd == host.hwnd && context.host.monitor == host.monitor)
                     {
                         return previous_contexts.remove(index);
                     }
                     DesktopHostContext { host, readiness: DesktopHostReadiness { guardian: data.coordinator.guardian_ready, ..Default::default() }, hit_regions: Vec::new(), input_drag_active: false, last_renderer_heartbeat: Instant::now(), renderer_reload_requested_at: None }
                 })
                 .collect();
-            if shell_changed
+            if shell_replaced
             {
                 data.coordinator.phase = TakeoverPhase::Starting;
             }
@@ -648,7 +635,26 @@ impl DesktopHostRuntime
                 data.coordinator.phase = TakeoverPhase::Committed;
             }
         }
-        crate::log_info!("宿主：显示环境已重建，Shell变化={}，拓扑变化={}，DPI或工作区变化={}，宿主数量={}，保留接管={}", u8::from(shell_changed), u8::from(topology_changed), u8::from(!shell_changed && !topology_changed), latest_monitors.len(), u8::from(was_committed && !shell_changed));
+        if was_committed && !shell_replaced
+        {
+            set_desktop_items_visible(latest_shell.def_view, false);
+            let contexts = {
+                let data = self.data.lock().map_err(|_| "桌面宿主状态暂时不可用".to_string())?; // 不持锁调用窗口 API。
+                data.hosts.iter().map(|context| (context.host.clone(), context.hit_regions.clone())).collect::<Vec<_>>()
+            };
+            for (host, regions) in contexts
+            {
+                if !regions.is_empty()
+                {
+                    apply_host_hit_regions(&host, regions)?;
+                }
+                if !set_host_visible(host.hwnd, true)
+                {
+                    return Err("恢复迁移后的桌面宿主显示失败".into());
+                }
+            }
+        } // 同一 Explorer 视图迁移后恢复裁剪与层级，无需重新接管或重置前端门槛。
+        crate::log_info!("宿主：显示环境已协调，Shell变化={}，视图替换={}，拓扑变化={}，宿主数量={}，保留接管={}", u8::from(shell_changed), u8::from(shell_replaced), u8::from(topology_changed), latest_monitors.len(), u8::from(was_committed && !shell_replaced));
         let item_snapshot = crate::commands::refresh_desktop_item_snapshot(&app.state::<crate::shell::DesktopItemState>()).map_err(|error| error.message)?; // 环境重建后重新枚举的 Shell 最终项目集合。
         let workspace_snapshot = crate::commands::reconcile_workspace_environment(&app.state::<crate::workspace::WorkspaceState>(), self, &item_snapshot, shell_changed || topology_changed, &[]).map_err(|error| error.message)?; // 当前环境变化协调后的逐屏工作区快照。
         let _ = app.emit(crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, &item_snapshot);
@@ -716,6 +722,10 @@ impl DesktopHostRuntime
         let committed = host_hidden && explorer_hidden && host_shown && hit_map_applied;
         // 等待提交接管结果的正式宿主状态。
         let mut data = self.data.lock().map_err(|_| DesktopHostError::state_unavailable())?;
+        if shell_hosts_changed(data.shell, shell) || hosts.iter().any(|(host, _)| !data.hosts.iter().any(|context| context.host.hwnd == host.hwnd))
+        {
+            return Ok(snapshot_from(&data));
+        } // Win+D 或 Explorer 重建后的迟到提交不能将当前宿主标记为失败。
         if committed
         {
             data.coordinator.mark_committed();

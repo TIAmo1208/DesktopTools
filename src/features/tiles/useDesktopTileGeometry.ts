@@ -5,6 +5,7 @@ import type { WorkspaceRect } from "../../contracts/workspace";
 import { moveFence, resizeFence, snapFenceEdges, type FenceResizeDirection } from "../fences/fenceGeometry";
 import { clientPointToPhysical, monitorAtPhysicalPoint, physicalPointToMonitorDip } from "../workspace/interaction/workspaceDrag";
 import { publishCrossMonitorDrag, resolveCrossMonitorDrop, type CrossMonitorDrag } from "../workspace/interaction/crossMonitorDrag";
+import { captureTileDragVisual, createTileDragPreview } from "./tileDragPreview";
 
 /** 公共几何交互使用内容的最小尺寸与领域提交入口。 */
 interface DesktopTileGeometryOptions {
@@ -40,6 +41,9 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
         const pointerId = event.pointerId; // 当前交互唯一指针。
         const startPointer = { x: event.clientX, y: event.clientY }; // 当前客户区起点。
         const start = { ...options.bounds }; // 取消恢复的完整权威边界。
+        const content = direction ? undefined : captureTileDragVisual(element); // 移动冻结当前帧，缩放保留真实组件的响应式布局。
+        const frozen = content ? createTileDragPreview(content) : undefined; // 缩放不复制计算后的固定轨道和内容尺寸。
+        const originalOpacity = element.style.opacity; // 跨屏隐藏源表面，结束时恢复。
         const session = crypto.randomUUID(); // 所有宿主共享的预览身份。
         const targets = [...document.querySelectorAll<HTMLElement>(".desktop-tile[data-hit-id]")]
             .filter((other) => other !== element)
@@ -93,10 +97,16 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
             return;
         }
         element.dataset.geometryActive = "true";
+        if (frozen) {
+            Object.assign(frozen.style, { position: "fixed", pointerEvents: "none", zIndex: "20000" });
+            element.parentElement?.append(frozen);
+            element.style.opacity = "0";
+            element.dataset.crossDragHidden = "true";
+        }
 
         /** 直接更新临时 DOM，保持正在播放的内容实例不变。 */
         const render = (rect: WorkspaceRect) => {
-            Object.assign(element.style, {
+            Object.assign((frozen ?? element).style, {
                 left: `${rect.left}px`,
                 top: `${rect.top}px`,
                 width: `${rect.width}px`,
@@ -121,20 +131,24 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                     options.minimum,
                 );
             render(preview);
-            if (!direction && options.currentMonitor) {
+            if (frozen && options.currentMonitor) {
                 const physical = clientPointToPhysical({ x: moveEvent.clientX, y: moveEvent.clientY }, options.currentMonitor); // Windows 物理指针。
                 const target = monitorAtPhysicalPoint(physical, options.monitors); // 当前目标显示器。
                 if (target) {
+                    const remote = target.id !== options.currentMonitor.id; // 同一格子只在指针所在屏幕呈现。
+                    frozen.style.opacity = remote ? "0" : originalOpacity || "1"; // opacity 作用于整个子树，子节点显式 visibility 不能穿透。
                     cross = {
                         session,
                         source: options.currentMonitor.id,
                         target: target.id,
                         kind: "fence",
+                        snap: options.snap,
+                        minimum: options.minimum,
                         itemIds: [],
                         pointer: physicalPointToMonitorDip(physical, target),
                         origin: { left: startPointer.x, top: startPointer.y },
                         delta: { left: delta.x, top: delta.y },
-                        visuals: [{ title: options.title, bounds: { ...start, height: options.collapsed ? 28 : start.height } }],
+                        visuals: [{ title: options.title, content, bounds: { ...start, height: options.collapsed ? 28 : start.height } }],
                     };
                     void publishCrossMonitorDrag(cross, "move").catch(options.onFailure);
                 }
@@ -154,6 +168,9 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
             window.removeEventListener("blur", handleCancel);
             if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
             if (!commit) {
+                element.style.opacity = originalOpacity;
+                frozen?.remove();
+                delete element.dataset.crossDragHidden;
                 if (cross) void publishCrossMonitorDrag(cross, "end").catch(options.onFailure);
                 render(start);
                 void options.onEndInputDrag().catch(options.onFailure);
@@ -170,7 +187,11 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                       options.currentMonitor,
                   )
                 : undefined; // 使用未截断指针计算目标归属。
-            const monitor = center ? monitorAtPhysicalPoint(center, options.monitors) : options.currentMonitor; // 释放目的屏。
+            const releasePointer =
+                !direction && options.currentMonitor && release
+                    ? clientPointToPhysical({ x: release.clientX, y: release.clientY }, options.currentMonitor)
+                    : center; // 与预览一样使用指针确定目标屏，不用格子中心切换归属。
+            const monitor = releasePointer ? monitorAtPhysicalPoint(releasePointer, options.monitors) : options.currentMonitor; // 释放目的屏。
             const targetCenter = center && monitor ? physicalPointToMonitorDip(center, monitor) : undefined; // 目标 DIP 中心。
             const viewport = monitor
                 ? { width: monitor.workWidth / monitor.scaleFactor, height: monitor.workHeight / monitor.scaleFactor }
@@ -196,6 +217,8 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                             source: options.currentMonitor.id,
                             target: monitor.id,
                             kind: "fence",
+                            snap: options.snap,
+                            minimum: options.minimum,
                             visuals: [],
                             itemIds: [],
                             pointer: targetCenter ?? { left: target.left, top: target.top },
@@ -241,6 +264,9 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                     render(start);
                     if (!abandoned) options.onFailure(error);
                 } finally {
+                    element.style.opacity = originalOpacity;
+                    frozen?.remove();
+                    delete element.dataset.crossDragHidden;
                     cancel.current = undefined;
                     window.removeEventListener("keydown", handlePendingKey);
                     window.removeEventListener("blur", handlePendingCancel);

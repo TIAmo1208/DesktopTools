@@ -5,7 +5,7 @@ import type { HitRegion } from "../../../contracts/desktopHost.ts";
 export const collectHitRegions = (): HitRegion[] =>
     projectHitRegions(
         [...document.querySelectorAll<HTMLElement>("[data-hit-id]")]
-            .filter((element) => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden")
+            .filter((element) => !element.closest('[data-cross-drag-hidden="true"]') && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden")
             .map((element) => {
                 const bounds = element.getBoundingClientRect(); // 当前语义对象 CSS 像素边界。
                 const surface = element.closest<HTMLElement>(".desktop-tile, .desktop-tile-menu") ?? element; // 控件所属的真实公共表面。
@@ -46,12 +46,13 @@ export const projectHitRegions = (
 
 /** 将权威工作区投影到单个显示器，不改变全局选择和持久归属。 */
 export const projectWorkspaceSurface = (snapshot: WorkspaceSnapshot | undefined, monitorId: string | undefined): WorkspaceSnapshot | undefined => {
-    if (!snapshot || !monitorId) return snapshot;
+    if (!snapshot || !monitorId) return undefined;
     const fences = snapshot.fences
         .filter((fence) => (fence.projectionMonitorId ?? fence.monitorId) === monitorId)
         .map((fence) => ({ ...fence, bounds: fence.projectionMonitorId === monitorId && fence.projectionBounds ? fence.projectionBounds : fence.bounds })); // 当前显示器可见的持久或临时投射围栏。
+    const memberIds = new Set(snapshot.fences.flatMap((fence) => fence.members)); // 归属来自完整工作区，不能把其他屏幕围栏成员重新呈现为桌面项目。
     const unclassifiedItems = snapshot.unclassifiedItems
-        .filter((item) => (item.projectionMonitorId ?? item.monitorId) === monitorId)
+        .filter((item) => !memberIds.has(item.stableReference) && (item.projectionMonitorId ?? item.monitorId) === monitorId)
         .map((item) => ({
             ...item,
             position: item.projectionMonitorId === monitorId && item.projectionPosition ? item.projectionPosition : item.position,

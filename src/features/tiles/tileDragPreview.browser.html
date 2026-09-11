@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>跨屏格子预览回归检查</title>
+<body><main class="fence-workspace" id="fixture"></main><pre id="result">RUNNING</pre>
+<script type="module">
+import React from "react";
+import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
+import { DesktopTileBase } from "./DesktopTileBase.tsx";
+import { DesktopTileHeader } from "./DesktopTileHeader.tsx";
+import { DesktopTileViewport } from "./DesktopTileViewport.tsx";
+import { captureTileDragVisual, createTileDragPreview } from "./tileDragPreview.ts";
+import { collectHitRegions } from "../workspace/surface/workspaceSurfaceProjection.ts";
+import "../../styles/global.css";
+import "../fences/FenceWorkspace.css";
+const h = React.createElement; // 实际公共格子组件，内容使用固定时钟文本。
+const assert = (condition, message) => { if (!condition) throw new Error(message); }; // 浏览器 DOM 与几何断言。
+try {
+    const root = createRoot(document.getElementById("fixture")); // 单一测试表面。
+    flushSync(() => root.render(h(DesktopTileBase, { onResize() {}, "data-hit-id": "clock", "data-hit-kind": "component", style: { left: 10, top: 10, width: 240, height: 180 } },
+        h(DesktopTileHeader, { title: "本地时间", editing: false, onRenameEnd() {}, onRename: async () => {} }),
+        h(DesktopTileViewport, { className: "official-component__content" }, h("time", { style: { display: "block", alignSelf: "center", justifySelf: "center", fontVariantNumeric: "tabular-nums" } }, "16:23:20")))));
+    const source = document.querySelector(".desktop-tile"); // 与正式格子相同的 DOM 及 CSS。
+    const viewport = source.querySelector(".desktop-tile-viewport"); // 实际可滚动视口。
+    viewport.scrollTop = 40;
+    const visual = captureTileDragVisual(source); // 源屏捕获后通过 JSON 往返模拟跨窗口。
+    const copy = createTileDragPreview(JSON.parse(JSON.stringify(visual))); // 目标屏重建。
+    Object.assign(copy.style, { position: "fixed", left: "300px", top: "10px" });
+    document.getElementById("fixture").append(copy);
+    await Promise.resolve();
+    assert(copy.textContent.includes("本地时间") && copy.textContent.includes("16:23:20"), "标题或时钟内容丢失");
+    source.querySelector("time").textContent = "16:23:21";
+    assert(copy.textContent.includes("16:23:20") && !copy.textContent.includes("16:23:21"), "拖动帧随源内容刷新");
+    assert(copy.getBoundingClientRect().width === source.getBoundingClientRect().width, "格子宽度改变");
+    assert(getComputedStyle(copy.querySelector("time")).alignSelf === "center" && getComputedStyle(copy.querySelector("time")).justifySelf === "center", "静态帧丢失时钟自对齐");
+    const sourceTime = source.querySelector("time").getBoundingClientRect();
+    const copyTime = copy.querySelector("time").getBoundingClientRect();
+    assert(Math.abs((copyTime.left - copy.getBoundingClientRect().left) - (sourceTime.left - source.getBoundingClientRect().left)) < 1, "静态帧时钟水平位置变化");
+    assert(Math.abs((copyTime.top - copy.getBoundingClientRect().top) - (sourceTime.top - source.getBoundingClientRect().top)) < 1, "静态帧时钟垂直位置变化");
+    copy.style.opacity = "0";
+    assert(getComputedStyle(copy).opacity === "0", "跨屏源副本未整体透明");
+    assert(copy.inert && !copy.querySelector("[data-hit-id],[data-item-id]"), "副本变成第二份交互映射");
+    source.dataset.crossDragHidden = "true";
+    assert(!collectHitRegions().some(region => region.id === "clock"), "源格子仍参与命中");
+    let rejected = false; // 接收端拒绝可执行标签。
+    try { createTileDragPreview({ tag: "script", text: "alert(1)" }); } catch { rejected = true; }
+    assert(rejected, "非法标签未拒绝");
+    document.getElementById("result").textContent = "PASS：完整内容、尺寸、惰性副本、源命中排除及标签校验";
+} catch (error) { document.getElementById("result").textContent = "FAIL：" + error.stack; }
+</script></body></html>

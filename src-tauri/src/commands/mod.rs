@@ -5,7 +5,6 @@ mod desktop_item;
 pub use desktop_item::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
 pub mod music;
 pub mod settings;
-mod virtual_desktop;
 mod workspace;
 mod workspace_menu;
 pub use music::{execute_music_action, get_current_music_session};
@@ -57,7 +56,6 @@ use crate::component_runtime::ComponentRuntimeState;
 use crate::contracts::{ComponentCapability, DesktopHostError, FrontendHostReadiness, HitRegion, WorkspaceCommand, WorkspaceContextMenuTarget, WorkspaceInteractionCommand};
 use crate::host::DesktopHostRuntime;
 use crate::shell::DesktopItemState;
-use crate::virtual_desktop::VirtualDesktopState;
 use crate::workspace::WorkspaceState;
 
 pub use application::{get_application_snapshot, set_application_status};
@@ -65,7 +63,6 @@ pub use component::{get_component_runtime_snapshot, invoke_component_capability}
 pub use desktop_host::{begin_desktop_host_input_drag, end_desktop_host_input_drag, exit_desktop_tools, get_desktop_host_snapshot, publish_desktop_host_readiness, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, update_desktop_host_hit_map};
 pub(crate) use desktop_item::refresh_desktop_item_snapshot;
 pub use desktop_item::{delete_desktop_items, get_desktop_item_snapshot, open_desktop_items, paste_desktop_items, rename_desktop_item, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag};
-pub use virtual_desktop::{create_virtual_desktop, delete_virtual_desktop, get_virtual_desktop_snapshot, restore_virtual_desktop_archive};
 pub(crate) use workspace::reconcile_workspace_environment;
 pub use workspace::{apply_workspace_command, apply_workspace_interaction, get_workspace_snapshot, inspect_workspace_backup, list_workspace_auto_snapshots, redo_workspace, restore_workspace_backup, undo_workspace, write_workspace_backup};
 
@@ -85,10 +82,15 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         "relay_workspace_drag" =>
         {
             let payload: Value = command_argument(&arguments, "payload", "跨屏拖动参数无效").map_err(serialize_error)?; // 仅允许有界对象消息。
-            let maximum_bytes = if payload.get("phase").and_then(Value::as_str) == Some("ole-preview") { 1048576 } else { 65536 }; // 完整命中图比单次移动事件大，仍限制总载荷。
+            let maximum_bytes = crate::platform::windows::drag_payload_limit(&payload); // 完整格子与几何确认在两层使用同一预算。
             if !payload.is_object() || payload.to_string().len() > maximum_bytes
             {
                 return Err(serialize_error(DesktopHostError::invalid_readiness("跨屏拖动消息无效")));
+            }
+            if payload.get("phase").and_then(Value::as_str) == Some("ole-preview")
+            {
+                // 渲染确认只更新受锁保护的几何数据，不排到正在运行 DoDragDrop 的 UI 事件队列后面。
+                return crate::platform::windows::relay_workspace_drag(payload).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error))).and_then(serialize_result);
             }
             app.run_on_main_thread(move || {
                 if let Err(error) = crate::platform::windows::relay_workspace_drag(payload)
@@ -142,7 +144,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         {
             let token = command_argument(&arguments, "token", "拖动凭据无效").map_err(serialize_error)?; // 单次启动凭据。
             let pointer_offset = command_argument(&arguments, "pointerOffset", "拖动锚点偏移无效").map_err(serialize_error)?; // 源表面 DIP 偏移。
-            app.state::<DesktopItemState>().drag(token, pointer_offset).map_err(serialize_error).and_then(serialize_result)
+            desktop_item::execute_start_desktop_item_drag(app, &app.state::<DesktopItemState>(), token, pointer_offset).map_err(serialize_error).and_then(serialize_result)
         }
         "show_workspace_context_menu" =>
         {
@@ -166,23 +168,10 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         "restore_workspace_backup" =>
         {
             let path: String = command_argument(&arguments, "path", "命令参数无效").map_err(serialize_error)?; // 已解码的 path。
-            workspace::execute_restore_workspace_backup(app, &app.state::<VirtualDesktopState>(), &app.state::<WorkspaceState>(), &app.state::<DesktopItemState>(), runtime, path).map_err(serialize_error).and_then(serialize_result)
+            workspace::execute_restore_workspace_backup(app, &app.state::<WorkspaceState>(), &app.state::<DesktopItemState>(), runtime, path).map_err(serialize_error).and_then(serialize_result)
         }
         "undo_workspace" => workspace::apply_workspace_history(app, &app.state::<WorkspaceState>(), &app.state::<DesktopItemState>(), runtime, false).map_err(serialize_error).and_then(serialize_result),
         "redo_workspace" => workspace::apply_workspace_history(app, &app.state::<WorkspaceState>(), &app.state::<DesktopItemState>(), runtime, true).map_err(serialize_error).and_then(serialize_result),
-        "get_virtual_desktop_snapshot" => app.state::<VirtualDesktopState>().snapshot(&app.state::<WorkspaceState>()).map_err(serialize_error).and_then(serialize_result),
-        "create_virtual_desktop" => virtual_desktop::execute_create_virtual_desktop(app, &app.state::<VirtualDesktopState>(), &app.state::<WorkspaceState>(), runtime, &app.state::<DesktopItemState>()).map_err(serialize_error).and_then(serialize_result),
-        "delete_virtual_desktop" =>
-        {
-            let desktop_id: String = command_argument(&arguments, "desktopId", "命令参数无效").map_err(serialize_error)?; // 已解码的 desktopId。
-            let fallback_id: String = command_argument(&arguments, "fallbackId", "命令参数无效").map_err(serialize_error)?; // 已解码的 fallbackId。
-            virtual_desktop::execute_delete_virtual_desktop(app, &app.state::<VirtualDesktopState>(), &app.state::<WorkspaceState>(), runtime, &app.state::<DesktopItemState>(), desktop_id, fallback_id).map_err(serialize_error).and_then(serialize_result)
-        }
-        "restore_virtual_desktop_archive" =>
-        {
-            let archive_id: String = command_argument(&arguments, "archiveId", "命令参数无效").map_err(serialize_error)?; // 已解码的 archiveId。
-            virtual_desktop::execute_restore_virtual_desktop_archive(app, &app.state::<VirtualDesktopState>(), &app.state::<WorkspaceState>(), runtime, &app.state::<DesktopItemState>(), archive_id).map_err(serialize_error).and_then(serialize_result)
-        }
         "apply_workspace_command" =>
         {
             let monitor_id: String = command_argument(&arguments, "monitorId", "命令参数无效").map_err(serialize_error)?; // 已解码的 monitorId。

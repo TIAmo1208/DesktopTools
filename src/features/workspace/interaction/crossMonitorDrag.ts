@@ -1,8 +1,10 @@
 import { invokeRuntime } from "../../../bridge/runtime";
 import type { WorkspacePoint, WorkspaceRect } from "../../../contracts/workspace";
+import type { TileDragVisual } from "../../tiles/tileDragPreview";
 
 /** 跨屏预览的语义项目，禁止传输或执行 HTML。 */
 export interface DragVisual {
+    content?: TileDragVisual; // 格子当前已渲染内容的只读快照。
     itemId?: string; // 使用目标页已有的 Shell 快照绘制。
     title?: string; // 围栏标题。
     bounds: WorkspaceRect; // 源屏 DIP 边界。
@@ -20,6 +22,8 @@ export interface CrossMonitorDrag {
     visuals: DragVisual[]; // 本次预览对象。
     itemIds: string[]; // 原子提交的完整拖动集合。
     committed?: boolean; // 成功提交后保留目标滚动，否则恢复临时状态。
+    snap?: boolean; // 源格子当前吸附设置。
+    minimum?: { width: number; height: number }; // 源内容有效最小尺寸。
 }
 
 /** 目标屏使用实际滚动 DOM 计算出的投放结果。 */
@@ -29,6 +33,15 @@ export interface CrossMonitorDrop {
     fenceId?: string; // 可接收项目的围栏。
     beforeItemId?: string | null; // 目标插入后继。
     scrollTop?: number; // 自动滚动后的最终位置。
+}
+
+/** 原生与跨屏消息共用的预览输入，序号与修订仅用于原生几何确认。 */
+export interface CrossMonitorPreviewEvent extends CrossMonitorDrag {
+    phase: string; // 当前会话阶段。
+    sequence?: number; // 原生指针序号。
+    revision?: number; // 工作区版本。
+    modifiers?: number; // 原生修饰键。
+    external?: boolean; // 外部来源决定复制占位规则。
 }
 
 let activeDrag: CrossMonitorDrag | undefined; // 当前页面拥有的最新拖动，静止时仍需保持目标预览。
