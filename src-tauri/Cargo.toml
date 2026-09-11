@@ -8,7 +8,8 @@ default-run = "desktop-tools"
 
 [lib]
 name = "desktop_tools_lib"
-crate-type = ["lib", "cdylib", "staticlib"]
+# Windows 主程序和 guardian 仅消费 Rust 库，不生成 C ABI 库产物。
+crate-type = ["lib"]
 
 [[bin]]
 name = "desktop-tools"
@@ -47,7 +48,6 @@ windows = { version = "0.61.3", features = [
   "Win32_System_Memory",
   "Win32_System_Ole",
   "Win32_System_Registry",
-  "Win32_System_Registry",
   "Win32_System_SystemServices",
   "Win32_System_Threading",
   "Win32_UI_HiDpi",
@@ -60,3 +60,10 @@ windows-core = "0.61.2"
 wry = { version = "0.55.1", default-features = false, features = ["protocol"] }
 
 [dev-dependencies]
+
+# 保留函数与行号定位，减少开发产物；需要完整变量调试时临时覆盖为 2。
+[profile.dev]
+debug = 1
+
+[profile.test]
+debug = 1
