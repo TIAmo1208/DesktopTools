@@ -1,0 +1,211 @@
+/* 门户只拥有导航与文件内容，表面由公共格子绘制。 */
+.folder-portal {
+    display: grid;
+    grid-template-rows: 28px minmax(0, 1fr);
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    padding: 1px;
+    color: var(--fence-text);
+    font: var(--interface-font-size) var(--interface-font);
+}
+
+/* 门户导航按钮的命中尺寸。 */
+.folder-portal button {
+    min-height: 24px;
+    padding: 2px 6px;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+}
+.folder-portal button:hover:not(:disabled) {
+    background: rgb(255 255 255 / 14%);
+}
+.folder-portal button:focus-visible {
+    outline: 2px solid var(--fence-focus-border);
+    outline-offset: 1px;
+}
+.folder-portal button:disabled {
+    opacity: 0.48;
+}
+
+/* 折叠式面包屑和导航按钮。 */
+.folder-portal__breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    overflow: hidden;
+    padding: 2px 4px;
+}
+.folder-portal__breadcrumb ol {
+    display: flex;
+    min-width: 0;
+    margin: 0;
+    padding: 0 0 0 4px;
+    overflow: hidden;
+    list-style: none;
+    color: var(--fence-text);
+    font-size: 12px;
+}
+.folder-portal__breadcrumb li {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    white-space: nowrap;
+}
+.folder-portal__breadcrumb-separator {
+    margin: 0 4px;
+    opacity: 0.7;
+}
+.folder-portal__breadcrumb li span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 面包屑祖先节点使用紧凑链接，当前节点保持静态文本。 */
+.folder-portal__breadcrumb li button {
+    min-height: 20px;
+    padding: 0 2px;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+}
+
+/* 折叠省略号的中间层级下拉菜单。 */
+.folder-portal__breadcrumb-collapse {
+    position: relative;
+    display: inline-flex;
+}
+.folder-portal__breadcrumb-menu {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 2px);
+    left: 0;
+    min-width: 120px;
+    margin: 0;
+    padding: 4px;
+    border: 1px solid var(--fence-border);
+    border-radius: 4px;
+    color: var(--fence-text);
+    background: var(--fence-surface);
+    list-style: none;
+    box-shadow: 2px 3px 8px rgb(0 0 0 / 24%);
+}
+.folder-portal__breadcrumb-menu li + li {
+    margin-top: 2px;
+}
+.folder-portal__breadcrumb-menu li + li::before {
+    content: none;
+}
+.folder-portal__breadcrumb-menu button {
+    width: 100%;
+    text-align: left;
+}
+
+/* 返回和上一级图标保持 16px 命中尺寸。 */
+.folder-portal__breadcrumb > button svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+}
+
+/* 门户内容滚动区和空、加载、异常状态。 */
+.folder-portal__content {
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    padding: 8px;
+    outline: none;
+}
+.folder-portal__state {
+    margin: 28px 8px;
+    color: var(--fence-text);
+}
+.folder-portal__state--error {
+    color: var(--color-error);
+}
+
+/* 列表布局使用紧凑固定行高和系统选择态。 */
+.folder-portal__items {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.folder-portal__items li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+    padding: 4px 6px;
+    border: 1px solid transparent;
+    border-radius: 3px;
+}
+.folder-portal__items li:hover {
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+.folder-portal__items li.is-selected {
+    border-color: color-mix(in srgb, var(--color-accent) 70%, white);
+    background: color-mix(in srgb, var(--color-accent) 32%, transparent);
+}
+
+/* 平铺布局复用围栏项目步进。 */
+/* 原位命名使用项目所在行的剩余空间，错误不占据内容轨道。 */
+.folder-portal__rename {
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+    color: inherit;
+    background: var(--fence-surface);
+    border: 1px solid var(--fence-focus-border);
+    font: inherit;
+}
+
+.folder-portal__icon {
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+    border: 1px solid currentColor;
+}
+
+.folder-portal__icon--folder {
+    height: 12px;
+    margin-top: 3px;
+    color: #e8bd62;
+    background: #f5d68a;
+}
+
+.folder-portal__icon--file {
+    color: #a7b5bb;
+    background: #f5f8f9;
+}
+
+.folder-portal--tile .folder-portal__items {
+    grid-template-columns: repeat(auto-fill, minmax(68px, 1fr));
+    gap: 8px 6px;
+}
+.folder-portal--tile .folder-portal__items li {
+    display: grid;
+    grid-template-rows: 48px minmax(0, auto);
+    justify-items: center;
+    align-content: start;
+    min-height: 90px;
+    padding: 4px;
+    text-align: center;
+}
+.folder-portal--tile .folder-portal__items li > span:first-child {
+    flex-basis: 48px;
+    width: 48px;
+    height: 48px;
+    margin: 0;
+}

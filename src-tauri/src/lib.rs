@@ -27,7 +27,10 @@ pub fn run()
 {
     if let Err(error) = tools::log::init(tools::log::LogConfig::default())
     {
-        eprintln!("日志系统初始化失败：{error}");
+        if cfg!(debug_assertions)
+        {
+            eprintln!("日志系统初始化失败：{error}");
+        }
     }
     let (initial_menu_action, _instance_guard) = match app::desktop_menu::prepare_startup()
     {
@@ -71,6 +74,13 @@ pub fn run()
             get_application_snapshot,
             get_desktop_host_snapshot,
             get_desktop_item_snapshot,
+            commands::folder_portal::get_folder_portal_snapshot,
+            commands::folder_portal::open_folder_portal_path,
+            commands::folder_portal::delete_folder_portal_items,
+            commands::folder_portal::set_folder_portal_clipboard,
+            commands::folder_portal::paste_folder_portal_items,
+            commands::folder_portal::show_folder_portal_menu,
+            commands::folder_portal::rename_folder_portal_item,
             get_component_runtime_snapshot,
             invoke_component_capability,
             get_current_music_session,

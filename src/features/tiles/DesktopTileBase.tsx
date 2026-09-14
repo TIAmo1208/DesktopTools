@@ -132,7 +132,7 @@ export const DesktopTileBase = ({
     const commonItems: DesktopTileMenuItem[] =
         headerPresent && onAppearanceChange
             ? [
-                  { label: "重命名", onSelect: onRenameStart },
+                  ...(onRenameStart ? [{ label: "重命名", onSelect: onRenameStart }] : []),
                   {
                       label: "标题显示方式",
                       children: [

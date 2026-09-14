@@ -27,6 +27,7 @@ pub(super) fn choose_workspace_menu(snapshot: &WorkspaceSnapshot, monitor: &Desk
     const DISSOLVE_FENCE: u32 = 0x7803;
     /// 在菜单锚点创建围栏命令编号。
     const CREATE_FENCE: u32 = 0x7804;
+    const CREATE_FOLDER_PORTAL: u32 = 0x7808;
     /// 当前工作区已经持续启用的编辑布局命令编号。
     const EDIT_LAYOUT: u32 = 0x7805;
     /// 重新枚举 Shell 项目并协调工作区命令编号。
@@ -88,7 +89,7 @@ pub(super) fn choose_workspace_menu(snapshot: &WorkspaceSnapshot, monitor: &Desk
                 Some(fence_id),
             )
         }
-        WorkspaceContextMenuTarget::Background => (NativeMenuTarget::Background, vec![NativeMenuCommand { id: CREATE_FENCE, label: "新建围栏".to_string(), enabled: true }, NativeMenuCommand { id: EDIT_LAYOUT, label: "编辑布局".to_string(), enabled: true }, NativeMenuCommand { id: REFRESH_ITEMS, label: "刷新桌面项目".to_string(), enabled: true }, NativeMenuCommand { id: OPEN_SETTINGS, label: "打开设置".to_string(), enabled: false }], Vec::new(), None),
+        WorkspaceContextMenuTarget::Background => (NativeMenuTarget::Background, vec![NativeMenuCommand { id: CREATE_FENCE, label: "新建围栏".to_string(), enabled: true }, NativeMenuCommand { id: CREATE_FOLDER_PORTAL, label: "新建文件夹门户".to_string(), enabled: true }, NativeMenuCommand { id: EDIT_LAYOUT, label: "编辑布局".to_string(), enabled: true }, NativeMenuCommand { id: REFRESH_ITEMS, label: "刷新桌面项目".to_string(), enabled: true }, NativeMenuCommand { id: OPEN_SETTINGS, label: "打开设置".to_string(), enabled: false }], Vec::new(), None),
     };
     // 原生菜单关闭后返回的可选产品命令编号。
     let enabled = product_commands.iter().filter(|command| command.enabled).map(|command| command.id).collect::<Vec<_>>(); // 本次菜单允许的动作。

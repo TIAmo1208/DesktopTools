@@ -70,6 +70,15 @@ export const FeatureSettings = ({
                             onChange={(checked) => onPreferences({ componentSnap: checked })}
                         />
                     </div>
+                    <div className="feature-settings__row">
+                        <span>文件夹门户</span>
+                        <SettingsSwitch
+                            label="文件夹门户"
+                            checked={preferences?.folderPortalEnabled ?? true}
+                            disabled={unavailable}
+                            onChange={(checked) => onPreferences({ folderPortalEnabled: checked })}
+                        />
+                    </div>
                 </>
             ) : detail === "clock" ? (
                 <>

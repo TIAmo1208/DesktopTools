@@ -59,6 +59,7 @@ export interface ApplicationPreferences {
     debugShowDetails: boolean; // 显示详细状态。
     componentSnap: boolean; // 功能格子边缘对齐。
     interfaceAnimations: boolean; // 界面装饰动画偏好，实际启用还需满足系统动态效果设置。
+    folderPortalEnabled: boolean; // 文件夹门户功能入口显隐。
 }
 
 /** 设置页读取的真实应用和 Windows 状态。 */
@@ -104,6 +105,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         debugShowDetails: true,
         componentSnap: true,
         interfaceAnimations: true,
+        folderPortalEnabled: true,
     }; // 旧配置默认行为。
     for (const key of Object.keys(features) as (keyof typeof features)[]) {
         if (candidate[key] === undefined) continue;

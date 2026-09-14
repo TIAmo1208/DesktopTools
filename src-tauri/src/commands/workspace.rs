@@ -21,7 +21,7 @@ pub fn apply_workspace_command(app: AppHandle, state: State<'_, WorkspaceState>,
 pub(crate) fn execute_apply_workspace_command(app: &AppHandle, state: &WorkspaceState, desktop_items: &DesktopItemState, runtime: &DesktopHostRuntime, monitor_id: String, command: WorkspaceCommand) -> Result<WorkspaceSnapshot, WorkspaceError>
 {
     let before_revision = state.snapshot()?.revision; // 判断布局命令是否真正创建新统一时间线分支的修订号。
-    let history_command = matches!(&command, WorkspaceCommand::UndoLayout | WorkspaceCommand::RedoLayout | WorkspaceCommand::SetTileAppearance { .. } | WorkspaceCommand::RenameFence { .. } | WorkspaceCommand::SetFenceAutoExpand { .. } | WorkspaceCommand::SetFenceCollapsed { .. }); // 外观和历史命令不创建新的 Shell 重做分支。
+    let history_command = matches!(&command, WorkspaceCommand::SetFolderPortalAppearance { .. } | WorkspaceCommand::UndoLayout | WorkspaceCommand::RedoLayout | WorkspaceCommand::SetTileAppearance { .. } | WorkspaceCommand::RenameFence { .. } | WorkspaceCommand::SetFenceAutoExpand { .. } | WorkspaceCommand::SetFenceCollapsed { .. }); // 外观和历史命令不创建新的 Shell 重做分支。
     // 已原子持久化的下一工作区快照。
     let snapshot = apply_workspace_state_command(state, runtime, &monitor_id, command)?;
     if !history_command && snapshot.revision != before_revision

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 
 import type { DesktopItemSnapshot } from "../../contracts/desktopItem";
 import fenceLayoutListIcon from "../../../resources/fence-layout-list.svg?raw";
@@ -39,6 +39,7 @@ import type { TileAppearance, TileAppearanceChange } from "../../contracts/tile"
 
 /** 围栏工作区接收的权威快照与命令边界。 */
 interface FenceWorkspaceProps {
+    children?: ReactNode; // 共享工作区主题与命中图的附加内容。
     desktopItems?: DesktopItemSnapshot;
     workspace?: WorkspaceSnapshot;
     completeWorkspace?: WorkspaceSnapshot;
@@ -217,8 +218,12 @@ const FencePanel = ({
             onAppearanceChange={handleAppearance}
             sortItems={sortItems}
             menuItems={[
-                { label: "排序方式", children: sortItems },
-                { label: "解除围栏", onSelect: () => void onCommand({ type: "dissolve-fence", fenceId: fence.id }).catch(() => undefined) },
+                { label: "排序方式", separatorBefore: true, children: sortItems },
+                {
+                    label: "解除围栏",
+                    separatorBefore: true,
+                    onSelect: () => void onCommand({ type: "dissolve-fence", fenceId: fence.id }).catch(() => undefined),
+                },
             ]}
             onResize={(event, direction) => void beginGeometry(event, direction)}
             onKeyDown={handleGeometryKey}
@@ -348,6 +353,7 @@ const FencePanel = ({
 
 /** 呈现正式透明宿主中的未归类区域与全部围栏。 */
 export const FenceWorkspace = ({
+    children,
     desktopItems,
     workspace,
     completeWorkspace,
@@ -505,6 +511,7 @@ export const FenceWorkspace = ({
             onContextMenu={handleWorkspaceContextMenu}
         >
             <MessageNotificationHost />
+            {children}
 
             <ul className="fence-workspace__unclassified" aria-label="未归类区域" onPointerDown={handleWorkspacePointerDown}>
                 {unclassifiedItems.map((item) => {

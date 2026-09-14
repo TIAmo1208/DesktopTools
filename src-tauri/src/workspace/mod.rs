@@ -436,7 +436,7 @@ impl WorkspaceState
             return self.restore_layout_history(true).map(|result| result.snapshot);
         }
         // 围栏滚动由拖动事务或当前滚动位置直接提交，不形成独立撤销单元。
-        let records_history = !matches!(&command, WorkspaceCommand::SetFenceScroll { .. } | WorkspaceCommand::UpdateComponentState { .. } | WorkspaceCommand::SetTileAppearance { .. } | WorkspaceCommand::RenameFence { .. } | WorkspaceCommand::SetFenceAutoExpand { .. } | WorkspaceCommand::SetFenceCollapsed { .. });
+        let records_history = !matches!(&command, WorkspaceCommand::SetFolderPortalAppearance { .. } | WorkspaceCommand::SetFenceScroll { .. } | WorkspaceCommand::UpdateComponentState { .. } | WorkspaceCommand::SetTileAppearance { .. } | WorkspaceCommand::RenameFence { .. } | WorkspaceCommand::SetFenceAutoExpand { .. } | WorkspaceCommand::SetFenceCollapsed { .. });
         // 等待事务提交的当前工作区快照。
         let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?;
         if expected_revision.is_some_and(|revision| revision != current.revision)
@@ -513,6 +513,13 @@ impl WorkspaceState
             }
         }
         appearance::project(&mut target);
+        for portal in &mut target.folder_portals
+        {
+            if let Some(active) = current.folder_portals.iter().find(|active| active.id == portal.id)
+            {
+                portal.appearance = active.appearance.clone();
+            }
+        }
         reflow_grid_items(&mut target, &current.monitor_grids)?;
         let (mut next, restored_count, changed_count) = merge_layout_history_target(target, &current); // 保留外部新增项目并排除已离开工作区的历史引用。
         // 撤销和重做期间需要保留的当前围栏滚动位置。
@@ -892,7 +899,7 @@ fn default_workspace_snapshot(default_components: &[ComponentInstanceSnapshot]) 
 impl Default for WorkspaceSnapshot
 {
     /// 创建当前版本的空工作区布局。
-    fn default() -> Self { Self { tile_appearances: Default::default(), schema_version: WORKSPACE_SCHEMA_VERSION, revision: 0, grid: WorkspaceGrid::default(), monitor_grids: Vec::new(), fences: Vec::new(), unclassified_items: Vec::new(), components: Vec::new(), interaction: WorkspaceInteractionSnapshot::default() } }
+    fn default() -> Self { Self { folder_portals: Vec::new(), tile_appearances: Default::default(), schema_version: WORKSPACE_SCHEMA_VERSION, revision: 0, grid: WorkspaceGrid::default(), monitor_grids: Vec::new(), fences: Vec::new(), unclassified_items: Vec::new(), components: Vec::new(), interaction: WorkspaceInteractionSnapshot::default() } }
 }
 
 /// 实现工作区快照内部的布局事务和完整性校验。
@@ -1294,6 +1301,58 @@ impl WorkspaceSnapshot
     {
         match command
         {
+            WorkspaceCommand::SetFolderPortalAppearance { portal_id, change } =>
+            {
+                use crate::contracts::TileAppearanceChange;
+                let portal = self.folder_portals.iter_mut().find(|portal| portal.id == portal_id).ok_or_else(|| WorkspaceError::invalid_command("门户不存在"))?; // 仅更新指定实例外观。
+                match change
+                {
+                    TileAppearanceChange::Title(_) => return Err(WorkspaceError::invalid_command("门户标题由绑定目录决定")),
+                    TileAppearanceChange::TitleMode(mode) => portal.appearance.title_mode = mode,
+                    TileAppearanceChange::ButtonMode(mode) =>
+                    {
+                        if portal.appearance.title_mode == crate::contracts::TileTitleMode::Hover
+                        {
+                            return Err(WorkspaceError::invalid_command("悬浮标题下不能修改按钮偏好"));
+                        }
+                        portal.appearance.button_mode = mode;
+                    }
+                    TileAppearanceChange::Collapsed(value) => portal.appearance.collapsed = value,
+                    TileAppearanceChange::AutoExpand(value) => portal.appearance.auto_expand = value,
+                }
+                Ok("更新门户外观")
+            }
+            WorkspaceCommand::CreateFolderPortal { root_path, bounds } =>
+            {
+                validate_component_rect(bounds)?;
+                if !Path::new(&root_path).is_absolute() || !Path::new(&root_path).is_dir()
+                {
+                    return Err(WorkspaceError::invalid_command("绑定路径必须是可访问的绝对目录"));
+                }
+                let mut sequence = self.revision.saturating_add(1); // 只检测身份碰撞，不检测路径重复。
+                while self.folder_portals.iter().any(|portal| portal.id == format!("portal-{sequence}"))
+                {
+                    sequence = sequence.checked_add(1).ok_or_else(|| WorkspaceError::invalid_command("门户身份已耗尽"))?;
+                }
+                self.folder_portals.push(crate::contracts::FolderPortalInstance { id: format!("portal-{sequence}"), root_path, monitor_id: monitor_id.unwrap_or_default().to_string(), bounds, z_index: self.folder_portals.len() as u32, appearance: Default::default() });
+                Ok("创建文件夹门户")
+            }
+            WorkspaceCommand::UpdateFolderPortalBounds { portal_id, bounds } =>
+            {
+                validate_component_rect(bounds)?;
+                let portal = self.folder_portals.iter_mut().find(|portal| portal.id == portal_id).ok_or_else(|| WorkspaceError::invalid_command("门户不存在"))?; // 按实例身份提交。
+                portal.bounds = bounds;
+                if let Some(monitor_id) = monitor_id
+                {
+                    portal.monitor_id = monitor_id.to_string();
+                }
+                Ok("更新门户布局")
+            }
+            WorkspaceCommand::RemoveFolderPortal { portal_id } =>
+            {
+                self.folder_portals.retain(|portal| portal.id != portal_id);
+                Ok("移除文件夹门户")
+            }
             WorkspaceCommand::SetTileAppearance { target, change } =>
             {
                 appearance::apply(self, target, change)?;
@@ -1722,6 +1781,16 @@ impl WorkspaceSnapshot
         {
             return Err(WorkspaceError::invalid_command("围栏成员来源位置状态无效"));
         }
+        let mut portal_ids = std::collections::HashSet::new(); // 路径可以重复，实例身份必须唯一。
+        for portal in &self.folder_portals
+        {
+            validate_id(&portal.id, "门户身份无效")?;
+            validate_component_rect(portal.bounds)?;
+            if !portal_ids.insert(&portal.id) || !Path::new(&portal.root_path).is_absolute()
+            {
+                return Err(WorkspaceError::invalid_command("门户绑定或身份无效"));
+            }
+        }
         let mut component_ids = std::collections::HashSet::new(); // 当前快照中已经出现的组件实例标识。
         for component in &self.components
         {
@@ -1930,6 +1999,36 @@ mod tests
     use super::{AUTO_SNAPSHOT_LIMIT, PersistedWorkspacePayload, WorkspaceState, decode_workspace_store, merge_layout_history_target, workspace_store_from_payload, write_auto_snapshot};
     use crate::contracts::{ComponentInstanceSnapshot, DesktopHostMonitor, UnclassifiedItemSnapshot, WorkspaceCommand, WorkspaceFocusTarget, WorkspaceInteractionCommand, WorkspaceItemPlacement, WorkspacePoint, WorkspaceRect, WorkspaceSelectionMode, WorkspaceSnapshot};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// 相同路径的独立身份、几何、移除和重启恢复通过真实持久化路径验证。
+    #[test]
+    fn folder_portals_persist_independent_duplicate_paths()
+    {
+        let path = snapshot_path("folder-portals"); // 独立测试布局文件。
+        let root_path = std::env::temp_dir().to_string_lossy().into_owned(); // 已存在且不写入内容的目录。
+        let bounds = WorkspaceRect { left: 24.0, top: 24.0, width: 360.0, height: 280.0 }; // 初始几何。
+        let state = WorkspaceState::load(path.clone()).unwrap(); // 使用真实原子保存。
+        state.apply(WorkspaceCommand::CreateFolderPortal { root_path: root_path.clone(), bounds }).unwrap();
+        let created = state.apply(WorkspaceCommand::CreateFolderPortal { root_path, bounds }).unwrap(); // 同路径始终追加。
+        assert_eq!(created.folder_portals.len(), 2);
+        assert_ne!(created.folder_portals[0].id, created.folder_portals[1].id);
+        let moved = WorkspaceRect { left: 100.0, ..bounds }; // 只修改第一个实例。
+        state.apply(WorkspaceCommand::UpdateFolderPortalBounds { portal_id: created.folder_portals[0].id.clone(), bounds: moved }).unwrap();
+        state.apply(WorkspaceCommand::SetFolderPortalAppearance { portal_id: created.folder_portals[0].id.clone(), change: crate::contracts::TileAppearanceChange::Collapsed(true) }).unwrap(); // 外观不占据布局撤销步骤。
+        let undone = state.apply(WorkspaceCommand::UndoLayout).unwrap(); // 撤销移动，保留当前外观。
+        assert_eq!(undone.folder_portals[0].bounds, bounds);
+        assert!(undone.folder_portals[0].appearance.collapsed);
+        state.apply(WorkspaceCommand::RedoLayout).unwrap();
+        drop(state);
+        let restored = WorkspaceState::load(path.clone()).unwrap(); // 重启恢复权威工作区。
+        let snapshot = restored.snapshot().unwrap(); // 断言路径和几何均独立。
+        assert_eq!(snapshot.folder_portals[0].bounds, moved);
+        assert!(snapshot.folder_portals[0].appearance.collapsed);
+        assert_eq!(snapshot.folder_portals[1].bounds, bounds);
+        let removed = restored.apply(WorkspaceCommand::RemoveFolderPortal { portal_id: snapshot.folder_portals[0].id.clone() }).unwrap();
+        assert_eq!(removed.folder_portals.len(), 1);
+        assert!(std::path::Path::new(&removed.folder_portals[0].root_path).is_dir());
+    }
 
     /// 创建当前测试独占的工作区快照路径。
     fn snapshot_path(name: &str) -> std::path::PathBuf

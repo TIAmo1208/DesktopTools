@@ -11,7 +11,7 @@ const RECEIVER: PCWSTR = w!("DesktopToolsDesktopMenu"); // 当前会话的命令
 const MESSAGE: u32 = WM_APP + 0x64; // 仅传递固定数字动词，不接收路径或脚本。
 const DISPATCH_MESSAGE: u32 = MESSAGE + 1; // 脱离跨进程 SendMessage 的同步调用栈后再访问 COM。
 static OWN_RECEIVER: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0); // 退出时只销毁本进程创建的窗口。
-const ACTIONS: [(&str, &str, u32); 4] = [("create-fence", "新建围栏", 0x7804), ("edit-layout", "编辑布局", 0x7805), ("refresh", "刷新桌面项目", 0x7806), ("settings", "打开设置", 0x7807)]; // 注册表、启动参数与消息校验共用的动作清单。
+const ACTIONS: [(&str, &str, u32); 5] = [("create-fence", "新建围栏", 0x7804), ("create-folder-portal", "新建文件夹门户", 0x7808), ("edit-layout", "编辑布局", 0x7805), ("refresh", "刷新桌面项目", 0x7806), ("settings", "打开设置", 0x7807)]; // 注册表、启动参数与消息校验共用的动作清单。
 
 /// 区分已经处理的命令与需要启动应用的初始动作。
 pub enum Startup
@@ -45,16 +45,29 @@ fn command_line(executable: &std::path::Path, action: &str) -> Result<String, St
 pub fn register() -> Result<(), String>
 {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?; // 当前安装或开发程序。
-    write_value(REGISTRY_PATH, "MUIVerb", "Desktop Tools")?;
-    write_value(REGISTRY_PATH, "SubCommands", "")?;
-    write_value(REGISTRY_PATH, "Icon", &format!("\"{}\",0", executable.display()))?;
+    register_actions(REGISTRY_PATH, &executable)?;
+    crate::log_info!("桌面菜单：已注册当前用户菜单，路径=HKCU\\{REGISTRY_PATH}");
+    Ok(())
+}
+
+/// 用当前动作全集替换产品菜单子树，供正式注册和隔离注册表验证共用。
+fn register_actions(registry_path: &str, executable: &std::path::Path) -> Result<(), String>
+{
+    let child_path = format!(r"{registry_path}\shell"); // 产品菜单动作的唯一子树。
+    let result = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(&child_path)) }; // 重注册前清除旧序号，避免菜单动作重复。
+    if result.0 != 2
+    {
+        result.ok().map_err(|error| error.to_string())?;
+    }
+    write_value(registry_path, "MUIVerb", "Desktop Tools")?;
+    write_value(registry_path, "SubCommands", "")?;
+    write_value(registry_path, "Icon", &format!("\"{}\",0", executable.display()))?;
     for (index, (action, label, _)) in ACTIONS.iter().enumerate()
     {
-        let key = format!(r"{REGISTRY_PATH}\shell\{index:02}-{action}"); // 序号保证菜单顺序稳定。
+        let key = format!(r"{registry_path}\shell\{index:02}-{action}"); // 序号保证菜单顺序稳定。
         write_value(&key, "MUIVerb", label)?;
         write_value(&format!(r"{key}\command"), "", &command_line(&executable, action)?)?;
     }
-    crate::log_info!("桌面菜单：已注册当前用户菜单，路径=HKCU\\{REGISTRY_PATH}");
     Ok(())
 }
 
@@ -187,6 +200,29 @@ pub fn shutdown()
 #[cfg(test)]
 mod tests
 {
+    /// 动作插入导致序号变化后重复注册，旧子键必须消失且全部当前动作保留。
+    #[test]
+    fn registration_replaces_stale_actions()
+    {
+        use windows::Win32::System::Registry::{KEY_READ, RegOpenKeyExW};
+        let path = format!(r"Software\DesktopToolsMenuTest-{}", std::process::id()); // 本测试独占的非产品键。
+        let obsolete = format!(r"{path}\shell\01-edit-layout"); // 新清单中序号已经改变的旧动作。
+        let executable = std::path::Path::new(r"C:\Program Files\Desktop Tools\desktop-tools.exe"); // 含空格的注册命令路径。
+        super::write_value(&obsolete, "MUIVerb", "编辑布局").unwrap();
+        for _ in 0..2
+        {
+            super::register_actions(&path, executable).unwrap();
+        }
+        let mut key = super::HKEY::default(); // 测试读取句柄。
+        assert_eq!(unsafe { RegOpenKeyExW(super::HKEY_CURRENT_USER, &super::HSTRING::from(obsolete), None, KEY_READ, &mut key) }.0, 2);
+        for (index, (action, _, _)) in super::ACTIONS.iter().enumerate()
+        {
+            let current = format!(r"{path}\shell\{index:02}-{action}\command"); // 当前动作必须存在且有命令。
+            unsafe { RegOpenKeyExW(super::HKEY_CURRENT_USER, &super::HSTRING::from(current), None, KEY_READ, &mut key) }.ok().unwrap();
+            drop(unsafe { super::Owned::new(key) });
+        }
+        unsafe { super::RegDeleteTreeW(super::HKEY_CURRENT_USER, &super::HSTRING::from(path)) }.ok().unwrap();
+    }
     /// 安装后从 Shell 桌面视图直接枚举菜单，验证注册项由系统加载而非应用追加。
     #[test]
     #[ignore = "要求先运行正式程序的 --register-desktop-menu"]

@@ -120,8 +120,24 @@ const SHELL_HIDE_ICONS_BIT: i32 = 1 << 12;
 const NATIVE_BRIDGE_SCRIPT: &str = r#"
 (() => {
   const nativeOrigin = __DESKTOP_NATIVE_ORIGIN__; // Rust 注入本屏原生命令地址，独立于开发页面来源。
+  const reported = new Set(); // 同一页面生命周期内相同异常只记录一次。
+  const reportFailure = (stage, detail) => {
+    const message = String(detail?.stack || detail?.message || detail || "未知错误").slice(0, 4096); // 限制日志大小。
+    const key = `${stage}:${message}`; // 避免轮询失败刷屏。
+    if (reported.has(key) || reported.size >= 40) return;
+    reported.add(key);
+    void fetch(`${nativeOrigin}/__desktop_tools_invoke/record_renderer_diagnostic`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ origin: nativeOrigin, url: String(window.location?.href || ""), stage, message }),
+    }).catch(() => {}); // 日志通道失败不递归上报。
+  };
+  if (window.addEventListener) {
+    window.addEventListener("error", (event) => reportFailure(event.error ? "脚本异常" : "资源加载失败", event.error || `${event.message || ""} ${event.filename || event.target?.src || event.target?.href || ""}:${event.lineno || 0}:${event.colno || 0}`), true);
+    window.addEventListener("unhandledrejection", (event) => reportFailure("未处理的异步异常", event.reason));
+  }
   // 通过正式宿主本地协议调用 Rust 命令边界。
   const invoke = async (command, args = {}) => {
+    try {
     // 当前命令对应的本地协议响应。
     const response = await fetch(`${nativeOrigin}/__desktop_tools_invoke/${encodeURIComponent(command)}`, {
       method: "POST",
@@ -132,6 +148,10 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
     const payload = await response.json();
     if (!payload.ok) throw payload.error;
     return payload.result;
+    } catch (error) {
+      if (["publish_desktop_host_readiness", "get_desktop_host_snapshot", "get_desktop_item_snapshot", "update_desktop_host_hit_map"].includes(command)) reportFailure(`命令失败：${command}，显示器=${args.monitorId || args.report?.monitorId || "未解析"}`, error);
+      throw error;
+    }
   };
 
   // 快照事件对应的只读轮询命令。
@@ -360,7 +380,15 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                             }
                             else
                             {
-                                let result = state.begin_drop_transfer(data, effect, plan.transfers.clone()).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?;
+                                let result = if let Some(directory) = plan.portal_root.clone()
+                                {
+                                    state.begin_folder_drop_transfer(data, effect, plan.transfers.clone(), directory)
+                                }
+                                else
+                                {
+                                    state.begin_drop_transfer(data, effect, plan.transfers.clone())
+                                }
+                                .map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?;
                                 super::drop_target::wait_transfer(result).unwrap_or_else(|error| crate::contracts::ShellOperationResult { operation_id: 0, completed_at_unix_micros: 0, kind: crate::contracts::ShellOperationKind::Paste, aborted: false, operation_error: Some(windows::Win32::Foundation::E_FAIL.0), reversible: false, permanent: false, effect: Some(if effect == DROPEFFECT_MOVE { "移动" } else { "复制" }.into()), items: Vec::new(), message: format!("文件结果无法完整确认：{error}") })
                             };
                             let (succeeded, committed, result) = crate::app::desktop_drop::complete_external(&app, plan, completed); // 原生只交付文件事实，不解释布局结果归属。
@@ -1253,7 +1281,7 @@ mod tests
     #[test]
     fn pixel_probe_excludes_the_workspace_background()
     {
-        let region = HitRegion { id: "workspace-background".to_string(), kind: "workspace-background".to_string(), left: 0.0, top: 0.0, width: 1920.0, height: 1080.0, priority: 1 };
+        let region = HitRegion { id: "workspace-background".to_string(), kind: "workspace-background".to_string(), left: 0.0, top: 0.0, width: 1920.0, height: 1080.0, priority: 1, target_path: None };
 
         assert!(!is_pixel_probe_region(&region));
     }

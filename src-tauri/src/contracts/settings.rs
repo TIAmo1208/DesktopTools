@@ -84,13 +84,14 @@ pub struct ApplicationPreferences
     pub debug_show_details: bool,              // 测试格子是否显示详细宿主字段。
     pub component_snap: bool,                  // 功能格子拖动与缩放时边缘对齐。
     pub interface_animations: bool,            // 界面动画默认开启，系统减少动态效果由各窗口解析。
+    pub folder_portal_enabled: bool,           // 文件夹门户功能入口显隐。
 }
 
 /// 首次启动跟随系统，并沿用现有双击打开行为。
 impl Default for ApplicationPreferences
 {
     /// 创建首次启动的应用偏好，音乐默认关闭。
-    fn default() -> Self { Self { theme: ApplicationTheme::System, desktop_appearance: DesktopAppearance::default(), config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(), double_click_to_open: true, accent_color: "#2563eb".to_string(), use_windows_accent_color: false, corner_radius: 6, font_family: "Segoe UI Variable".to_string(), font_size: 13, desktop_grid: GridPreferences::default(), fence_grid: GridPreferences { column_gap: 6, ..Default::default() }, clock_enabled: true, music_enabled: false, clock_hour12: false, clock_show_seconds: true, debug_enabled: true, debug_show_details: true, component_snap: true, interface_animations: true } }
+    fn default() -> Self { Self { theme: ApplicationTheme::System, desktop_appearance: DesktopAppearance::default(), config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(), double_click_to_open: true, accent_color: "#2563eb".to_string(), use_windows_accent_color: false, corner_radius: 6, font_family: "Segoe UI Variable".to_string(), font_size: 13, desktop_grid: GridPreferences::default(), fence_grid: GridPreferences { column_gap: 6, ..Default::default() }, clock_enabled: true, music_enabled: false, clock_hour12: false, clock_show_seconds: true, debug_enabled: true, debug_show_details: true, component_snap: true, interface_animations: true, folder_portal_enabled: true } }
 }
 
 /// 校验配置文件和命令输入共用的外观边界。

@@ -95,7 +95,17 @@ export interface WorkspaceInteractionSnapshot {
 }
 
 /** Rust 发布给 React 的不可变工作区快照。 */
+export interface FolderPortalInstance {
+    id: string; // 持久门户身份。
+    rootPath: string; // 绑定路径。
+    monitorId: string; // 持久显示器归属。
+    bounds: WorkspaceRect; // 展开几何。
+    zIndex: number; // 层级。
+    appearance: import("./tile").TileAppearance; // 公共外观。
+}
+
 export interface WorkspaceSnapshot {
+    folderPortals?: FolderPortalInstance[]; // 缺省时没有门户。
     tileAppearances?: Record<string, TileAppearance>; // 按稳定身份共享的宿主外观。
     schemaVersion: number;
     revision: number;
@@ -147,6 +157,10 @@ export type WorkspaceInteractionCommand =
 
 /** React 可以提交给工作区领域的完整命令集合。 */
 export type WorkspaceCommand =
+    | { type: "set-folder-portal-appearance"; portalId: string; change: TileAppearanceChange }
+    | { type: "create-folder-portal"; rootPath: string; bounds: WorkspaceRect }
+    | { type: "update-folder-portal-bounds"; portalId: string; bounds: WorkspaceRect }
+    | { type: "remove-folder-portal"; portalId: string }
     | { type: "set-tile-appearance"; target: Extract<WorkspaceFocusTarget, { type: "fence" | "component" }>; change: TileAppearanceChange }
     | { type: "create-fence"; title: string; bounds: WorkspaceRect }
     | { type: "update-fence-bounds"; fenceId: string; bounds: WorkspaceRect }
@@ -345,7 +359,33 @@ export const parseWorkspaceSnapshot = (value: unknown): WorkspaceSnapshot => {
           })
         : []; // 已完成契约校验的逐屏网格集合。
     const components = Array.isArray(candidate.components) ? candidate.components.map(parseComponentInstanceSnapshot) : []; // 已完成契约校验的组件实例集合。
+    if (candidate.folderPortals !== undefined && !Array.isArray(candidate.folderPortals)) throw new WorkspaceContractError();
+    const folderPortals: FolderPortalInstance[] = ((candidate.folderPortals ?? []) as unknown[]).map((entry) => {
+        if (!entry || typeof entry !== "object") throw new WorkspaceContractError();
+        const portal = entry as Record<string, unknown>; // 边界逐字段校验。
+        if (
+            typeof portal.id !== "string" ||
+            !portal.id ||
+            typeof portal.rootPath !== "string" ||
+            !portal.rootPath ||
+            typeof portal.monitorId !== "string" ||
+            !Number.isSafeInteger(portal.zIndex) ||
+            (portal.zIndex as number) < 0
+        )
+            throw new WorkspaceContractError();
+        const appearance = parseTileAppearances({ [`component:${portal.id}`]: portal.appearance })[`component:${portal.id}`]; // 复用相同外观字段校验。
+        return {
+            id: portal.id,
+            rootPath: portal.rootPath,
+            monitorId: portal.monitorId,
+            bounds: parseRect(portal.bounds),
+            zIndex: portal.zIndex as number,
+            appearance,
+        };
+    });
+    if (new Set(folderPortals.map((portal) => portal.id)).size !== folderPortals.length) throw new WorkspaceContractError();
     return {
+        folderPortals,
         tileAppearances: parseTileAppearances(candidate.tileAppearances),
         schemaVersion: 1,
         revision: candidate.revision as number,

@@ -10,6 +10,7 @@ export interface HitRegion {
     width: number;
     height: number;
     priority: number;
+    targetPath?: string;
 }
 
 /** React 双帧完成后发布的宿主准备证据。 */

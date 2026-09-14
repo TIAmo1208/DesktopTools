@@ -137,6 +137,7 @@ export const useWorkspaceDrag = ({
         let gridPreview: Map<string, WorkspacePoint> | undefined; // 当前有效的未归类网格预览位置。
         let insertionBlocked = false; // 当前网格传播是否因容量不足而失败。
         let targetFenceId: string | undefined; // 当前指针命中的目标围栏。
+        let targetPortalId: string | undefined; // 当前指针命中的文件夹门户。
         let rejectedByTile = false; // 内容不支持文件时阻止穿透到下层围栏或桌面。
         let targetItemId: string | undefined; // 当前指针命中的目标围栏成员。
         let targetPlacement: "before" | "after" | undefined; // 当前围栏成员插入方向。
@@ -191,11 +192,18 @@ export const useWorkspaceDrag = ({
         /** 根据当前指针更新围栏投放、手动顺序和自动滚动预览。 */
         const previewFenceDrop = (pointer: { x: number; y: number }): boolean => {
             clearFencePreview();
+            targetPortalId = undefined;
             const tile = document
                 .elementsFromPoint(pointer.x, pointer.y)
                 .map((element) => element.closest<HTMLElement>(".desktop-tile"))
                 .find(Boolean); // 只判断最上层公共表面。
-            rejectedByTile = Boolean(tile && !tile.dataset.fenceId);
+            targetPortalId = tile?.dataset.portalId;
+            rejectedByTile = Boolean(tile && !tile.dataset.fenceId && !targetPortalId);
+            if (targetPortalId) {
+                stopAutoScroll();
+                marker.hidden = true;
+                return true;
+            }
             if (rejectedByTile) {
                 stopAutoScroll();
                 marker.hidden = true;
@@ -425,6 +433,7 @@ export const useWorkspaceDrag = ({
                     const drop = await resolveCrossMonitorDrop(crossDrag); // 释放点的目标围栏与插入位置。
                     if (drop.rejected) throw new Error("此格子不接受文件投放");
                     targetFenceId = drop.fenceId;
+                    targetPortalId = drop.portalId;
                     beforeItemId = drop.beforeItemId ?? null;
                     if (drop.fenceId && drop.scrollTop !== undefined) fenceScrolls.push({ fenceId: drop.fenceId, scrollTop: drop.scrollTop });
                     remoteDrop = true;
@@ -438,6 +447,11 @@ export const useWorkspaceDrag = ({
             if (!remoteDrop && rejectedByTile) {
                 restoreStartLayout();
                 onFailure("此格子不接受文件投放");
+                await cleanupDrag();
+                return;
+            }
+            if (targetPortalId) {
+                restoreStartLayout();
                 await cleanupDrag();
                 return;
             }

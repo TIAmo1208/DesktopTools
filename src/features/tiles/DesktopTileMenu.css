@@ -56,6 +56,13 @@
     cursor: default;
 }
 
+/* 不同功能组之间的菜单分割线。 */
+.desktop-tile-menu__separator {
+    height: 1px;
+    margin: 4px 0;
+    background: var(--menu-border);
+}
+
 /* 当前父项、悬停和键盘焦点使用同一状态表面。 */
 .desktop-tile-menu button:hover:enabled,
 .desktop-tile-menu button:focus-visible,

@@ -2,6 +2,7 @@ mod application;
 mod component;
 mod desktop_host;
 mod desktop_item;
+pub mod folder_portal;
 pub use desktop_item::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
 pub mod music;
 pub mod settings;
@@ -26,6 +27,18 @@ pub(crate) fn execute_registered_desktop_menu(app: &tauri::AppHandle, selected: 
     let items = app.state::<DesktopItemState>(); // Shell 项目状态。
     let snapshot = workspace.snapshot().map_err(|error| error.message)?; // 解析动作时的当前布局。
     let action = workspace_menu::choose_workspace_menu(&snapshot, monitor, WorkspaceContextMenuTarget::Background, (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor, |_, _, _, _| Ok(Some(selected))).map_err(|error| error.message)?; // 只解释已选择的动作，不获取或弹出菜单。
+    if selected == 0x7808
+    {
+        if !app.state::<crate::app::settings::SettingsState>().preferences()?.folder_portal_enabled
+        {
+            return Err("文件夹门户已关闭，请在功能格子设置中启用".to_string());
+        }
+        if let Some(path) = folder_portal::create_from_desktop_menu()?
+        {
+            workspace::execute_apply_workspace_command(app, &workspace, &items, &runtime, monitor.id.clone(), WorkspaceCommand::CreateFolderPortal { root_path: path, bounds: crate::contracts::WorkspaceRect { left: 24.0, top: 24.0, width: 360.0, height: 280.0 } }).map_err(|error| error.message)?;
+        }
+        return Ok(());
+    }
     match action
     {
         workspace_menu::WorkspaceMenuAction::None =>
@@ -103,7 +116,56 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         }
         "get_windows_accent_color" => app.state::<crate::platform::windows::settings::WindowsAccentMonitor>().color().map_err(serialize_error).and_then(serialize_result),
         "get_preferences" => app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error).and_then(serialize_result),
+        "record_renderer_diagnostic" =>
+        {
+            let fields = ["origin", "url", "stage", "message"].map(|key| arguments.get(key).and_then(Value::as_str).unwrap_or("").chars().take(4096).collect::<String>().replace(['\r', '\n'], " ")); // 有界单行诊断，不执行页面内容。
+            crate::log_error!("宿主前端：来源={}，页面={}，阶段={}，错误={}", fields[0], fields[1], fields[2], fields[3]);
+            serialize_result(())
+        }
+        "open_folder_portal_path" =>
+        {
+            let root_path = command_argument(&arguments, "rootPath", "门户根路径参数无效").map_err(serialize_error)?;
+            let path = command_argument(&arguments, "path", "门户路径参数无效").map_err(serialize_error)?;
+            folder_portal::open_folder_portal_path(root_path, path).map_err(serialize_error).and_then(serialize_result)
+        }
+        "delete_folder_portal_items" =>
+        {
+            let root_path = command_argument(&arguments, "rootPath", "门户根路径参数无效").map_err(serialize_error)?;
+            let current_path = command_argument(&arguments, "currentPath", "门户当前路径参数无效").map_err(serialize_error)?;
+            let names = command_argument(&arguments, "names", "门户项目参数无效").map_err(serialize_error)?;
+            folder_portal::execute_delete_folder_portal_items(&app.state::<DesktopItemState>(), root_path, current_path, names).map_err(serialize_error).and_then(serialize_result)
+        }
+        "set_folder_portal_clipboard" =>
+        {
+            let root_path = command_argument(&arguments, "rootPath", "门户根路径参数无效").map_err(serialize_error)?;
+            let current_path = command_argument(&arguments, "currentPath", "门户当前路径参数无效").map_err(serialize_error)?;
+            let names = command_argument(&arguments, "names", "门户项目参数无效").map_err(serialize_error)?;
+            let cut = command_argument(&arguments, "cut", "剪贴板操作参数无效").map_err(serialize_error)?;
+            folder_portal::set_folder_portal_clipboard(app.state::<DesktopItemState>(), root_path, current_path, names, cut).map_err(serialize_error).and_then(serialize_result)
+        }
+        "paste_folder_portal_items" =>
+        {
+            let root_path = command_argument(&arguments, "rootPath", "门户根路径参数无效").map_err(serialize_error)?;
+            let current_path = command_argument(&arguments, "currentPath", "门户当前路径参数无效").map_err(serialize_error)?;
+            folder_portal::paste_folder_portal_items(app.state::<DesktopItemState>(), root_path, current_path).map_err(serialize_error).and_then(serialize_result)
+        }
+        "show_folder_portal_menu" =>
+        {
+            let request = command_argument(&arguments, "request", "门户菜单参数无效").map_err(serialize_error)?; // 两种传输使用相同请求结构。
+            folder_portal::execute_show_folder_portal_menu(&app.state::<DesktopItemState>(), runtime, request).map_err(serialize_error).and_then(serialize_result)
+        }
+        "rename_folder_portal_item" =>
+        {
+            let request = command_argument(&arguments, "request", "门户重命名参数无效").map_err(serialize_error)?;
+            folder_portal::execute_rename_folder_portal_item(&app.state::<DesktopItemState>(), request).map_err(serialize_error).and_then(serialize_result)
+        }
         "get_desktop_item_snapshot" => desktop_item::execute_get_desktop_item_snapshot(app, &app.state::<DesktopItemState>(), &app.state::<WorkspaceState>(), runtime).map_err(serialize_error).and_then(serialize_result),
+        "get_folder_portal_snapshot" =>
+        {
+            let root_path: String = command_argument(&arguments, "rootPath", "门户绑定目录参数无效").map_err(serialize_error)?;
+            let current_path: Option<String> = arguments.get("currentPath").cloned().map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("门户当前目录参数无效")))?;
+            folder_portal::get_folder_portal_snapshot(root_path, current_path).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error))).and_then(serialize_result)
+        }
         "get_component_runtime_snapshot" => component::execute_get_component_runtime_snapshot(app, &app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>()).map_err(serialize_error).and_then(serialize_result),
         "get_current_component_runtime_snapshot" => component::component_runtime_snapshot(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>()).map_err(serialize_error).and_then(serialize_result),
         "get_current_component_host_event" => component::current_component_host_event(&app.state::<ComponentRuntimeState>()).map_err(serialize_error).and_then(serialize_result),

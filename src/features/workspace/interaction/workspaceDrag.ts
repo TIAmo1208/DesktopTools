@@ -203,7 +203,12 @@ export const resolveGridDrop = (
         const offsets = draggedIds.map((itemId) => {
             const renderedAnchor = renderedPositions?.get(draggedIds[0]); // 当前拖动锚点的真实位置。
             const rendered = renderedPositions?.get(itemId); // 当前项目的真实位置。
-            if (renderedAnchor && rendered) return { itemId, column: Math.round((rendered.left - renderedAnchor.left) / grid.columnWidth), row: Math.round((rendered.top - renderedAnchor.top) / grid.rowHeight) };
+            if (renderedAnchor && rendered)
+                return {
+                    itemId,
+                    column: Math.round((rendered.left - renderedAnchor.left) / grid.columnWidth),
+                    row: Math.round((rendered.top - renderedAnchor.top) / grid.rowHeight),
+                };
             const position = positions.get(itemId); // 当前组成员的来源网格位置。
             const assignedIndex = assignedSlots.get(itemId);
             return position

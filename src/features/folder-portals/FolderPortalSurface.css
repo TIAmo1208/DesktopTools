@@ -1,0 +1,4 @@
+/* 门户内容占满公共视口，导航固定、文件列表独立滚动。 */
+.folder-portal-host__content {
+    display: grid;
+}

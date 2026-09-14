@@ -20,6 +20,14 @@ const emptyWorkspace = {
 };
 
 // 验证旧排序字段默认值、完整状态和非法输入边界。
+test("门户允许重复路径但拒绝重复身份和非法几何", () => {
+    const portal = { id: "portal-1", rootPath: "C:\\资料", monitorId: "DISPLAY1", bounds: { left: 0, top: 0, width: 360, height: 280 }, zIndex: 0, appearance: { title: null, titleMode: "fixed", buttonMode: "hover", collapsed: false, autoExpand: false } }; // 真实工作区门户契约。
+    const parsed = parseWorkspaceSnapshot({ ...emptyWorkspace, folderPortals: [portal, { ...portal, id: "portal-2" }] });
+    assert.equal(parsed.folderPortals?.length, 2);
+    assert.throws(() => parseWorkspaceSnapshot({ ...emptyWorkspace, folderPortals: [portal, portal] }));
+    assert.throws(() => parseWorkspaceSnapshot({ ...emptyWorkspace, folderPortals: [{ ...portal, bounds: { ...portal.bounds, width: -1 } }] }));
+});
+
 test("validates fence sorting modes and defaults legacy snapshots to none", () => {
     const fence = {
         id: "fence-1",

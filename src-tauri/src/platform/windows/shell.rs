@@ -28,12 +28,12 @@ use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
 use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
 use windows::Win32::UI::Shell::CFSTR_LOGICALPERFORMEDDROPEFFECT;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
-#[cfg(test)]
 use windows::Win32::UI::Shell::IShellFolder;
 use windows::Win32::UI::Shell::{
-    CFSTR_PREFERREDDROPEFFECT, CMF_NORMAL, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, CSIDL_DESKTOP, FOF_ALLOWUNDO, FOF_WANTNUKEWARNING, FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FOLDERID_Desktop, FOLDERID_PublicDesktop, FileOperation, IContextMenu, IContextMenu2, IContextMenu3, IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl, ILGetSize, IShellItem, SEE_MASK_IDLIST, SEE_MASK_UNICODE, SHCNE_ALLEVENTS, SHCNE_RENAMEFOLDER, SHCNE_RENAMEITEM, SHCNRF_NewDelivery, SHCNRF_ShellLevel, SHCONTF_FOLDERS, SHCONTF_INCLUDEHIDDEN, SHCONTF_NONFOLDERS, SHChangeNotification_Lock, SHChangeNotification_Unlock, SHChangeNotifyDeregister, SHChangeNotifyEntry, SHChangeNotifyRegister, SHCreateItemFromIDList, SHELLEXECUTEINFOW, SHFILEINFOW, SHGFI_PIDL, SHGFI_SYSICONINDEX, SHGetDesktopFolder, SHGetFileInfoW, SHGetImageList, SHGetKnownFolderIDList, SHGetNameFromIDList, SHGetSpecialFolderLocation, SHIL_EXTRALARGE, SHParseDisplayName, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING,
-    SIGDN_FILESYSPATH, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEEDITING, ShellExecuteExW,
+    CFSTR_PREFERREDDROPEFFECT, CMF_NORMAL, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, CSIDL_DESKTOP, FOF_ALLOWUNDO, FOF_WANTNUKEWARNING, FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FOLDERID_Desktop, FOLDERID_PublicDesktop, FileOperation, IContextMenu, IContextMenu2, IContextMenu3, IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl, ILGetSize, IShellItem, SEE_MASK_IDLIST, SEE_MASK_UNICODE, SHCNE_ALLEVENTS, SHCNE_RENAMEFOLDER, SHCNE_RENAMEITEM, SHCNRF_NewDelivery, SHCNRF_ShellLevel, SHCONTF_FOLDERS, SHCONTF_INCLUDEHIDDEN, SHCONTF_NONFOLDERS, SHChangeNotification_Lock, SHChangeNotification_Unlock, SHChangeNotifyDeregister, SHChangeNotifyEntry, SHChangeNotifyRegister, SHCreateItemFromIDList, SHCreateItemFromParsingName, SHELLEXECUTEINFOW, SHFILEINFOW, SHGFI_PIDL, SHGFI_SYSICONINDEX, SHGetDesktopFolder, SHGetFileInfoW, SHGetImageList, SHGetKnownFolderIDList, SHGetNameFromIDList, SHGetSpecialFolderLocation, SHIL_EXTRALARGE, SHParseDisplayName, SIGDN,
+    SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEEDITING, ShellExecuteExW,
 };
+use windows::Win32::UI::Shell::{ILFindLastID, SHBindToParent};
 use windows::Win32::UI::Shell::{KF_FLAG_DEFAULT, SHGetKnownFolderPath};
 use windows::Win32::UI::WindowsAndMessaging::{AppendMenuW, CREATESTRUCTW, CreatePopupMenu, CreateWindowExW, DI_NORMAL, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, GWLP_USERDATA, GetForegroundWindow, GetWindowLongPtrW, HICON, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOWNORMAL, SetForegroundWindow, SetWindowLongPtrW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE, WM_NULL, WNDCLASSW, WS_POPUP};
 use windows::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT, WM_QUIT};
@@ -356,6 +356,8 @@ pub enum NativeMenuTarget
 {
     /// 使用当前完整选择集合构建多选 Shell 菜单。
     Items(Vec<String>),
+    /// 门户当前目录中的真实文件系统项目，不通过桌面子项枚举。
+    FolderItems(Vec<String>),
     /// 使用 Shell 桌面视图构建背景菜单。
     Background,
     /// 只显示 Desktop Tools 产品命令。
@@ -932,7 +934,14 @@ pub fn compensate_desktop_items(owner: &ShellMenuOwner, kind: ShellOperationKind
 pub fn set_desktop_item_clipboard(owner: &ShellMenuOwner, references: &[String], cut: bool) -> Result<ShellOperationResult, String>
 {
     validate_reference_selection(references)?;
-    let data_object = desktop_data_object(owner.hwnd, references)?; // Shell handler 提供的完整多格式数据对象。
+    let data_object = if references.iter().all(|reference| std::path::Path::new(reference).is_absolute())
+    {
+        filesystem_data_object(references)? // 门户使用绝对文件系统路径，绑定真实 Shell 项目。
+    }
+    else
+    {
+        desktop_data_object(owner.hwnd, references)? // 桌面项目继续使用桌面命名空间。
+    };
     let effect = if cut { DROPEFFECT_MOVE } else { DROPEFFECT_COPY }; // 系统剪贴板使用的首选投放效果。
     set_drop_effect(&data_object, CFSTR_PREFERREDDROPEFFECT, effect)?;
     unsafe { OleSetClipboard(&data_object) }.map_err(|error| format!("写入系统 Shell 剪贴板失败: {error}"))?;
@@ -953,6 +962,18 @@ pub fn set_desktop_item_clipboard(owner: &ShellMenuOwner, references: &[String],
     })
 }
 
+/// 门户无桌面项目身份时直接使用绝对路径写入剪贴板。
+pub fn set_desktop_item_clipboard_for_paths(references: &[String], cut: bool) -> Result<ShellOperationResult, String>
+{
+    validate_reference_selection(references)?;
+    let data_object = filesystem_data_object(references)?;
+    let effect = if cut { DROPEFFECT_MOVE } else { DROPEFFECT_COPY };
+    set_drop_effect(&data_object, CFSTR_PREFERREDDROPEFFECT, effect)?;
+    unsafe { OleSetClipboard(&data_object) }.map_err(|error| format!("写入门户系统剪贴板失败：{error}"))?;
+    let kind = if cut { ShellOperationKind::Cut } else { ShellOperationKind::Copy };
+    Ok(ShellOperationResult { operation_id: 0, completed_at_unix_micros: 0, kind, aborted: false, operation_error: None, reversible: false, permanent: false, effect: Some(drop_effect_name(effect).to_string()), message: format!("已{} {} 个项目到系统剪贴板", if cut { "剪切" } else { "复制" }, references.len()), items: references.iter().map(|reference| ShellOperationItemResult { proof: None, compensation_blocked: None, source_reference: reference.clone(), result_reference: Some(reference.clone()), succeeded: true, result_code: S_OK.0, source_parent_reference: None, source_name: None, result_parent_reference: None, result_name: None }).collect() })
+}
+
 /// 使用系统剪贴板 IDataObject 和 IFileOperation 粘贴到桌面命名空间。
 pub fn paste_desktop_items(owner: &ShellMenuOwner) -> Result<ShellOperationResult, String>
 {
@@ -960,6 +981,15 @@ pub fn paste_desktop_items(owner: &ShellMenuOwner) -> Result<ShellOperationResul
     let preferred_effect = read_drop_effect(&data_object, CFSTR_PREFERREDDROPEFFECT).unwrap_or(DROPEFFECT_COPY); // 剪切或复制来源声明的首选效果。
     let effect = if (preferred_effect & DROPEFFECT_MOVE).0 != 0 { DROPEFFECT_MOVE } else { DROPEFFECT_COPY }; // 本次粘贴交给 IFileOperation 的真实动作。
     transfer_desktop_data(owner, &data_object, effect, None)
+}
+
+/// 使用系统剪贴板粘贴到指定门户目录。
+pub fn paste_folder_portal_items(owner: &ShellMenuOwner, directory: &str) -> Result<ShellOperationResult, String>
+{
+    let data_object = unsafe { OleGetClipboard() }.map_err(|error| format!("读取系统 Shell 剪贴板失败：{error}"))?;
+    let preferred = read_drop_effect(&data_object, CFSTR_PREFERREDDROPEFFECT).unwrap_or(DROPEFFECT_COPY);
+    let effect = if (preferred & DROPEFFECT_MOVE).0 != 0 { DROPEFFECT_MOVE } else { DROPEFFECT_COPY };
+    transfer_data_to_directory(owner, &data_object, effect, Some(directory), None)
 }
 
 /// 在 Shell STA 将数据对象复制或移动到当前用户真实桌面，供剪贴板与原生投放共同执行。
@@ -981,14 +1011,24 @@ pub(crate) fn default_drop_effect(data: &IDataObject, sources: &[String]) -> DRO
 }
 
 /// 在 Shell STA 将数据对象复制或移动到当前用户真实桌面，供剪贴板与原生投放共同执行。
-pub(crate) fn transfer_desktop_data(owner: &ShellMenuOwner, data_object: &IDataObject, effect: DROPEFFECT, selected: Option<&[String]>) -> Result<ShellOperationResult, String>
+pub(crate) fn transfer_desktop_data(owner: &ShellMenuOwner, data_object: &IDataObject, effect: DROPEFFECT, selected: Option<&[String]>) -> Result<ShellOperationResult, String> { transfer_data_to_directory(owner, data_object, effect, None, selected) }
+
+/// 将 IDataObject 交给 IFileOperation，目标为指定文件系统目录。
+pub(crate) fn transfer_data_to_directory(owner: &ShellMenuOwner, data_object: &IDataObject, effect: DROPEFFECT, directory: Option<&str>, selected: Option<&[String]>) -> Result<ShellOperationResult, String>
 {
     if effect != DROPEFFECT_COPY && effect != DROPEFFECT_MOVE
     {
         return Err("桌面文件传输只接受复制或移动效果".to_string());
     }
-    let desktop_pidl = unsafe { SHGetKnownFolderIDList(&FOLDERID_Desktop, KF_FLAG_DEFAULT.0 as u32, None) }.map(OwnedPidl).map_err(|error| format!("读取用户桌面目标失败: {error}"))?; // 系统解析重定向后的真实用户桌面。
-    let destination: IShellItem = unsafe { SHCreateItemFromIDList(desktop_pidl.0) }.map_err(|error| format!("创建桌面 Shell 目标失败: {error}"))?; // IFileOperation 使用的桌面目标项目。
+    let destination: IShellItem = if let Some(directory) = directory
+    {
+        unsafe { SHCreateItemFromParsingName(&HSTRING::from(directory), None) }.map_err(|error| format!("创建门户 Shell 目标失败: {error}"))?
+    }
+    else
+    {
+        let desktop_pidl = unsafe { SHGetKnownFolderIDList(&FOLDERID_Desktop, KF_FLAG_DEFAULT.0 as u32, None) }.map(OwnedPidl).map_err(|error| format!("读取用户桌面目标失败: {error}"))?;
+        unsafe { SHCreateItemFromIDList(desktop_pidl.0) }.map_err(|error| format!("创建桌面 Shell 目标失败: {error}"))?
+    }; // IFileOperation 使用的真实目标目录。
     let filesystem_sources = super::drop_target::filesystem_drop_items(data_object); // 已存在文件的逐项传输路径；虚拟剪贴板仍交给 Shell 批量接口。
     if selected.is_some() && filesystem_sources.is_none()
     {
@@ -1251,6 +1291,7 @@ pub fn show_native_context_menu(owner: &mut ShellMenuOwner, target: NativeMenuTa
     let item_pidls = match &target
     {
         NativeMenuTarget::Items(references) => resolve_desktop_child_pidls(references)?,
+        NativeMenuTarget::FolderItems(references) => references.iter().map(|reference| parse_desktop_item_reference(reference)).collect::<Result<Vec<_>, _>>()?,
         NativeMenuTarget::Background | NativeMenuTarget::ProductOnly => Vec::new(),
     };
     // 当前语义目标对应的可选 Shell 上下文菜单。
@@ -1261,6 +1302,18 @@ pub fn show_native_context_menu(owner: &mut ShellMenuOwner, target: NativeMenuTa
             // 传给桌面根目录的相对项目 PIDL 集合。
             let pidl_pointers = item_pidls.iter().map(|pidl| pidl.0.cast_const()).collect::<Vec<_>>();
             Some(unsafe { desktop.GetUIObjectOf(owner.hwnd, &pidl_pointers, None) }.map_err(|error| format!("创建多选 Shell 项目菜单失败: {error}"))?)
+        }
+        NativeMenuTarget::FolderItems(ref references) =>
+        {
+            validate_reference_selection(references)?;
+            let parent = std::path::Path::new(&references[0]).parent(); // 多选菜单必须属于同一真实目录。
+            if parent.is_none() || references.iter().any(|path| std::path::Path::new(path).parent() != parent)
+            {
+                return Err("门户菜单选择不属于同一目录".to_string());
+            }
+            let folder: IShellFolder = unsafe { SHBindToParent(item_pidls[0].0, None) }.map_err(|error| format!("绑定门户菜单目录失败：{error}"))?; // 父目录接口与绝对 PIDL 在菜单关闭前保持有效。
+            let children = item_pidls.iter().map(|pidl| unsafe { ILFindLastID(pidl.0).cast_const() }).collect::<Vec<_>>(); // 目录内相对子项 PIDL。
+            Some(unsafe { folder.GetUIObjectOf(owner.hwnd, &children, None) }.map_err(|error| format!("创建门户原生菜单失败：{error}"))?)
         }
         NativeMenuTarget::Background => unreachable!("背景菜单已交给 Explorer"),
         NativeMenuTarget::ProductOnly => None,
@@ -1406,6 +1459,20 @@ pub(crate) fn desktop_data_object(hwnd: HWND, references: &[String]) -> Result<I
     let pidl_pointers = item_pidls.iter().map(|pidl| pidl.0.cast_const()).collect::<Vec<_>>(); // 传给桌面 Shell folder 的相对子 PIDL 指针。
     let desktop = unsafe { SHGetDesktopFolder() }.map_err(|error| format!("获取 Shell 桌面命名空间失败: {error}"))?; // IDataObject 所属的桌面根接口。
     unsafe { desktop.GetUIObjectOf(hwnd, &pidl_pointers, None) }.map_err(|error| format!("创建 Shell 多选数据对象失败: {error}"))
+}
+
+/// 从绝对文件系统路径创建可复制/剪切的 Shell 数据对象。
+fn filesystem_data_object(references: &[String]) -> Result<IDataObject, String>
+{
+    let pidls = references.iter().map(|reference| parse_desktop_item_reference(reference)).collect::<Result<Vec<_>, _>>()?; // 绝对 PIDL 生命周期覆盖数据对象创建。
+    let parent_path = std::path::Path::new(&references[0]).parent().ok_or("门户项目父目录无效")?;
+    if references.iter().any(|reference| std::path::Path::new(reference).parent() != Some(parent_path))
+    {
+        return Err("门户选择必须来自同一目录".to_string());
+    }
+    let parent: IShellFolder = unsafe { SHBindToParent(pidls[0].0, None) }.map_err(|error| format!("绑定门户剪贴板目录失败：{error}"))?;
+    let children = pidls.iter().map(|pidl| unsafe { ILFindLastID(pidl.0).cast_const() }).collect::<Vec<_>>(); // 同一父目录下的相对子 PIDL。
+    unsafe { parent.GetUIObjectOf(HWND::default(), &children, None) }.map_err(|error| format!("创建门户多选数据对象失败：{error}"))
 }
 
 /// 将稳定引用解析为 IFileOperation 使用的 IShellItem。
@@ -2263,6 +2330,63 @@ mod tests
         std::fs::remove_dir_all(directory).unwrap();
         super::uninitialize_shell_apartment();
     }
+    /// 门户传入非桌面路径时仍执行原生重命名与回收，不永久删除。
+    #[test]
+    fn native_portal_rename_and_recycle()
+    {
+        super::initialize_shell_apartment().unwrap();
+        let directory = std::env::temp_dir().join(format!("desktop-tools-portal-native-{}", crate::tools::time::next_timeline_timestamp())); // 独占夹具目录。
+        std::fs::create_dir(&directory).unwrap();
+        let source = directory.join("原名.txt"); // 不接触用户数据。
+        std::fs::write(&source, "portal-test").unwrap();
+        let owner = super::ShellMenuOwner::create().unwrap(); // 与产品相同的原生 owner。
+        let renamed = super::rename_desktop_item(&owner, source.to_str().unwrap(), "新名.txt").unwrap();
+        assert!(renamed.items.iter().any(|item| item.succeeded));
+        let target = directory.join("新名.txt"); // 实际系统改名结果。
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "portal-test");
+        let recycled = super::delete_desktop_items(&owner, &[target.to_string_lossy().into_owned()], false).unwrap();
+        assert_eq!(recycled.kind, super::ShellOperationKind::Recycle);
+        assert!(!recycled.permanent);
+        assert!(!recycled.aborted);
+        assert!(recycled.items.iter().any(|item| item.succeeded && item.result_reference.is_some()));
+        assert!(!target.exists());
+        drop(owner);
+        std::fs::remove_dir(&directory).unwrap();
+        super::uninitialize_shell_apartment();
+    }
+
+    /// 真实门户多选菜单经过现有 owner 消息循环显示并自动取消。
+    #[test]
+    #[ignore = "需要交互式桌面，会短暂显示门户原生菜单"]
+    fn native_portal_menu_opens_and_cancels()
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{EndMenu, KillTimer, SetTimer};
+        unsafe extern "system" fn cancel_menu(_: super::HWND, _: u32, _: usize, _: u32) { let _ = unsafe { EndMenu() }; }
+        super::initialize_shell_apartment().unwrap();
+        let directory = std::env::temp_dir().join(format!("desktop-tools-portal-menu-{}", crate::tools::time::next_timeline_timestamp())); // 独占测试目录。
+        std::fs::create_dir(&directory).unwrap();
+        let paths = [directory.join("一.txt"), directory.join("二.txt")]; // 真实同目录多选。
+        for path in &paths
+        {
+            std::fs::write(path, "menu-test").unwrap();
+        }
+        let mut owner = super::ShellMenuOwner::create().unwrap(); // 复用产品菜单 owner。
+        let timer = unsafe { SetTimer(Some(owner.hwnd), 1, 500, Some(cancel_menu)) }; // 自动关闭，不调用菜单动作。
+        assert_ne!(timer, 0);
+        let started = std::time::Instant::now(); // 验证菜单确实进入消息循环。
+        let result = super::show_native_context_menu(&mut owner, super::NativeMenuTarget::FolderItems(paths.iter().map(|path| path.to_string_lossy().into_owned()).collect()), 40, 40, &[]);
+        unsafe { KillTimer(Some(owner.hwnd), timer) }.unwrap();
+        assert_eq!(result.unwrap(), None);
+        assert!(started.elapsed().as_millis() >= 100);
+        drop(owner);
+        for path in paths
+        {
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(directory).unwrap();
+        super::uninitialize_shell_apartment();
+    }
+
     /// 隐藏快捷方式后缀不应在用户只修改显示名称时丢失。
     #[test]
     fn shortcut_rename_preserves_hidden_extension()

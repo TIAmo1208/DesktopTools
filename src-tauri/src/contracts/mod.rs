@@ -5,6 +5,7 @@ mod desktop_item;
 pub use desktop_item::ShellDragPreparation;
 pub mod settings;
 mod workspace;
+pub use workspace::FolderPortalInstance;
 pub use workspace::{TileAppearance, TileAppearanceChange, TileTitleMode};
 
 pub use application::{APPLICATION_SNAPSHOT_CHANGED_EVENT, ApplicationError, ApplicationSnapshot, ApplicationStatus, parse_application_status};

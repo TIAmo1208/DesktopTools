@@ -1,7 +1,10 @@
 use std::{os::windows::ffi::OsStrExt, path::Path};
 
 /// 使用系统文件夹选择弹窗，不枚举或上传目录内文件。
-pub fn choose_config_directory(owner: isize) -> Result<Option<String>, String>
+pub fn choose_config_directory(owner: isize) -> Result<Option<String>, String> { choose_directory(owner, "选择配置目录") }
+
+/// 在调用方 UI 线程显示带有明确用途标题的系统目录选择器。
+pub fn choose_directory(owner: isize, title: &str) -> Result<Option<String>, String>
 {
     use windows::Win32::{
         Foundation::{ERROR_CANCELLED, HWND},
@@ -13,7 +16,7 @@ pub fn choose_config_directory(owner: isize) -> Result<Option<String>, String>
         let dialog: IFileOpenDialog = unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)? }; // 系统原生文件夹选择器。
         unsafe {
             dialog.SetOptions(dialog.GetOptions()? | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)?;
-            dialog.SetTitle(w!("选择配置目录"))?;
+            dialog.SetTitle(&windows::core::HSTRING::from(title))?;
             if let Err(error) = dialog.Show(Some(HWND(owner as *mut std::ffi::c_void)))
             {
                 if error.code() == windows::core::HRESULT::from_win32(ERROR_CANCELLED.0)
@@ -28,7 +31,23 @@ pub fn choose_config_directory(owner: isize) -> Result<Option<String>, String>
             Ok(Some(value?))
         }
     })(); // 将原生错误统一转换为设置页可见说明。
-    result.map_err(|error| format!("选择配置目录失败：{error}"))
+    result.map_err(|error| format!("选择目录失败：{error}"))
+}
+
+/// 将真实路径交给系统默认程序打开。
+pub fn open_path(path: &Path) -> Result<(), String>
+{
+    use windows::Win32::{
+        Foundation::HWND,
+        UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
+    };
+    let value = windows::core::HSTRING::from(path.as_os_str().to_string_lossy().as_ref());
+    let result = unsafe { ShellExecuteW(Some(HWND::default()), windows::core::PCWSTR::null(), windows::core::PCWSTR(value.as_ptr()), windows::core::PCWSTR::null(), windows::core::PCWSTR::null(), SW_SHOWNORMAL) };
+    if (result.0 as isize) <= 32
+    {
+        return Err(format!("打开路径失败：{}", result.0 as isize));
+    }
+    Ok(())
 }
 use windows::{
     Foundation::TypedEventHandler,

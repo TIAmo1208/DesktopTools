@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import "./DesktopTileMenu.css";
 
@@ -11,6 +11,7 @@ export interface DesktopTileMenuItem {
     description?: string; // 禁用原因和辅助技术说明。
     children?: DesktopTileMenuItem[]; // 同时显示的二级菜单。
     onSelect?: () => void; // 选择最终命令。
+    separatorBefore?: boolean; // 与前一功能组分离。
 }
 
 /** 呈现同组两级菜单，统一焦点、边缘定位与透明宿主命中。 */
@@ -45,7 +46,7 @@ export const DesktopTileMenu = ({
 
     useLayoutEffect(() => {
         if (active === undefined || !root.current || !child.current) return;
-        const parent = root.current.children[active]?.getBoundingClientRect(); // 当前父项真实位置。
+        const parent = root.current.querySelectorAll<HTMLElement>('li[role="none"]')[active]?.getBoundingClientRect(); // 当前父项真实位置。
         const bounds = child.current.getBoundingClientRect(); // 二级菜单真实尺寸。
         const menuBounds = root.current.getBoundingClientRect(); // 一级菜单边界。
         if (parent)
@@ -78,7 +79,7 @@ export const DesktopTileMenu = ({
     const handleReturn = () => {
         const index = active; // 关闭前保存父项位置。
         setActive(undefined);
-        if (index !== undefined) root.current?.children[index]?.querySelector<HTMLButtonElement>("button")?.focus();
+        if (index !== undefined) root.current?.querySelectorAll<HTMLElement>('li[role="none"]')[index]?.querySelector<HTMLButtonElement>("button")?.focus();
     };
 
     /** 两级菜单共用方向导航与逐级关闭规则。 */
@@ -110,57 +111,59 @@ export const DesktopTileMenu = ({
     /** 一级与二级使用相同命令表面，不复制状态规则。 */
     const renderItems = (entries: DesktopTileMenuItem[], nested: boolean) =>
         entries.map((item, index) => (
-            <li
-                key={item.label}
-                role="none"
-                onPointerEnter={() => {
-                    clearTimeout(timer.current);
-                    if (!nested) timer.current = setTimeout(() => setActive(item.children && !item.disabled ? index : undefined), 200);
-                }}
-            >
-                <button
-                    type="button"
-                    role={item.checked === undefined ? "menuitem" : item.radio ? "menuitemradio" : "menuitemcheckbox"}
-                    aria-checked={item.checked}
-                    disabled={item.disabled}
-                    aria-disabled={item.disabled}
-                    title={item.description}
-                    aria-description={item.description}
-                    aria-haspopup={item.children ? "menu" : undefined}
-                    aria-expanded={item.children ? active === index : undefined}
-                    data-expanded={!nested && active === index ? "true" : undefined}
-                    onKeyDown={(event) => {
-                        if (event.key !== "ArrowRight" || !item.children || item.disabled) return;
-                        event.preventDefault();
-                        event.stopPropagation();
+            <Fragment key={item.label}>
+                {item.separatorBefore && <li className="desktop-tile-menu__separator" role="separator" aria-hidden="true" />}
+                <li
+                    role="none"
+                    onPointerEnter={() => {
                         clearTimeout(timer.current);
-                        focusChild.current = true;
-                        setActive(index);
-                        if (active === index) child.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-                    }}
-                    onClick={() => {
-                        if (item.disabled) return;
-                        clearTimeout(timer.current);
-                        if (item.children) {
-                            focusChild.current = true;
-                            setActive(index);
-                            return;
-                        }
-                        onClose();
-                        item.onSelect?.();
+                        if (!nested) timer.current = setTimeout(() => setActive(item.children && !item.disabled ? index : undefined), 200);
                     }}
                 >
-                    <span className="desktop-tile-menu__check" aria-hidden="true">
-                        {item.checked ? "✓" : ""}
-                    </span>
-                    {item.label}
-                    {item.children && (
-                        <svg className="desktop-tile-menu__arrow" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-                            <path d="m6 4 4 4-4 4" fill="none" stroke="currentColor" />
-                        </svg>
-                    )}
-                </button>
-            </li>
+                    <button
+                        type="button"
+                        role={item.checked === undefined ? "menuitem" : item.radio ? "menuitemradio" : "menuitemcheckbox"}
+                        aria-checked={item.checked}
+                        disabled={item.disabled}
+                        aria-disabled={item.disabled}
+                        title={item.description}
+                        aria-description={item.description}
+                        aria-haspopup={item.children ? "menu" : undefined}
+                        aria-expanded={item.children ? active === index : undefined}
+                        data-expanded={!nested && active === index ? "true" : undefined}
+                        onKeyDown={(event) => {
+                            if (event.key !== "ArrowRight" || !item.children || item.disabled) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            clearTimeout(timer.current);
+                            focusChild.current = true;
+                            setActive(index);
+                            if (active === index) child.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+                        }}
+                        onClick={() => {
+                            if (item.disabled) return;
+                            clearTimeout(timer.current);
+                            if (item.children) {
+                                focusChild.current = true;
+                                setActive(index);
+                                return;
+                            }
+                            onClose();
+                            item.onSelect?.();
+                        }}
+                    >
+                        <span className="desktop-tile-menu__check" aria-hidden="true">
+                            {item.checked ? "✓" : ""}
+                        </span>
+                        {item.label}
+                        {item.children && (
+                            <svg className="desktop-tile-menu__arrow" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                                <path d="m6 4 4 4-4 4" fill="none" stroke="currentColor" />
+                            </svg>
+                        )}
+                    </button>
+                </li>
+            </Fragment>
         ));
 
     return (

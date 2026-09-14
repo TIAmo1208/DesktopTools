@@ -9,7 +9,7 @@ use windows::Win32::System::Ole::DROPEFFECT;
 use windows::core::AgileReference;
 
 use crate::contracts::{DesktopItem, DesktopItemAvailability, DesktopItemError, DesktopItemSnapshot, ShellOperationKind, ShellOperationResult};
-use crate::platform::windows::{NativeMenuCommand, NativeMenuTarget, ShellChangeEvent, ShellChangeWatcher, ShellCompensationAction, ShellMenuOwner, compensate_desktop_items, delete_desktop_items, enumerate_desktop_items, initialize_shell_apartment, open_desktop_items, paste_desktop_items, rename_desktop_item, set_desktop_item_clipboard, show_native_context_menu, start_shell_change_watcher, uninitialize_shell_apartment};
+use crate::platform::windows::{NativeMenuCommand, NativeMenuTarget, ShellChangeEvent, ShellChangeWatcher, ShellCompensationAction, ShellMenuOwner, compensate_desktop_items, delete_desktop_items, enumerate_desktop_items, initialize_shell_apartment, open_desktop_items, paste_desktop_items, paste_folder_portal_items, rename_desktop_item, set_desktop_item_clipboard, set_desktop_item_clipboard_for_paths, show_native_context_menu, start_shell_change_watcher, uninitialize_shell_apartment};
 
 /// 表示发送到专用 Shell STA 线程的请求。
 enum ShellRequest
@@ -61,8 +61,18 @@ enum ShellRequest
         /// 等待系统剪贴板结果的同步通道。
         reply: SyncSender<Result<ShellOperationResult, String>>,
     },
+    /// 将门户绝对路径集合写入系统剪贴板。
+    SetClipboardPaths
+    {
+        references: Vec<String>, cut: bool, reply: SyncSender<Result<ShellOperationResult, String>>
+    },
     /// 将系统 Shell 剪贴板粘贴到桌面命名空间。
     Paste(SyncSender<Result<ShellOperationResult, String>>),
+    /// 将系统剪贴板粘贴到指定门户目录。
+    PasteFolder
+    {
+        directory: String, reply: SyncSender<Result<ShellOperationResult, String>>
+    },
     /// 经 COM 封送在 Shell STA 执行原生投放，结果通道不阻塞工作线程。
     Transfer
     {
@@ -70,6 +80,11 @@ enum ShellRequest
         data: AgileReference<IDataObject>,                   // 在目标 apartment 解析的数据对象代理。
         effect: DROPEFFECT,                                  // 已协商的复制或移动效果。
         reply: Sender<Result<ShellOperationResult, String>>, // 宿主通过消息泵等待的结果通道。
+    },
+    /// 将封送的 Shell 数据传输到门户绑定目录。
+    TransferFolder
+    {
+        data: AgileReference<IDataObject>, effect: DROPEFFECT, references: Vec<String>, directory: String, reply: Sender<Result<ShellOperationResult, String>>
     },
     /// 消费准备凭据并封送完整数据，真正拖放由接收输入的宿主 UI STA 执行。
     TakePreparedDrag
@@ -230,9 +245,17 @@ impl ShellStaRuntime
                         {
                             let _ = reply.send(set_desktop_item_clipboard(&menu_owner, &references, cut));
                         }
+                        ShellRequest::SetClipboardPaths { references, cut, reply } =>
+                        {
+                            let _ = reply.send(set_desktop_item_clipboard_for_paths(&references, cut));
+                        }
                         ShellRequest::Paste(reply) =>
                         {
                             let _ = reply.send(paste_desktop_items(&menu_owner));
+                        }
+                        ShellRequest::PasteFolder { directory, reply } =>
+                        {
+                            let _ = reply.send(paste_folder_portal_items(&menu_owner, &directory));
                         }
                         ShellRequest::Transfer { data, effect, references, reply } =>
                         {
@@ -258,6 +281,33 @@ impl ShellStaRuntime
                                 Err(error) =>
                                 {
                                     let _ = reply.send(Err(format!("启动文件传输线程失败：{error}")));
+                                }
+                            }
+                        }
+                        ShellRequest::TransferFolder { data, effect, references, directory, reply } =>
+                        {
+                            transfers.retain(|worker| !worker.is_finished());
+                            let completed_reply = reply.clone();
+                            match thread::Builder::new().name("desktop-tools-folder-transfer".into()).spawn(move || {
+                                if let Err(error) = initialize_shell_apartment()
+                                {
+                                    let _ = completed_reply.send(Err(error));
+                                    return;
+                                }
+                                let result = (|| {
+                                    let owner = ShellMenuOwner::create()?;
+                                    let object = data.resolve().map_err(|error| format!("解析门户投放数据代理失败：{error}"))?;
+                                    crate::platform::windows::transfer_data_to_directory(&owner, &object, effect, Some(&directory), Some(&references))
+                                })();
+                                drop(data);
+                                uninitialize_shell_apartment();
+                                let _ = completed_reply.send(result);
+                            })
+                            {
+                                Ok(worker) => transfers.push(worker),
+                                Err(error) =>
+                                {
+                                    let _ = reply.send(Err(format!("门户文件传输线程启动失败：{error}")));
                                 }
                             }
                         }
@@ -362,11 +412,27 @@ impl ShellStaRuntime
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
+    /// 在所属 STA 将门户路径集合写入剪贴板。
+    fn set_clipboard_paths(&self, references: Vec<String>, cut: bool) -> Result<ShellOperationResult, String>
+    {
+        let (reply, response) = mpsc::sync_channel(0);
+        self.sender.send(ShellRequest::SetClipboardPaths { references, cut, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
+    }
+
     /// 在专用 STA 线程粘贴系统 Shell 剪贴板。
     fn paste(&self) -> Result<ShellOperationResult, String>
     {
         let (reply, response) = mpsc::sync_channel(0); // 等待 Shell 粘贴结果的同步通道。
         self.sender.send(ShellRequest::Paste(reply)).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
+    }
+
+    /// 在专用 STA 粘贴到门户当前目录。
+    fn paste_folder(&self, directory: String) -> Result<ShellOperationResult, String>
+    {
+        let (reply, response) = mpsc::sync_channel(0);
+        self.sender.send(ShellRequest::PasteFolder { directory, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
@@ -550,6 +616,23 @@ impl DesktopItemState
         self.record_operation(result)
     }
 
+    /// 门户边界校验后的路径复用同一 STA 和原生回收操作，保留部分成功及撤销记录。
+    pub(crate) fn recycle_portal_items(&self, references: Vec<String>) -> Result<ShellOperationResult, DesktopItemError>
+    {
+        let result = self.runtime.delete(references, false).map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 普通 Delete 必须走系统回收行为。
+        self.record_operation(result)
+    }
+
+    /// 门户已校验单项使用同一 STA 原生重命名与撤销记录。
+    pub(crate) fn rename_portal_item(&self, reference: String, new_name: String) -> Result<ShellOperationResult, DesktopItemError>
+    {
+        let result = self.runtime.rename(reference, new_name).map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // Shell 负责实际文件语义。
+        self.record_operation(result)
+    }
+
+    /// 门户路径集合写入系统剪贴板。
+    pub(crate) fn set_portal_clipboard(&self, references: Vec<String>, cut: bool) -> Result<ShellOperationResult, DesktopItemError> { self.runtime.set_clipboard_paths(references, cut).map_err(|error| DesktopItemError::shell_operation_failed(&error)) }
+
     /// 将当前完整选择集合复制或剪切到系统 Shell 剪贴板。
     pub fn set_clipboard(&self, item_ids: &[String], cut: bool) -> Result<ShellOperationResult, DesktopItemError>
     {
@@ -573,12 +656,24 @@ impl DesktopItemState
         self.record_operation(result)
     }
 
+    /// 将系统剪贴板原生粘贴到门户当前目录。
+    pub(crate) fn paste_portal(&self, directory: String) -> Result<ShellOperationResult, DesktopItemError> { self.runtime.paste_folder(directory).map_err(|error| DesktopItemError::shell_operation_failed(&error)).and_then(|result| self.record_operation(result)) }
+
     /// 原生宿主提交已封送的投放数据，返回后宿主继续处理消息直到结果完成。
     pub(crate) fn begin_drop_transfer(&self, data: &IDataObject, effect: DROPEFFECT, references: Vec<String>) -> Result<Receiver<Result<ShellOperationResult, String>>, DesktopItemError>
     {
         let data = AgileReference::new(data).map_err(|error| DesktopItemError::shell_operation_failed(&format!("封送投放数据失败：{error}")))?; // COM 提供跨 apartment 的引用，不传递裸接口指针。
         let (reply, result) = mpsc::channel(); // 无阻塞结果交接，宿主取消等待也不阻塞 Shell STA。
         self.runtime.sender.send(ShellRequest::Transfer { data, effect, references, reply }).map_err(|_| DesktopItemError::shell_operation_failed(&"Shell STA 线程已经停止"))?;
+        Ok(result)
+    }
+
+    /// 在 Shell STA 将封送数据传输到门户目录。
+    pub(crate) fn begin_folder_drop_transfer(&self, data: &IDataObject, effect: DROPEFFECT, references: Vec<String>, directory: String) -> Result<Receiver<Result<ShellOperationResult, String>>, DesktopItemError>
+    {
+        let data = AgileReference::new(data).map_err(|error| DesktopItemError::shell_operation_failed(&format!("封送门户投放数据失败：{error}")))?;
+        let (reply, result) = mpsc::channel();
+        self.runtime.sender.send(ShellRequest::TransferFolder { data, effect, references, directory, reply }).map_err(|_| DesktopItemError::shell_operation_failed(&"Shell STA 线程已经停止"))?;
         Ok(result)
     }
 

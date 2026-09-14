@@ -15,11 +15,12 @@ pub(crate) struct DropInput
 /// 预检后固定的外部投放计划，文件执行期间不重新解释目标。
 pub(crate) struct ExternalDrop
 {
-    target: DropTarget,          // 共享归属与原视图空间意图。
-    snapshot: WorkspaceSnapshot, // 预检时的布局，用于隔离同期新增项目。
-    sources: Vec<String>,        // 原始顺序。
-    existing: Vec<String>,       // 只改变布局的已知项目。
-    pub transfers: Vec<String>,  // 平台需要执行真实传输的完整来源。
+    target: DropTarget,              // 共享归属与原视图空间意图。
+    snapshot: WorkspaceSnapshot,     // 预检时的布局，用于隔离同期新增项目。
+    sources: Vec<String>,            // 原始顺序。
+    existing: Vec<String>,           // 只改变布局的已知项目。
+    pub transfers: Vec<String>,      // 平台需要执行真实传输的完整来源。
+    pub portal_root: Option<String>, // 门户目标绑定根目录。
 }
 
 /// 向原生会话提供当前布局事实，应用状态访问集中于应用层。
@@ -31,7 +32,9 @@ fn target_at(input: DropInput, snapshot: &WorkspaceSnapshot, dragged: &[String])
     let fence_id = drop_fence_at(&input.pointer, &input.regions, snapshot); // 共享围栏身份。
     let position = WorkspacePoint { left: input.pointer.left.max(0.0), top: input.pointer.top.max(0.0) }; // 保存位置不允许越过工作区原点。
     let region = input.regions.iter().filter(|region| position.left >= region.left && position.left < region.left + region.width && position.top >= region.top && position.top < region.top + region.height).max_by_key(|region| region.priority); // 最高语义接收者。
-    if fence_id.is_none() && !region.is_some_and(|region| region.kind == "workspace-background" || (region.kind == "desktop-item" && snapshot.unclassified_items.iter().any(|item| item.stable_reference == region.id)))
+    let portal = region.filter(|region| region.kind == "component").and_then(|region| snapshot.folder_portals.iter().find(|portal| portal.id == region.id));
+    let portal_path = region.and_then(|region| region.target_path.clone());
+    if fence_id.is_none() && portal.is_none() && !region.is_some_and(|region| region.kind == "workspace-background" || (region.kind == "desktop-item" && snapshot.unclassified_items.iter().any(|item| item.stable_reference == region.id)))
     {
         return Ok(None);
     }
@@ -44,7 +47,7 @@ fn target_at(input: DropInput, snapshot: &WorkspaceSnapshot, dragged: &[String])
     {
         None
     }; // 桌面插入与围栏插入互斥。
-    Ok(Some(DropTarget { monitor_id: input.monitor_id, revision: snapshot.revision, fence_id, before_item_id, position, free: false, insertion, scrolls: input.scrolls }))
+    Ok(Some(DropTarget { monitor_id: input.monitor_id, revision: snapshot.revision, fence_id, portal_id: portal.map(|portal| portal.id.clone()), portal_path, before_item_id, position, free: false, insertion, scrolls: input.scrolls }))
 }
 
 /// 提交内部布局投放，不请求正被 DoDragDrop 占用的 Shell STA。
@@ -85,18 +88,26 @@ pub(crate) fn prepare_external(app: &AppHandle, snapshot: WorkspaceSnapshot, inp
     {
         return Ok(None);
     }; // 无效目标不启动文件操作。
-    app.state::<WorkspaceState>().preflight_drop(&target, &existing, transfers.len()).map_err(|error| error.message)?;
-    Ok(Some(ExternalDrop { target, snapshot, sources, existing, transfers }))
+    let portal_root = target.portal_path.clone().or_else(|| target.portal_id.as_ref().and_then(|id| snapshot.folder_portals.iter().find(|portal| &portal.id == id)).map(|portal| portal.root_path.clone()));
+    if portal_root.is_none()
+    {
+        app.state::<WorkspaceState>().preflight_drop(&target, &existing, transfers.len()).map_err(|error| error.message)?;
+    }
+    Ok(Some(ExternalDrop { target, snapshot, sources, existing, transfers, portal_root }))
 }
 
 /// 消费文件事实，协调环境、共享归属和同一次撤销记录；不重新执行文件传输。
 pub(crate) fn complete_external(app: &AppHandle, plan: ExternalDrop, mut completed: ShellOperationResult) -> (bool, bool, Option<ShellOperationResult>)
 {
-    let ExternalDrop { target: drop_target, snapshot, sources, existing, transfers } = plan; // 释放时冻结的业务输入。
+    let ExternalDrop { target: drop_target, snapshot, sources, existing, transfers, portal_root } = plan; // 释放时冻结的业务输入。
     let workspace = app.state::<WorkspaceState>(); // 当前权威工作区。
     let state = app.state::<crate::shell::DesktopItemState>(); // Shell 快照与补偿记录入口。
     let mut committed = false; // 文件成功不等于布局提交成功。
     let succeeded = completed.items.iter().any(|item| item.succeeded); // 只有文件实际成功才返回文件传输效果。
+    if portal_root.is_some()
+    {
+        return (succeeded, false, state.record_drop_transfer(completed, None).ok());
+    } // 门户拖放只改变真实目录，不改变桌面布局。
     let mut layout_change = None;
     let disposition = (|| -> Result<(), String> {
         let items = if transfers.is_empty() { state.snapshot() } else { state.refresh() }.map_err(|error| error.message)?;
@@ -271,7 +282,7 @@ mod tests
             "fences": [{ "id": "fence", "title": "", "bounds": { "left": 0, "top": 0, "width": 200, "height": 200 }, "members": ["member"], "layoutMode": "tile", "scrollTop": 0, "collapsed": false, "lastExpandedHeight": 200, "zIndex": 1 }]
         }))
         .unwrap(); // 当前共享归属的最小快照。
-        let mut regions = vec![HitRegion { id: "fence".into(), kind: "fence".into(), left: 10.0, top: 20.0, width: 100.0, height: 100.0, priority: 1 }]; // 宿主发布的 DIP 围栏区域。
+        let mut regions = vec![HitRegion { id: "fence".into(), kind: "fence".into(), left: 10.0, top: 20.0, width: 100.0, height: 100.0, priority: 1, target_path: None }]; // 宿主发布的 DIP 围栏区域。
         let point = WorkspacePoint { left: 20.0, top: 30.0 }; // 平台已转换的工作区 DIP。
         assert_eq!(super::drop_fence_at(&point, &regions, &snapshot).as_deref(), Some("fence"));
         assert_eq!(super::drop_fence_at(&WorkspacePoint { left: 110.0, top: 30.0 }, &regions, &snapshot), None);

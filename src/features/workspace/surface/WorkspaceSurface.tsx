@@ -18,6 +18,8 @@ import { useWorkspace } from "../state/useWorkspace";
 import { useDesktopHostSurface } from "./useDesktopHostSurface";
 import { useCrossMonitorPreview } from "./useCrossMonitorPreview";
 import { projectWorkspaceSurface } from "./workspaceSurfaceProjection";
+import { FolderPortalSurface } from "../../folder-portals/FolderPortalSurface";
+import { usePreferences } from "../../settings/PreferencesProvider";
 
 /** 将未知错误转换为桌面项目操作说明。 */
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : "桌面项目请求失败");
@@ -33,6 +35,7 @@ export const WorkspaceSurface = () => {
     const [desktopItemStatus, setDesktopItemStatus] = useState<string>();
     // 当前透明宿主使用的权威工作区状态。
     const workspace = useWorkspace(true);
+    const { preferences } = usePreferences(); // 门户开关仅控制显示，保留已选目录。
     useEffect(() => {
         if (workspace.status) setDesktopItemStatus(workspace.status);
     }, [workspace.status]); // 统一撤销或重做的部分恢复说明复用工作区状态区域呈现。
@@ -166,7 +169,23 @@ export const WorkspaceSurface = () => {
                 onItemInput={desktopHost.handleItemInput}
                 onBeginInputDrag={desktopHost.beginInputDrag}
                 onEndInputDrag={desktopHost.endInputDrag}
-            />
+            >
+                {preferences?.folderPortalEnabled &&
+                    workspace.snapshot?.folderPortals
+                        ?.filter((portal) => portal.monitorId === desktopHost.host?.monitor.id)
+                        .map((portal) => (
+                            <FolderPortalSurface
+                                key={portal.id}
+                                portal={portal}
+                                onCommand={handleWorkspaceCommand}
+                                currentMonitor={desktopHost.host?.monitor}
+                                monitors={desktopHost.snapshot?.hosts.map((host) => host.monitor) ?? []}
+                                onBeginInputDrag={desktopHost.beginInputDrag}
+                                onEndInputDrag={desktopHost.endInputDrag}
+                                onFailure={(error) => setDesktopItemFailure(errorMessage(error))}
+                            />
+                        ))}
+            </FenceWorkspace>
         </main>
     );
 };

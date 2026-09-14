@@ -5,7 +5,12 @@ import type { HitRegion } from "../../../contracts/desktopHost.ts";
 export const collectHitRegions = (): HitRegion[] =>
     projectHitRegions(
         [...document.querySelectorAll<HTMLElement>("[data-hit-id]")]
-            .filter((element) => !element.closest('[data-cross-drag-hidden="true"]') && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden")
+            .filter(
+                (element) =>
+                    !element.closest('[data-cross-drag-hidden="true"]') &&
+                    element.getClientRects().length > 0 &&
+                    getComputedStyle(element).visibility !== "hidden",
+            )
             .map((element) => {
                 const bounds = element.getBoundingClientRect(); // 当前语义对象 CSS 像素边界。
                 const surface = element.closest<HTMLElement>(".desktop-tile, .desktop-tile-menu") ?? element; // 控件所属的真实公共表面。
@@ -18,6 +23,7 @@ export const collectHitRegions = (): HitRegion[] =>
                     width: bounds.width,
                     height: bounds.height,
                     priority: Number(element.dataset.hitPriority ?? "0"),
+                    targetPath: element.dataset.folderPortalPath,
                     stackingOrder: Number.parseInt(getComputedStyle(surface).zIndex, 10) || 0,
                     clip,
                 };

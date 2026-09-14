@@ -47,7 +47,9 @@ export const createWorkspaceDropTarget = (monitorId: string, onScroll: (drag: Cr
                 .elementsFromPoint(drag.pointer.left, drag.pointer.top)
                 .map((node) => node.closest<HTMLElement>(".desktop-tile"))
                 .find(Boolean); // 最高格子决定接收能力，不能穿透。
-            drop.rejected = Boolean(tile && !tile.dataset.fenceId);
+            const portal = tile?.dataset.portalId;
+            drop.rejected = Boolean(tile && !tile.dataset.fenceId && !portal);
+            if (portal) drop.portalId = portal;
             const element = drop.rejected
                 ? undefined
                 : document

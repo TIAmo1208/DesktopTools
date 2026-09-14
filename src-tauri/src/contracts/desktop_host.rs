@@ -132,6 +132,9 @@ pub struct HitRegion
     pub height: f64,
     /// 重叠区域输入优先级。
     pub priority: i32,
+    /// 门户当前浏览目录，供原生拖放锁定目标。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_path: Option<String>,
 }
 
 /// React 双帧完成后发布的宿主准备证据。

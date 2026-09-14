@@ -310,6 +310,19 @@ impl Default for WorkspaceInteractionSnapshot
     fn default() -> Self { Self { revision: 0, selected_item_ids: Vec::new(), selection_anchor_id: None, keyboard_focus: WorkspaceFocusTarget::Background } }
 }
 
+/// 门户实例的持久路径和几何，重复路径仍拥有不同身份。
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderPortalInstance
+{
+    pub id: String,                 // 稳定实例身份。
+    pub root_path: String,          // 绑定目录，不保存会话子目录。
+    pub monitor_id: String,         // 持久显示器归属。
+    pub bounds: WorkspaceRect,      // 展开时的几何边界。
+    pub z_index: u32,               // 持久层级。
+    pub appearance: TileAppearance, // 公共格子外观。
+}
+
 /// Rust 发布给 React 的不可变工作区快照。
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -335,6 +348,8 @@ pub struct WorkspaceSnapshot
     /// 统一工作区持久化的完整组件实例集合。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<ComponentInstanceSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folder_portals: Vec<FolderPortalInstance>, // 独立门户实例集合。
     /// 统一工作区的运行期交互状态。
     #[serde(default)]
     pub interaction: WorkspaceInteractionSnapshot,
@@ -471,6 +486,30 @@ pub enum WorkspaceInteractionCommand
 #[serde(rename_all = "camelCase", tag = "type", rename_all_fields = "camelCase")]
 pub enum WorkspaceCommand
 {
+    /// 门户公共外观与布局历史分离，标题仍由绑定目录决定。
+    #[serde(rename = "set-folder-portal-appearance")]
+    SetFolderPortalAppearance
+    {
+        portal_id: String, change: TileAppearanceChange
+    },
+    /// 每次创建独立门户，不对路径去重。
+    #[serde(rename = "create-folder-portal")]
+    CreateFolderPortal
+    {
+        root_path: String, bounds: WorkspaceRect
+    },
+    /// 提交门户的移动和缩放结果。
+    #[serde(rename = "update-folder-portal-bounds")]
+    UpdateFolderPortalBounds
+    {
+        portal_id: String, bounds: WorkspaceRect
+    },
+    /// 只移除实例，不操作绑定目录。
+    #[serde(rename = "remove-folder-portal")]
+    RemoveFolderPortal
+    {
+        portal_id: String
+    },
     /// 更新一个格子的共享外观，不进入布局历史。
     #[serde(rename = "set-tile-appearance")]
     SetTileAppearance

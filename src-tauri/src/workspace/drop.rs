@@ -9,6 +9,8 @@ pub(crate) struct DropTarget
     pub monitor_id: String,                        // 原空间目标显示器。
     pub revision: u64,                             // 开始传输前必须一致的布局版本。
     pub fence_id: Option<String>,                  // 全局稳定围栏身份；None 表示未归类。
+    pub portal_id: Option<String>,                 // 文件夹门户实例身份；与围栏和未归类互斥。
+    pub portal_path: Option<String>,               // 当前门户目录，供真实投放锁定目标。
     pub before_item_id: Option<String>,            // 手动顺序的稳定后继。
     pub position: WorkspacePoint,                  // 已扣除锚点偏移的释放位置。
     pub free: bool,                                // 内部 Alt 自由定位。
@@ -441,7 +443,7 @@ mod tests
             state.reconcile_host_monitors(&monitors, &["existing".into()], &[], &[]).unwrap();
             let created = state.apply(WorkspaceCommand::CreateFence { title: " ".into(), bounds: WorkspaceRect { left: 40.0, top: 40.0, width: 320.0, height: 240.0 } }).unwrap();
             let fence = created.fences[0].id.clone();
-            let target = DropTarget { monitor_id: "screen".into(), revision: created.revision, fence_id: Some(fence.clone()), before_item_id: None, position: WorkspacePoint { left: 0.0, top: 0.0 }, free: false, insertion: None, scrolls: Vec::new() };
+            let target = DropTarget { monitor_id: "screen".into(), revision: created.revision, fence_id: Some(fence.clone()), portal_id: None, portal_path: None, before_item_id: None, position: WorkspacePoint { left: 0.0, top: 0.0 }, free: false, insertion: None, scrolls: Vec::new() };
             let disk = std::fs::read(&path).unwrap();
             state.preflight_drop(&target, &["existing".into()], 1).unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), disk);

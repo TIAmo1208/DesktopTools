@@ -397,7 +397,7 @@ mod tests
     {
         let monitor = crate::contracts::DesktopHostMonitor { id: "preview-screen".into(), name: "preview-screen".into(), primary: false, x: -1000, y: 0, width: 1000, height: 800, work_x: -1000, work_y: 0, work_width: 1000, work_height: 800, scale_factor: 2.0, dpi: 192 }; // 负坐标与混合 DPI。
         let point = POINTL { x: -970, y: 60 }; // 对应 DIP (15, 30)。
-        let preview = DropPreview { session: "preview-test".into(), sequence: 2, geometry_revision: 1, revision: 7, monitor_id: monitor.id.clone(), pointer: crate::contracts::WorkspacePoint { left: 15.0, top: 30.0 }, regions: vec![crate::contracts::HitRegion { id: "background".into(), kind: "workspace-background".into(), left: 0.0, top: 0.0, width: 500.0, height: 400.0, priority: 1 }], fence_scrolls: Vec::new() }; // 已呈现的合法几何。
+        let preview = DropPreview { session: "preview-test".into(), sequence: 2, geometry_revision: 1, revision: 7, monitor_id: monitor.id.clone(), pointer: crate::contracts::WorkspacePoint { left: 15.0, top: 30.0 }, regions: vec![crate::contracts::HitRegion { id: "background".into(), kind: "workspace-background".into(), left: 0.0, top: 0.0, width: 500.0, height: 400.0, priority: 1, target_path: None }], fence_scrolls: Vec::new() }; // 已呈现的合法几何。
         publish_preview(preview.clone()).unwrap();
         assert!(confirmed_preview(&preview.session, 2, 7, &monitor, &point).is_none());
         set_preview_session(&preview.session, true);
