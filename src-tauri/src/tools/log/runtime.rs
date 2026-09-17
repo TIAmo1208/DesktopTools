@@ -42,7 +42,10 @@ pub fn init(mut config: LogConfig) -> Result<(), LogError>
     if config.file_output
         && let Err(error) = worker.initialize_file_output()
     {
-        eprintln!("日志文件输出已关闭，目录无法使用：\"{}\"：{error}", config.directory.display());
+        if cfg!(debug_assertions)
+        {
+            eprintln!("日志文件输出已关闭，目录无法使用：\"{}\"：{error}", config.directory.display());
+        }
         config.file_output = false;
     }
 
@@ -77,7 +80,7 @@ pub fn shutdown() -> Result<(), LogError>
     response.recv().map_err(|_| LogError::WorkerStopped)?;
     runtime.worker.join().map_err(|_| LogError::WorkerPanicked)?;
 
-    if file_output
+    if cfg!(debug_assertions) && file_output
     {
         // 展示给用户的绝对日志目录。
         let absolute_directory = absolute_path(&directory);
@@ -204,7 +207,7 @@ fn enqueue(level: LogLevel, level_name: &'static str, message: String, source_fi
     // 本条记录的文件输出决策。
     let file_output = runtime.config.file_output && runtime.config.file_level.allows(level);
     // 本条记录的控制台输出决策。
-    let console_output = runtime.config.console_level.allows(level);
+    let console_output = cfg!(debug_assertions) && runtime.config.console_level.allows(level);
     if !file_output && !console_output
     {
         return Ok(());

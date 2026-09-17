@@ -78,18 +78,25 @@ impl super::WorkspaceState
                 let target = candidate.fence_mut(&fence.id)?;
                 let successor = fence.members.iter().skip(index + 1).find_map(|id| target.members.iter().position(|current| current == id)).unwrap_or(target.members.len()); // 后继不存在时追加，保留其他并发成员。
                 target.members.insert(successor, actual.clone());
+                candidate.unclassified_items.retain(|item| &item.stable_reference != actual);
+            }
+            else if let Some(wanted) = desired.unclassified_items.iter().find(|item| &item.stable_reference == original)
+                && (file_change || expected_owner.is_some())
+            {
+                let mut position = wanted.clone(); // 历史恢复明确保存的桌面位置。
+                position.stable_reference.clone_from(actual);
+                candidate.unclassified_items.retain(|item| &item.stable_reference != actual);
+                candidate.unclassified_items.push(position);
             }
             if let Some(item) = candidate.unclassified_items.iter_mut().find(|item| &item.stable_reference == actual)
                 && let Some(wanted) = desired.unclassified_items.iter().find(|item| &item.stable_reference == original)
                 && let Some(applied) = expected.unclassified_items.iter().find(|item| &item.stable_reference == original)
+                && (file_change || (item.position == applied.position && item.monitor_id == applied.monitor_id))
             {
-                if file_change || (item.position == applied.position && item.monitor_id == applied.monitor_id)
-                {
-                    item.position = wanted.position;
-                    item.monitor_id.clone_from(&wanted.monitor_id);
-                    item.projection_position = None;
-                    item.projection_monitor_id = None;
-                }
+                item.position = wanted.position;
+                item.monitor_id.clone_from(&wanted.monitor_id);
+                item.projection_position = None;
+                item.projection_monitor_id = None;
             }
             restored.push(original.clone());
         }
@@ -138,6 +145,21 @@ impl super::WorkspaceState
                 } // 部分文件未撤销时不能把其他项目恢复进仍被占用的位置。
             }
         }
+        for (_, _, actual, _) in mappings.iter().filter(|(original, _, _, _)| restored.contains(original))
+        {
+            let Some(index) = candidate.unclassified_items.iter().position(|item| &item.stable_reference == actual)
+            else
+            {
+                continue;
+            }; // 只调整本次实际恢复的桌面项目。
+            let item = &candidate.unclassified_items[index]; // 保存的位置可能已被后续独立操作使用。
+            if candidate.unclassified_items.iter().any(|other| other.stable_reference != item.stable_reference && other.monitor_id == item.monitor_id && other.position == item.position)
+            {
+                let mut item = candidate.unclassified_items.remove(index); // 自身不参与空格计算。
+                item.position = candidate.nearest_unclassified_position(&item.monitor_id, item.position)?;
+                candidate.unclassified_items.insert(index, item);
+            }
+        }
         self.sort_fences(&mut candidate)?;
         candidate.revision = current.revision.max(candidate.revision).saturating_add(1);
         candidate.validate()?;
@@ -167,7 +189,14 @@ impl super::WorkspaceState
             {
                 return Err(WorkspaceError::invalid_command("投放模拟身份冲突"));
             }
-            let position = (0..grid_capacity(grid)?).map(|slot| grid_position(grid, slot)).find(|point| occupied.insert((point.left.to_bits(), point.top.to_bits()))).ok_or_else(|| WorkspaceError::invalid_command("投放目标空间不足"))?;
+            let position = if target.fence_id.is_some()
+            {
+                grid_position(grid, 0)
+            }
+            else
+            {
+                (0..grid_capacity(grid)?).map(|slot| grid_position(grid, slot)).find(|point| occupied.insert((point.left.to_bits(), point.top.to_bits()))).ok_or_else(|| WorkspaceError::invalid_command("投放目标空间不足"))?
+            }; // 围栏投放不预留桌面容量。
             candidate.unclassified_items.push(super::UnclassifiedItemSnapshot { stable_reference: id.clone(), monitor_id: monitor_id.clone(), projection_monitor_id: None, projection_position: None, position, z_index: 0 });
             ids.push(id);
         }
@@ -176,20 +205,38 @@ impl super::WorkspaceState
     }
 
     /// 文件事实协调后一次保存准确归属，由 Shell 联合历史记录本次操作。
-    pub(crate) fn commit_external_drop(&self, target: &DropTarget, item_ids: &[String], layout_only_ids: &[String]) -> Result<(WorkspaceSnapshot, DropLayoutChange), WorkspaceError>
+    pub(crate) fn commit_external_drop(&self, target: &DropTarget, item_ids: &[String], layout_only_ids: &[String], files: &crate::contracts::DesktopItemSnapshot) -> Result<(WorkspaceSnapshot, DropLayoutChange), WorkspaceError>
     {
+        if item_ids.iter().any(|id| !files.items.iter().any(|item| &item.stable_reference == id))
+        {
+            return Err(WorkspaceError::invalid_command("投放结果未出现在 Shell 项目集合"));
+        }
         let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 文件传输期间的后续操作必须保留。
         let imported = self.explorer_layout_imported.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 共同保存的导入状态。
+        let mut history = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 与环境协调采用相同锁顺序。
+        let mut names = self.item_names.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 文件事实与排序名称在保存成功后共同提交。
+        let next_names = files.items.iter().map(|item| (item.stable_reference.clone(), item.display_name.to_lowercase())).collect(); // 本次完整 Shell 名称观察。
         let before = current.clone(); // 实际提交前状态，用于部分补偿。
         let mut candidate = before.clone(); // 保存前不改变内存。
+        if target.fence_id.is_some()
+        {
+            for id in item_ids
+            {
+                if candidate.contains_item(id)
+                {
+                    continue;
+                }
+                candidate.unclassified_items.push(super::UnclassifiedItemSnapshot { stable_reference: id.clone(), monitor_id: target.monitor_id.clone(), projection_monitor_id: None, projection_position: None, position: target.position, z_index: 0 });
+            } // 调用方已按 Shell 成功结果校验身份；围栏提交前的临时记录不占桌面容量、不持久化。
+        }
         candidate.apply_drop(target, item_ids)?;
-        self.sort_fences(&mut candidate)?;
+        Self::sort_fences_with_names(&mut candidate, &next_names);
         candidate.revision = current.revision.saturating_add(1);
         candidate.validate()?;
-        let mut history = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 保存前确认重做分支可清理。
         let store = super::save_workspace_store(&self.persistence_path, &candidate, *imported).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 持久化后再提交联合历史结果。
         history.redo.clear();
         *current = candidate.clone();
+        *names = next_names;
         self.schedule_auto_snapshot(store);
         Ok((candidate.clone(), DropLayoutChange { before, after: candidate, layout_only_ids: layout_only_ids.to_vec(), item_ids: item_ids.to_vec() }))
     }
@@ -228,9 +275,9 @@ impl WorkspaceSnapshot
         {
             return Err(WorkspaceError::invalid_command("拖动项目集合无效"));
         }
-        let members = self.fences.iter().flat_map(|fence| fence.members.iter()).collect::<HashSet<_>>(); // 围栏来源占位不阻挡桌面落点，提交时由领域修复占位。
+        let members = self.fences.iter().flat_map(|fence| fence.members.iter()).collect::<HashSet<_>>(); // 桌面落位仅使用未归类项目，围栏身份不占槽位。
         let positions = self.unclassified_items.iter().filter(|item| item_ids.contains(&item.stable_reference) || (!members.contains(&item.stable_reference) && item.projection_monitor_id.as_deref().unwrap_or(&item.monitor_id) == monitor_id)).map(|item| (&item.stable_reference, item.projection_position.unwrap_or(item.position))).collect::<Vec<_>>(); // 与前端目标屏投影相同的稳定输入顺序。
-        let sources = item_ids.iter().map(|id| positions.iter().find(|(candidate, _)| *candidate == id).map(|(_, point)| *point).ok_or_else(|| WorkspaceError::invalid_command("拖动项目不存在"))).collect::<Result<Vec<_>, _>>()?; // 完整选择必须可解析。
+        let sources = item_ids.iter().enumerate().map(|(index, id)| positions.iter().find(|(candidate, _)| *candidate == id).map(|(_, point)| *point).or_else(|| self.contains_item(id).then(|| grid_position(self.grid, index as u32))).ok_or_else(|| WorkspaceError::invalid_command("拖动项目不存在"))).collect::<Result<Vec<_>, _>>()?; // 已有成员采用本次渲染来源，外部投放缺少几何时按当前顺序排列。
         let sources = if let Some(rendered) = source_positions
         {
             if rendered.len() != item_ids.len()
@@ -258,7 +305,7 @@ impl WorkspaceSnapshot
         }
         let grid = self.monitor_grids.iter().find(|entry| entry.monitor_id == monitor_id).map(|entry| entry.grid).unwrap_or(self.grid); // 当前目标显示器的有效网格。
         let capacity = grid_capacity(grid)?; // 复用领域网格上限校验。
-        // 按原型相同的顺序为离网项目分配最近的未占槽位。
+        // 按工作区列优先顺序为离网项目分配最近的未占槽位。
         let assign = |exclude_dragged: bool| {
             let mut used = HashSet::new(); // 已分配的列优先网格槽位。
             let mut slots = HashMap::new(); // 项目对应的稳定槽位。
@@ -290,7 +337,7 @@ impl WorkspaceSnapshot
         if let Some((target, direction)) = insertion
             && !item_ids.contains(target)
         {
-            let vertical = matches!(direction.as_str(), "up" | "down"); // 与原型 resolveGridInsertion 相同的传播轴。
+            let vertical = matches!(direction.as_str(), "up" | "down"); // 上下插入沿列传播，左右插入沿行传播。
             let before = matches!(direction.as_str(), "left" | "up");
             if !matches!(direction.as_str(), "left" | "right" | "up" | "down")
             {
@@ -404,120 +451,11 @@ impl WorkspaceSnapshot
                 return Ok(item_ids.iter().zip(slots).map(|(id, slot)| WorkspaceItemPlacement { item_id: id.clone(), position: grid_position(grid, slot) }).collect());
             }
         }
-        let slots = (0..capacity).map(|offset| (candidates[0] + offset) % capacity).filter(|slot| !occupied.contains(slot)).take(item_ids.len()); // 组形状无法保留时按原型循环填充空槽。
+        let slots = (0..capacity).map(|offset| (candidates[0] + offset) % capacity).filter(|slot| !occupied.contains(slot)).take(item_ids.len()); // 组形状无法保留时从首选槽位循环填充空槽。
         Ok(item_ids.iter().zip(slots).map(|(id, slot)| WorkspaceItemPlacement { item_id: id.clone(), position: grid_position(grid, slot) }).collect())
     }
 }
 
 #[cfg(test)]
-mod tests
-{
-    use super::*;
-
-    /// 原生内部投放按围栏可见排列落位，不恢复分散的旧桌面坐标。
-    #[test]
-    fn internal_drop_uses_rendered_group_geometry()
-    {
-        let mut snapshot = WorkspaceSnapshot::default(); // 最小目标工作区。
-        snapshot.grid = super::super::WorkspaceGrid { left: 0.0, top: 0.0, column_width: 80.0, row_height: 100.0, rows: 10, columns: 10 };
-        snapshot.unclassified_items = [("a", 0.0, 0.0), ("b", 640.0, 800.0)].into_iter().map(|(id, left, top)| super::super::UnclassifiedItemSnapshot { stable_reference: id.into(), monitor_id: "screen".into(), projection_monitor_id: None, projection_position: None, position: WorkspacePoint { left, top }, z_index: 0 }).collect();
-        let ids = ["a".into(), "b".into()]; // 原子拖动集合。
-        let rendered = [WorkspacePoint { left: -10.0, top: -10.0 }, WorkspacePoint { left: 64.0, top: -10.0 }]; // 原生 Enter 缓存的围栏排列。
-        let result = snapshot.grid_drop_placements_at(&ids, "screen", WorkspacePoint { left: 160.0, top: 300.0 }, false, None, Some(&rendered)).unwrap(); // OLE 正式落位入口。
-        assert_eq!(result[0].position, WorkspacePoint { left: 160.0, top: 300.0 });
-        assert_eq!(result[1].position, WorkspacePoint { left: 240.0, top: 300.0 });
-        assert!(snapshot.grid_drop_placements_at(&ids, "screen", WorkspacePoint { left: 0.0, top: 0.0 }, false, None, Some(&rendered[..1])).is_err());
-    }
-
-    /// 混合结果只消费指定身份；释放后文件传输仍使用固定目标，联合恢复不吞掉并发项目。
-    #[test]
-    fn released_drop_keeps_shared_target_and_restores_only_confirmed_items()
-    {
-        use crate::contracts::{DesktopHostMonitor, DesktopItem, DesktopItemAvailability, DesktopItemSnapshot, WorkspaceCommand, WorkspaceRect};
-        {
-            let root = std::env::temp_dir().join(format!("desktop-tools-drop-{}-{}", std::process::id(), crate::tools::time::next_timeline_timestamp())); // 所有写入仅位于本例独占目录。
-            std::fs::create_dir(&root).unwrap();
-            let path = root.join("workspace.json");
-            let monitors = [DesktopHostMonitor { id: "screen".into(), name: "screen".into(), primary: true, x: 0, y: 0, width: 1200, height: 800, work_x: 0, work_y: 0, work_width: 1200, work_height: 800, scale_factor: 1.0, dpi: 96 }];
-            let mut state = super::super::WorkspaceState::load(path.clone()).unwrap();
-            state.reconcile_host_monitors(&monitors, &["existing".into()], &[], &[]).unwrap();
-            let created = state.apply(WorkspaceCommand::CreateFence { title: " ".into(), bounds: WorkspaceRect { left: 40.0, top: 40.0, width: 320.0, height: 240.0 } }).unwrap();
-            let fence = created.fences[0].id.clone();
-            let target = DropTarget { monitor_id: "screen".into(), revision: created.revision, fence_id: Some(fence.clone()), portal_id: None, portal_path: None, before_item_id: None, position: WorkspacePoint { left: 0.0, top: 0.0 }, free: false, insertion: None, scrolls: Vec::new() };
-            let disk = std::fs::read(&path).unwrap();
-            state.preflight_drop(&target, &["existing".into()], 1).unwrap();
-            assert_eq!(std::fs::read(&path).unwrap(), disk);
-            assert!(state.preflight_drop(&target, &["existing".into()], 1000).is_err());
-            let ids = ["existing".into(), "new".into(), "concurrent".into()]; // 新文件成功和其他程序并发新增使用不同准确身份。
-            state.reconcile_host_monitors(&monitors, &ids, &[], &[]).unwrap();
-            assert!(state.preflight_drop(&target, &["existing".into()], 1).is_err()); // 释放前布局版本变化必须拒绝。
-            let (committed, change) = state.commit_external_drop(&target, &["existing".into(), "new".into()], &["existing".into()]).unwrap(); // 释放后完成可以使用固定共享目标。
-            assert_eq!(committed.fences[0].members, ["existing", "new"]);
-            let files = DesktopItemSnapshot { revision: 1, items: ["existing", "concurrent"].into_iter().map(|id| DesktopItem { stable_reference: id.into(), display_name: id.into(), system_image: None, availability: DesktopItemAvailability::Available }).collect() };
-            let mappings = [("existing".into(), "existing".into(), "existing".into(), false), ("new".into(), "new".into(), "recycle-new".into(), false)];
-            state.persistence_path = path.join("blocked.json");
-            assert!(state.restore_drop_layout(&change, &mappings, &files).is_err());
-            assert_eq!(state.snapshot().unwrap(), committed); // 保存失败不能改变归属，也不要求重做已经完成的文件补偿。
-            state.persistence_path = path.clone();
-            assert_eq!(state.restore_drop_layout(&change, &mappings, &files).unwrap().len(), 2);
-            let undone = state.snapshot().unwrap();
-            assert!(undone.fences[0].members.is_empty());
-            assert!(undone.unclassified_items.iter().any(|item| item.stable_reference == "concurrent"));
-            assert!(!undone.unclassified_items.iter().any(|item| item.stable_reference == "new"));
-            drop(state);
-            std::fs::remove_dir_all(root).unwrap();
-        }
-    }
-
-    /// 与前端同一 L 形组实例核对原生落位，并验证自由定位和输入拒绝。
-    #[test]
-    fn native_grid_drop_preserves_group_geometry()
-    {
-        let mut snapshot = WorkspaceSnapshot::default(); // 测试只使用布局，不访问文件系统。
-        snapshot.grid = super::super::WorkspaceGrid { left: 0.0, top: 0.0, column_width: 80.0, row_height: 100.0, rows: 3, columns: 3 };
-        snapshot.unclassified_items = [("anchor", 0.0, 0.0), ("right", 80.0, 0.0), ("down", 0.0, 100.0)].into_iter().map(|(id, left, top)| super::super::UnclassifiedItemSnapshot { stable_reference: id.into(), monitor_id: "screen".into(), projection_monitor_id: None, projection_position: None, position: WorkspacePoint { left, top }, z_index: 0 }).collect();
-        let ids = vec!["anchor".into(), "right".into(), "down".into()]; // 前端回归使用的相同锚点顺序。
-        let desired = WorkspacePoint { left: 80.0, top: 100.0 }; // 目标屏释放点。
-        let result = snapshot.grid_drop_placements(&ids, "screen", desired, false).unwrap(); // 应与 resolveGridDrop 保持一致。
-        assert_eq!(result.iter().map(|item| item.position).collect::<Vec<_>>(), [WorkspacePoint { left: 80.0, top: 100.0 }, WorkspacePoint { left: 160.0, top: 100.0 }, WorkspacePoint { left: 80.0, top: 200.0 }]);
-        let free = snapshot.grid_drop_placements(&ids, "screen", WorkspacePoint { left: 13.0, top: 27.0 }, true).unwrap(); // Alt 不吸附但保留组内相对位置。
-        assert_eq!(free[1].position, WorkspacePoint { left: 93.0, top: 27.0 });
-        assert!(snapshot.grid_drop_placements(&[], "screen", desired, false).is_err());
-        assert!(snapshot.grid_drop_placements(&["anchor".into(), "anchor".into()], "screen", desired, false).is_err());
-        assert!(snapshot.grid_drop_placements(&["missing".into()], "screen", desired, false).is_err());
-        assert!(snapshot.grid_drop_placements(&ids, "screen", WorkspacePoint { left: f64::NAN, top: 0.0 }, false).is_err());
-        snapshot.grid.columns = 1;
-        snapshot.grid.rows = 2;
-        assert!(snapshot.grid_drop_placements(&ids, "screen", desired, false).is_err());
-    }
-
-    /// 离网持久位置按稳定槽位占用，落位不能改变其他项目。
-    #[test]
-    fn native_grid_drop_keeps_unrelated_positions()
-    {
-        let mut snapshot = WorkspaceSnapshot::default(); // 对应前端离网来源回归。
-        snapshot.grid = super::super::WorkspaceGrid { left: 0.0, top: 0.0, column_width: 78.0, row_height: 98.0, rows: 7, columns: 2 };
-        snapshot.unclassified_items = [("dragged", 0.0, 0.0), ("later", 0.0, 196.0), ("legacy", 20.0, 396.0)].into_iter().map(|(id, left, top)| super::super::UnclassifiedItemSnapshot { stable_reference: id.into(), monitor_id: "screen".into(), projection_monitor_id: None, projection_position: None, position: WorkspacePoint { left, top }, z_index: 0 }).collect();
-        let result = snapshot.grid_drop_placements(&["dragged".into()], "screen", WorkspacePoint { left: 0.0, top: 98.0 }, false).unwrap(); // 只返回实际拖动项目的提交位置。
-        assert_eq!(result, [WorkspaceItemPlacement { item_id: "dragged".into(), position: WorkspacePoint { left: 0.0, top: 98.0 } }]);
-        assert_eq!(snapshot.unclassified_items[1].position.top, 196.0);
-    }
-
-    /// 使用前端同一传播实例核对原生组插入，且 Alt 不执行挤位。
-    #[test]
-    fn native_insertion_matches_frontend_group_propagation()
-    {
-        let mut snapshot = WorkspaceSnapshot::default();
-        snapshot.grid = super::super::WorkspaceGrid { left: 0.0, top: 0.0, column_width: 80.0, row_height: 100.0, rows: 3, columns: 2 };
-        snapshot.unclassified_items = [("a", 0.0, 0.0), ("b", 0.0, 100.0), ("target", 0.0, 200.0), ("tail", 80.0, 0.0)].into_iter().map(|(id, left, top)| super::super::UnclassifiedItemSnapshot { stable_reference: id.into(), monitor_id: "screen".into(), projection_monitor_id: None, projection_position: None, position: WorkspacePoint { left, top }, z_index: 0 }).collect();
-        let ids = ["a".into(), "b".into()];
-        let insertion = ("target".into(), "up".into());
-        let desired = WorkspacePoint { left: 0.0, top: 200.0 };
-        let positions = snapshot.grid_drop_placements_at(&ids, "screen", desired, false, Some(&insertion), None).unwrap();
-        assert_eq!(positions.iter().find(|item| item.item_id == "a").unwrap().position, WorkspacePoint { left: 0.0, top: 200.0 });
-        assert_eq!(positions.iter().find(|item| item.item_id == "b").unwrap().position, WorkspacePoint { left: 80.0, top: 0.0 });
-        assert_eq!(positions.iter().find(|item| item.item_id == "target").unwrap().position, WorkspacePoint { left: 80.0, top: 100.0 });
-        assert_eq!(snapshot.grid_drop_placements_at(&ids, "screen", desired, true, Some(&insertion), None).unwrap().len(), 2);
-        assert!(snapshot.grid_drop_placements_at(&ids, "screen", desired, false, Some(&("target".into(), "diagonal".into())), None).is_err());
-    }
-}
+#[path = "drop.test.rs"]
+mod tests;

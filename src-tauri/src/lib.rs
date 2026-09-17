@@ -26,11 +26,9 @@ use workspace::WorkspaceState;
 pub fn run()
 {
     if let Err(error) = tools::log::init(tools::log::LogConfig::default())
+        && cfg!(debug_assertions)
     {
-        if cfg!(debug_assertions)
-        {
-            eprintln!("日志系统初始化失败：{error}");
-        }
+        eprintln!("日志系统初始化失败：{error}");
     }
     let (initial_menu_action, _instance_guard) = match app::desktop_menu::prepare_startup()
     {
@@ -81,6 +79,7 @@ pub fn run()
             commands::folder_portal::paste_folder_portal_items,
             commands::folder_portal::show_folder_portal_menu,
             commands::folder_portal::rename_folder_portal_item,
+            commands::folder_portal::prepare_folder_portal_drag,
             get_component_runtime_snapshot,
             invoke_component_capability,
             get_current_music_session,
@@ -126,6 +125,7 @@ pub fn run()
             app.manage(workspace);
 
             // 正式逐屏宿主运行时。
+            crate::platform::windows::install_host_events(app.handle());
             let desktop_host = DesktopHostRuntime::start(app.handle())?;
             app.manage(Arc::clone(&desktop_host));
             // Shell 变化通知由唯一协调线程消费。
@@ -158,8 +158,13 @@ pub fn run()
     // Windows Tauri 事件循环返回的原生退出码。
     let runtime_exit_code = app.run_return(move |app, event| match event
     {
-        RunEvent::ExitRequested { code, .. } =>
+        RunEvent::ExitRequested { code, api, .. } =>
         {
+            if code.is_none()
+            {
+                api.prevent_exit();
+                return;
+            } // 最后一个设置窗口关闭不退出托盘应用。
             if let Some(code) = code
             {
                 callback_exit_code.store(code, Ordering::Relaxed);

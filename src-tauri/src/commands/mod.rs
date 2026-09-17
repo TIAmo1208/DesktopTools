@@ -82,10 +82,16 @@ pub use workspace::{apply_workspace_command, apply_workspace_interaction, get_wo
 /// 路由独立 Windowed WebView2 transport 到正式应用命令边界。
 pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRuntime, command: &str, arguments: Value) -> Result<Value, Value>
 {
+    use tauri::Emitter;
     // 当前本地 transport 命令的统一 JSON 结果。
     let result: Result<Value, Value> = match command
     {
         "get_current_music_session" => music::get_current_music_session().map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))),
+        "request_music_convergence" =>
+        {
+            crate::platform::windows::music::request_convergence();
+            serialize_result(())
+        }
         "execute_music_action" =>
         {
             let action: String = command_argument(&arguments, "action", "媒体动作参数无效").map_err(serialize_error)?; // 原生桌面通道与 Tauri 使用相同的动作入口。
@@ -116,10 +122,58 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         }
         "get_windows_accent_color" => app.state::<crate::platform::windows::settings::WindowsAccentMonitor>().color().map_err(serialize_error).and_then(serialize_result),
         "get_preferences" => app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error).and_then(serialize_result),
+        "watch_folder_portal" =>
+        {
+            let root: String = command_argument(&arguments, "rootPath", "门户根路径无效").map_err(serialize_error)?; // 校验绑定根。
+            let current: String = command_argument(&arguments, "currentPath", "门户当前目录无效").map_err(serialize_error)?; // 当前导航路径。
+            let monitor: String = command_argument(&arguments, "monitorId", "显示器标识无效").map_err(serialize_error)?; // 用于宿主销毁时清理。
+            runtime.validate_monitor_id(&monitor).map_err(serialize_error)?;
+            let (_, path) = folder_portal::checked_directory(&root, &current).map_err(serialize_error)?; // 复用目录安全边界。
+            crate::platform::windows::directory_watch::start(app.clone(), monitor, path).map_err(serialize_error).and_then(serialize_result)
+        }
+        "unwatch_folder_portal" =>
+        {
+            let id: u64 = command_argument(&arguments, "subscription", "目录监听标识无效").map_err(serialize_error)?; // 仅取消本应用监听。
+            crate::platform::windows::directory_watch::stop(id);
+            serialize_result(())
+        }
+        "subscribe_component_time" =>
+        {
+            let instance: String = command_argument(&arguments, "instanceId", "组件实例标识无效").map_err(serialize_error)?; // 需要校验的真实组件实例。
+            let monitor: String = command_argument(&arguments, "monitorId", "显示器标识无效").map_err(serialize_error)?; // 当前呈现宿主。
+            runtime.validate_monitor_id(&monitor).map_err(serialize_error)?;
+            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), instance, crate::contracts::ComponentCapability::ReadHostTime).map_err(serialize_error)?;
+            serialize_result(ComponentRuntimeState::subscribe_time(monitor))
+        }
+        "unsubscribe_component_time" =>
+        {
+            let id: u64 = command_argument(&arguments, "subscription", "时间订阅标识无效").map_err(serialize_error)?; // 独立生命周期身份。
+            ComponentRuntimeState::unsubscribe_time(id);
+            serialize_result(())
+        }
+        "get_desktop_refresh_policy" =>
+        {
+            let monitor_id: String = command_argument(&arguments, "monitorId", "显示器标识无效").map_err(serialize_error)?; // 当前页面的显示器身份。
+            let snapshot = runtime.snapshot().map_err(serialize_error)?; // 暂停只适用于已完成接管的宿主。
+            let monitor = snapshot.hosts.iter().find(|host| host.monitor.id == monitor_id).ok_or_else(|| serialize_error("显示器不存在"))?; // 不接受页面外的未知显示器。
+            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?; // 每次读取已保存的开关。
+            serialize_result(snapshot.committed && crate::platform::windows::refresh_policy::should_pause(&monitor.monitor, preferences.pause_on_fullscreen, preferences.pause_on_focus))
+        }
         "record_renderer_diagnostic" =>
         {
             let fields = ["origin", "url", "stage", "message"].map(|key| arguments.get(key).and_then(Value::as_str).unwrap_or("").chars().take(4096).collect::<String>().replace(['\r', '\n'], " ")); // 有界单行诊断，不执行页面内容。
             crate::log_error!("宿主前端：来源={}，页面={}，阶段={}，错误={}", fields[0], fields[1], fields[2], fields[3]);
+            serialize_result(())
+        }
+        "record_desktop_refresh_state" =>
+        {
+            let monitor_id: String = command_argument(&arguments, "monitorId", "显示器标识无效").map_err(serialize_error)?; // 已校验显示器身份。
+            let paused: bool = command_argument(&arguments, "paused", "暂停状态无效").map_err(serialize_error)?; // 页面实际应用的暂停状态。
+            runtime.validate_monitor_id(&monitor_id).map_err(serialize_error)?;
+            crate::platform::windows::refresh_policy::set_paused(&monitor_id, paused);
+            ComponentRuntimeState::wake_time_source();
+            let _ = app.emit("desktop-refresh-policy-changed", ());
+            crate::log_info!("桌面刷新：显示器={}，状态={}", monitor_id, if paused { "已暂停" } else { "已恢复" });
             serialize_result(())
         }
         "open_folder_portal_path" =>
@@ -201,6 +255,14 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         }
         "paste_desktop_items" => desktop_item::execute_paste_desktop_items(&app.state::<DesktopItemState>(), &app.state::<WorkspaceState>()).map_err(serialize_error).and_then(serialize_result),
         "prepare_desktop_item_drag" => command_argument(&arguments, "itemIds", "桌面项目拖放参数无效").map_err(serialize_error).and_then(|item_ids: Vec<String>| app.state::<DesktopItemState>().prepare_drag(&item_ids).map_err(serialize_error)).and_then(serialize_result),
+        "prepare_folder_portal_drag" =>
+        {
+            let root: String = command_argument(&arguments, "rootPath", "门户根路径无效").map_err(serialize_error)?;
+            let current: String = command_argument(&arguments, "currentPath", "门户当前目录无效").map_err(serialize_error)?;
+            let names: Vec<String> = command_argument(&arguments, "names", "门户选择无效").map_err(serialize_error)?;
+            let references = folder_portal::checked_item_paths(&root, &current, &names).map_err(serialize_error)?;
+            app.state::<DesktopItemState>().prepare_portal_drag(references).map_err(serialize_error).and_then(serialize_result)
+        }
         "cancel_desktop_item_drag_preparation" => command_argument(&arguments, "token", "拖动凭据无效").map_err(serialize_error).and_then(|token| app.state::<DesktopItemState>().cancel_prepared_drag(token).map_err(serialize_error)).and_then(serialize_result),
         "start_desktop_item_drag" =>
         {
@@ -293,56 +355,5 @@ fn serialize_result<T: Serialize>(value: T) -> Result<Value, Value> { serde_json
 fn serialize_error(error: impl Serialize) -> Value { serde_json::to_value(error).unwrap_or_else(|_| json!({ "code": "desktop-host-error", "message": "桌面宿主命令失败" })) }
 
 #[cfg(test)]
-mod tests
-{
-    use super::command_argument;
-    use crate::contracts::FrontendHostReadiness;
-    use serde_json::json;
-
-    /// 缺失和类型错误参数不得进入业务执行，错误保留公开编码。
-    #[test]
-    fn native_arguments_reject_invalid_mutations()
-    {
-        for value in [json!({}), json!({"permanent": "true"}), json!({"permanent": null})]
-        {
-            let error = command_argument::<bool>(&value, "permanent", "命令参数无效").unwrap_err(); // 入口校验失败。
-            let encoded = super::serialize_error(error); // transport 实际返回的错误对象。
-            assert!(encoded["code"].is_string());
-            assert!(encoded["message"].as_str().is_some_and(|message| !message.is_empty()));
-        }
-        assert!(!command_argument::<bool>(&json!({"permanent": false}), "permanent", "命令参数无效").unwrap());
-        assert!(command_argument::<crate::contracts::WorkspaceCommand>(&json!({"command": {"type": "unknown"}}), "command", "命令参数无效").is_err());
-        assert_eq!(super::serialize_result(()).unwrap(), serde_json::Value::Null);
-    }
-
-    /// 验证本地 transport 与 Tauri command 使用相同的类型化准备证据。
-    #[test]
-    fn native_transport_decodes_typed_readiness_arguments()
-    {
-        // 完整且字段类型有效的页面准备请求。
-        let arguments = json!({
-            "report": {
-                "monitorId": "\\\\.\\DISPLAY1",
-                "viewportWidth": 1920.0,
-                "viewportHeight": 1040.0,
-                "devicePixelRatio": 1.0,
-                "totalSystemImages": 1,
-                "loadedSystemImages": 1,
-                "hitRegions": [{
-                    "id": "desktop-item",
-                    "kind": "desktop-item",
-                    "left": 20.0,
-                    "top": 20.0,
-                    "width": 92.0,
-                    "height": 135.0,
-                    "priority": 1
-                }]
-            }
-        });
-        // 解析后的类型化页面准备证据。
-        let report: FrontendHostReadiness = command_argument(&arguments, "report", "页面准备参数无效").unwrap();
-
-        assert_eq!(report.hit_regions.len(), 1);
-        assert!(command_argument::<FrontendHostReadiness>(&json!({}), "report", "页面准备参数无效").is_err());
-    }
-}
+#[path = "mod.test.rs"]
+mod tests;

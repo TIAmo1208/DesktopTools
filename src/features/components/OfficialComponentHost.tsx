@@ -1,7 +1,7 @@
 import { Component, useEffect, useMemo, useRef, useState, type ErrorInfo, type PointerEvent, type ReactNode } from "react";
 
-import { getComponentRuntimeSnapshot, invokeComponentCapability, listenComponentHostEvents, listenComponentRuntimeSnapshots } from "../../bridge/components";
-import type { ComponentHostEvent, ComponentInstanceSnapshot, ComponentRegistrationSnapshot, ComponentRuntimeSnapshot } from "../../contracts/component";
+import { getComponentRuntimeSnapshot, listenComponentHostEvents, listenComponentRuntimeSnapshots } from "../../bridge/components";
+import type { ComponentInstanceSnapshot, ComponentRegistrationSnapshot, ComponentRuntimeSnapshot } from "../../contracts/component";
 import type { DesktopHostMonitor } from "../../contracts/desktopHost";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspaceRect, WorkspaceSnapshot } from "../../contracts/workspace";
 
@@ -54,44 +54,61 @@ class ComponentErrorBoundary extends Component<{ children: ReactNode; instanceId
     }
 }
 
-/** 呈现原型已验证视觉路径对应的官方本地时间组件。 */
+/** 呈现官方本地时间组件。 */
 const LocalClock = ({
     instance,
     registration,
-    hostEvent,
+    visible,
+    monitorId,
 }: {
     instance: ComponentInstanceSnapshot;
     registration: ComponentRegistrationSnapshot;
-    hostEvent?: ComponentHostEvent;
+    visible: boolean; // 实际展开状态包含临时悬停展开。
+    monitorId: string; // 当前呈现宿主，不等同于离线显示器归属。
 }) => {
     const [unixMillis, setUnixMillis] = useState<number>(); // 宿主授权能力或事件提供的当前时间。
     const [failure, setFailure] = useState<string>(); // 当前实例能力调用失败说明。
     const canReadTime = registration.authorizedCapabilities.includes("read-host-time"); // 当前清单实际获得的宿主时间能力。
     const { preferences } = usePreferences(); // 跨窗口同步的时间格式。
     const hour12 = preferences?.clockHour12 ?? false; // 用户设置的时间制式。
-
-    /** 通过 Component Runtime 能力边界刷新本地时间。 */
-    const handleRefresh = async () => {
-        if (!canReadTime) {
-            setFailure("组件未获得宿主时间能力");
-            return;
-        }
-        try {
-            const result = await invokeComponentCapability(instance.instanceId, "read-host-time");
-            setUnixMillis(result.payload.unixMillis);
-            setFailure(undefined);
-        } catch (error: unknown) {
-            setFailure(error instanceof Error ? error.message : "组件时间读取失败");
-        }
-    };
+    const [paused, setPaused] = useState(() => window.__DESKTOP_TOOLS_NATIVE__?.isRefreshPaused?.() ?? false); // 当前页面实际暂停状态。
 
     useEffect(() => {
-        void handleRefresh();
-    }, [instance.instanceId]);
-
+        const handleRefreshState = () => setPaused(window.__DESKTOP_TOOLS_NATIVE__?.isRefreshPaused?.() ?? false); // 恢复后重新建立活动订阅。
+        window.addEventListener("desktop-refresh-changed", handleRefreshState);
+        return () => window.removeEventListener("desktop-refresh-changed", handleRefreshState);
+    }, []);
     useEffect(() => {
-        if (canReadTime && hostEvent?.kind === "time-tick") setUnixMillis(hostEvent.unixMillis);
-    }, [canReadTime, hostEvent]);
+        if (!visible || paused || !canReadTime) return;
+        let active = true; // 折叠、暂停及重新挂载后拒绝旧结果。
+        let stop: (() => void) | undefined; // 当前时间订阅的释放入口。
+        const handleFailure = (error: unknown) => {
+            if (active) setFailure(error instanceof Error ? error.message : "组件时间读取失败");
+        }; // 错误只影响当前时钟。
+        void listenComponentHostEvents(
+            instance.instanceId,
+            monitorId,
+            (event) => {
+                if (active && event.kind === "time-tick") {
+                    setUnixMillis(event.unixMillis);
+                    setFailure(undefined);
+                }
+            },
+            handleFailure,
+        )
+            .then((unlisten) => {
+                if (!active) {
+                    unlisten();
+                    return;
+                }
+                stop = unlisten;
+            })
+            .catch(handleFailure);
+        return () => {
+            active = false;
+            stop?.();
+        };
+    }, [instance.instanceId, monitorId, visible, paused, canReadTime]);
 
     const text = unixMillis
         ? new Intl.DateTimeFormat("zh-CN", {
@@ -119,7 +136,6 @@ const ComponentSurface = ({
     debugContent,
     instance,
     registration,
-    hostEvent,
     currentMonitor,
     monitors,
     onCommand,
@@ -132,7 +148,6 @@ const ComponentSurface = ({
     debugContent?: ReactNode; // 已装配的调试内容。
     instance: ComponentInstanceSnapshot;
     registration?: ComponentRegistrationSnapshot;
-    hostEvent?: ComponentHostEvent;
     currentMonitor?: DesktopHostMonitor;
     monitors: DesktopHostMonitor[];
     onCommand: OfficialComponentHostProps["onCommand"];
@@ -254,7 +269,12 @@ const ComponentSurface = ({
                     ) : failed ? (
                         <p className="official-component__error">{registration?.error ?? "组件清单不存在"}</p>
                     ) : registration.entry === "official:local-clock" ? (
-                        <LocalClock instance={instance} registration={registration} hostEvent={hostEvent} />
+                        <LocalClock
+                            instance={instance}
+                            registration={registration}
+                            visible={!expansion.collapsed}
+                            monitorId={currentMonitor?.id ?? instance.monitorId}
+                        />
                     ) : registration.entry === "official:debug-test" ? (
                         debugContent
                     ) : registration.entry === "official:music-control" ? (
@@ -288,7 +308,6 @@ export const OfficialComponentHost = ({
 }: OfficialComponentHostProps) => {
     const { preferences } = usePreferences(); // 开关只控制可见实例。
     const [runtime, setRuntime] = useState<ComponentRuntimeSnapshot>(); // 当前后端组件注册表和实例状态。
-    const [hostEvent, setHostEvent] = useState<ComponentHostEvent>(); // 最近一次通过宿主事件边界发布的时间事件。
     const [failure, setFailure] = useState<string>(); // 组件运行时 command 或 event 错误说明。
     const registrations = useMemo(() => new Map(runtime?.instances.map((instance) => [instance.instanceId, instance]) ?? []), [runtime]);
     const visibleInstances = instances.filter((instance) =>
@@ -307,13 +326,10 @@ export const OfficialComponentHost = ({
             if (mounted) setFailure(error instanceof Error ? error.message : "组件运行时请求失败");
         };
         const runtimeSubscription = listenComponentRuntimeSnapshots((snapshot) => mounted && setRuntime(snapshot), handleFailure);
-        const eventSubscription = listenComponentHostEvents((event) => mounted && setHostEvent(event), handleFailure);
         void runtimeSubscription.catch(handleFailure);
-        void eventSubscription.catch(handleFailure);
         return () => {
             mounted = false;
             void runtimeSubscription.then((unlisten) => unlisten()).catch(() => undefined);
-            void eventSubscription.then((unlisten) => unlisten()).catch(() => undefined);
         };
     }, []);
 
@@ -347,7 +363,6 @@ export const OfficialComponentHost = ({
                     debugContent={debugContent}
                     instance={instance}
                     registration={registrations.get(instance.instanceId)}
-                    hostEvent={hostEvent}
                     currentMonitor={currentMonitor}
                     monitors={monitors}
                     onCommand={onCommand}

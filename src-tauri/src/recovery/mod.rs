@@ -5,11 +5,83 @@ use std::process::{Child, Command};
 use std::thread;
 use std::time::Duration;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
-use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CreateEventW, EVENT_MODIFY_STATE, OpenEventW, OpenProcess, PROCESS_SYNCHRONIZE, SYNCHRONIZATION_ACCESS_RIGHTS, SetEvent, WaitForMultipleObjects, WaitForSingleObject};
-use windows::core::PCWSTR;
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_NOTIFY, REG_NOTIFY_CHANGE_LAST_SET, RegCloseKey, RegNotifyChangeKeyValue, RegOpenKeyExW};
+use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CreateEventW, EVENT_MODIFY_STATE, INFINITE, OpenEventW, OpenProcess, PROCESS_SYNCHRONIZE, SYNCHRONIZATION_ACCESS_RIGHTS, SetEvent, WaitForMultipleObjects, WaitForSingleObject};
+use windows::core::{HSTRING, PCWSTR};
 
 use crate::platform::windows::{ShellDesktopState, desktop_items_setting_visible, desktop_items_visible, discover_shell_desktop, redraw_shell_desktop, set_desktop_items_visible};
+
+const ICON_SETTING_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"; // Explorer“显示桌面图标”用户设置键。
+
+/// guardian 无限等待返回的具体事件。
+enum GuardianEvent
+{
+    MainExited,
+    Shutdown,
+    VisibilityChanged,
+}
+
+/// 持有 guardian 桌面图标设置注册表通知。
+struct DesktopVisibilityWatch
+{
+    key: HKEY,     // Explorer Advanced 只读通知键。
+    event: HANDLE, // 自动复位的异步注册表通知事件。
+}
+
+/// 等待主进程、正常停止或桌面图标设置变化。
+fn wait_for_guardian_event(main_process: HANDLE, shutdown_event: HANDLE, visibility_event: HANDLE) -> Result<GuardianEvent, String>
+{
+    let result = unsafe { WaitForMultipleObjects(&[main_process, shutdown_event, visibility_event], false, INFINITE) };
+    if result == WAIT_OBJECT_0
+    {
+        return Ok(GuardianEvent::MainExited);
+    }
+    if result.0 == WAIT_OBJECT_0.0 + 1
+    {
+        return Ok(GuardianEvent::Shutdown);
+    }
+    if result.0 == WAIT_OBJECT_0.0 + 2
+    {
+        return Ok(GuardianEvent::VisibilityChanged);
+    }
+    Err(format!("guardian 等待失败，结果：{result:?}"))
+}
+
+/// 建立并重新注册 Explorer 用户设置变化通知。
+impl DesktopVisibilityWatch
+{
+    fn new() -> Result<Self, String>
+    {
+        let mut key = HKEY::default(); // 不创建或修改用户配置。
+        unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &HSTRING::from(ICON_SETTING_KEY), None, KEY_NOTIFY, &mut key) }.ok().map_err(|error| format!("guardian 打开桌面图标设置通知键失败：{error}"))?;
+        let event = match unsafe { CreateEventW(None, false, false, None) }
+        {
+            Ok(event) => event,
+            Err(error) =>
+            {
+                let _ = unsafe { RegCloseKey(key) };
+                return Err(format!("guardian 创建桌面图标设置通知事件失败：{error}"));
+            }
+        };
+        let watch = Self { key, event };
+        watch.rearm()?;
+        Ok(watch)
+    }
+
+    /// 每次事件到达后重新注册一次异步通知。
+    fn rearm(&self) -> Result<(), String> { unsafe { RegNotifyChangeKeyValue(self.key, false, REG_NOTIFY_CHANGE_LAST_SET, Some(self.event), true) }.ok().map_err(|error| format!("guardian 注册桌面图标设置变化通知失败：{error}")) }
+}
+
+/// 关闭 guardian 设置通知资源。
+impl Drop for DesktopVisibilityWatch
+{
+    fn drop(&mut self)
+    {
+        let _ = unsafe { RegCloseKey(self.key) };
+        let _ = unsafe { CloseHandle(self.event) };
+    }
+}
 
 /// 独立 guardian 子进程与正常停止事件。
 pub struct GuardianProcess
@@ -158,6 +230,8 @@ fn monitor_main_process(arguments: &[String]) -> Result<(), String>
     let shutdown_access = SYNCHRONIZATION_ACCESS_RIGHTS(EVENT_MODIFY_STATE.0 | 0x0010_0000);
     // guardian 正常停止事件句柄。
     let shutdown_event = unsafe { OpenEventW(shutdown_access, false, PCWSTR(shutdown_event_name_wide.as_ptr())).map_err(|error| format!("打开 guardian 停止事件失败: {error}"))? };
+    // 用户桌面图标设置变化通知。
+    let visibility_watch = DesktopVisibilityWatch::new()?;
     unsafe {
         SetEvent(ready_event).map_err(|error| format!("guardian 就绪握手失败: {error}"))?;
         let _ = CloseHandle(ready_event);
@@ -165,27 +239,29 @@ fn monitor_main_process(arguments: &[String]) -> Result<(), String>
     crate::log_info!("恢复：guardian 开始监视，主进程标识：{main_process_id}");
 
     let mut restore_visibility = original_visibility; // guardian 最近观察到的用户桌面图标设置。
-    // 主进程结束、正常停止事件与用户设置观察的竞态等待结果。
-    let wait_result = loop
+    // 主进程结束、正常停止事件与用户设置变化的无限等待结果。
+    let guardian_event = loop
     {
-        let result = unsafe { WaitForMultipleObjects(&[main_process, shutdown_event], false, 500) }; // 本轮主进程、停止事件或观察超时结果。
-        if result == WAIT_TIMEOUT
+        match wait_for_guardian_event(main_process, shutdown_event, visibility_watch.event)?
         {
-            let observed = desktop_items_setting_visible(); // 不受临时 ShowWindow 隐藏影响的 Shell 用户设置。
-            if observed != restore_visibility
+            GuardianEvent::VisibilityChanged =>
             {
-                restore_visibility = observed;
-                crate::log_info!("恢复：guardian 已更新 Explorer 桌面项目恢复设置，可见：{}", u8::from(observed));
+                visibility_watch.rearm()?;
+                let observed = desktop_items_setting_visible(); // 不受临时 ShowWindow 隐藏影响的 Shell 用户设置。
+                if observed != restore_visibility
+                {
+                    restore_visibility = observed;
+                    crate::log_info!("恢复：guardian 已更新 Explorer 桌面项目恢复设置，可见：{}", u8::from(observed));
+                }
             }
-            continue;
+            event => break event,
         }
-        break result;
     };
     unsafe {
         let _ = CloseHandle(main_process);
         let _ = CloseHandle(shutdown_event);
     }
-    if wait_result == WAIT_OBJECT_0
+    if matches!(guardian_event, GuardianEvent::MainExited)
     {
         // Explorer 重启后重新发现的当前桌面层。
         let shell = discover_shell_desktop().unwrap_or(ShellDesktopState { def_view: original_def_view, explorer_host: original_def_view, list_view: 0, original_items_visible: original_visibility });
@@ -199,13 +275,13 @@ fn monitor_main_process(arguments: &[String]) -> Result<(), String>
             return Err("guardian 恢复 Explorer 桌面项目失败".to_string());
         }
     }
-    else if wait_result.0 == WAIT_OBJECT_0.0 + 1
+    else if matches!(guardian_event, GuardianEvent::Shutdown)
     {
         crate::log_info!("恢复：guardian 收到正常停止事件");
     }
-    else
-    {
-        return Err(format!("guardian 等待失败，结果：{wait_result:?}"));
-    }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "mod.test.rs"]
+mod tests;

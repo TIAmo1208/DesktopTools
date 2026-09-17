@@ -107,6 +107,8 @@ export const FolderPortalSurface = ({
                     ref={contentRef}
                     rootPath={rootPath}
                     monitorId={currentMonitor?.id ?? portal.monitorId}
+                    onBeginInputDrag={onBeginInputDrag}
+                    onEndInputDrag={onEndInputDrag}
                     onCurrentPathChange={(path) => {
                         if (surfaceRef.current) surfaceRef.current.dataset.folderPortalPath = path;
                     }}

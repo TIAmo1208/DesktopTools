@@ -110,7 +110,7 @@ export const resolveGridInsertion = (
     const direction: GridInsertionDirection = Math.abs(dx) >= Math.abs(dy) ? (dx < 0 ? "left" : "right") : dy < 0 ? "up" : "down";
     const horizontal = direction === "left" || direction === "right"; // 当前插入方向使用横轴传播。
     const activationDistance = horizontal ? Math.abs(dx) : Math.abs(dy); // 当前主导轴的中心距离。
-    const activationThreshold = (horizontal ? targetBounds.width : targetBounds.height) * 0.25; // 原型使用的目标中心死区阈值。
+    const activationThreshold = (horizontal ? targetBounds.width : targetBounds.height) * 0.25; // 目标中心死区占主轴尺寸的四分之一。
     if (activationDistance <= activationThreshold) return { active: false };
 
     const verticalPropagation = direction === "up" || direction === "down"; // 上下插入沿列优先顺序传播。
@@ -272,7 +272,7 @@ export const resolveGridDrop = (
 export const resolveFenceInsertion = (pointer: { x: number; y: number }, targetBounds: InteractionRect, layoutMode: FenceLayoutMode): FenceInsertionPreview => {
     const vertical = layoutMode === "list"; // 列表使用纵轴，平铺使用横轴。
     const distance = vertical ? pointer.y - (targetBounds.top + targetBounds.height / 2) : pointer.x - (targetBounds.left + targetBounds.width / 2); // 指针到目标中心在布局轴上的距离。
-    const threshold = (vertical ? targetBounds.height : targetBounds.width) * 0.25; // 原型使用的目标中心死区阈值。
+    const threshold = (vertical ? targetBounds.height : targetBounds.width) * 0.25; // 目标中心死区占布局轴尺寸的四分之一。
     if (Math.abs(distance) <= threshold) return { active: false };
     return {
         active: true,
@@ -286,7 +286,7 @@ export const resolveFenceAutoScroll = (pointerY: number, viewportBounds: Pick<DO
     if (pointerY < viewportBounds.top || pointerY > viewportBounds.bottom) return 0;
     const center = (viewportBounds.top + viewportBounds.bottom) / 2; // 围栏内容区垂直中心。
     const halfHeight = (viewportBounds.bottom - viewportBounds.top) / 2; // 围栏内容区半高。
-    const deadZoneHalfHeight = halfHeight * 0.7; // 原型中央 70% 死区的半高。
+    const deadZoneHalfHeight = halfHeight * 0.7; // 中央死区占内容区半高的 70%。
     const activeDistance = halfHeight - deadZoneHalfHeight; // 单侧有效滚动距离。
     const distance = pointerY - center; // 指针离开内容中心的有符号距离。
     const outsideDistance = Math.max(0, Math.abs(distance) - deadZoneHalfHeight); // 指针越过死区后的距离。

@@ -13,7 +13,7 @@ test("正式音乐订阅更新、故障后相同值恢复、退订不再交付",
     const requests: string[] = []; // 实际读取命令。
     let reply: unknown = { ok: true, result: { media: null } }; // 本轮模拟的 native transport 返回。
     let finish: (() => void) | undefined; // 控制退订期间的在途请求。
-    const window = { setTimeout: (callback: () => Promise<void>) => timers.push(callback) } as Record<string, any>; // 最小宿主环境。
+    const window = { setTimeout: (callback: () => Promise<void>) => timers.push(callback), clearTimeout: () => {}, addEventListener: () => {} } as Record<string, any>; // 最小宿主环境。
     const nativeOrigin = "http://desktop-tools-host-0.localhost"; // 与 Rust 注入的逐屏协议地址一致。
     runInNewContext(script.replace("__DESKTOP_NATIVE_ORIGIN__", JSON.stringify(nativeOrigin)), {
         window,
@@ -27,22 +27,14 @@ test("正式音乐订阅更新、故障后相同值恢复、退订不再交付",
         },
     });
     const unlisten = await window.__DESKTOP_TOOLS_NATIVE__.listen("music-session-changed", (payload: unknown) => events.push(payload)); // 真实订阅入口。
-    await timers.shift()!();
-    assert.equal(requests[0], `${nativeOrigin}/__desktop_tools_invoke/get_current_music_session`);
+    assert.equal(requests.length, 1);
     assert.equal(events.length, 1);
-    await timers.shift()!();
-    assert.equal(events.length, 1);
-    reply = { ok: false, error: { message: "连接失败" } };
-    await timers.shift()!();
+    window.__DESKTOP_TOOLS_NATIVE__.dispatch("music-session-changed", { media: null, error: "连接失败" });
     assert.equal((events.at(-1) as { error: string }).error, "连接失败");
-    reply = { ok: true, result: { media: null } };
-    await timers.shift()!();
+    window.__DESKTOP_TOOLS_NATIVE__.dispatch("music-session-changed", { media: null });
     assert.equal(events.length, 3);
-    finish = () => undefined;
-    const pending = timers.shift()!(); // 请求已开始但尚未完成。
     unlisten();
-    finish();
-    await pending;
+    window.__DESKTOP_TOOLS_NATIVE__.dispatch("music-session-changed", { media: { title: "迟到值" } });
     assert.equal(events.length, 3);
     assert.equal(timers.length, 0);
 });

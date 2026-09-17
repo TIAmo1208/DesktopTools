@@ -48,11 +48,27 @@ export const listenComponentRuntimeSnapshots = (
     });
 
 /** 订阅已授权组件可以消费的宿主事件。 */
-export const listenComponentHostEvents = (onEvent: (event: ComponentHostEvent) => void, onError: (error: unknown) => void): Promise<UnlistenFn> =>
-    listenRuntime<unknown>(COMPONENT_HOST_EVENT, (payload) => {
+export const listenComponentHostEvents = async (
+    instanceId: string,
+    monitorId: string,
+    onEvent: (event: ComponentHostEvent) => void,
+    onError: (error: unknown) => void,
+): Promise<UnlistenFn> => {
+    const stop = await listenRuntime<unknown>(COMPONENT_HOST_EVENT, (payload) => {
         try {
             onEvent(parseComponentHostEvent(payload));
         } catch (error: unknown) {
             onError(error);
         }
     });
+    try {
+        const subscription = await invokeRuntime<number>("subscribe_component_time", { instanceId, monitorId }); // 接收入口已建立，再唤醒共享计时源。
+        return () => {
+            stop();
+            void invokeRuntime("unsubscribe_component_time", { subscription }).catch(onError);
+        };
+    } catch (error) {
+        stop();
+        throw error;
+    }
+};

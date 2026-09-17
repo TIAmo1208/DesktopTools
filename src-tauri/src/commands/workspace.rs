@@ -197,7 +197,7 @@ pub(crate) fn reconcile_workspace_environment(state: &WorkspaceState, runtime: &
         WorkspaceError::state_unavailable()
     })?;
     let monitors = host_snapshot.hosts.into_iter().map(|host| host.monitor).collect::<Vec<_>>(); // 当前逐屏宿主的显示器物理状态。
-    let assignments = if read_assignments
+    let positions = if read_assignments
     {
         desktop_item_monitor_assignments(
             &desktop_items.items,
@@ -212,5 +212,6 @@ pub(crate) fn reconcile_workspace_environment(state: &WorkspaceState, runtime: &
     {
         Vec::new()
     }; // 初始导入、拓扑或 Explorer 变化时使用的原始项目归属。
-    state.reconcile_environment(crate::workspace::WorkspaceEnvironment { transfer_assignments: false, monitors: &monitors, items: &desktop_items.items, assignments: &assignments, renames })
+    let assignments = positions.iter().map(|(id, monitor, _)| (id.clone(), monitor.clone())).collect::<Vec<_>>(); // 首次导入仅使用显示器归属。
+    state.reconcile_environment(crate::workspace::WorkspaceEnvironment { new_item_positions: &positions, transfer_assignments: false, monitors: &monitors, items: &desktop_items.items, assignments: &assignments, renames })
 }

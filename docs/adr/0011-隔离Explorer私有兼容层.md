@@ -10,7 +10,7 @@ status: accepted
 
 跨进程 `SetParent` 后窗口实际 DPI 可能与目标显示器 DPI 不同。正式 `platform/windows/desktop_host.rs` 使用 Controller3 设置 `BoundsMode=USE_RAW_PIXELS`、关闭自动显示器缩放检测，并按目标显示器设置 `RasterizationScale`；页面 DPR、命中区域换算与目标比例保持一致，实际 HWND DPI 作为独立诊断信息。显示环境变化由宿主协调和重建处理，不把窗口级 `WM_DPICHANGED` 建议路径写成已实现。
 
-Windowed 宿主通过显式栅格化控制处理跨进程 DPI 影响。正式接管门槛见 [ADR-0016](0016-从原型验证结果演进正式项目架构.md)。
+Windowed 宿主通过显式栅格化控制处理跨进程 DPI 影响。正式接管门槛见 [ADR-0016](0016-正式项目架构.md)。
 
 ### 验证边界与官方契约
 

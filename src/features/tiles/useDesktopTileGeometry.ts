@@ -24,7 +24,7 @@ interface DesktopTileGeometryOptions {
     onFailure: (error: unknown) => void; // 统一失败反馈。
 }
 
-/** 共用原型几何算法、跨屏预览与取消恢复，不重写内容逻辑。 */
+/** 共用桌面格子几何算法、跨屏预览与取消恢复，不重写内容逻辑。 */
 export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
     const cancel = useRef<(() => void) | undefined>(undefined); // 卸载、取消或失焦时的清理入口。
     useEffect(() => () => cancel.current?.(), []);

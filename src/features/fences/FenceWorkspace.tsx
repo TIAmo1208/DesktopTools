@@ -181,7 +181,7 @@ const FencePanel = ({
                           : "格子几何操作失败",
                 source: "desktop-tile",
             }),
-    }); // 公共几何沿用原型调用路径。
+    }); // 围栏与其他桌面格子共用几何交互路径。
 
     /** 将当前原生滚动位置立即提交到权威工作区。 */
     const handleScroll = () => {
@@ -293,7 +293,7 @@ const FencePanel = ({
                                 }).catch(() => undefined)
                             }
                         >
-                            {/* 仅内联仓库中可信的原型 SVG，使 currentColor 继承系统主题。 */}
+                            {/* 内联仓库内的排序图标，使 currentColor 继承系统主题。 */}
                             <span
                                 aria-hidden="true"
                                 dangerouslySetInnerHTML={{ __html: fence.layoutMode === "tile" ? fenceLayoutTileIcon : fenceLayoutListIcon }}

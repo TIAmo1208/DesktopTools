@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, LazyLock, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -17,6 +17,9 @@ const MUSIC_ENTRY: &str = "official:music-control";
 /// 内置官方组件清单来源。
 const LOCAL_CLOCK_MANIFEST: &str = include_str!("../../components/official.local-clock.json");
 const MUSIC_MANIFEST: &str = include_str!("../../components/official.music-control.json");
+
+static TIME_CONSUMERS: LazyLock<(Mutex<HashMap<u64, String>>, Condvar)> = LazyLock::new(|| (Mutex::new(HashMap::new()), Condvar::new())); // 独立订阅身份映射到原生宿主。
+static NEXT_TIME_SUBSCRIPTION: AtomicU64 = AtomicU64::new(1); // 重载后的身份不复用。
 
 /// 持有官方组件清单、活动实例注册结果和能力边界。
 pub struct ComponentRuntimeState
@@ -104,7 +107,40 @@ impl ComponentRuntimeState
     }
 
     /// 返回最近一次已发布的组件宿主事件。
-    pub fn current_host_event(&self) -> Result<Option<ComponentHostEvent>, ComponentRuntimeError> { self.latest_host_event.lock().map(|event| event.clone()).map_err(|_| ComponentRuntimeError::state_unavailable()) }
+    pub fn current_host_event(&self) -> Result<Option<ComponentHostEvent>, ComponentRuntimeError> { Ok(Some(ComponentHostEvent { sequence: self.next_event_sequence.fetch_add(1, Ordering::Relaxed), kind: "time-tick".to_string(), unix_millis: Utc::now().timestamp_millis() })) }
+
+    /// 登记已经通过命令层实例与能力校验的时间消费者。
+    pub(crate) fn subscribe_time(monitor: String) -> u64
+    {
+        let id = NEXT_TIME_SUBSCRIPTION.fetch_add(1, Ordering::Relaxed); // 本次订阅身份。
+        TIME_CONSUMERS.0.lock().unwrap_or_else(|error| error.into_inner()).insert(id, monitor);
+        TIME_CONSUMERS.1.notify_one();
+        id
+    }
+
+    /// 只解除对应身份，迟到的清理不影响新实例。
+    pub(crate) fn unsubscribe_time(id: u64)
+    {
+        TIME_CONSUMERS.0.lock().unwrap_or_else(|error| error.into_inner()).remove(&id);
+        TIME_CONSUMERS.1.notify_one();
+    }
+
+    /// 页面重载与宿主销毁清理该屏全部时间消费者。
+    pub(crate) fn clear_time_monitor(monitor: &str)
+    {
+        TIME_CONSUMERS.0.lock().unwrap_or_else(|error| error.into_inner()).retain(|_, value| value != monitor);
+        TIME_CONSUMERS.1.notify_one();
+    }
+
+    /// 原生桥只向仍有活动消费者的宿主交付时间事件。
+    pub(crate) fn has_time_consumers(monitor: &str) -> bool { TIME_CONSUMERS.0.lock().unwrap_or_else(|error| error.into_inner()).values().any(|value| value == monitor) }
+
+    /// 暂停策略变化唤醒计时源重新判断活动消费者。
+    pub(crate) fn wake_time_source()
+    {
+        let _consumers = TIME_CONSUMERS.0.lock().unwrap_or_else(|error| error.into_inner()); // 与条件等待配对，防止丢失唤醒。
+        TIME_CONSUMERS.1.notify_one();
+    }
 
     /// 启动官方组件共享的低频宿主时间事件。
     pub fn start_host_events(app: AppHandle)
@@ -113,13 +149,23 @@ impl ComponentRuntimeState
         thread::spawn(move || {
             loop
             {
-                thread::sleep(Duration::from_secs(1));
+                let mut consumers = TIME_CONSUMERS.0.lock().unwrap_or_else(|error| error.into_inner()); // 空闲时阻塞，不按秒检查。
+                while !consumers.values().any(|monitor| !crate::platform::windows::refresh_policy::is_paused(monitor))
+                {
+                    consumers = TIME_CONSUMERS.1.wait(consumers).unwrap_or_else(|error| error.into_inner());
+                }
+                let (consumers, elapsed) = TIME_CONSUMERS.1.wait_timeout(consumers, Duration::from_secs(1)).unwrap_or_else(|error| error.into_inner()); // 订阅变化打断周期并重新判定。
+                if !elapsed.timed_out() || !consumers.values().any(|monitor| !crate::platform::windows::refresh_policy::is_paused(monitor))
+                {
+                    continue;
+                }
+                drop(consumers);
                 let Some(state) = app.try_state::<ComponentRuntimeState>()
                 else
                 {
                     break;
                 };
-                if !state.manifests.values().any(|manifest| manifest.required_capabilities.contains(&ComponentCapability::ReadHostTime))
+                if !app.state::<crate::app::settings::SettingsState>().preferences().is_ok_and(|preferences| preferences.clock_enabled)
                 {
                     continue;
                 }
@@ -233,42 +279,5 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
 fn failed_registration(instance: &ComponentInstanceSnapshot, message: &str) -> ComponentRegistrationSnapshot { ComponentRegistrationSnapshot { instance_id: instance.instance_id.clone(), component_id: instance.component_id.clone(), entry: None, authorized_capabilities: Vec::new(), status: ComponentLoadStatus::Failed, error: Some(message.to_string()) } }
 
 #[cfg(test)]
-mod tests
-{
-    use super::{ComponentRuntimeState, validate_manifest};
-    use crate::contracts::{ComponentCapability, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, WorkspaceRect};
-    use serde_json::json;
-
-    /// Debug 清单与默认实例严格跟随 Rust 构建模式。
-    #[test]
-    fn debug_widget_is_registered_only_in_debug_builds()
-    {
-        let runtime = ComponentRuntimeState::new(); // 当前构建注册表。
-        let instances = runtime.default_instances(); // 当前构建默认实例。
-        assert_eq!(instances.iter().any(|instance| instance.component_id == "official.debug-test"), cfg!(debug_assertions));
-        assert_eq!(runtime.manifests.contains_key("official.debug-test"), cfg!(debug_assertions));
-    }
-
-    /// 验证未授权能力在清单注册边界被拒绝。
-    #[test]
-    fn manifest_rejects_an_unauthorized_capability_set()
-    {
-        let manifest = ComponentManifest { id: "official.local-clock".to_string(), name: "本地时间".to_string(), entry: "official:local-clock".to_string(), required_capabilities: Vec::new(), persistence_version: 1 }; // 缺少宿主时间能力的无效官方清单。
-
-        assert_eq!(validate_manifest(&manifest).expect_err("空能力集合应被拒绝").code, "invalid-component-manifest");
-    }
-
-    /// 验证未知实例形成失败状态且不影响有效官方实例。
-    #[test]
-    fn failed_instance_is_isolated_from_ready_instances()
-    {
-        let runtime = ComponentRuntimeState::new(); // 已注册本地时间清单的组件运行时。
-        let instance = |instance_id: &str, component_id: &str| ComponentInstanceSnapshot { instance_id: instance_id.to_string(), component_id: component_id.to_string(), monitor_id: "DISPLAY1".to_string(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 20.0, top: 20.0, width: 220.0, height: 116.0 }, state_version: 1, state: json!({}) }; // 当前测试复用的组件实例构造器。
-
-        let snapshot = runtime.snapshot(&[instance("clock", "official.local-clock"), instance("missing", "official.missing")]).expect("实例集合应可隔离注册");
-
-        assert_eq!(snapshot.instances[0].status, ComponentLoadStatus::Ready);
-        assert_eq!(snapshot.instances[1].status, ComponentLoadStatus::Failed);
-        assert_eq!(snapshot.instances[0].authorized_capabilities, [ComponentCapability::ReadHostTime]);
-    }
-}
+#[path = "mod.test.rs"]
+mod tests;

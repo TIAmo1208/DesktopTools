@@ -118,7 +118,7 @@ impl LogWorker
         // 与原工具一致的日志正文。
         let text = format!("[{}]:[{}]\t{}", now.format("%H:%M:%S"), record.level_name, record.message);
 
-        if record.console_output
+        if cfg!(debug_assertions) && record.console_output
         {
             // 当前等级对应的 ANSI 颜色。
             let color = console_color(record.level_name);
@@ -136,7 +136,10 @@ impl LogWorker
             && self.file_output
             && let Err(error) = self.write_record(&now, &text)
         {
-            eprintln!("日志文件输出已关闭：{error}");
+            if cfg!(debug_assertions)
+            {
+                eprintln!("日志文件输出已关闭：{error}");
+            }
             self.file_output = false;
             self.flush_and_close();
         }
@@ -179,7 +182,7 @@ impl LogWorker
         self.writer = Some(BufWriter::new(file));
         self.active_date = Some(date);
 
-        if create_new_file
+        if cfg!(debug_assertions) && create_new_file
         {
             println!("[{}]:[INFO]\t日志：已创建文件：\"{}\"", now.format("%H:%M:%S"), output_path.display());
         }
@@ -238,6 +241,7 @@ impl LogWorker
     {
         if let Some(writer) = self.writer.as_mut()
             && let Err(error) = writer.flush()
+            && cfg!(debug_assertions)
         {
             eprintln!("日志文件刷新失败：{error}");
         }

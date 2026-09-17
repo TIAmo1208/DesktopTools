@@ -43,9 +43,15 @@ DesktopTools/
 │
 ├─ resources/                            # 图标、安装资源、静态资产
 ├─ docs/                                 # 领域文档、ADR、接口说明
-├─ .scratch/                             # 需求、规格、工单、验证证据
-└─ prototypes/tauri-desktop-host/       # 冻结的宿主行为参考
+└─ .scratch/                             # 需求、规格、工单、验证证据
 ```
+
+## 构建与运行
+
+发布构建使用 `npm run tauri:build`，由 Tauri CLI 构建前端并启用 `custom-protocol`，从内嵌资源加载设置与桌面页面。单独执行 `cargo build --release` 只选择优化 profile，不会启用 Tauri 发布协议，不能作为发布构建。需要直接调用 Cargo 时，先执行 `npm run build`，再执行 `cargo build --release --manifest-path src-tauri/Cargo.toml --features custom-protocol --bins`。
+
+主程序和 guardian 位于 `build/target/release/`。Release 日志只写入 `%LOCALAPPDATA%/TIAmo/DesktopTools/`，不向控制台输出；设置窗口通过托盘或桌面菜单按需创建，关闭时销毁页面，不退出后台桌面宿主。运行验收需确认设置页面内容和逐屏桌面渲染，进程存活不能代替验收；资源采样应包含主进程、guardian 及其 WebView2 子进程。
+
 
 ## 职责边界
 
@@ -75,8 +81,7 @@ React Feature
 
 ## 参考文档
 
-- [正式架构规格](docs/adr/0016-从原型验证结果演进正式项目架构.md)
+- [正式架构规格](docs/adr/0016-正式项目架构.md)
 - [领域词汇](CONTEXT.md)
-- [宿主原型说明](prototypes/tauri-desktop-host/README.md)
 
-当前阶段完成文件结构和职责边界，正式功能实现按 ADR 0016 的迁移顺序推进。
+当前架构、职责边界与功能演进约束以 ADR 0016 和现有源码为准。

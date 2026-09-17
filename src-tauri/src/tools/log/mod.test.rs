@@ -35,7 +35,7 @@ fn restores_tool_log_behavior()
     // 进程级日志测试串行锁。
     let _guard = TEST_LOCK.lock().expect("日志测试锁应可获取");
     let defaults = LogConfig::default(); // 正式运行默认目录及输出等级。
-    assert_eq!(defaults.console_level, LogLevel::Debug);
+    assert_eq!(defaults.console_level, if cfg!(debug_assertions) { LogLevel::Debug } else { LogLevel::None });
     assert_eq!(defaults.file_level, LogLevel::Info);
     assert_eq!(defaults.directory, PathBuf::from(std::env::var_os("LOCALAPPDATA").expect("Windows 用户目录应存在")).join("TIAmo").join("DesktopTools"));
     // 当前测试的根目录。

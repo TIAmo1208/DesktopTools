@@ -3,6 +3,15 @@ import test from "node:test";
 
 import { parsePreferences, parseSettingsSnapshot } from "./settings.ts";
 
+test("刷新策略默认关闭，保存往返保留开关并拒绝错误类型", () => {
+    const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 当前缺省策略。
+    for (const key of ["pauseOnFullscreen", "pauseOnFocus"] as const) {
+        assert.equal(defaults[key], false);
+        assert.equal(parsePreferences(JSON.parse(JSON.stringify({ ...defaults, [key]: true })))[key], true);
+        for (const value of [null, 1, "true"]) assert.throws(() => parsePreferences({ ...defaults, [key]: value }));
+    }
+});
+
 test("界面动画使用默认值并严格校验布尔设置", () => {
     const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 缺失字段使用当前默认值。
     assert.equal(defaults.interfaceAnimations, true);

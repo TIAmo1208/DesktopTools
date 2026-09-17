@@ -1,7 +1,8 @@
 use crate::contracts::{ShellDragPreparation, WorkspacePoint};
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::{Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use windows::Win32::System::Com::IDataObject;
@@ -17,7 +18,7 @@ enum ShellRequest
     /// 在原指针拖动仍有效时准备完整数据对象，失败返回内部布局回退。
     PrepareDrag
     {
-        references: Vec<String>, reply: SyncSender<Result<Option<ShellDragPreparation>, String>>
+        references: Vec<String>, portal_source: bool, reply: SyncSender<Result<Option<ShellDragPreparation>, String>>
     },
     /// 释放未启动的单次准备，不影响其他窗口更新的准备。
     CancelPreparedDrag(u64),
@@ -81,10 +82,10 @@ enum ShellRequest
         effect: DROPEFFECT,                                  // 已协商的复制或移动效果。
         reply: Sender<Result<ShellOperationResult, String>>, // 宿主通过消息泵等待的结果通道。
     },
-    /// 将封送的 Shell 数据传输到门户绑定目录。
+    /// 将已校验文件路径传输到门户绑定目录。
     TransferFolder
     {
-        data: AgileReference<IDataObject>, effect: DROPEFFECT, references: Vec<String>, directory: String, reply: Sender<Result<ShellOperationResult, String>>
+        effect: DROPEFFECT, references: Vec<String>, directory: String, reply: Sender<Result<ShellOperationResult, String>>
     },
     /// 消费准备凭据并封送完整数据，真正拖放由接收输入的宿主 UI STA 执行。
     TakePreparedDrag
@@ -126,6 +127,7 @@ pub(crate) struct PreparedShellDrag
 {
     pub data: AgileReference<IDataObject>, // 原始完整数据对象的合法封送引用。
     pub references: Vec<String>,           // 与原数据对象一致的完整来源身份。
+    pub portal_source: bool,               // 门户来源必须执行文件传输，不走内部布局提交。
 }
 
 /// 持有专用 Shell STA 线程及其请求通道。
@@ -133,8 +135,24 @@ struct ShellStaRuntime
 {
     /// Shell 请求发送端。
     sender: Sender<ShellRequest>,
+    /// 请求到达时唤醒 STA 联合等待的自动复位事件。
+    request_event: isize,
     /// Shell STA 后台线程。
     worker: Option<JoinHandle<()>>,
+}
+
+/// 等待 Shell 请求事件或当前 STA 的 Windows/COM 消息。
+fn wait_for_shell_activity(request_event: windows::Win32::Foundation::HANDLE) -> Result<(), String>
+{
+    use windows::Win32::Foundation::WAIT_OBJECT_0;
+    use windows::Win32::System::Threading::INFINITE;
+    use windows::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjects, QS_ALLINPUT};
+    let result = unsafe { MsgWaitForMultipleObjects(Some(&[request_event]), false, INFINITE, QS_ALLINPUT) }; // 空闲时无限阻塞，请求或消息到达后立即返回。
+    if result == WAIT_OBJECT_0 || result.0 == WAIT_OBJECT_0.0 + 1
+    {
+        return Ok(());
+    }
+    Err(format!("Shell STA 等待请求或消息失败，状态：{}", result.0))
 }
 
 impl ShellStaRuntime
@@ -144,6 +162,10 @@ impl ShellStaRuntime
     {
         // Shell 请求通道。
         let (sender, receiver) = mpsc::channel();
+        // 请求发送后唤醒 STA 的自动复位事件。
+        let request_event = unsafe { windows::Win32::System::Threading::CreateEventW(None, false, false, None) }.map_err(|error| DesktopItemError::shell_enumeration_failed(&format!("创建 Shell STA 请求事件失败：{error}")))?;
+        // 线程和运行时共同引用的事件句柄值，由运行时在工作线程结束后关闭。
+        let request_event_raw = request_event.0 as isize;
         // Shell STA 初始化结果通道。
         let (ready, initialized) = mpsc::sync_channel(0);
         // 专用 Shell STA 后台线程。
@@ -167,7 +189,7 @@ impl ShellStaRuntime
                     }
                 };
                 let _ = ready.send(Ok(()));
-                let mut prepared_drag: Option<(u64, Vec<String>, IDataObject)> = None; // 当前唯一未消费准备，COM 对象始终留在所属 STA。
+                let mut prepared_drag: Option<(u64, Vec<String>, IDataObject, bool)> = None; // 当前唯一未消费准备，COM 对象始终留在所属 STA。
                 let mut next_drag_token = 0_u64; // 当前进程内递增的准备凭据。
                 let mut transfers = Vec::<JoinHandle<()>>::new(); // 长文件操作使用独立 STA，菜单、打开和源拖动继续响应。
 
@@ -186,23 +208,32 @@ impl ShellStaRuntime
                             DispatchMessageW(&message);
                         }
                     }
-                    let request = match receiver.recv_timeout(std::time::Duration::from_millis(10))
+                    let request = match receiver.try_recv()
                     {
                         Ok(request) => request,
-                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    }; // 有限等待不会饿死 STA 的消息泵。
+                        Err(TryRecvError::Empty) =>
+                        {
+                            let event = windows::Win32::Foundation::HANDLE(request_event_raw as *mut c_void); // 仅借用运行时持有的事件句柄。
+                            if let Err(error) = wait_for_shell_activity(event)
+                            {
+                                crate::log_error!("Shell：{error}");
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(TryRecvError::Disconnected) => break,
+                    }; // 已排队请求不等待；空队列才进入请求与消息的联合无限等待。
                     match request
                     {
-                        ShellRequest::PrepareDrag { references, reply } =>
+                        ShellRequest::PrepareDrag { references, portal_source, reply } =>
                         {
                             prepared_drag = None;
-                            let result = match crate::platform::windows::desktop_data_object(windows::Win32::Foundation::HWND::default(), &references)
+                            let result = match crate::platform::windows::drag_data_object(windows::Win32::Foundation::HWND::default(), &references, portal_source)
                             {
                                 Ok(data) =>
                                 {
                                     next_drag_token += 1;
-                                    prepared_drag = Some((next_drag_token, references, data));
+                                    prepared_drag = Some((next_drag_token, references, data, portal_source));
                                     use windows::Win32::UI::HiDpi::GetSystemMetricsForDpi;
                                     use windows::Win32::UI::WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG};
                                     Ok(Some(ShellDragPreparation { token: next_drag_token, threshold: WorkspacePoint { left: unsafe { GetSystemMetricsForDpi(SM_CXDRAG, 96) }.max(1) as f64, top: unsafe { GetSystemMetricsForDpi(SM_CYDRAG, 96) }.max(1) as f64 } }))
@@ -284,7 +315,7 @@ impl ShellStaRuntime
                                 }
                             }
                         }
-                        ShellRequest::TransferFolder { data, effect, references, directory, reply } =>
+                        ShellRequest::TransferFolder { effect, references, directory, reply } =>
                         {
                             transfers.retain(|worker| !worker.is_finished());
                             let completed_reply = reply.clone();
@@ -294,12 +325,7 @@ impl ShellStaRuntime
                                     let _ = completed_reply.send(Err(error));
                                     return;
                                 }
-                                let result = (|| {
-                                    let owner = ShellMenuOwner::create()?;
-                                    let object = data.resolve().map_err(|error| format!("解析门户投放数据代理失败：{error}"))?;
-                                    crate::platform::windows::transfer_data_to_directory(&owner, &object, effect, Some(&directory), Some(&references))
-                                })();
-                                drop(data);
+                                let result = ShellMenuOwner::create().and_then(|owner| crate::platform::windows::transfer_paths_to_directory(&owner, effect, Some(&directory), &references));
                                 uninitialize_shell_apartment();
                                 let _ = completed_reply.send(result);
                             })
@@ -315,8 +341,8 @@ impl ShellStaRuntime
                         {
                             let result = if prepared_drag.as_ref().is_some_and(|prepared| prepared.0 == token)
                             {
-                                let (_, references, data) = prepared_drag.take().expect("准备凭据已核实"); // 启动之前消费，不能重放。
-                                AgileReference::new(&data).map(|data| PreparedShellDrag { data, references }).map_err(|error| format!("封送源拖放数据失败：{error}"))
+                                let (_, references, data, portal_source) = prepared_drag.take().expect("准备凭据已核实"); // 启动之前消费，不能重放。
+                                AgileReference::new(&data).map(|data| PreparedShellDrag { data, references, portal_source }).map_err(|error| format!("封送源拖放数据失败：{error}"))
                             }
                             else
                             {
@@ -363,11 +389,37 @@ impl ShellStaRuntime
                 } // 退出时保留真实文件结果，不能中断一半后伪报取消。
                 uninitialize_shell_apartment();
             })
-            .map_err(|error| DesktopItemError::shell_enumeration_failed(&error))?;
-        initialized.recv().map_err(|error| DesktopItemError::shell_enumeration_failed(&error))?.map_err(|error| DesktopItemError::shell_enumeration_failed(&error))?;
+            .map_err(|error| {
+                let _ = unsafe { windows::Win32::Foundation::CloseHandle(request_event) };
+                DesktopItemError::shell_enumeration_failed(&error)
+            })?;
+        let initialization = match initialized.recv()
+        {
+            Ok(initialization) => initialization,
+            Err(error) =>
+            {
+                let _ = worker.join();
+                let _ = unsafe { windows::Win32::Foundation::CloseHandle(request_event) };
+                return Err(DesktopItemError::shell_enumeration_failed(&error));
+            }
+        }; // 初始化失败前工作线程已经结束，可以安全回收事件句柄。
+        if let Err(error) = initialization
+        {
+            let _ = worker.join();
+            let _ = unsafe { windows::Win32::Foundation::CloseHandle(request_event) };
+            return Err(DesktopItemError::shell_enumeration_failed(&error));
+        }
 
         crate::log_info!("Shell：专用 STA 运行时已启动");
-        Ok(Self { sender, worker: Some(worker) })
+        Ok(Self { sender, request_event: request_event_raw, worker: Some(worker) })
+    }
+
+    /// 将请求入队后设置事件，避免 STA 在空闲联合等待中遗漏唤醒。
+    fn send(&self, request: ShellRequest) -> Result<(), String>
+    {
+        self.sender.send(request).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        let event = windows::Win32::Foundation::HANDLE(self.request_event as *mut c_void); // 运行时持有到工作线程退出。
+        unsafe { windows::Win32::System::Threading::SetEvent(event) }.map_err(|error| format!("唤醒 Shell STA 线程失败：{error}"))
     }
 
     /// 在专用 STA 线程枚举桌面项目。
@@ -375,7 +427,7 @@ impl ShellStaRuntime
     {
         // 等待 Shell 枚举结果的同步通道。
         let (reply, response) = mpsc::sync_channel(0);
-        self.sender.send(ShellRequest::Enumerate(reply)).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        self.send(ShellRequest::Enumerate(reply))?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
@@ -384,7 +436,7 @@ impl ShellStaRuntime
     {
         // 等待 Shell 打开结果的同步通道。
         let (reply, response) = mpsc::sync_channel(0);
-        self.sender.send(ShellRequest::Open { references, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        self.send(ShellRequest::Open { references, reply })?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
@@ -392,7 +444,7 @@ impl ShellStaRuntime
     fn rename(&self, reference: String, new_name: String) -> Result<ShellOperationResult, String>
     {
         let (reply, response) = mpsc::sync_channel(0); // 等待 Shell 重命名结果的同步通道。
-        self.sender.send(ShellRequest::Rename { reference, new_name, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        self.send(ShellRequest::Rename { reference, new_name, reply })?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
@@ -400,7 +452,7 @@ impl ShellStaRuntime
     fn delete(&self, references: Vec<String>, permanent: bool) -> Result<ShellOperationResult, String>
     {
         let (reply, response) = mpsc::sync_channel(0); // 等待 Shell 删除结果的同步通道。
-        self.sender.send(ShellRequest::Delete { references, permanent, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        self.send(ShellRequest::Delete { references, permanent, reply })?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
@@ -408,7 +460,7 @@ impl ShellStaRuntime
     fn set_clipboard(&self, references: Vec<String>, cut: bool) -> Result<ShellOperationResult, String>
     {
         let (reply, response) = mpsc::sync_channel(0); // 等待系统剪贴板结果的同步通道。
-        self.sender.send(ShellRequest::SetClipboard { references, cut, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        self.send(ShellRequest::SetClipboard { references, cut, reply })?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
@@ -416,7 +468,7 @@ impl ShellStaRuntime
     fn set_clipboard_paths(&self, references: Vec<String>, cut: bool) -> Result<ShellOperationResult, String>
     {
         let (reply, response) = mpsc::sync_channel(0);
-        self.sender.send(ShellRequest::SetClipboardPaths { references, cut, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        self.send(ShellRequest::SetClipboardPaths { references, cut, reply })?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
@@ -424,7 +476,7 @@ impl ShellStaRuntime
     fn paste(&self) -> Result<ShellOperationResult, String>
     {
         let (reply, response) = mpsc::sync_channel(0); // 等待 Shell 粘贴结果的同步通道。
-        self.sender.send(ShellRequest::Paste(reply)).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        self.send(ShellRequest::Paste(reply))?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
@@ -432,7 +484,7 @@ impl ShellStaRuntime
     fn paste_folder(&self, directory: String) -> Result<ShellOperationResult, String>
     {
         let (reply, response) = mpsc::sync_channel(0);
-        self.sender.send(ShellRequest::PasteFolder { directory, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        self.send(ShellRequest::PasteFolder { directory, reply })?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
@@ -440,7 +492,7 @@ impl ShellStaRuntime
     fn take_prepared_drag(&self, token: u64) -> Result<PreparedShellDrag, String>
     {
         let (reply, response) = mpsc::sync_channel(0); // 只等待准备，不占用整个拖放生命周期。
-        self.sender.send(ShellRequest::TakePreparedDrag { token, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        self.send(ShellRequest::TakePreparedDrag { token, reply })?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
@@ -448,7 +500,7 @@ impl ShellStaRuntime
     fn compensate(&self, kind: ShellOperationKind, actions: Vec<ShellCompensationAction>, proofs: Vec<crate::platform::windows::file_proof::FileProof>) -> Result<ShellOperationResult, String>
     {
         let (reply, response) = mpsc::sync_channel(0); // 等待 Shell 补偿结果的同步通道。
-        self.sender.send(ShellRequest::Compensate { kind, actions, proofs, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        self.send(ShellRequest::Compensate { kind, actions, proofs, reply })?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 
@@ -457,7 +509,7 @@ impl ShellStaRuntime
     {
         // 等待原生菜单选择结果的同步通道。
         let (reply, response) = mpsc::sync_channel(0);
-        self.sender.send(ShellRequest::ShowMenu { target, screen_x, screen_y, product_commands, reply }).map_err(|_| "Shell STA 线程已经停止".to_string())?;
+        self.send(ShellRequest::ShowMenu { target, screen_x, screen_y, product_commands, reply })?;
         response.recv().map_err(|_| "Shell STA 线程已经停止".to_string())?
     }
 }
@@ -467,11 +519,14 @@ impl Drop for ShellStaRuntime
     /// 请求 Shell STA 线程释放 COM apartment 并退出。
     fn drop(&mut self)
     {
-        let _ = self.sender.send(ShellRequest::Shutdown);
+        let _ = self.send(ShellRequest::Shutdown);
         if let Some(worker) = self.worker.take()
         {
             let _ = worker.join();
         }
+        let event = windows::Win32::Foundation::HANDLE(self.request_event as *mut c_void); // 工作线程退出后释放唯一事件句柄。
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(event) };
+        self.request_event = 0;
     }
 }
 
@@ -664,16 +719,15 @@ impl DesktopItemState
     {
         let data = AgileReference::new(data).map_err(|error| DesktopItemError::shell_operation_failed(&format!("封送投放数据失败：{error}")))?; // COM 提供跨 apartment 的引用，不传递裸接口指针。
         let (reply, result) = mpsc::channel(); // 无阻塞结果交接，宿主取消等待也不阻塞 Shell STA。
-        self.runtime.sender.send(ShellRequest::Transfer { data, effect, references, reply }).map_err(|_| DesktopItemError::shell_operation_failed(&"Shell STA 线程已经停止"))?;
+        self.runtime.send(ShellRequest::Transfer { data, effect, references, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
         Ok(result)
     }
 
     /// 在 Shell STA 将封送数据传输到门户目录。
-    pub(crate) fn begin_folder_drop_transfer(&self, data: &IDataObject, effect: DROPEFFECT, references: Vec<String>, directory: String) -> Result<Receiver<Result<ShellOperationResult, String>>, DesktopItemError>
+    pub(crate) fn begin_folder_drop_transfer(&self, effect: DROPEFFECT, references: Vec<String>, directory: String) -> Result<Receiver<Result<ShellOperationResult, String>>, DesktopItemError>
     {
-        let data = AgileReference::new(data).map_err(|error| DesktopItemError::shell_operation_failed(&format!("封送门户投放数据失败：{error}")))?;
         let (reply, result) = mpsc::channel();
-        self.runtime.sender.send(ShellRequest::TransferFolder { data, effect, references, directory, reply }).map_err(|_| DesktopItemError::shell_operation_failed(&"Shell STA 线程已经停止"))?;
+        self.runtime.send(ShellRequest::TransferFolder { effect, references, directory, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
         Ok(result)
     }
 
@@ -692,12 +746,20 @@ impl DesktopItemState
             Err(_) => return Ok(None),
         }; // 不从选择中丢弃失效项目。
         let (reply, response) = mpsc::sync_channel(0); // 指针会话不等待，前端异步接收准备结果。
-        self.runtime.sender.send(ShellRequest::PrepareDrag { references, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
+        self.runtime.send(ShellRequest::PrepareDrag { references, portal_source: false, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
         response.recv().map_err(|error| DesktopItemError::shell_operation_failed(&error))?.map_err(|error| DesktopItemError::shell_operation_failed(&error))
     }
 
+    /// 门户路径已经通过命令层校验；完整集合必须成功准备，不能回退布局拖动。
+    pub(crate) fn prepare_portal_drag(&self, references: Vec<String>) -> Result<ShellDragPreparation, DesktopItemError>
+    {
+        let (reply, response) = mpsc::sync_channel(0);
+        self.runtime.send(ShellRequest::PrepareDrag { references, portal_source: true, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
+        response.recv().map_err(|error| DesktopItemError::shell_operation_failed(&error))?.map_err(|error| DesktopItemError::shell_operation_failed(&error))?.ok_or_else(|| DesktopItemError::shell_operation_failed(&"无法准备门户文件拖放"))
+    }
+
     /// 单击、取消或失去捕获时释放尚未消费的 Shell 数据对象。
-    pub fn cancel_prepared_drag(&self, token: u64) -> Result<(), DesktopItemError> { self.runtime.sender.send(ShellRequest::CancelPreparedDrag(token)).map_err(|error| DesktopItemError::shell_operation_failed(&error)) }
+    pub fn cancel_prepared_drag(&self, token: u64) -> Result<(), DesktopItemError> { self.runtime.send(ShellRequest::CancelPreparedDrag(token)).map_err(|error| DesktopItemError::shell_operation_failed(&error)) }
 
     /// 返回指定方向最近一个有效 Shell 历史单元的时间。
     pub fn latest_shell_history_time(&self, redo: bool) -> Result<Option<i64>, DesktopItemError>
@@ -1141,114 +1203,5 @@ fn publish_observation(snapshot: &mut DesktopItemSnapshot, observation: Result<V
 }
 
 #[cfg(test)]
-mod tests
-{
-    use super::{ShellHistoryEntry, ShellHistoryState, publish_observation, reconcile_desktop_items, shell_compensation_actions, shell_history_items};
-    use crate::contracts::{DesktopItem, DesktopItemAvailability, DesktopItemSnapshot, ShellOperationItemResult, ShellOperationKind, ShellOperationResult};
-    use crate::platform::windows::ShellCompensationAction;
-
-    /// 验证暂时解析失败的项目保留最近一次有效元数据。
-    #[test]
-    fn unavailable_item_preserves_last_valid_metadata()
-    {
-        // 最近一次有效项目集合。
-        let previous = vec![DesktopItem { stable_reference: "::{project}".to_string(), display_name: "Project".to_string(), system_image: Some("data:image/png;base64,AA==".to_string()), availability: DesktopItemAvailability::Available }];
-        // 本次 Shell 枚举观察到的暂时不可用项目。
-        let observed = vec![DesktopItem { stable_reference: "::{project}".to_string(), display_name: "::{project}".to_string(), system_image: None, availability: DesktopItemAvailability::Unavailable }];
-
-        // 按稳定引用协调后的项目集合。
-        let reconciled = reconcile_desktop_items(observed, &previous);
-
-        assert_eq!(reconciled[0].display_name, "Project");
-        assert_eq!(reconciled[0].system_image.as_deref(), Some("data:image/png;base64,AA=="));
-        assert_eq!(reconciled[0].availability, DesktopItemAvailability::Unavailable);
-    }
-
-    /// 验证枚举失败保留最近一次有效快照。
-    #[test]
-    fn enumeration_failure_preserves_last_valid_snapshot()
-    {
-        // 最近一次有效桌面项目快照。
-        let mut snapshot = DesktopItemSnapshot { revision: 8, items: vec![DesktopItem { stable_reference: "::{project}".to_string(), display_name: "Project".to_string(), system_image: None, availability: DesktopItemAvailability::Available }] };
-        // Shell 枚举失败结果。
-        let result = publish_observation(&mut snapshot, Err("Explorer 暂时不可用".to_string()));
-
-        assert_eq!(result.expect_err("Shell 枚举失败应返回错误").code, "shell-enumeration-failed");
-        assert_eq!(snapshot.revision, 8);
-        assert_eq!(snapshot.items[0].display_name, "Project");
-    }
-
-    /// 验证补偿日志只接纳同时具有实际结果引用和所需父级名称的项目。
-    #[test]
-    fn reversible_shell_history_requires_complete_native_metadata()
-    {
-        let result = ShellOperationResult {
-            operation_id: 3,
-            completed_at_unix_micros: 10,
-            kind: ShellOperationKind::Recycle,
-            aborted: false,
-            operation_error: None, // 当前操作没有整体原生错误。
-            reversible: true,
-            permanent: false,
-            effect: None,
-            items: vec![ShellOperationItemResult { proof: None, compensation_blocked: None, source_reference: "desktop-old".to_string(), result_reference: Some("recycle-item".to_string()), succeeded: true, result_code: 0, source_parent_reference: Some("desktop-parent".to_string()), source_name: Some("old.txt".to_string()), result_parent_reference: Some("recycle-parent".to_string()), result_name: Some("old.txt".to_string()) }, ShellOperationItemResult { proof: None, compensation_blocked: None, source_reference: "missing-result".to_string(), result_reference: None, succeeded: true, result_code: 0, source_parent_reference: Some("desktop-parent".to_string()), source_name: Some("missing.txt".to_string()), result_parent_reference: None, result_name: None }],
-            message: "移入回收站完成：2 项".to_string(),
-        }; // 一个可明确恢复和一个缺少结果引用的 Shell 实际结果。
-
-        let items = shell_history_items(&result);
-
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].current_reference, "recycle-item");
-    }
-
-    /// 验证回收站撤销和重做分别生成移动恢复与再次回收动作。
-    #[test]
-    fn recycle_history_builds_inverse_native_actions()
-    {
-        let result = ShellOperationResult {
-            operation_id: 4,
-            completed_at_unix_micros: 20,
-            kind: ShellOperationKind::Recycle,
-            aborted: false,
-            operation_error: None, // 当前操作没有整体原生错误。
-            reversible: true,
-            permanent: false,
-            effect: None,
-            items: vec![ShellOperationItemResult { proof: None, compensation_blocked: None, source_reference: "desktop-old".to_string(), result_reference: Some("recycle-item".to_string()), succeeded: true, result_code: 0, source_parent_reference: Some("desktop-parent".to_string()), source_name: Some("old.txt".to_string()), result_parent_reference: Some("recycle-parent".to_string()), result_name: Some("old.txt".to_string()) }],
-            message: "移入回收站完成：1 项".to_string(),
-        }; // 已具备完整补偿元数据的回收结果。
-        let mut entry = ShellHistoryEntry { busy: false, items: shell_history_items(&result), result, state: ShellHistoryState::Applied, timeline_at_unix_micros: 20, layout: None, layout_states: std::collections::HashMap::new(), pending_layout: Vec::new() };
-        entry.items[0].proof = Some(crate::platform::windows::file_proof::FileProof::capture(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap()); // 只读证据用于动作构建，本例不操作该文件。
-        entry.items[0].state = ShellHistoryState::Applied;
-
-        let undo = shell_compensation_actions(&entry, false);
-        entry.items[0].state = ShellHistoryState::Undone;
-        let redo = shell_compensation_actions(&entry, true);
-
-        assert!(matches!(
-            &undo[0],
-            ShellCompensationAction::Move {
-                reference,
-                destination_parent_reference,
-                new_name
-            } if reference == "recycle-item"
-                && destination_parent_reference == "desktop-parent"
-                && new_name == "old.txt"
-        ));
-        assert!(matches!(
-            &redo[0],
-            ShellCompensationAction::Recycle { reference } if reference == "recycle-item"
-        ));
-        let mut retry = entry.items[0].clone(); // 同一轮部分失败仍停留在应用方向。
-        retry.state = ShellHistoryState::Applied;
-        retry.current_reference = "retry-item".into();
-        entry.items.push(retry);
-        assert!(super::shell_history_has_direction(&entry, false));
-        assert!(super::shell_history_has_direction(&entry, true));
-        super::invalidate_shell_redo(&mut entry);
-        assert_eq!(shell_compensation_actions(&entry, false).len(), 1); // 新分支不能丢弃明确失败项。
-        assert!(shell_compensation_actions(&entry, true).is_empty());
-        entry.pending_layout.push(("result".into(), "result".into(), "recycled".into(), false));
-        assert!(!super::shell_history_has_direction(&entry, true)); // 文件已撤销而布局未保存时先恢复同一方向。
-    }
-}
+#[path = "mod.test.rs"]
+mod tests;

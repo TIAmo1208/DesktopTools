@@ -46,7 +46,7 @@ export const useWorkspace = (enabled: boolean) => {
         // 工作区快照事件订阅。
         const subscription = listenWorkspaceSnapshots(handleSnapshot, handleFailure);
         void subscription.catch(handleFailure);
-        void getWorkspaceSnapshot().then(handleSnapshot).catch(handleFailure);
+        if (!window.__DESKTOP_TOOLS_NATIVE__) void getWorkspaceSnapshot().then(handleSnapshot).catch(handleFailure);
         return () => {
             isMounted = false;
             void subscription.then((unlisten) => unlisten()).catch(() => undefined);

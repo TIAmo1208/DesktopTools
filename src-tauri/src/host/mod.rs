@@ -1,3 +1,4 @@
+use std::ffi::c_void;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,8 +17,11 @@ const RENDERER_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Renderer 未恢复时再次尝试轻量重载的最小间隔。
 const RENDERER_RELOAD_RETRY: Duration = Duration::from_secs(5);
 
-/// Explorer 或显示器适配器连续失败后进入阻塞恢复的轮询次数。
+/// 环境事件到达后等待 Explorer 与显示器事实稳定的最大次数。
 const ENVIRONMENT_FAILURE_LIMIT: u32 = 20;
+
+/// 环境事件到达后的有限收敛间隔。
+const ENVIRONMENT_CONVERGENCE_INTERVAL: Duration = Duration::from_millis(100);
 
 /// 协调全局 guardian 门槛、桌面接管提交和 Explorer 恢复阶段。
 struct TakeoverCoordinator
@@ -114,6 +118,8 @@ struct DesktopHostRuntimeData
     cleanup_complete: bool,
     /// 显示环境整组重建是否已经排队到 UI 线程。
     rebuild_in_progress: bool,
+    /// 正常退出时唤醒宿主环境无限等待的事件句柄。
+    environment_stop_event: isize,
 }
 
 /// 持有单显示器透明宿主、接管门槛和 Explorer 恢复契约。
@@ -165,7 +171,7 @@ impl DesktopHostRuntime
         let mut coordinator = TakeoverCoordinator::new(shell.original_items_visible);
         coordinator.mark_guardian_ready();
         // 正式宿主共享运行时。
-        let runtime = Arc::new(Self { data: Mutex::new(DesktopHostRuntimeData { coordinator, hosts: hosts.into_iter().map(|host| DesktopHostContext { host, readiness: DesktopHostReadiness { guardian: true, ..Default::default() }, hit_regions: Vec::new(), input_drag_active: false, last_renderer_heartbeat: Instant::now(), renderer_reload_requested_at: None }).collect(), shell, guardian: Some(guardian), cleanup_complete: false, rebuild_in_progress: false }) });
+        let runtime = Arc::new(Self { data: Mutex::new(DesktopHostRuntimeData { coordinator, hosts: hosts.into_iter().map(|host| DesktopHostContext { host, readiness: DesktopHostReadiness { guardian: true, ..Default::default() }, hit_regions: Vec::new(), input_drag_active: false, last_renderer_heartbeat: Instant::now(), renderer_reload_requested_at: None }).collect(), shell, guardian: Some(guardian), cleanup_complete: false, rebuild_in_progress: false, environment_stop_event: 0 }) });
         runtime_slot.set(Arc::clone(&runtime)).map_err(|_| "正式宿主运行时重复初始化".to_string())?;
         load_desktop_hosts()?;
         crate::log_info!("宿主：等待全部逐屏页面、系统图像、像素和命中图门槛，宿主数量={}", monitors.len());
@@ -351,10 +357,15 @@ impl DesktopHostRuntime
             data.cleanup_complete = true;
             // 正常退出恢复使用的接管前 Explorer 可见状态。
             let original_visibility = data.coordinator.restore();
-            (data.hosts.iter().map(|context| context.host.clone()).collect::<Vec<_>>(), data.shell, original_visibility, data.guardian.take())
+            (data.hosts.iter().map(|context| context.host.clone()).collect::<Vec<_>>(), data.shell, original_visibility, data.guardian.take(), std::mem::take(&mut data.environment_stop_event))
         };
         // 正常恢复使用的正式宿主、Shell 状态和 guardian。
-        let (hosts, original_shell, restore_visibility, guardian) = cleanup;
+        let (hosts, original_shell, restore_visibility, guardian, environment_stop_event) = cleanup;
+        if environment_stop_event != 0
+        {
+            let event = windows::Win32::Foundation::HANDLE(environment_stop_event as *mut c_void); // 环境线程持有并在退出时关闭。
+            let _ = unsafe { windows::Win32::System::Threading::SetEvent(event) };
+        }
         let host_hidden = hosts.iter().all(|host| set_host_visible(host.hwnd, false)); // 正常退出时撤下全部逐屏宿主的结果。
         let (restored, environment_verified) = restore_explorer_environment(original_shell, restore_visibility); // 正常退出时恢复并复核 Explorer。
         crate::log_info!("宿主：正常退出恢复，宿主隐藏：{}，Explorer 恢复：{}，环境检查：{}", u8::from(host_hidden), u8::from(restored), u8::from(environment_verified));
@@ -373,7 +384,7 @@ impl DesktopHostRuntime
         destroy_desktop_hosts();
     }
 
-    /// 监视逐屏前端心跳，并按原型路径轻量重载失效 Renderer。
+    /// 监视逐屏前端心跳，并按当前恢复契约轻量重载失效 Renderer。
     pub fn start_renderer_watchdog(app: AppHandle, runtime: Arc<Self>)
     {
         thread::spawn(move || {
@@ -438,92 +449,89 @@ impl DesktopHostRuntime
         });
     }
 
-    /// 按原型路径监视显示器布局、拓扑和 Explorer 宿主身份变化。
+    /// 监视显示器布局、拓扑和 Explorer 宿主身份变化。
     pub fn start_environment_watchdog(app: AppHandle, runtime: Arc<Self>)
     {
+        let stop_event = match unsafe { windows::Win32::System::Threading::CreateEventW(None, true, false, None) }
+        {
+            Ok(event) => event,
+            Err(error) =>
+            {
+                runtime.fail_host_adapter(&format!("创建宿主环境停止事件失败：{error}"));
+                return;
+            }
+        }; // 正常退出主动唤醒无限等待。
+        if let Ok(mut data) = runtime.data.lock()
+        {
+            if data.cleanup_complete
+            {
+                let _ = unsafe { windows::Win32::Foundation::CloseHandle(stop_event) };
+                return;
+            }
+            data.environment_stop_event = stop_event.0 as isize;
+        }
+        let stop_event_raw = stop_event.0 as isize; // HANDLE 本身不跨线程，在线程内按原值恢复。
         thread::spawn(move || {
-            let mut environment_failures = 0_u32; // 连续无法读取 Explorer 或显示器环境的次数。
+            let stop_event = windows::Win32::Foundation::HANDLE(stop_event_raw as *mut c_void); // 线程独占并最终关闭的停止事件。
+            let mut watch = match crate::platform::windows::environment_watch::DesktopEnvironmentWatch::new(stop_event)
+            {
+                Ok(watch) => watch,
+                Err(error) =>
+                {
+                    let _ = unsafe { windows::Win32::Foundation::CloseHandle(stop_event) };
+                    runtime.fail_host_adapter(&error);
+                    return;
+                }
+            }; // 当前线程独占的显示、Explorer 和注册表通知资源。
+            crate::log_info!("宿主：环境事件监听已启动，空闲期无限等待");
             loop
             {
-                thread::sleep(Duration::from_millis(500));
-                let observed_visibility = desktop_items_setting_visible(); // 当前用户“显示桌面图标”设置。
-                let takeover_def_view = {
-                    let mut data = match runtime.data.lock()
+                match watch.wait()
+                {
+                    Ok(crate::platform::windows::environment_watch::EnvironmentNotification::Stop) => return,
+                    Ok(crate::platform::windows::environment_watch::EnvironmentNotification::Visibility) =>
                     {
-                        Ok(data) => data,
-                        Err(_) => return,
-                    };
-                    if data.cleanup_complete || data.coordinator.phase() == TakeoverPhase::Failed
+                        if !observe_desktop_visibility(&runtime)
+                        {
+                            return;
+                        }
+                        continue;
+                    }
+                    Ok(crate::platform::windows::environment_watch::EnvironmentNotification::Fallback { environment, visibility }) =>
                     {
+                        if visibility && !observe_desktop_visibility(&runtime)
+                        {
+                            return;
+                        }
+                        if !environment
+                        {
+                            continue;
+                        }
+                    }
+                    Ok(crate::platform::windows::environment_watch::EnvironmentNotification::Environment) =>
+                    {}
+                    Err(error) =>
+                    {
+                        runtime.fail_host_adapter(&error);
                         return;
                     }
-                    data.coordinator.observe_user_visibility(observed_visibility);
-                    data.shell.original_items_visible = observed_visibility;
-                    (data.coordinator.is_committed() && desktop_items_visible(data.shell.def_view)).then_some(data.shell.def_view)
-                }; // 用户更新设置后是否需要继续维持本轮临时桌面接管隐藏。
-                if let Some(def_view) = takeover_def_view
-                    && set_desktop_items_visible(def_view, false)
-                {
-                    crate::log_info!("宿主：已记录用户桌面图标设置并继续维持接管隐藏，恢复可见：{}", u8::from(observed_visibility));
                 }
-                let latest_shell = match discover_shell_desktop()
+                let _ = app.emit("desktop-refresh-policy-changed", ()); // 显示和 Explorer 环境变化后立即复核暂停策略。
+                let (latest_shell, latest_monitors) = match observe_stable_environment()
                 {
-                    Ok(shell) => shell,
+                    Ok(environment) => environment,
                     Err(error) =>
                     {
-                        environment_failures = environment_failures.saturating_add(1);
-                        if environment_failure_is_blocking(environment_failures)
-                        {
-                            let failure_app = app.clone(); // UI 线程恢复与快照发布使用的应用句柄。
-                            let failure_runtime = Arc::clone(&runtime); // UI 线程进入阻塞恢复的宿主运行时。
-                            let reason = format!("Explorer 桌面宿主连续发现失败：{error}"); // 用户可检索的兼容适配器失败原因。
-                            if app
-                                .run_on_main_thread(move || {
-                                    failure_runtime.fail_host_adapter(&reason);
-                                    if let Ok(snapshot) = failure_runtime.snapshot()
-                                    {
-                                        let _ = failure_app.emit(crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, snapshot);
-                                    }
-                                })
-                                .is_err()
-                            {
-                                runtime.fail_host_adapter("Explorer 失败恢复调度失败");
-                            }
-                            return;
-                        }
-                        continue;
+                        runtime.fail_host_adapter(&error);
+                        return;
                     }
-                }; // 当前重新发现的 Explorer 桌面宿主身份。
-                let latest_monitors = match enumerate_desktop_monitors()
+                };
+                if !observe_desktop_visibility(&runtime)
                 {
-                    Ok(monitors) => monitors,
-                    Err(error) =>
-                    {
-                        environment_failures = environment_failures.saturating_add(1);
-                        if environment_failure_is_blocking(environment_failures)
-                        {
-                            let failure_app = app.clone(); // UI 线程恢复与快照发布使用的应用句柄。
-                            let failure_runtime = Arc::clone(&runtime); // UI 线程进入阻塞恢复的宿主运行时。
-                            let reason = format!("显示器适配器连续枚举失败：{error}"); // 用户可检索的显示环境失败原因。
-                            if app
-                                .run_on_main_thread(move || {
-                                    failure_runtime.fail_host_adapter(&reason);
-                                    if let Ok(snapshot) = failure_runtime.snapshot()
-                                    {
-                                        let _ = failure_app.emit(crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, snapshot);
-                                    }
-                                })
-                                .is_err()
-                            {
-                                runtime.fail_host_adapter("显示器失败恢复调度失败");
-                            }
-                            return;
-                        }
-                        continue;
-                    }
-                }; // 当前全部显示器物理布局与 DPI。
-                environment_failures = 0;
-                let should_rebuild = {
+                    return;
+                }
+                let should_rebuild = loop
+                {
                     let mut data = match runtime.data.lock()
                     {
                         Ok(data) => data,
@@ -532,18 +540,20 @@ impl DesktopHostRuntime
                     if data.cleanup_complete || data.coordinator.phase() == TakeoverPhase::Failed
                     {
                         return;
+                    }
+                    if data.rebuild_in_progress
+                    {
+                        drop(data);
+                        thread::sleep(ENVIRONMENT_CONVERGENCE_INTERVAL);
+                        continue;
                     }
                     let current_monitors = data.hosts.iter().map(|context| context.host.monitor.clone()).collect::<Vec<_>>(); // 当前正式宿主使用的显示器状态。
                     let changed = shell_hosts_changed(data.shell, latest_shell) || monitor_layout_changed(&current_monitors, &latest_monitors);
-                    if changed && !data.rebuild_in_progress
+                    if changed
                     {
                         data.rebuild_in_progress = true;
-                        true
                     }
-                    else
-                    {
-                        false
-                    }
+                    break changed;
                 };
                 if !should_rebuild
                 {
@@ -698,6 +708,14 @@ impl DesktopHostRuntime
             let mut data = self.data.lock().map_err(|_| DesktopHostError::state_unavailable())?;
             if !all_hosts_ready(&data)
             {
+                static LAST_WAIT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new()); // 相同等待状态只记录一次，避免重复就绪请求刷屏。
+                let waiting = format!("guardian={}，逐屏状态={:?}", data.coordinator.guardian_ready, data.hosts.iter().map(|context| format!("{}:页面={}，系统图像={}，命中图={}", context.host.monitor.id, context.readiness.page, context.readiness.system_images, context.readiness.hit_map)).collect::<Vec<_>>()); // 全部实际门槛，不将像素诊断当作接管条件。
+                if let Ok(mut previous) = LAST_WAIT.lock()
+                    && *previous != waiting
+                {
+                    crate::log_warn!("宿主：桌面接管等待，{}", waiting);
+                    *previous = waiting;
+                }
                 return Ok(snapshot_from(&data));
             }
             data.coordinator.mark_hosts_ready();
@@ -765,7 +783,64 @@ fn monitor_topology_changed(previous: &[crate::contracts::DesktopHostMonitor], l
 /// 判断已提交桌面的 Renderer 是否需要首次或再次轻量重载。
 fn renderer_restart_due(committed: bool, heartbeat_age: Duration, retry_age: Option<Duration>) -> bool { committed && heartbeat_age >= RENDERER_HEARTBEAT_TIMEOUT && retry_age.is_none_or(|age| age >= RENDERER_RELOAD_RETRY) }
 
-/// 判断连续平台发现失败是否已经越过恢复等待窗口。
+/// 读取最近用户图标设置，并在已接管时继续维持 Explorer 临时隐藏。
+fn observe_desktop_visibility(runtime: &DesktopHostRuntime) -> bool
+{
+    let observed_visibility = desktop_items_setting_visible(); // 当前用户“显示桌面图标”设置。
+    let takeover_def_view = {
+        let mut data = match runtime.data.lock()
+        {
+            Ok(data) => data,
+            Err(_) => return false,
+        };
+        if data.cleanup_complete || data.coordinator.phase() == TakeoverPhase::Failed
+        {
+            return false;
+        }
+        data.coordinator.observe_user_visibility(observed_visibility);
+        data.shell.original_items_visible = observed_visibility;
+        (data.coordinator.is_committed() && desktop_items_visible(data.shell.def_view)).then_some(data.shell.def_view)
+    }; // 用户更新设置后是否需要继续维持本轮临时桌面接管隐藏。
+    if let Some(def_view) = takeover_def_view
+        && set_desktop_items_visible(def_view, false)
+    {
+        crate::log_info!("宿主：已记录用户桌面图标设置并继续维持接管隐藏，恢复可见：{}", u8::from(observed_visibility));
+    }
+    true
+}
+
+/// 环境通知后有限重读，连续两次一致才提交本轮 Explorer 与显示器事实。
+fn observe_stable_environment() -> Result<(ShellDesktopState, Vec<crate::contracts::DesktopHostMonitor>), String>
+{
+    let mut previous: Option<(ShellDesktopState, Vec<crate::contracts::DesktopHostMonitor>)> = None; // 上一次成功观察，供稳定性比较。
+    let mut last_error = "宿主环境未稳定".to_string(); // 全部尝试失败时返回最近错误。
+    for attempt in 1..=ENVIRONMENT_FAILURE_LIMIT
+    {
+        match (discover_shell_desktop(), enumerate_desktop_monitors())
+        {
+            (Ok(shell), Ok(monitors)) =>
+            {
+                if previous.as_ref().is_some_and(|(prior_shell, prior_monitors)| !shell_hosts_changed(*prior_shell, shell) && !monitor_layout_changed(prior_monitors, &monitors))
+                {
+                    return Ok((shell, monitors));
+                }
+                previous = Some((shell, monitors));
+            }
+            (shell, monitors) =>
+            {
+                last_error = format!("宿主环境收敛失败，Explorer={shell:?}，显示器={monitors:?}");
+                previous = None;
+            }
+        }
+        if !environment_failure_is_blocking(attempt)
+        {
+            thread::sleep(ENVIRONMENT_CONVERGENCE_INTERVAL);
+        }
+    }
+    Err(last_error)
+}
+
+/// 判断有限环境收敛是否已经越过恢复等待窗口。
 fn environment_failure_is_blocking(failures: u32) -> bool { failures >= ENVIRONMENT_FAILURE_LIMIT }
 
 /// 恢复 Explorer 桌面项目并检查当前窗口环境与目标一致。
@@ -816,90 +891,5 @@ pub(crate) fn validate_hit_regions(hit_regions: &[HitRegion], viewport_width: f6
 }
 
 #[cfg(test)]
-mod tests
-{
-    use super::{DesktopHostContext, DesktopHostRuntimeData, RENDERER_HEARTBEAT_TIMEOUT, RENDERER_RELOAD_RETRY, TakeoverCoordinator, TakeoverPhase, all_hosts_ready, environment_failure_is_blocking, monitor_topology_changed, renderer_restart_due};
-    use crate::contracts::{DesktopHostMonitor, DesktopHostReadiness};
-    use crate::platform::windows::{NativeDesktopHost, ShellDesktopState};
-
-    /// 验证 guardian 与全部逐屏门槛完成后才允许提交。
-    #[test]
-    fn takeover_waits_for_guardian_and_every_host()
-    {
-        // 保存接管前 Explorer 可见状态的协调器。
-        let mut coordinator = TakeoverCoordinator::new(true);
-        assert!(!coordinator.begin_commit());
-
-        coordinator.mark_guardian_ready();
-        coordinator.mark_hosts_ready();
-        assert!(coordinator.begin_commit());
-        assert_eq!(coordinator.phase(), TakeoverPhase::Committing);
-    }
-
-    /// 创建逐屏门槛测试使用的显示器状态。
-    fn monitor(id: &str, scale_factor: f64) -> DesktopHostMonitor { DesktopHostMonitor { id: id.to_string(), name: id.to_string(), primary: id == "DISPLAY1", x: if id == "DISPLAY1" { 0 } else { 1920 }, y: 0, width: 1920, height: 1080, work_x: if id == "DISPLAY1" { 0 } else { 1920 }, work_y: 0, work_width: 1920, work_height: 1040, scale_factor, dpi: (96.0 * scale_factor).round() as u32 } }
-
-    /// 验证任一自动逐屏门槛缺失都会阻止统一桌面接管，输入诊断不阻塞提交。
-    #[test]
-    fn every_host_must_pass_every_automatic_gate()
-    {
-        let mut coordinator = TakeoverCoordinator::new(true); // 当前全局接管协调器。
-        coordinator.mark_guardian_ready();
-        let ready = DesktopHostReadiness { guardian: true, page: true, system_images: true, pixels: true, input: true, hit_map: true }; // 当前完整逐屏门槛。
-        let mut data = DesktopHostRuntimeData { coordinator, hosts: [monitor("DISPLAY1", 1.0), monitor("DISPLAY2", 1.5)].into_iter().enumerate().map(|(index, monitor)| DesktopHostContext { host: NativeDesktopHost { hwnd: index as isize + 1, monitor }, readiness: ready, hit_regions: Vec::new(), input_drag_active: false, last_renderer_heartbeat: std::time::Instant::now(), renderer_reload_requested_at: None }).collect(), shell: ShellDesktopState { def_view: 1, explorer_host: 1, list_view: 2, original_items_visible: true }, guardian: None, cleanup_complete: false, rebuild_in_progress: false }; // 当前双屏宿主运行状态。
-        data.hosts[1].readiness.hit_map = false;
-        assert!(!all_hosts_ready(&data));
-        data.hosts[1].readiness.hit_map = true;
-        data.hosts[1].readiness.input = false;
-        data.hosts[1].readiness.pixels = false;
-        assert!(all_hosts_ready(&data));
-        data.hosts[1].readiness.page = false;
-        assert!(!all_hosts_ready(&data));
-    }
-
-    /// 验证 DPI-only 变化不被分类为持久显示器拓扑变化。
-    #[test]
-    fn dpi_only_change_preserves_monitor_topology()
-    {
-        let previous = [monitor("DISPLAY1", 1.0), monitor("DISPLAY2", 1.25)]; // 变化前显示器环境。
-        let latest = [monitor("DISPLAY1", 1.0), monitor("DISPLAY2", 1.5)]; // 仅次屏 DPI 变化后的环境。
-        assert!(!monitor_topology_changed(&previous, &latest));
-
-        let disconnected = [monitor("DISPLAY1", 1.0)]; // 次屏断开后的真实拓扑。
-        assert!(monitor_topology_changed(&previous, &disconnected));
-    }
-
-    /// 验证 Renderer 只在已接管、心跳超时且超过重试间隔时重载。
-    #[test]
-    fn renderer_restart_waits_for_committed_stale_heartbeat()
-    {
-        assert!(!renderer_restart_due(false, RENDERER_HEARTBEAT_TIMEOUT, None));
-        assert!(renderer_restart_due(true, RENDERER_HEARTBEAT_TIMEOUT, None));
-        assert!(!renderer_restart_due(true, RENDERER_HEARTBEAT_TIMEOUT, Some(RENDERER_RELOAD_RETRY - std::time::Duration::from_millis(1))));
-        assert!(renderer_restart_due(true, RENDERER_HEARTBEAT_TIMEOUT, Some(RENDERER_RELOAD_RETRY)));
-    }
-
-    /// 验证环境瞬时发现失败不会立即撤下宿主，连续失败才进入阻塞恢复。
-    #[test]
-    fn environment_failure_uses_a_bounded_recovery_window()
-    {
-        assert!(!environment_failure_is_blocking(1));
-        assert!(!environment_failure_is_blocking(19));
-        assert!(environment_failure_is_blocking(20));
-
-        let mut coordinator = TakeoverCoordinator::new(true); // 已进入阻塞恢复的宿主协调器。
-        coordinator.mark_failed();
-        assert_eq!(coordinator.phase(), TakeoverPhase::Failed);
-    }
-
-    /// 验证正常退出和异常恢复使用最近观察到的用户图标设置。
-    #[test]
-    fn recovery_uses_the_latest_observed_user_visibility()
-    {
-        let mut coordinator = TakeoverCoordinator::new(true); // 启动时桌面图标可见的恢复状态。
-        coordinator.observe_user_visibility(false);
-
-        assert!(!coordinator.restore());
-        assert_eq!(coordinator.phase(), TakeoverPhase::Restored);
-    }
-}
+#[path = "mod.test.rs"]
+mod tests;

@@ -22,6 +22,10 @@ path = "src/bin/guardian.rs"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# Tauri 发布构建启用内嵌资源协议；开发构建继续使用 devUrl。
+custom-protocol = ["tauri/custom-protocol"]
+
 [dependencies]
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
@@ -37,6 +41,7 @@ windows = { version = "0.61.3", features = [
   "Storage_Streams",
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
+  "Win32_Graphics_Dwm",
   "Win32_Security",
   "Win32_Security_Cryptography",
   "Win32_Storage_Xps",
@@ -46,12 +51,14 @@ windows = { version = "0.61.3", features = [
   "Win32_System_DataExchange",
   "Win32_System_LibraryLoader",
   "Win32_System_Memory",
+  "Win32_System_IO",
   "Win32_System_Ole",
   "Win32_System_Registry",
   "Win32_System_SystemServices",
   "Win32_System_Threading",
   "Win32_UI_HiDpi",
   "Win32_UI_Controls",
+  "Win32_UI_Accessibility",
   "Win32_UI_Shell",
   "Win32_UI_Shell_Common",
   "Win32_UI_WindowsAndMessaging",

@@ -12,7 +12,7 @@
     display: none;
 }
 
-/* 公共滚动容器隐藏系统滚动条，使用原型覆盖轨道。 */
+/* 公共滚动容器隐藏系统滚动条，使用自绘覆盖轨道。 */
 .desktop-tile-viewport__content {
     min-width: 0;
     min-height: 0;

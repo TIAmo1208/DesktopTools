@@ -12,12 +12,17 @@ use crate::{app::settings::SettingsState, contracts::settings::ApplicationTheme}
 pub struct TrayState
 {
     toggle: MenuItem<Wry>, // 随设置窗口实际显隐变化的菜单项。
+    icon: Image<'static>,  // 按需创建设置窗口时复用的图标。
 }
 
 /// 读取窗口实际状态，最小化窗口视为等待恢复。
 fn settings_visible(app: &AppHandle) -> tauri::Result<bool>
 {
-    let window = app.get_webview_window("main").ok_or(tauri::Error::WindowNotFound)?; // 唯一设置窗口。
+    let Some(window) = app.get_webview_window("main")
+    else
+    {
+        return Ok(false);
+    }; // 未创建或已销毁时视为隐藏。
     Ok(window.is_visible()? && !window.is_minimized()?)
 }
 
@@ -31,26 +36,65 @@ fn sync_menu(app: &AppHandle) -> tauri::Result<()>
     Ok(())
 }
 
-/// 显示时恢复最小化并聚焦，隐藏时保持应用和桌面宿主运行。
+/// 在主线程按需创建设置窗口，关闭销毁页面而保持桌面宿主运行。
 pub(crate) fn set_settings_visible(app: &AppHandle, visible: bool) -> tauri::Result<()>
 {
-    let window = app.get_webview_window("main").ok_or(tauri::Error::WindowNotFound)?; // 本次显隐操作的唯一窗口。
     if visible
     {
+        let window = if let Some(window) = app.get_webview_window("main")
+        {
+            window
+        }
+        else
+        {
+            let config = app.config().app.windows.iter().find(|window| window.label == "main").ok_or(tauri::Error::WindowNotFound)?; // 原配置仍是尺寸和权限的唯一来源。
+            let window = tauri::WebviewWindowBuilder::from_config(app, config)?.build()?; // 仅在打开入口创建页面。
+            window.set_icon(app.state::<TrayState>().icon.clone())?;
+            if let Ok(preferences) = app.state::<SettingsState>().preferences()
+            {
+                window.set_theme(match preferences.theme
+                {
+                    ApplicationTheme::System => None,
+                    ApplicationTheme::Light => Some(tauri::Theme::Light),
+                    ApplicationTheme::Dark => Some(tauri::Theme::Dark),
+                })?;
+            }
+            let handle = app.clone(); // 窗口销毁后的菜单同步句柄。
+            window.on_window_event(move |event| {
+                if matches!(event, WindowEvent::Destroyed)
+                {
+                    if let Some(state) = handle.try_state::<TrayState>()
+                    {
+                        let _ = state.toggle.set_text("显示设置");
+                    }
+                    crate::log_info!("设置：窗口已销毁，页面资源已释放");
+                }
+                else if matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_))
+                    && let Err(error) = sync_menu(&handle)
+                {
+                    crate::log_warn!("托盘：菜单状态更新失败，错误：{error}");
+                }
+            });
+            crate::log_info!("设置：按需创建窗口");
+            window
+        }; // 连续打开沿用唯一 main 窗口。
         window.unminimize()?;
         window.show()?;
         window.set_focus()?;
     }
     else
     {
-        window.hide()?;
+        if let Some(window) = app.get_webview_window("main")
+        {
+            window.close()?;
+        }
     }
     sync_menu(app)?;
     crate::log_debug!("设置：窗口显隐已更新，显示：{visible}");
     Ok(())
 }
 
-/// 在应用主线程创建 Windows 原生托盘、菜单和关闭隐藏行为。
+/// 在应用主线程创建 Windows 原生托盘与设置窗口入口。
 pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>>
 {
     let mut decoder = png::Decoder::new(Cursor::new(include_bytes!("../../../resources/application.png"))); // 应用位图的现有 PNG 解码器。
@@ -102,32 +146,7 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>>
             {}
         })
         .build(app)?;
-    app.manage(TrayState { toggle });
-    let window = app.get_webview_window("main").ok_or(tauri::Error::WindowNotFound)?; // 已配置且默认隐藏的设置窗口。
-    window.set_icon(icon)?;
-    let preferences = app.state::<SettingsState>().preferences()?; // 初始化标题栏主题所需的已保存偏好。
-    window.set_theme(match preferences.theme
-    {
-        ApplicationTheme::System => None,
-        ApplicationTheme::Light => Some(tauri::Theme::Light),
-        ApplicationTheme::Dark => Some(tauri::Theme::Dark),
-    })?;
-    let handle = app.clone(); // 窗口事件持有的应用句柄。
-    window.on_window_event(move |event| {
-        if let WindowEvent::CloseRequested { api, .. } = event
-        {
-            api.prevent_close();
-            if let Err(error) = set_settings_visible(&handle, false)
-            {
-                crate::log_error!("设置：隐藏窗口失败，错误：{error}");
-            }
-        }
-        else if matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_))
-            && let Err(error) = sync_menu(&handle)
-        {
-            crate::log_warn!("托盘：菜单状态更新失败，错误：{error}");
-        }
-    });
+    app.manage(TrayState { toggle, icon });
     crate::log_info!("托盘：图标和原生菜单已创建");
     Ok(())
 }

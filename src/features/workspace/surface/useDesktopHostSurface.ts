@@ -47,7 +47,7 @@ export const useDesktopHostSurface = (enabled: boolean, monitorIndex: number, it
         };
         const subscription = listenDesktopHostSnapshots(handleSnapshot, handleFailure); // 正式宿主快照订阅。
         void subscription.catch(handleFailure);
-        void getDesktopHostSnapshot().then(handleSnapshot).catch(handleFailure);
+        if (!window.__DESKTOP_TOOLS_NATIVE__) void getDesktopHostSnapshot().then(handleSnapshot).catch(handleFailure);
         return () => {
             isMounted = false;
             void subscription.then((unlisten) => unlisten()).catch(() => undefined);

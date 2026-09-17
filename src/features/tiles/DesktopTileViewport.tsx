@@ -27,7 +27,7 @@ export const DesktopTileViewport = ({
     const localRef = useRef<HTMLElement | null>(null); // 未提供外部引用时使用的滚动节点。
     const scrollRef = contentRef ?? localRef; // 拖放、持久化与滚动条共同拥有的滚动位置。
     const trackRef = useRef<HTMLDivElement>(null); // 覆盖式滚动轨道。
-    const [bar, setBar] = useState({ max: 0, top: 0, height: 0, track: 0 }); // 原型滑块比例与最小尺寸。
+    const [bar, setBar] = useState({ max: 0, top: 0, height: 0, track: 0 }); // 当前滑块比例、位置与轨道尺寸。
     const cancel = useRef<(() => void) | undefined>(undefined); // 卸载时释放滑块连续输入。
     const update = () => {
         const content = scrollRef.current; // 当前内容视口。
@@ -49,7 +49,7 @@ export const DesktopTileViewport = ({
         return () => observer.disconnect();
     }, [children, collapsed, scrollable]);
     useEffect(() => () => cancel.current?.(), []);
-    const scrollBy = (top: number) => scrollRef.current?.scrollBy({ top }); // 沿用原型 46 DIP 步进和分页距离。
+    const scrollBy = (top: number) => scrollRef.current?.scrollBy({ top }); // 使用当前 46 DIP 步进和分页距离。
     return (
         <div className="desktop-tile-viewport" hidden={collapsed}>
             <Content
@@ -113,7 +113,7 @@ export const DesktopTileViewport = ({
                                 const thumb = event.currentTarget; // 当前捕获滑块。
                                 const pointer = event.pointerId; // 当前唯一指针。
                                 const startY = event.clientY; // 起始指针纵坐标。
-                                const startScroll = scrollRef.current?.scrollTop ?? 0; // 原型滚动起点。
+                                const startScroll = scrollRef.current?.scrollTop ?? 0; // 本次滑块拖动的滚动起点。
                                 const handleMove = (move: globalThis.PointerEvent) => {
                                     if (move.pointerId === pointer && scrollRef.current)
                                         scrollRef.current.scrollTop = startScroll + ((move.clientY - startY) / (bar.track - bar.height)) * bar.max;

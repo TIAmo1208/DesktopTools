@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Listener, Manager};
 use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS, ICoreWebView2Controller3};
 use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{BI_RGB, BITMAPINFO, BITMAPINFOHEADER, ClientToScreen, CombineRgn, CreateCompatibleDC, CreateDIBSection, CreateRectRgn, DIB_RGB_COLORS, DeleteDC, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC, HGDIOBJ, HMONITOR, MONITORINFO, MONITORINFOEXW, RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW, RGN_OR, RedrawWindow, ScreenToClient, SelectObject, SetWindowRgn};
@@ -24,7 +24,7 @@ use windows::Win32::UI::WindowsAndMessaging::{CS_HREDRAW, CS_VREDRAW, CreateWind
 use windows::core::{BOOL, Interface, PCWSTR, w};
 use wry::http::{Request, Response, StatusCode};
 use wry::raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle};
-use wry::{PageLoadEvent, Rect as WryRect, WebView, WebViewBuilder, WebViewExtWindows, dpi};
+use wry::{MemoryUsageLevel, PageLoadEvent, Rect as WryRect, WebView, WebViewBuilder, WebViewExtWindows, dpi};
 
 use crate::contracts::{DesktopHostMonitor, DesktopItem, HitRegion};
 
@@ -121,6 +121,7 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
 (() => {
   const nativeOrigin = __DESKTOP_NATIVE_ORIGIN__; // Rust 注入本屏原生命令地址，独立于开发页面来源。
   const reported = new Set(); // 同一页面生命周期内相同异常只记录一次。
+  let pendingInteractions = 0; // 原生菜单和拖放命令返回前不暂停。
   const reportFailure = (stage, detail) => {
     const message = String(detail?.stack || detail?.message || detail || "未知错误").slice(0, 4096); // 限制日志大小。
     const key = `${stage}:${message}`; // 避免轮询失败刷屏。
@@ -137,6 +138,8 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
   }
   // 通过正式宿主本地协议调用 Rust 命令边界。
   const invoke = async (command, args = {}) => {
+    const interaction = ["show_workspace_context_menu", "show_folder_portal_menu", "start_desktop_item_drag"].includes(command); // 会进入原生嵌套消息循环的命令。
+    if (interaction) pendingInteractions++;
     try {
     // 当前命令对应的本地协议响应。
     const response = await fetch(`${nativeOrigin}/__desktop_tools_invoke/${encodeURIComponent(command)}`, {
@@ -151,10 +154,56 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
     } catch (error) {
       if (["publish_desktop_host_readiness", "get_desktop_host_snapshot", "get_desktop_item_snapshot", "update_desktop_host_hit_map"].includes(command)) reportFailure(`命令失败：${command}，显示器=${args.monitorId || args.report?.monitorId || "未解析"}`, error);
       throw error;
+    } finally {
+      if (interaction) pendingInteractions--;
     }
   };
 
   // 快照事件对应的只读轮询命令。
+  let refreshPaused = false; // 主动暂停只影响视觉订阅，心跳继续运行。
+  let monitorId; // 从权威宿主快照解析本页显示器。
+  let pauseSince = 0; // 连续满足条件的起点。
+  let interacting = false; // 指针交互期间不进入暂停。
+  let policyTimer; // 事件去抖与低频检查共用一个计时器。
+  const policyFallback = __REFRESH_POLICY_FALLBACK__; // 仅 WinEvent 注册失败时保留永久低频检查。
+  const resumePolls = new Set(); // 恢复时立即读取最新值，不重放中间事件。
+  const pausedAnimations = new Set(); // 仅恢复由本策略暂停的动画。
+  const setPaused = (paused) => {
+    if (refreshPaused === paused) return;
+    refreshPaused = paused;
+    for (const animation of document.getAnimations()) {
+      if (paused && animation.playState === "running") { pausedAnimations.add(animation); animation.pause(); }
+    }
+    if (!paused) {
+      for (const animation of pausedAnimations) animation.play();
+      pausedAnimations.clear();
+      for (const poll of resumePolls) void poll();
+    }
+    window.dispatchEvent(new CustomEvent("desktop-refresh-changed", { detail: paused }));
+    void invoke("record_desktop_refresh_state", { monitorId, paused }).catch(() => {});
+  };
+  window.addEventListener("pointerdown", () => { interacting = true; pauseSince = 0; setPaused(false); }, true);
+  window.addEventListener("pointerup", () => { interacting = false; }, true);
+  window.addEventListener("pointercancel", () => { interacting = false; }, true);
+  window.addEventListener("focus", () => { interacting = false; pauseSince = 0; setPaused(false); });
+  const wakeRefresh = () => { window.clearTimeout(policyTimer); policyTimer = window.setTimeout(checkRefresh, 0); };
+  window.addEventListener("pageshow", wakeRefresh);
+  window.addEventListener("visibilitychange", () => { if (!document.hidden) wakeRefresh(); });
+  // 事件驱动判定；仅候选去抖或 Hook 注册失败时安排后续检查。
+  const checkRefresh = async () => {
+    window.clearTimeout(policyTimer);
+    try {
+      if (monitorId) {
+        const pause = await invoke("get_desktop_refresh_policy", { monitorId });
+        if (pause && !interacting && pendingInteractions === 0 && !document.querySelector('.desktop-tile-menu, [role="menu"], input:focus, textarea:focus')) {
+          pauseSince ||= performance.now();
+          if (performance.now() - pauseSince >= 300) setPaused(true);
+        } else { pauseSince = 0; setPaused(false); }
+      }
+    } catch { pauseSince = 0; setPaused(false); }
+    finally { policyTimer = pauseSince && !refreshPaused ? window.setTimeout(checkRefresh, 350) : policyFallback ? window.setTimeout(checkRefresh, 5000) : undefined; }
+  };
+
   const eventCommands = {
     "music-session-changed": "get_current_music_session",
     "preferences-changed": "get_preferences",
@@ -166,49 +215,113 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
     "component-host-event": "get_current_component_host_event",
   };
 
-  // 通过只读快照轮询模拟正式宿主事件订阅。
+  const eventSubscriptions = new Map(); // 已迁移事件的本页订阅，不保留历史消息。
+  const dispatch = (name, payload) => {
+    if (name === "desktop-refresh-policy-changed" || name === "preferences-changed") {
+      wakeRefresh();
+    }
+    for (const subscription of eventSubscriptions.get(name) || []) subscription.receive(payload);
+  };
+
+  // 权威布局、桌面项目及组件注册事件使用真实投递。
   const listen = async (eventName, handler) => {
+    if (eventName === "folder-portal-changed") {
+      const subscription = { receive: (payload) => { if (!refreshPaused || payload.error) handler(payload); } }; // 暂停仍交付监听失效，避免恢复时保留已终止订阅。
+      if (!eventSubscriptions.has(eventName)) eventSubscriptions.set(eventName, new Set());
+      eventSubscriptions.get(eventName).add(subscription);
+      return () => eventSubscriptions.get(eventName)?.delete(subscription);
+    }
     // 当前事件对应的只读快照命令。
     const command = eventCommands[eventName];
     if (!command) return () => {};
-    // 当前订阅是否仍需继续轮询。
-    let active = true;
-    // 上一次已发布的序列化快照。
-    let previous = "";
-    // 执行一轮快照读取与变化发布。
-    const poll = async () => {
-      if (!active) return;
-      try {
-        // 当前轮次返回的类型化快照载荷。
-        const payload = await invoke(command);
-        if (!active) return;
-        if (payload == null) return;
-        // 用于变化比较的稳定 JSON 文本。
-        const serialized = JSON.stringify(payload);
-        if (serialized !== previous) {
-          previous = serialized;
-          handler(payload);
+    {
+      let active = true; // 退订后拒绝所有迟到结果。
+      let generation = 0; // 事件先到时废弃旧的初始读取。
+      const receive = (payload) => {
+        generation++;
+        if (!active || refreshPaused || payload == null) return;
+        if (eventName === "desktop-host-snapshot-changed" && !monitorId) {
+          monitorId = payload.hosts?.[Number(new URLSearchParams(location.search).get("monitor") || 0)]?.monitor.id;
+          if (monitorId) window.setTimeout(checkRefresh, 0);
         }
-      } catch (error) {
-        // 音乐故障作为快照交付，恢复后的相同媒体也必须重新发布。
-        if (active && eventName === "music-session-changed") {
-          previous = "";
-          handler({ media: null, error: error?.message || "无法连接媒体控制" });
-        } else if (eventName !== "music-session-changed") throw error;
-      } finally {
-        if (active) window.setTimeout(poll, eventName === "music-session-changed" ? 1000 : 250);
-      }
-    };
-    window.setTimeout(poll, 0);
-    return () => { active = false; };
+        handler(payload);
+      };
+      const refresh = async () => {
+        const requested = generation;
+        try { const payload = await invoke(command); if (active && generation === requested) receive(payload); }
+        catch (error) { reportFailure(`状态事件同步失败：${eventName}`, error); throw error; }
+      };
+      const subscription = { receive }; // 在读取快照前建立接收入口。
+      if (!eventSubscriptions.has(eventName)) eventSubscriptions.set(eventName, new Set());
+      eventSubscriptions.get(eventName).add(subscription);
+      const resume = () => {
+        if (eventName === "music-session-changed") void invoke("request_music_convergence").catch(() => {});
+        void refresh().catch(() => {});
+      }; // 音乐恢复同时唤醒有限收敛，快照读取不等待后续播放器事件。
+      resumePolls.add(resume);
+      try { await refresh(); } catch (error) { active = false; eventSubscriptions.get(eventName)?.delete(subscription); resumePolls.delete(resume); throw error; }
+      return () => { active = false; generation++; eventSubscriptions.get(eventName)?.delete(subscription); resumePolls.delete(resume); };
+    }
   };
 
-  window.__DESKTOP_TOOLS_NATIVE__ = { invoke, listen };
+  window.__DESKTOP_TOOLS_NATIVE__ = { invoke, listen, dispatch, isRefreshPaused: () => refreshPaused };
 })();
 "#;
 
 /// 将保存的原始整数恢复为 HWND。
 fn raw_hwnd(raw: isize) -> HWND { HWND(raw as *mut c_void) }
+
+/// 将现有宿主事件转交 UI 线程的原生 WebView，页面重载后自动使用新的订阅入口。
+pub(crate) fn install_host_events(app: &AppHandle)
+{
+    super::refresh_policy::start_events(app);
+    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed"]
+    {
+        let handle = app.clone(); // 原生窗口所属的 UI 调度器。
+        app.listen(name, move |event| {
+            let payload = event.payload().to_string(); // Tauri 已序列化的结构化快照。
+            let watcher_failed = name == "folder-portal-changed" && serde_json::from_str::<Value>(&payload).is_ok_and(|value| value.get("error").is_some()); // 暂停仍保留监听故障恢复通道。
+            if let Err(error) = handle.run_on_main_thread(move || {
+                let script = format!("window.__DESKTOP_TOOLS_NATIVE__?.dispatch('{name}', {payload});"); // 内部白名单事件名，不执行外部脚本输入。
+                NATIVE_HOSTS.with(|hosts| {
+                    for host in hosts.borrow().iter()
+                    {
+                        if name == "component-host-event" && !crate::component_runtime::ComponentRuntimeState::has_time_consumers(&host.monitor_id)
+                        {
+                            continue;
+                        }
+                        if !matches!(name, "desktop-refresh-policy-changed" | "preferences-changed") && !watcher_failed && super::refresh_policy::is_paused(&host.monitor_id)
+                        {
+                            continue;
+                        }
+                        if name == "desktop-refresh-policy-changed"
+                        {
+                            let level = if super::refresh_policy::is_paused(&host.monitor_id)
+                            {
+                                MemoryUsageLevel::Low
+                            }
+                            else
+                            {
+                                MemoryUsageLevel::Normal
+                            };
+                            if let Err(error) = host.webview.set_memory_usage_level(level)
+                            {
+                                crate::log_warn!("宿主：设置 WebView2 内存目标失败，显示器={}，错误={error}", host.monitor_id);
+                            }
+                        }
+                        if let Err(error) = host.webview.evaluate_script(&script)
+                        {
+                            crate::log_warn!("宿主：事件投递失败，显示器={}，错误={error}", host.monitor_id);
+                        }
+                    }
+                });
+            })
+            {
+                crate::log_warn!("宿主：事件调度失败，错误={error}");
+            }
+        });
+    }
+}
 
 /// 为正式宿主和 WebView2 子窗口注册 Shell 桌面 IDropTarget。
 fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHostMonitor) -> Result<(Vec<(isize, IDropTarget)>, bool), String>
@@ -229,6 +342,9 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
         let monitor = monitor.clone(); // 释放坐标所属宿主的物理空间与 DPI。
         let accepted = std::cell::Cell::new(false); // Enter 对完整来源集合的接受性结果。
         let preferred_effect = std::cell::Cell::new(windows::Win32::System::Ole::DROPEFFECT_COPY); // 源首选效果或实际卷关系决定的默认值。
+        let explicit_effect = std::cell::Cell::new(None); // 来源明确声明的首选效果不受目标卷重算覆盖。
+        let source_paths = std::cell::RefCell::new(Vec::<String>::new()); // 当前完整文件来源，用于门户目标卷判定。
+        let portal_effect = std::cell::RefCell::new(None::<(String, windows::Win32::System::Ole::DROPEFFECT)>); // 目标目录不变时复用卷判断。
         let internal_source = std::cell::Cell::new(false); // Enter 已核实的进程内 COM 身份。
         let preview = std::cell::RefCell::new(None::<serde_json::Value>); // 复用已有跨宿主预览事件，文件来源仍由原生决定。
         let target = super::drop_target::create_drop_target(
@@ -249,15 +365,19 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                         }
                         let source_session = super::drop_target::source_drag_session(data); // 只有进程登记的完整对象能使用内部来源位置。
                         let item_ids = source_session.as_ref().map(|session| session.item_ids.clone()).unwrap_or_else(|| super::drop_target::filesystem_drop_items(data).unwrap_or_default());
-                        if !internal_source.get()
+                        *source_paths.borrow_mut() = super::drop_target::filesystem_drop_items(data).unwrap_or_default();
+                        explicit_effect.set(super::shell::preferred_drop_effect(data));
+                        *portal_effect.borrow_mut() = None;
+                        if source_session.as_ref().is_none_or(|session| session.portal_source)
                         {
-                            preferred_effect.set(super::shell::default_drop_effect(data, &super::drop_target::filesystem_drop_items(data).unwrap_or_default()));
+                            preferred_effect.set(super::shell::default_drop_effect(data, &source_paths.borrow()));
                         }
                         let revision = crate::app::desktop_drop::snapshot(&app).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?.revision; // 原生要求页面确认相同布局版本。
                         let payload = serde_json::json!({"session": format!("ole-{}", crate::tools::time::next_timeline_timestamp()), "sequence": 1, "revision": revision, "modifiers": keys.0, "source": "ole", "target": monitor.id, "phase": "move", "kind": "items", "itemIds": item_ids, "visuals": [], "origin": {"left": 0, "top": 0}, "pointer": {"left": (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, "top": (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor}}); // 原生坐标只用于预览，Drop 不等待页面回传。
                         let mut payload = payload;
-                        payload["external"] = serde_json::json!(source_session.is_none());
+                        payload["external"] = serde_json::json!(source_session.as_ref().is_none_or(|session| session.portal_source));
                         if let Some(source) = source_session
+                            && !source.portal_source
                         {
                             let cached = HIT_REGIONS.get().and_then(|regions| regions.read().ok()); // 复用源宿主已经发布的实际项目几何。
                             let regions = cached.as_ref().map(|regions| regions.values().flatten().filter(|region| region.kind == "desktop-item").collect::<Vec<_>>()).unwrap_or_default();
@@ -279,7 +399,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                         let _ = relay_workspace_drag(payload.clone());
                         *preview.borrow_mut() = Some(payload);
                         crate::log_info!("拖放：原生进入处理完成，显示器={}", monitor.id);
-                        Ok(super::drop_target::negotiated_effect(effect, keys, preferred_effect.get(), internal_source.get()))
+                        Ok(super::drop_target::negotiated_effect(effect, keys, preferred_effect.get(), internal_source.get() && !super::drop_target::source_drag_session(data).is_some_and(|session| session.portal_source)))
                     }
                     DropPhase::Over(keys, point, effect) =>
                     {
@@ -287,6 +407,8 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                         {
                             return Ok(DROPEFFECT_NONE);
                         }
+                        let mut portal_target = false; // 门户即使接收本程序桌面项目也执行真实文件传输。
+                        let mut portal_path = None;
                         if let Some(payload) = preview.borrow_mut().as_mut()
                         {
                             let pointer = serde_json::json!({"left": (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, "top": (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor}); // 当前工作区指针。
@@ -305,12 +427,29 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                 return Ok(DROPEFFECT_NONE);
                             }; // 新帧确认前不显示可投放光标。
                             let top = geometry.regions.iter().filter(|region| geometry.pointer.left >= region.left && geometry.pointer.left < region.left + region.width && geometry.pointer.top >= region.top && geometry.pointer.top < region.top + region.height).max_by_key(|region| region.priority);
-                            if !top.is_some_and(|region| matches!(region.kind.as_str(), "workspace-background" | "fence" | "desktop-item"))
+                            portal_target = top.is_some_and(|region| region.kind == "component" && region.target_path.is_some());
+                            portal_path = top.filter(|_| portal_target).and_then(|region| region.target_path.clone());
+                            if !top.is_some_and(|region| matches!(region.kind.as_str(), "workspace-background" | "fence" | "desktop-item") || (region.kind == "component" && region.target_path.is_some()))
                             {
                                 return Ok(DROPEFFECT_NONE);
                             }
                         }
-                        Ok(super::drop_target::negotiated_effect(effect, keys, preferred_effect.get(), internal_source.get()))
+                        let preferred = if let Some(path) = portal_path.as_deref()
+                        {
+                            explicit_effect.get().unwrap_or_else(|| {
+                                let mut cache = portal_effect.borrow_mut();
+                                if cache.as_ref().is_none_or(|(current, _)| current != path)
+                                {
+                                    *cache = Some((path.to_string(), super::shell::directory_drop_effect(&source_paths.borrow(), path)));
+                                }
+                                cache.as_ref().expect("门户目标效果已缓存").1
+                            })
+                        }
+                        else
+                        {
+                            preferred_effect.get()
+                        };
+                        Ok(super::drop_target::negotiated_effect(effect, keys, preferred, internal_source.get() && !portal_target && !preview.borrow().as_ref().is_some_and(|payload| payload["external"] == true)))
                     }
                     DropPhase::Drop(data, keys, point, mut effect) =>
                     {
@@ -318,7 +457,9 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                         {
                             return Ok(DROPEFFECT_NONE);
                         }
-                        if let Some(session) = super::drop_target::source_drag_session(data)
+                        let source_session = super::drop_target::source_drag_session(data);
+                        let portal_target = preview.borrow().as_ref().and_then(|payload| super::drop_target::confirmed_preview(payload["session"].as_str()?, payload["sequence"].as_u64()?, payload["revision"].as_u64()?, &monitor, point)).is_some_and(|geometry| geometry.regions.iter().filter(|region| geometry.pointer.left >= region.left && geometry.pointer.left < region.left + region.width && geometry.pointer.top >= region.top && geometry.pointer.top < region.top + region.height).max_by_key(|region| region.priority).is_some_and(|region| region.kind == "component" && region.target_path.is_some()));
+                        if let Some(session) = source_session.as_ref().filter(|session| !session.portal_source && !portal_target)
                         {
                             let snapshot = crate::app::desktop_drop::snapshot(&app).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 应用层提供释放时布局版本。
                             let geometry = preview.borrow().as_ref().and_then(|payload| super::drop_target::confirmed_preview(payload["session"].as_str()?, payload["sequence"].as_u64()?, snapshot.revision, &monitor, point)); // 不同步等待页面，拒绝未确认或过期落点。
@@ -339,18 +480,19 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                             }
                             return Ok(DROPEFFECT_NONE);
                         }
-                        if internal_source.get()
+                        if internal_source.get() && source_session.is_none()
                         {
                             return Ok(DROPEFFECT_NONE);
                         } // Drop 对象与 Enter 身份不一致时拒绝，不改走外部路径。
-                        if !super::shell::shell_drag_active()
+                        if !super::shell::shell_drag_active() || source_session.is_some()
                         {
-                            effect = super::drop_target::negotiated_effect(effect, keys, preferred_effect.get(), false);
+                            let preferred = portal_effect.borrow().as_ref().map(|(_, effect)| *effect).unwrap_or(preferred_effect.get());
+                            effect = super::drop_target::negotiated_effect(effect, keys, explicit_effect.get().unwrap_or(preferred), false);
                             if effect != DROPEFFECT_COPY && effect != DROPEFFECT_MOVE
                             {
                                 return Ok(DROPEFFECT_NONE);
                             }
-                            let Some(sources) = super::drop_target::filesystem_drop_items(data)
+                            let Some(sources) = super::drop_target::filesystem_drop_items(data).or_else(|| source_session.as_ref().map(|session| session.item_ids.clone()))
                             else
                             {
                                 return Ok(DROPEFFECT_NONE);
@@ -382,7 +524,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                             {
                                 let result = if let Some(directory) = plan.portal_root.clone()
                                 {
-                                    state.begin_folder_drop_transfer(data, effect, plan.transfers.clone(), directory)
+                                    state.begin_folder_drop_transfer(effect, plan.transfers.clone(), directory)
                                 }
                                 else
                                 {
@@ -392,12 +534,9 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                 super::drop_target::wait_transfer(result).unwrap_or_else(|error| crate::contracts::ShellOperationResult { operation_id: 0, completed_at_unix_micros: 0, kind: crate::contracts::ShellOperationKind::Paste, aborted: false, operation_error: Some(windows::Win32::Foundation::E_FAIL.0), reversible: false, permanent: false, effect: Some(if effect == DROPEFFECT_MOVE { "移动" } else { "复制" }.into()), items: Vec::new(), message: format!("文件结果无法完整确认：{error}") })
                             };
                             let (succeeded, committed, result) = crate::app::desktop_drop::complete_external(&app, plan, completed); // 原生只交付文件事实，不解释布局结果归属。
-                            if committed
+                            if committed && let Some(payload) = preview.borrow_mut().as_mut()
                             {
-                                if let Some(payload) = preview.borrow_mut().as_mut()
-                                {
-                                    payload["committed"] = serde_json::json!(true);
-                                }
+                                payload["committed"] = serde_json::json!(true);
                             }
                             if effect == DROPEFFECT_MOVE && has_transfers
                             {
@@ -424,6 +563,8 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                             let _ = relay_workspace_drag(payload);
                         }
                         internal_source.set(false);
+                        source_paths.borrow_mut().clear();
+                        *portal_effect.borrow_mut() = None;
                         Ok(DROPEFFECT_NONE)
                     }
                 }
@@ -638,7 +779,7 @@ pub(super) fn explorer_desktop_view() -> Result<windows::Win32::UI::Shell::IShel
     unsafe { shell_browser.QueryActiveShellView() }.map_err(|error| format!("获取 Explorer 桌面视图失败: {error}"))
 }
 
-/// 按原型公开 Shell 路径读取 Explorer 桌面项目解析名称和物理屏幕坐标。
+/// 通过 Shell 路径读取 Explorer 桌面项目解析名称和物理屏幕坐标。
 fn explorer_desktop_item_positions(list_view_raw: isize) -> Result<HashMap<String, POINT>, String>
 {
     if list_view_raw == 0
@@ -678,8 +819,8 @@ fn explorer_desktop_item_positions(list_view_raw: isize) -> Result<HashMap<Strin
     Ok(positions)
 }
 
-/// 按 Explorer 原始图标坐标返回首次导入使用的项目显示器归属。
-pub fn desktop_item_monitor_assignments(items: &[DesktopItem], monitors: &[DesktopHostMonitor], shell: ShellDesktopState) -> Vec<(String, String)>
+/// 按准确项目身份读取 Explorer 显示器归属及工作区 DIP 坐标，仅用于首次导入与新增项目。
+pub fn desktop_item_monitor_assignments(items: &[DesktopItem], monitors: &[DesktopHostMonitor], shell: ShellDesktopState) -> Vec<(String, String, crate::contracts::WorkspacePoint)>
 {
     let positions = match explorer_desktop_item_positions(shell.list_view)
     {
@@ -696,20 +837,28 @@ pub fn desktop_item_monitor_assignments(items: &[DesktopItem], monitors: &[Deskt
 }
 
 /// 将 Explorer 解析名称坐标映射为 Workspace 使用的稳定显示器归属。
-fn match_desktop_item_monitor_assignments(items: &[DesktopItem], monitors: &[DesktopHostMonitor], positions: &HashMap<String, POINT>) -> Vec<(String, String)>
+fn match_desktop_item_monitor_assignments(items: &[DesktopItem], monitors: &[DesktopHostMonitor], positions: &HashMap<String, POINT>) -> Vec<(String, String, crate::contracts::WorkspacePoint)>
 {
     items
         .iter()
         .filter_map(|item| {
             let point = positions.get(&item.stable_reference.to_lowercase())?; // 当前项目的 Explorer 物理坐标。
             let monitor_id = monitor_id_at_point(monitors, *point)?; // 当前物理坐标所属显示器。
-            Some((item.stable_reference.clone(), monitor_id.to_string()))
+            let monitor = monitors.iter().find(|monitor| monitor.id == monitor_id)?; // 物理坐标转换到目标屏工作区 DIP。
+            Some((item.stable_reference.clone(), monitor_id.to_string(), crate::contracts::WorkspacePoint { left: (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, top: (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor }))
         })
         .collect()
 }
 
 /// 正式宿主窗口过程。
-unsafe extern "system" fn host_window_proc(hwnd: HWND, message: u32, wparam: windows::Win32::Foundation::WPARAM, lparam: windows::Win32::Foundation::LPARAM) -> windows::Win32::Foundation::LRESULT { unsafe { DefWindowProcW(hwnd, message, wparam, lparam) } }
+unsafe extern "system" fn host_window_proc(hwnd: HWND, message: u32, wparam: windows::Win32::Foundation::WPARAM, lparam: windows::Win32::Foundation::LPARAM) -> windows::Win32::Foundation::LRESULT
+{
+    if matches!(message, windows::Win32::UI::WindowsAndMessaging::WM_DISPLAYCHANGE | windows::Win32::UI::WindowsAndMessaging::WM_DPICHANGED)
+    {
+        super::environment_watch::signal_environment();
+    }
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
 
 /// 注册正式宿主窗口类。
 fn register_host_class() -> Result<(), String>
@@ -918,7 +1067,8 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     let dev_url = if tauri::is_dev() { app.config().build.dev_url.as_ref() } else { None }; // Debug 构建不等同于 Tauri 开发模式。
     let dev_origin = dev_url.map(|url| url.origin().ascii_serialization()); // 正式模式不会放行开发 Origin。
     let page_url = desktop_page_url(&native_origin, dev_url, index).to_string(); // 页面与刷新共享当前模式地址。
-    let initialization_script = NATIVE_BRIDGE_SCRIPT.replace("__DESKTOP_NATIVE_ORIGIN__", &serde_json::to_string(&native_origin).expect("宿主地址序列化失败")); // JSON 编码避免脚本字符串转义错误。
+    let initialization_script = NATIVE_BRIDGE_SCRIPT.replace("__DESKTOP_NATIVE_ORIGIN__", &serde_json::to_string(&native_origin).expect("宿主地址序列化失败")).replace("__REFRESH_POLICY_FALLBACK__", if super::refresh_policy::fallback_enabled() { "true" } else { "false" }); // JSON 编码避免脚本字符串转义错误，Hook 状态在宿主创建前确定。
+    super::refresh_policy::set_paused(&monitor.id, false);
     crate::log_info!("宿主：页面来源={}，原生命令来源={}", page_url, native_origin);
     // 正式 Windowed WebView2。
     let webview = WebViewBuilder::new()
@@ -1034,9 +1184,12 @@ pub fn load_desktop_hosts() -> Result<(), String>
     })
 }
 
-/// 按原型轻量重载路径刷新一个 Renderer，并保留外层 HWND 与命中区域。
+/// 按当前轻量恢复路径刷新一个 Renderer，并保留外层 HWND 与命中区域。
 pub fn reload_desktop_host(monitor_id: &str) -> Result<(), String>
 {
+    super::directory_watch::clear_monitor(monitor_id);
+    crate::component_runtime::ComponentRuntimeState::clear_time_monitor(monitor_id);
+    super::refresh_policy::set_paused(monitor_id, false);
     NATIVE_HOSTS.with(|hosts| {
         let hosts = hosts.borrow(); // 当前 UI 线程持有的全部正式 WebView2 宿主。
         let host = hosts.iter().find(|host| host.monitor_id == monitor_id).ok_or_else(|| format!("Renderer 重载目标不存在，显示器={monitor_id}"))?;
@@ -1250,6 +1403,8 @@ fn destroy_matching_hosts(matches: impl Fn(&str) -> bool)
         for index in removed
         {
             let host = hosts.remove(index); // 仅释放本次选中的宿主。
+            super::directory_watch::clear_monitor(&host.monitor_id);
+            crate::component_runtime::ComponentRuntimeState::clear_time_monitor(&host.monitor_id);
             for (hwnd, _) in &host.drop_targets
             {
                 let _ = unsafe { RevokeDragDrop(raw_hwnd(*hwnd)) };
@@ -1270,38 +1425,5 @@ fn destroy_matching_hosts(matches: impl Fn(&str) -> bool)
 }
 
 #[cfg(test)]
-mod tests
-{
-    use super::{SHELL_HIDE_ICONS_BIT, is_pixel_probe_region, match_desktop_item_monitor_assignments, shell_flag_state_icons_visible};
-    use crate::contracts::{DesktopHostMonitor, DesktopItem, DesktopItemAvailability, HitRegion};
-    use std::collections::HashMap;
-    use windows::Win32::Foundation::POINT;
-
-    /// 验证透明桌面背景保留输入能力且不参与渲染像素门槛。
-    #[test]
-    fn pixel_probe_excludes_the_workspace_background()
-    {
-        let region = HitRegion { id: "workspace-background".to_string(), kind: "workspace-background".to_string(), left: 0.0, top: 0.0, width: 1920.0, height: 1080.0, priority: 1, target_path: None };
-
-        assert!(!is_pixel_probe_region(&region));
-    }
-
-    /// 验证 Shell `fHideIcons` 用户设置与恢复可见性语义相反。
-    #[test]
-    fn shell_hide_icons_setting_maps_to_restore_visibility()
-    {
-        assert!(shell_flag_state_icons_visible(0));
-        assert!(!shell_flag_state_icons_visible(SHELL_HIDE_ICONS_BIT));
-    }
-
-    /// 验证 Explorer 物理图标坐标按显示器边界匹配稳定项目引用。
-    #[test]
-    fn explorer_positions_assign_items_to_monitors()
-    {
-        let monitors = [DesktopHostMonitor { id: "DISPLAY1".to_string(), name: "DISPLAY1".to_string(), primary: true, x: 0, y: 0, width: 1920, height: 1080, work_x: 0, work_y: 0, work_width: 1920, work_height: 1040, scale_factor: 1.0, dpi: 96 }, DesktopHostMonitor { id: "DISPLAY2".to_string(), name: "DISPLAY2".to_string(), primary: false, x: -1280, y: 0, width: 1280, height: 1024, work_x: -1280, work_y: 0, work_width: 1280, work_height: 984, scale_factor: 1.25, dpi: 120 }]; // 当前测试的负坐标混合 DPI 显示器集合。
-        let items = [DesktopItem { stable_reference: r"C:\Users\User\Desktop\Project".to_string(), display_name: "Project".to_string(), system_image: None, availability: DesktopItemAvailability::Available }]; // 当前等待 Explorer 坐标匹配的项目。
-        let positions = HashMap::from([(r"c:\users\user\desktop\project".to_string(), POINT { x: -400, y: 120 })]); // Explorer 返回的绝对解析名称和物理坐标。
-
-        assert_eq!(match_desktop_item_monitor_assignments(&items, &monitors, &positions), [(items[0].stable_reference.clone(), "DISPLAY2".to_string())]);
-    }
-}
+#[path = "desktop_host.test.rs"]
+mod tests;

@@ -46,7 +46,18 @@ export const projectHitRegions = (
             const right = Math.min(width, region.left + region.width, region.clip ? region.clip.left + region.clip.width : width); // 可见右边界。
             const bottom = Math.min(height, region.top + region.height, region.clip ? region.clip.top + region.clip.height : height); // 可见下边界。
             return right > left && bottom > top
-                ? [{ id: region.id, kind: region.kind, left, top, width: right - left, height: bottom - top, priority: index + 1 }]
+                ? [
+                      {
+                          id: region.id,
+                          kind: region.kind,
+                          left,
+                          top,
+                          width: right - left,
+                          height: bottom - top,
+                          priority: index + 1,
+                          ...(region.targetPath ? { targetPath: region.targetPath } : {}),
+                      },
+                  ]
                 : [];
         });
 

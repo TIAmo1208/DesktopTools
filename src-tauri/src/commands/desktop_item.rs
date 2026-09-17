@@ -88,7 +88,7 @@ pub(crate) fn execute_start_desktop_item_drag(app: &AppHandle, state: &DesktopIt
     let prepared = state.take_prepared_drag(token)?; // 准备凭据已消费，Shell STA 不等待 UI 拖放。
     let (reply, response) = std::sync::mpsc::channel(); // transport 工作线程等待原生结果，不阻塞 UI 消息循环。
     app.run_on_main_thread(move || {
-        let result = prepared.data.resolve().map_err(|error| format!("解析源拖放数据失败：{error}")).and_then(|data| crate::platform::windows::start_desktop_item_drag(data, &prepared.references, pointer_offset)); // 仅在当前 UI apartment 使用代理。
+        let result = prepared.data.resolve().map_err(|error| format!("解析源拖放数据失败：{error}")).and_then(|data| crate::platform::windows::start_desktop_item_drag(data, &prepared.references, pointer_offset, prepared.portal_source)); // 仅在当前 UI apartment 使用代理。
         let _ = reply.send(result);
     })
     .map_err(|error| DesktopItemError::shell_operation_failed(&error))?;

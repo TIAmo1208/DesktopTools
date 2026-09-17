@@ -2,6 +2,7 @@ mod runtime;
 mod worker;
 
 #[cfg(test)]
+#[path = "mod.test.rs"]
 mod tests;
 
 use std::fmt;
@@ -64,15 +65,16 @@ pub struct LogConfig
 
 impl Default for LogConfig
 {
-    /// 控制台保留调试信息，文件仅记录运行信息及更严重事件。
+    /// 开发构建保留控制台调试信息，发布构建仅写文件。
     fn default() -> Self
     {
         let directory = default_directory(); // 当前用户固定日志目录，失败时不回退工作目录。
         if let Err(error) = &directory
+            && cfg!(debug_assertions)
         {
             eprintln!("日志文件输出已关闭：{error}");
         }
-        Self { file_level: LogLevel::Info, console_level: LogLevel::Debug, file_output: directory.is_ok(), directory: directory.unwrap_or_default(), flush_interval: Duration::from_secs(10) }
+        Self { file_level: LogLevel::Info, console_level: if cfg!(debug_assertions) { LogLevel::Debug } else { LogLevel::None }, file_output: directory.is_ok(), directory: directory.unwrap_or_default(), flush_interval: Duration::from_secs(10) }
     }
 }
 

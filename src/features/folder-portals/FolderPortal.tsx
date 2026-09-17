@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useImperativeHandle, useMemo, useState, type MouseEvent, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type Ref } from "react";
+import { createPortal } from "react-dom";
+import { cancelDesktopItemDragPreparation, startDesktopItemDrag } from "../../bridge/desktopItems";
+import { redoWorkspace, undoWorkspace } from "../../bridge/workspace";
 
 import {
     deleteFolderPortalItems,
-    getFolderPortalSnapshot,
     openFolderPortalPath,
     showFolderPortalMenu,
     renameFolderPortalItem,
     setFolderPortalClipboard,
     pasteFolderPortalItems,
+    watchFolderPortal,
+    prepareFolderPortalDrag,
 } from "../../bridge/folderPortal";
 import type { FolderPortalItem, FolderPortalSnapshot } from "../../contracts/folderPortal";
 import { publishMessage } from "../notifications/messageNotification";
@@ -26,12 +30,16 @@ export interface FolderPortalActions {
 export const FolderPortal = ({
     rootPath,
     monitorId,
+    onBeginInputDrag,
+    onEndInputDrag,
     onCurrentPathChange,
     initialPath = rootPath,
     ref,
 }: {
     rootPath: string;
     monitorId: string; // 原生菜单的坐标所属宿主。
+    onBeginInputDrag: () => Promise<void>;
+    onEndInputDrag: () => Promise<void>;
     onCurrentPathChange?: (path: string) => void; // 同步原生投放目标的当前目录。
     initialPath?: string;
     ref?: Ref<FolderPortalActions>; // 只向所属外壳暴露操作。
@@ -43,6 +51,12 @@ export const FolderPortal = ({
     const [loading, setLoading] = useState(true); // 当前目录读取状态。
     const [rename, setRename] = useState<{ name: string; value: string; pending: boolean }>(); // 当前实例唯一命名输入。
     const [crumbMenuOpen, setCrumbMenuOpen] = useState(false); // 折叠中间层级菜单状态。
+    const watcher = useRef<ReturnType<typeof watchFolderPortal> | undefined>(undefined); // 当前目录的完整订阅生命周期。
+    const pendingRead = useRef(Promise.resolve()); // 跨导航串行化同一门户的枚举。
+    const cancelDrag = useRef<(() => void) | undefined>(undefined); // 导航或卸载终止本次原生准备。
+    const breadcrumbButton = useRef<HTMLButtonElement>(null); // 弹层使用当前可见锚点。
+    const breadcrumbMenu = useRef<HTMLMenuElement>(null); // 与公共菜单一致管理焦点和失焦关闭。
+    const suppressClick = useRef(false); // OLE 交接后的合成点击不得改变完整选择。
     const mergeSnapshot = (next: FolderPortalSnapshot, quiet: boolean) =>
         setSnapshot((previous) => {
             if (!quiet || !previous?.accessible || !next.accessible) return next;
@@ -55,43 +69,65 @@ export const FolderPortal = ({
                       });
             return { ...next, items };
         });
-    useEffect(() => setRename(undefined), [currentPath]); // 导航取消未提交命名。
+    useEffect(() => {
+        setRename(undefined);
+        cancelDrag.current?.();
+    }, [currentPath]); // 导航取消未提交命名和旧指针会话。
+    useEffect(() => () => cancelDrag.current?.(), []);
+    useEffect(() => {
+        if (!crumbMenuOpen) return;
+        const closeOutside = (event: globalThis.PointerEvent) => {
+            if (event.target instanceof Node && (breadcrumbMenu.current?.contains(event.target) || breadcrumbButton.current?.contains(event.target))) return;
+            setCrumbMenuOpen(false);
+        };
+        const close = () => setCrumbMenuOpen(false);
+        document.addEventListener("pointerdown", closeOutside, true);
+        window.addEventListener("blur", close);
+        window.addEventListener("desktop-tile-menu-opening", close);
+        return () => {
+            document.removeEventListener("pointerdown", closeOutside, true);
+            window.removeEventListener("blur", close);
+            window.removeEventListener("desktop-tile-menu-opening", close);
+        };
+    }, [crumbMenuOpen]);
+    useLayoutEffect(() => {
+        if (crumbMenuOpen) breadcrumbMenu.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    }, [crumbMenuOpen]);
     useEffect(() => onCurrentPathChange?.(currentPath), [currentPath, onCurrentPathChange]);
 
-    const refresh = useCallback(
-        async (path = currentPath, quiet = false) => {
-            if (!quiet) setLoading(true);
-            try {
-                const next = await getFolderPortalSnapshot(rootPath, path);
-                mergeSnapshot(next, quiet);
-                if (next.accessible) setSelected((current) => current.filter((name) => next.items.some((item) => item.name === name))); // 保留取消或部分失败后仍存在的选择。
-                if (!next.accessible)
-                    publishMessage({
-                        type: "error",
-                        content: next.error ?? "无法访问门户目录",
-                        source: "folder-portal",
-                        dedupeKey: `${rootPath}:${next.error}`,
-                    });
-            } catch (error) {
+    const refresh = useCallback(async () => {
+        await watcher.current?.refresh();
+    }, []); // 所有刷新入口共用串行读取和重连。
+    useEffect(() => {
+        setLoading(true);
+        const current = watchFolderPortal(
+            rootPath,
+            currentPath,
+            monitorId,
+            (next) => {
+                mergeSnapshot(next, true);
+                setLoading(false);
+                if (next.accessible) setSelected((selected) => selected.filter((name) => next.items.some((item) => item.name === name)));
+                else publishMessage({ type: "error", content: next.error ?? "无法访问门户目录", source: "folder-portal", dedupeKey: `${rootPath}:read` });
+            },
+            (error) => {
+                setLoading(false);
                 publishMessage({
                     type: "error",
-                    content: error instanceof Error ? error.message : "读取门户目录失败",
+                    content: error instanceof Error ? error.message : String(error),
                     source: "folder-portal",
                     dedupeKey: `${rootPath}:read`,
                 });
-            } finally {
-                if (!quiet) setLoading(false);
-            }
-        },
-        [currentPath, rootPath],
-    );
-    useEffect(() => {
-        void refresh();
-    }, [refresh]);
-    useEffect(() => {
-        const timer = window.setInterval(() => void refresh(currentPath, true), 2000); // ponytail: 静默增量轮询；目录规模或刷新成本显著增加时升级为原生 watcher。
-        return () => window.clearInterval(timer);
-    }, [currentPath, refresh]);
+            },
+            pendingRead.current,
+        ); // 路径变化创建独立身份，旧响应在桥接层丢弃。
+        watcher.current = current;
+        return () => {
+            current.stop();
+            pendingRead.current = current.drained();
+            watcher.current = undefined;
+        };
+    }, [currentPath, monitorId, rootPath]);
     useImperativeHandle(
         ref,
         () => ({
@@ -131,6 +167,97 @@ export const FolderPortal = ({
             if (event.ctrlKey || event.metaKey) return current.includes(item.name) ? current.filter((name) => name !== item.name) : [...current, item.name];
             return [item.name];
         });
+    const handleItemPointerDown = (event: PointerEvent<HTMLLIElement>, item: FolderPortalItem) => {
+        if (event.button !== 0 || loading || !snapshot?.accessible || rename || cancelDrag.current) return;
+        const names = selected.includes(item.name) && !event.ctrlKey && !event.shiftKey ? selected : [item.name]; // 拖动已选项使用完整选择。
+        const origin = { x: event.clientX, y: event.clientY };
+        const bounds = event.currentTarget.getBoundingClientRect();
+        const offset = { left: event.clientX - bounds.left, top: event.clientY - bounds.top };
+        let prepared: Awaited<ReturnType<typeof prepareFolderPortalDrag>> | undefined;
+        let moved = false;
+        let preparing = false;
+        let starting = false;
+        let finished = false;
+        let inputStarted = false;
+        const pointerId = event.pointerId;
+        const cleanup = (endInput = true) => {
+            if (finished) return;
+            finished = true;
+            window.removeEventListener("pointermove", move, true);
+            window.removeEventListener("pointerup", finish, true);
+            window.removeEventListener("pointercancel", finish, true);
+            window.removeEventListener("keydown", escape);
+            if (prepared) void cancelDesktopItemDragPreparation(prepared.token).catch(() => undefined);
+            if (inputStarted && endInput) void onEndInputDrag().catch(() => undefined);
+            cancelDrag.current = undefined;
+        };
+        const start = () => {
+            if (!prepared || finished || !moved || starting) return;
+            starting = true;
+            void onBeginInputDrag()
+                .then(() => {
+                    inputStarted = true;
+                    if (finished) {
+                        void onEndInputDrag().catch(() => undefined);
+                        return;
+                    }
+                    const token = prepared!.token;
+                    prepared = undefined;
+                    setSelected(names);
+                    suppressClick.current = true;
+                    cleanup(false);
+                    return startDesktopItemDrag(token, offset)
+                        .then((result) => publishMessage({ type: "info", content: result.message, source: "folder-portal" }))
+                        .finally(() => {
+                            void cancelDesktopItemDragPreparation(token).catch(() => undefined);
+                            void onEndInputDrag().catch(() => undefined);
+                            window.setTimeout(() => {
+                                suppressClick.current = false;
+                            }, 0);
+                        });
+                })
+                .catch((error) => {
+                    cleanup();
+                    publishMessage({ type: "error", content: error instanceof Error ? error.message : "启动系统拖放失败", source: "folder-portal" });
+                });
+        };
+        const move = (next: globalThis.PointerEvent) => {
+            if (next.pointerId !== pointerId) return;
+            if (!moved) moved = Math.abs(next.clientX - origin.x) > 3 || Math.abs(next.clientY - origin.y) > 3;
+            if (moved && !preparing) {
+                preparing = true;
+                void prepareFolderPortalDrag(rootPath, currentPath, names)
+                    .then((result) => {
+                        if (finished) {
+                            void cancelDesktopItemDragPreparation(result.token).catch(() => undefined);
+                            return;
+                        }
+                        prepared = result;
+                        start();
+                    })
+                    .catch((error) => {
+                        cleanup();
+                        publishMessage({ type: "error", content: error instanceof Error ? error.message : "无法准备门户拖放", source: "folder-portal" });
+                    });
+            }
+            start();
+        };
+        const finish = (next: globalThis.PointerEvent) => {
+            if (next.pointerId === pointerId) cleanup();
+        };
+        const escape = (key: KeyboardEvent) => {
+            if (key.key === "Escape") {
+                key.preventDefault();
+                cleanup();
+            }
+        };
+        cancelDrag.current = cleanup;
+        if (!event.ctrlKey && !event.shiftKey && !event.metaKey) setSelected(names);
+        window.addEventListener("pointermove", move, true);
+        window.addEventListener("pointerup", finish, true);
+        window.addEventListener("pointercancel", finish, true);
+        window.addEventListener("keydown", escape);
+    };
     const open = (item: FolderPortalItem) => {
         if (!item.isDirectory) {
             void openFolderPortalPath(rootPath, `${currentPath.replace(/[\\/]$/, "")}/${item.name}`).catch((error) =>
@@ -141,7 +268,19 @@ export const FolderPortal = ({
         setSelected([]);
         setCurrentPath(`${currentPath.replace(/[\\/]$/, "")}/${item.name}`);
     };
-    const crumb = currentPath.replace(/\\/g, "/").split("/").filter(Boolean);
+    const rootLabel =
+        rootPath
+            .replace(/[\\/]$/, "")
+            .split(/[\\/]/)
+            .filter(Boolean)
+            .pop() ?? rootPath;
+    const crumb = [
+        rootLabel,
+        ...currentPath
+            .slice(rootPath.replace(/[\\/]$/, "").length)
+            .split(/[\\/]/)
+            .filter(Boolean),
+    ];
     const displayCrumb = crumb.length > 3 ? [crumb[0], "…", ...crumb.slice(-2)] : crumb; // 空间不足时只折叠中间层级。
     const goRoot = () => {
         setSelected([]);
@@ -191,36 +330,65 @@ export const FolderPortal = ({
                         <li className="folder-portal__breadcrumb-item" key={`${part}-${index}`}>
                             {part === "…" ? (
                                 <span className="folder-portal__breadcrumb-collapse">
-                                    <button className="folder-portal__breadcrumb-ellipsis" 
+                                    <button
+                                        ref={breadcrumbButton}
+                                        className="folder-portal__breadcrumb-ellipsis"
                                         type="button"
                                         aria-label="显示中间层级"
                                         aria-expanded={crumbMenuOpen}
-                                        onClick={() => setCrumbMenuOpen((open) => !open)}
+                                        onClick={() => {
+                                            if (!crumbMenuOpen) window.dispatchEvent(new Event("desktop-tile-menu-opening"));
+                                            setCrumbMenuOpen((open) => !open);
+                                        }}
                                     >
                                         …
                                     </button>
-                                    {crumbMenuOpen && (
-                                        <menu className="folder-portal__breadcrumb-menu" role="menu">
-                                            {crumb.slice(1, -2).map((middle, middleIndex) => (
-                                                <li key={`${middle}-${middleIndex}`} role="none">
-                                                    <button
-                                                        type="button"
-                                                        role="menuitem"
-                                                        onClick={() => {
-                                                            setSelected([]);
-                                                            setCrumbMenuOpen(false);
-                                                            setCurrentPath(crumb.slice(0, middleIndex + 2).join("/"));
-                                                        }}
-                                                    >
-                                                        {middle}
-                                                    </button>
-                                                </li>
-                                            ))}
-                                        </menu>
-                                    )}
+                                    {crumbMenuOpen &&
+                                        breadcrumbButton.current &&
+                                        createPortal(
+                                            <menu
+                                                ref={breadcrumbMenu}
+                                                className="folder-portal__breadcrumb-menu"
+                                                role="menu"
+                                                style={{
+                                                    top: Math.max(
+                                                        4,
+                                                        Math.min(
+                                                            breadcrumbButton.current.getBoundingClientRect().bottom + 2,
+                                                            window.innerHeight - 30 - crumb.slice(1, -2).length * 26,
+                                                        ),
+                                                    ),
+                                                    left: Math.max(4, Math.min(breadcrumbButton.current.getBoundingClientRect().left, window.innerWidth - 124)),
+                                                }}
+                                            >
+                                                {crumb.slice(1, -2).map((middle, middleIndex) => (
+                                                    <li key={`${middle}-${middleIndex}`} role="none">
+                                                        <button
+                                                            type="button"
+                                                            role="menuitem"
+                                                            onKeyDown={(event) => {
+                                                                if (event.key === "Escape" || event.key === "Tab") setCrumbMenuOpen(false);
+                                                            }}
+                                                            onClick={() => {
+                                                                setSelected([]);
+                                                                setCrumbMenuOpen(false);
+                                                                setCurrentPath(
+                                                                    `${rootPath.replace(/[\\/]$/, "")}/${crumb.slice(1, middleIndex + 2).join("/")}`,
+                                                                );
+                                                            }}
+                                                        >
+                                                            {middle}
+                                                        </button>
+                                                    </li>
+                                                ))}
+                                            </menu>,
+                                            document.body,
+                                        )}
                                 </span>
                             ) : index === displayCrumb.length - 1 ? (
-                                <span className="folder-portal__breadcrumb-page" aria-current="page">{part}</span>
+                                <span className="folder-portal__breadcrumb-page" aria-current="page">
+                                    {part}
+                                </span>
                             ) : (
                                 <button
                                     type="button"
@@ -236,7 +404,11 @@ export const FolderPortal = ({
                                     {part}
                                 </button>
                             )}
-                            {index < displayCrumb.length - 1 && <span className="folder-portal__breadcrumb-separator" aria-hidden="true">›</span>}
+                            {index < displayCrumb.length - 1 && (
+                                <span className="folder-portal__breadcrumb-separator" aria-hidden="true">
+                                    ›
+                                </span>
+                            )}
                         </li>
                     ))}
                 </ol>
@@ -245,6 +417,19 @@ export const FolderPortal = ({
                 className="folder-portal__content"
                 onKeyDown={(event) => {
                     if (event.target instanceof HTMLInputElement) return;
+                    if (event.ctrlKey && (event.key.toLowerCase() === "z" || event.key.toLowerCase() === "y")) {
+                        event.preventDefault();
+                        const operation = event.key.toLowerCase() === "y" || event.shiftKey ? redoWorkspace : undoWorkspace;
+                        void operation()
+                            .then((result) => {
+                                publishMessage({ type: "info", content: result.message, source: "folder-portal" });
+                                return refresh();
+                            })
+                            .catch((error) =>
+                                publishMessage({ type: "error", content: error instanceof Error ? error.message : "恢复文件失败", source: "folder-portal" }),
+                            );
+                        return;
+                    }
                     if (event.ctrlKey && event.key.toLowerCase() === "v") {
                         event.preventDefault();
                         void pasteFolderPortalItems(rootPath, currentPath)
@@ -308,10 +493,17 @@ export const FolderPortal = ({
                             <li
                                 key={item.name}
                                 className={selected.includes(item.name) ? "is-selected" : undefined}
-                                onClick={(event) => select(item, event)}
+                                onClick={(event) => {
+                                    if (suppressClick.current) {
+                                        suppressClick.current = false;
+                                        return;
+                                    }
+                                    select(item, event);
+                                }}
                                 onPointerDown={(event) => {
-                                    if (!(event.target instanceof HTMLInputElement))
-                                        event.currentTarget.closest<HTMLElement>(".folder-portal__content")?.focus({ preventScroll: true });
+                                    if (event.target instanceof HTMLInputElement) return;
+                                    event.currentTarget.closest<HTMLElement>(".folder-portal__content")?.focus({ preventScroll: true });
+                                    handleItemPointerDown(event, item);
                                 }}
                                 onDoubleClick={() => open(item)}
                                 onContextMenu={(event) => {

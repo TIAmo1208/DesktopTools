@@ -320,6 +320,26 @@ export const SettingsPage = () => {
                 )}
                 {page === "performance" && (
                     <div className="settings__rows">
+                        {(
+                            [
+                                ["pauseOnFullscreen", "有应用全屏、最大化时暂停刷新", "仅暂停被前台窗口完全覆盖的显示器"],
+                                ["pauseOnFocus", "有应用获取焦点时暂停刷新", "其他应用在前台时暂停全部桌面；可见桌面内容也会停止更新"],
+                            ] as const
+                        ).map(([key, label, description]) => (
+                            <div className="settings__row" key={key}>
+                                <span className="settings__row-title">
+                                    <label htmlFor={key}>{label}</label>
+                                    <SettingsInfo label={label} description={description} />
+                                </span>
+                                <SettingsSwitch
+                                    id={key}
+                                    label={label}
+                                    checked={preferences?.[key] ?? false}
+                                    disabled={busy || !preferences}
+                                    onChange={(checked) => handlePreferences({ [key]: checked })}
+                                />
+                            </div>
+                        ))}
                         <div className="settings__row">
                             <span className="settings__row-title">
                                 <label htmlFor="interface-animations">界面动画</label>

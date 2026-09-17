@@ -38,7 +38,7 @@ interface WorkspaceDragOptions {
     onFailure: (failure: string | undefined) => void;
 }
 
-/** 管理单项或组拖动的原型预览、取消恢复和原子提交。 */
+/** 管理单项或组拖动的预览、取消恢复和原子提交。 */
 export const useWorkspaceDrag = ({
     workspaceRef,
     workspace,
@@ -90,6 +90,7 @@ export const useWorkspaceDrag = ({
                 return [id, { left: bounds.left, top: bounds.top }] as const;
             }),
         ); // 本地回退与原生 OLE 使用相同的真实来源几何。
+        for (const [id, position] of renderedPositions) if (!startPositions.has(id)) startPositions.set(id, position); // 围栏成员只使用本次可见排列，不读取历史桌面位置。
         const fenceContents = new Map(
             Array.from(workspaceElement.querySelectorAll<HTMLElement>("[data-fence-content-id]")).flatMap((element) => {
                 const fenceId = element.dataset.fenceContentId; // 当前滚动内容对应的围栏标识。
@@ -462,7 +463,7 @@ export const useWorkspaceDrag = ({
                 const physicalPointer = currentMonitor ? clientPointToPhysical(latestClientPointer, currentMonitor) : undefined; // 当前释放点的虚拟桌面物理坐标。
                 const targetMonitor = physicalPointer ? monitorAtPhysicalPoint(physicalPointer, monitors) : currentMonitor; // 当前释放点最终所属显示器。
                 const targetGrid = targetMonitor ? completeWorkspace?.monitorGrids.find((entry) => entry.monitorId === targetMonitor.id)?.grid : undefined; // 目标显示器对应的独立未归类网格。
-                const fenceMemberIds = new Set(completeWorkspace?.fences.flatMap((fence) => fence.members) ?? []); // 围栏成员的来源位置只用于解散恢复，不占用当前可见网格。
+                const fenceMemberIds = new Set(completeWorkspace?.fences.flatMap((fence) => fence.members) ?? []); // 围栏成员只通过本次渲染几何参与拖动，不占用桌面网格。
                 const targetPositions = new Map(
                     (completeWorkspace?.unclassifiedItems ?? workspace.unclassifiedItems)
                         .filter(

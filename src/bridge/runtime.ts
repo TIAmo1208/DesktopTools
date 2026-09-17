@@ -3,6 +3,7 @@ import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
 
 /** 正式 Windowed WebView2 初始化脚本提供的最小运行时桥。 */
 interface DesktopToolsNativeBridge {
+    isRefreshPaused?: () => boolean; // 当前宿主是否主动暂停非必要刷新。
     invoke: (command: string, payload?: Record<string, unknown>) => Promise<unknown>;
     listen: (eventName: string, handler: (payload: unknown) => void) => Promise<UnlistenFn>;
 }

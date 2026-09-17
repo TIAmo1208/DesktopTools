@@ -21,6 +21,11 @@ test("native hit regions follow stacking and exclude scrolled-out members", () =
     assert.ok(regions[1].priority > regions[0].priority);
 });
 
+test("portal hit region retains the current directory through projection", () => {
+    const portal = { id: "portal", kind: "component", left: 10, top: 10, width: 80, height: 60, priority: 60, stackingOrder: 1000, targetPath: "D:/Project/child" };
+    assert.equal(projectHitRegions([portal], 200, 120)[0].targetPath, portal.targetPath);
+});
+
 /** 验证断屏投射只改变呈现，重连与跨屏拖动仍可使用原始权威事实。 */
 test("projects a disconnected display without mutating global selection or ownership", () => {
     const grid = { left: 0, top: 0, columnWidth: 78, rowHeight: 98, rows: 9, columns: 12 }; // 当前宿主网格。

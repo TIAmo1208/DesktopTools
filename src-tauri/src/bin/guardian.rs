@@ -1,7 +1,10 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 /// 启动独立恢复进程并输出恢复日志。
 fn main()
 {
     if let Err(error) = desktop_tools_lib::tools::log::init(Default::default())
+        && cfg!(debug_assertions)
     {
         eprintln!("日志系统初始化失败：{error}");
     }

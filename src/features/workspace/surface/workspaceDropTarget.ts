@@ -115,7 +115,7 @@ export const createWorkspaceDropTarget = (monitorId: string, onScroll: (drag: Cr
                 if (snapshot && projected && target?.dataset.itemId) {
                     const members = new Set(snapshot.fences.flatMap((fence) => fence.members));
                     const ids = drag.itemIds.map((id, index) =>
-                        drag.external && (drag.modifiers! & 8 || !snapshot.unclassifiedItems.some((item) => item.stableReference === id))
+                        drag.external && (drag.modifiers! & 8 || (!members.has(id) && !snapshot.unclassifiedItems.some((item) => item.stableReference === id)))
                             ? `__ole-reservation-${index}`
                             : id,
                     ); // Ctrl 复制不能移走来源占位。
@@ -129,7 +129,7 @@ export const createWorkspaceDropTarget = (monitorId: string, onScroll: (drag: Cr
                             .map((item) => [item.stableReference, item.projectionPosition ?? item.position]),
                     );
                     const grid = projected.grid;
-                    const occupied = new Set(projected.unclassifiedItems.map((item) => `${item.position.left},${item.position.top}`)); // 隐藏成员来源同样占用容量。
+                    const occupied = new Set(projected.unclassifiedItems.map((item) => `${item.position.left},${item.position.top}`)); // 只有当前可见桌面项目占用容量。
                     for (const id of ids) {
                         if (positions.has(id)) continue;
                         for (let slot = 0; slot < grid.rows * grid.columns; slot++) {

@@ -92,7 +92,7 @@ export const moveFence = (start: WorkspaceRect, delta: PointerDelta, workspace: 
     top: Math.max(0, Math.min(workspace.height - start.height, start.top + delta.y)),
 });
 
-/** 按原型八方向规则缩放围栏并保持最小尺寸与工作区边界。 */
+/** 按八方向规则缩放围栏并保持最小尺寸与工作区边界。 */
 export const resizeFence = (
     direction: FenceResizeDirection,
     start: WorkspaceRect,

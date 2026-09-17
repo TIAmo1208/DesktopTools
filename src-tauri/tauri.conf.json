@@ -13,6 +13,7 @@
         "windows": [
             {
                 "label": "main",
+                "create": false,
                 "title": "Desktop Tools 设置",
                 "width": 960,
                 "height": 640,

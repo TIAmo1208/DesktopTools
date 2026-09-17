@@ -9,7 +9,6 @@ pnpm-debug.log*
 lerna-debug.log*
 
 build/
-prototypes/
 /.scratch/**/logs/
 .scratch/
 release/
@@ -20,7 +19,11 @@ dist
 dist-ssr
 *.local
 *.test.*
+!src-tauri/src/tools/log/
+!src-tauri/src/**/*.test.rs
 !src/contracts/settings.test.ts
+!src/bridge/folderPortal.test.ts
+!src/bridge/nativeHostEvents.test.ts
 *.spec.*
 temp/
 

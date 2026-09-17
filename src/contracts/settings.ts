@@ -60,6 +60,8 @@ export interface ApplicationPreferences {
     componentSnap: boolean; // 功能格子边缘对齐。
     interfaceAnimations: boolean; // 界面装饰动画偏好，实际启用还需满足系统动态效果设置。
     folderPortalEnabled: boolean; // 文件夹门户功能入口显隐。
+    pauseOnFullscreen: boolean; // 前台全屏或最大化覆盖本屏时暂停刷新。
+    pauseOnFocus: boolean; // 外部应用获得焦点时暂停全部桌面刷新。
 }
 
 /** 设置页读取的真实应用和 Windows 状态。 */
@@ -106,6 +108,8 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         componentSnap: true,
         interfaceAnimations: true,
         folderPortalEnabled: true,
+        pauseOnFullscreen: false,
+        pauseOnFocus: false,
     }; // 旧配置默认行为。
     for (const key of Object.keys(features) as (keyof typeof features)[]) {
         if (candidate[key] === undefined) continue;

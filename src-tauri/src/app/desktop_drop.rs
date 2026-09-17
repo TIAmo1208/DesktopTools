@@ -81,14 +81,25 @@ pub(crate) fn commit_internal(app: &AppHandle, snapshot: WorkspaceSnapshot, inpu
 /// 在任何文件传输前拆分准确来源并完成布局容量预检。
 pub(crate) fn prepare_external(app: &AppHandle, snapshot: WorkspaceSnapshot, input: DropInput, sources: Vec<String>, copy_all: bool) -> Result<Option<ExternalDrop>, String>
 {
-    let existing = sources.iter().filter(|id| !copy_all && snapshot.unclassified_items.iter().any(|item| &item.stable_reference == *id)).cloned().collect::<Vec<_>>(); // Ctrl 复制保留所有来源文件操作。
-    let transfers = sources.iter().filter(|id| !existing.contains(id)).cloned().collect::<Vec<_>>(); // 文件执行集合。
-    let Some(target) = target_at(input, &snapshot, &existing)?
+    let layout_only = sources.iter().filter(|id| !copy_all && snapshot.contains_item(id)).cloned().collect::<Vec<_>>(); // 非门户目标可直接调整已有桌面项目。
+    let Some(target) = target_at(input, &snapshot, &layout_only)?
     else
     {
         return Ok(None);
     }; // 无效目标不启动文件操作。
-    let portal_root = target.portal_path.clone().or_else(|| target.portal_id.as_ref().and_then(|id| snapshot.folder_portals.iter().find(|portal| &portal.id == id)).map(|portal| portal.root_path.clone()));
+    let portal_root = if let Some(id) = &target.portal_id
+    {
+        let portal = snapshot.folder_portals.iter().find(|portal| &portal.id == id).ok_or("门户目标不存在")?;
+        let path = target.portal_path.as_deref().ok_or("门户当前目录未确认")?;
+        let (_, current) = crate::commands::folder_portal::checked_directory(&portal.root_path, path)?;
+        Some(current.to_string_lossy().into_owned())
+    }
+    else
+    {
+        None
+    }; // 页面目录只作为候选，释放前再次校验绑定范围。
+    let existing = if portal_root.is_some() { Vec::new() } else { layout_only }; // 门户投放总是实际 Shell 文件操作。
+    let transfers = sources.iter().filter(|id| !existing.contains(id)).cloned().collect::<Vec<_>>();
     if portal_root.is_none()
     {
         app.state::<WorkspaceState>().preflight_drop(&target, &existing, transfers.len()).map_err(|error| error.message)?;
@@ -111,13 +122,13 @@ pub(crate) fn complete_external(app: &AppHandle, plan: ExternalDrop, mut complet
     let mut layout_change = None;
     let disposition = (|| -> Result<(), String> {
         let items = if transfers.is_empty() { state.snapshot() } else { state.refresh() }.map_err(|error| error.message)?;
-        if !transfers.is_empty()
+        if !transfers.is_empty() && (drop_target.fence_id.is_none() || completed.aborted)
         {
             let runtime = app.state::<std::sync::Arc<crate::host::DesktopHostRuntime>>();
             let monitors = runtime.snapshot().map_err(|error| error.message)?.hosts.into_iter().map(|host| host.monitor).collect::<Vec<_>>();
             let placement_monitor = drop_target.fence_id.as_ref().and_then(|id| snapshot.fences.iter().find(|fence| &fence.id == id)).map(|fence| &fence.monitor_id).unwrap_or(&drop_target.monitor_id);
             let assignments = completed.items.iter().filter(|item| transfers.contains(&item.source_reference)).filter_map(|item| item.result_reference.as_ref()).filter(|id| !snapshot.unclassified_items.iter().any(|item| &item.stable_reference == *id)).map(|id| (id.clone(), placement_monitor.clone())).collect::<Vec<_>>(); // 只分配此次准确结果，不收走并发创建。
-            workspace.reconcile_environment(crate::workspace::WorkspaceEnvironment { transfer_assignments: true, monitors: &monitors, items: &items.items, assignments: &assignments, renames: &[] }).map_err(|error| error.message)?;
+            workspace.reconcile_environment(crate::workspace::WorkspaceEnvironment { new_item_positions: &[], transfer_assignments: true, monitors: &monitors, items: &items.items, assignments: &assignments, renames: &[] }).map_err(|error| error.message)?;
         }
         let mut ids = Vec::new(); // 保持来源相对顺序，合并结果身份只提交一次。
         if !completed.aborted
@@ -133,11 +144,9 @@ pub(crate) fn complete_external(app: &AppHandle, plan: ExternalDrop, mut complet
                     completed.items.iter().find(|item| &item.source_reference == source && item.succeeded).and_then(|item| item.result_reference.clone()).filter(|id| items.items.iter().any(|item| &item.stable_reference == id))
                 };
                 if let Some(id) = result
+                    && !ids.contains(&id)
                 {
-                    if !ids.contains(&id)
-                    {
-                        ids.push(id);
-                    }
+                    ids.push(id);
                 }
             }
         } // 用户取消不提交已有归属，已完成文件保留在未归类。
@@ -147,7 +156,7 @@ pub(crate) fn complete_external(app: &AppHandle, plan: ExternalDrop, mut complet
         }
         else
         {
-            let (snapshot, change) = workspace.commit_external_drop(&drop_target, &ids, &existing).map_err(|error| error.message)?;
+            let (snapshot, change) = workspace.commit_external_drop(&drop_target, &ids, &existing, &items).map_err(|error| error.message)?;
             layout_change = Some(change);
             committed = true;
             snapshot
@@ -206,7 +215,7 @@ fn drop_fence_at(point: &WorkspacePoint, regions: &[HitRegion], snapshot: &crate
     }
 }
 
-/// 桌面项目按原型主导轴和中心死区确定四向插入，几何来自本次已渲染确认。
+/// 桌面项目按当前主导轴和中心死区规则确定四向插入。
 fn drop_grid_insertion_at(point: &WorkspacePoint, regions: &[HitRegion], dragged: &[String]) -> Option<(String, String)>
 {
     let x = point.left; // 已确认的工作区 DIP 横坐标。
@@ -269,33 +278,5 @@ fn drop_before_item_at(point: &WorkspacePoint, regions: &[HitRegion], fence: &cr
 }
 
 #[cfg(test)]
-mod tests
-{
-    use super::*;
-
-    /// 验证已转换的 DIP、遮挡和失效成员不会误命中围栏。
-    #[test]
-    fn drop_fence_uses_confirmed_geometry_and_current_membership()
-    {
-        let mut snapshot: crate::contracts::WorkspaceSnapshot = serde_json::from_value(serde_json::json!({
-            "schemaVersion": 1, "revision": 0, "unclassifiedItems": [],
-            "fences": [{ "id": "fence", "title": "", "bounds": { "left": 0, "top": 0, "width": 200, "height": 200 }, "members": ["member"], "layoutMode": "tile", "scrollTop": 0, "collapsed": false, "lastExpandedHeight": 200, "zIndex": 1 }]
-        }))
-        .unwrap(); // 当前共享归属的最小快照。
-        let mut regions = vec![HitRegion { id: "fence".into(), kind: "fence".into(), left: 10.0, top: 20.0, width: 100.0, height: 100.0, priority: 1, target_path: None }]; // 宿主发布的 DIP 围栏区域。
-        let point = WorkspacePoint { left: 20.0, top: 30.0 }; // 平台已转换的工作区 DIP。
-        assert_eq!(super::drop_fence_at(&point, &regions, &snapshot).as_deref(), Some("fence"));
-        assert_eq!(super::drop_fence_at(&WorkspacePoint { left: 110.0, top: 30.0 }, &regions, &snapshot), None);
-        regions.push(HitRegion { id: "member".into(), kind: "desktop-item".into(), priority: 2, ..regions[0].clone() });
-        assert_eq!(super::drop_before_item_at(&point, &regions, &snapshot.fences[0], &[]).as_deref(), Some("member"));
-        assert_eq!(super::drop_before_item_at(&point, &regions, &snapshot.fences[0], &["member".into()]), None);
-        assert_eq!(super::drop_fence_at(&point, &regions, &snapshot).as_deref(), Some("fence"));
-        snapshot.fences[0].members.clear();
-        assert_eq!(super::drop_fence_at(&point, &regions, &snapshot), None);
-        regions[1].kind = "component".into();
-        assert_eq!(super::drop_fence_at(&point, &regions, &snapshot), None);
-        regions.pop();
-        snapshot.fences.clear();
-        assert_eq!(super::drop_fence_at(&point, &regions, &snapshot), None);
-    }
-}
+#[path = "desktop_drop.test.rs"]
+mod tests;
