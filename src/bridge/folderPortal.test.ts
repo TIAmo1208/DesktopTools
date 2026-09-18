@@ -159,7 +159,7 @@ test("门户导航等待旧枚举结束，旧结果不写入新目录", async ()
 
 test("原生宿主通过工作区事件交付门户，取消订阅停止交付", async () => {
     const source = readFileSync(new URL("../../src-tauri/src/platform/windows/desktop_host.rs", import.meta.url), "utf8"); // 实际注入宿主的脚本来源。
-    const script = source.split('const NATIVE_BRIDGE_SCRIPT: &str = r#"')[1].split('"#;')[0]; // 运行产品代码而非重写消息桥。
+    const script = source.split('const NATIVE_BRIDGE_SCRIPT: &str = r#"')[1].split('"#;')[0].replace("__REFRESH_POLICY_FALLBACK__", "false"); // 运行产品代码并代入创建宿主时确定的故障兜底状态。
     const pending: Array<() => Promise<void>> = []; // 可控的下一次轮询。
     const calls: string[] = []; // 实际读取命令。
     const received: unknown[] = []; // 订阅者收到的目录。

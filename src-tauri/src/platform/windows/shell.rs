@@ -64,10 +64,11 @@ struct FileOperationProgressSink
 }
 
 /// 补偿操作需要的一个 Shell 项目身份、父级和编辑名称。
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ShellItemMetadata
 {
-    compensation_blocked: Option<String>, // 在文件改变前确认是否涉及覆盖或目录合并。
+    compensation_blocked: Option<String>,            // 在文件改变前确认是否涉及覆盖或目录合并。
+    existing_target: Option<Box<ShellItemMetadata>>, // 覆盖前已经存在的精确目标身份，Post 未返回新对象时复用。
     /// 项目自身的桌面绝对稳定引用。
     reference: String,
     /// 项目父级的桌面绝对稳定引用。
@@ -221,7 +222,9 @@ impl FileOperationProgressSink_Impl
             && let Some((_, metadata)) = pending.iter_mut().rev().find(|(candidate, _)| Some(candidate) == identity.as_ref())
         {
             let name = if new_name.is_null() { metadata.name.clone() } else { unsafe { new_name.to_string() }.ok() }; // 使用 Shell 已协商的目标名称。
-            let existing = destination.as_ref().and_then(|folder| shell_item_name(folder, SIGDN_FILESYSPATH).ok()).zip(name).map(|(parent, name)| std::path::Path::new(&parent).join(name).try_exists()); // 查询失败同样不能授权破坏性补偿。
+            let target_path = destination.as_ref().and_then(|folder| shell_item_name(folder, SIGDN_FILESYSPATH).ok()).zip(name).map(|(parent, name)| std::path::Path::new(&parent).join(name)); // Shell 已协商的准确目标路径。
+            let existing = target_path.as_ref().map(|path| path.try_exists()); // 查询失败同样不能授权破坏性补偿。
+            metadata.existing_target = target_path.filter(|path| matches!(path.try_exists(), Ok(true))).and_then(|path| unsafe { SHCreateItemFromParsingName(&HSTRING::from(path.to_string_lossy().as_ref()), None) }.ok()).map(|item| Box::new(shell_item_metadata(&item))); // 覆盖成功可能不返回新对象，保留操作前的稳定引用。
             if flags & windows::Win32::UI::Shell::TSF_OVERWRITE_EXIST.0 as u32 != 0 || !matches!(existing, Some(Ok(false)))
             {
                 metadata.compensation_blocked = Some("覆盖、目录合并或目标状态不明确，不能自动恢复".into());
@@ -258,7 +261,7 @@ impl FileOperationProgressSink_Impl
             })
             .or_else(|| source.as_ref().map(shell_item_metadata))
             .unwrap_or_default(); // 无匹配时读取实际来源，不猜测队首项目。
-        let result = result.as_ref().map(shell_item_metadata); // Post 回调提供的操作后结果项目元数据。
+        let result = result.as_ref().map(shell_item_metadata).or_else(|| succeeded.then(|| source.existing_target.as_deref().cloned()).flatten()); // 覆盖成功可能沿用既有目标身份。
         let compensation_blocked = if flags & windows::Win32::UI::Shell::TSF_OVERWRITE_EXIST.0 as u32 != 0
         {
             Some("覆盖或目录合并不能自动恢复".into())
@@ -1045,16 +1048,23 @@ pub(crate) fn transfer_data_to_directory(owner: &ShellMenuOwner, data_object: &I
     {
         return Err("桌面文件传输只接受复制或移动效果".to_string());
     }
+    crate::log_info!("[DEBUG-drop-argument] 开始传输，线程={}，目标={}，效果={}，选择数量={}", unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }, directory.unwrap_or("<Desktop>"), drop_effect_name(effect), selected.map_or(0, <[String]>::len));
     let destination: IShellItem = if let Some(directory) = directory
     {
-        unsafe { SHCreateItemFromParsingName(&HSTRING::from(directory), None) }.map_err(|error| format!("创建门户 Shell 目标失败: {error}"))?
+        let parsing_path = shell_parsing_path(directory); // Shell 解析接口不接受 Rust canonicalize 产生的 extended-length 前缀。
+        unsafe { SHCreateItemFromParsingName(&HSTRING::from(&parsing_path), None) }.map_err(|error| {
+            crate::log_error!("[DEBUG-drop-argument] 创建门户 Shell 目标失败，原路径={}，解析路径={}，HRESULT={:#010x}", directory, parsing_path, error.code().0);
+            format!("创建门户 Shell 目标失败: {error}")
+        })?
     }
     else
     {
         let desktop_pidl = unsafe { SHGetKnownFolderIDList(&FOLDERID_Desktop, KF_FLAG_DEFAULT.0 as u32, None) }.map(OwnedPidl).map_err(|error| format!("读取用户桌面目标失败: {error}"))?;
         unsafe { SHCreateItemFromIDList(desktop_pidl.0) }.map_err(|error| format!("创建桌面 Shell 目标失败: {error}"))?
     }; // IFileOperation 使用的真实目标目录。
+    crate::log_info!("[DEBUG-drop-argument] 目标 Shell item 已创建，目标={}", directory.unwrap_or("<Desktop>"));
     let filesystem_sources = super::drop_target::filesystem_drop_items(data_object); // 已存在文件的逐项传输路径；虚拟剪贴板仍交给 Shell 批量接口。
+    crate::log_info!("[DEBUG-drop-argument] IDataObject 来源提取完成，数量={}，来源={}", filesystem_sources.as_ref().map_or(0, Vec::len), filesystem_sources.as_ref().map(|sources| sources.join(" | ")).unwrap_or_else(|| "<无法提取文件系统来源>".into()));
     if selected.is_some() && filesystem_sources.is_none()
     {
         return Err("投放数据不包含完整文件系统来源".into());
@@ -1072,6 +1082,7 @@ pub(crate) fn transfer_data_to_directory(owner: &ShellMenuOwner, data_object: &I
         let mut operation_error = None; // 逐项执行期间首个整体错误。
         for reference in sources
         {
+            crate::log_info!("[DEBUG-drop-argument] 排队逐项传输，来源={reference}，目标={}", directory.unwrap_or("<Desktop>"));
             let before = shell_file_proof(reference).ok(); // 源完整内容只用于判断新结果是否完整，不保存副本。
             let completed = (|| {
                 let source = resolve_shell_item(reference)?; // 每个顶层来源独立执行，目录后代仍由 Shell 管理。
@@ -1133,6 +1144,7 @@ pub(crate) fn transfer_data_to_directory(owner: &ShellMenuOwner, data_object: &I
                     _ => item.compensation_blocked = Some("缺少完整来源或结果安全证据".into()),
                 }
             }
+            crate::log_info!("[DEBUG-drop-argument] 逐项传输完成，来源={}，成功={}，HRESULT={:#010x}，结果={}", item.source_reference, u8::from(item.succeeded), item.result_code, item.result_reference.as_deref().unwrap_or("<无>"));
             completed_items.push(item);
             if aborted
             {
@@ -1640,11 +1652,15 @@ fn completed_file_operation(kind: ShellOperationKind, reversible: bool, permanen
 /// 读取 IShellItem 的桌面绝对解析名称并释放 Shell 内存。
 fn shell_item_reference(item: &IShellItem) -> Result<String, String> { shell_item_name(item, SIGDN_DESKTOPABSOLUTEPARSING) }
 
+/// 将文件系统安全边界使用的 extended-length 路径转换为 Shell 解析路径。
+fn shell_parsing_path(path: &str) -> String { path.strip_prefix(r"\\?\UNC\").map_or_else(|| path.strip_prefix(r"\\?\").unwrap_or(path).to_string(), |unc| format!(r"\\{unc}")) }
+
 /// 读取补偿日志需要的项目稳定引用、父级引用和编辑名称。
 fn shell_item_metadata(item: &IShellItem) -> ShellItemMetadata
 {
     ShellItemMetadata {
         compensation_blocked: None,
+        existing_target: None,
         reference: shell_item_reference(item).unwrap_or_default(),
         parent_reference: unsafe { item.GetParent() }.ok().and_then(|parent| shell_item_reference(&parent).ok()),
         name: shell_item_name(item, SIGDN_FILESYSPATH).ok().and_then(|path| std::path::Path::new(&path).file_name().map(|name| name.to_string_lossy().into_owned())).or_else(|| shell_item_name(item, SIGDN_PARENTRELATIVEEDITING).ok()), // 文件系统历史保存完整文件名，虚拟项目沿用 Shell 编辑名。

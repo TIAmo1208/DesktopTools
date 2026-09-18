@@ -499,13 +499,13 @@ export const FolderPortal = ({
                                         return;
                                     }
                                     select(item, event);
+                                    if (event.detail > 0 && event.detail % 2 === 0) open(item); // 浏览器多击计数跨导航继续递增，每一对点击都应打开。
                                 }}
                                 onPointerDown={(event) => {
                                     if (event.target instanceof HTMLInputElement) return;
                                     event.currentTarget.closest<HTMLElement>(".folder-portal__content")?.focus({ preventScroll: true });
                                     handleItemPointerDown(event, item);
                                 }}
-                                onDoubleClick={() => open(item)}
                                 onContextMenu={(event) => {
                                     event.preventDefault();
                                     event.stopPropagation();

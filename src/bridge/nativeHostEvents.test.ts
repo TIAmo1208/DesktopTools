@@ -68,6 +68,7 @@ for (const eventName of [
         runInNewContext(script, {
             window,
             __DESKTOP_NATIVE_ORIGIN__: "http://host.localhost",
+            __REFRESH_POLICY_FALLBACK__: false,
             URLSearchParams,
             location: { search: "?monitor=0" },
             fetch: async () => ({ json: () => response }),

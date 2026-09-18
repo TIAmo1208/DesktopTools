@@ -15,7 +15,7 @@ test("正式音乐订阅更新、故障后相同值恢复、退订不再交付",
     let finish: (() => void) | undefined; // 控制退订期间的在途请求。
     const window = { setTimeout: (callback: () => Promise<void>) => timers.push(callback), clearTimeout: () => {}, addEventListener: () => {} } as Record<string, any>; // 最小宿主环境。
     const nativeOrigin = "http://desktop-tools-host-0.localhost"; // 与 Rust 注入的逐屏协议地址一致。
-    runInNewContext(script.replace("__DESKTOP_NATIVE_ORIGIN__", JSON.stringify(nativeOrigin)), {
+    runInNewContext(script.replace("__DESKTOP_NATIVE_ORIGIN__", JSON.stringify(nativeOrigin)).replace("__REFRESH_POLICY_FALLBACK__", "false"), {
         window,
         fetch: async (url: string) => {
             requests.push(url);

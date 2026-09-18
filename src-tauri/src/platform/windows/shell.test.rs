@@ -88,9 +88,42 @@ fn portal_drag_uses_filesystem_items_without_cross_apartment_data_object()
         let data = super::drag_data_object(windows::Win32::Foundation::HWND::default(), &references, true).unwrap();
         assert_eq!(crate::platform::windows::drop_target::filesystem_drop_items(&data).unwrap(), references);
         let owner = super::ShellMenuOwner::create().unwrap();
-        let result = super::transfer_paths_to_directory(&owner, super::DROPEFFECT_COPY, Some(&destination.to_string_lossy()), &references).unwrap();
+        let extended_destination = format!(r"\\?\{}", destination.to_string_lossy()); // 覆盖门户 canonicalize 产生的目标格式。
+        let result = super::transfer_paths_to_directory(&owner, super::DROPEFFECT_COPY, Some(&extended_destination), &references).unwrap();
         assert!(result.items.iter().any(|item| item.succeeded));
         assert!(destination.join("probe.txt").exists());
+    }
+    super::uninitialize_shell_apartment();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 同名覆盖成功但 Shell 未返回新对象时，沿用操作前已确认的目标身份。
+#[test]
+fn overwrite_without_new_item_keeps_existing_target_reference()
+{
+    super::initialize_shell_apartment().unwrap();
+    let root = std::env::temp_dir().join(format!("desktop-tools-overwrite-{}", std::process::id())); // 当前测试的隔离目录。
+    let source_dir = root.join("source"); // 覆盖来源目录。
+    let destination_dir = root.join("destination"); // 已有同名目标目录。
+    std::fs::create_dir_all(&source_dir).unwrap();
+    std::fs::create_dir_all(&destination_dir).unwrap();
+    let source_path = source_dir.join("probe.txt"); // 本次复制来源。
+    let target_path = destination_dir.join("probe.txt"); // 覆盖前已存在的目标。
+    std::fs::write(&source_path, "new").unwrap();
+    std::fs::write(&target_path, "old").unwrap();
+    {
+        let source = super::resolve_shell_item(&source_path.to_string_lossy()).unwrap();
+        let destination = super::resolve_shell_item(&destination_dir.to_string_lossy()).unwrap();
+        let expected = super::resolve_shell_item(&target_path.to_string_lossy()).and_then(|item| super::shell_item_reference(&item)).unwrap(); // 操作前的准确目标引用。
+        let (sink, results) = super::create_operation_sink();
+        unsafe {
+            sink.PreCopyItem(windows::Win32::UI::Shell::TSF_OVERWRITE_EXIST.0 as u32, &source, &destination, super::PCWSTR::null()).unwrap();
+            sink.PostCopyItem(windows::Win32::UI::Shell::TSF_OVERWRITE_EXIST.0 as u32, &source, &destination, super::PCWSTR::null(), super::S_OK, None).unwrap();
+        }
+        let actual = results.lock().unwrap();
+        assert_eq!(actual.len(), 1);
+        assert_eq!(actual[0].result_reference.as_deref(), Some(expected.as_str()));
+        assert!(actual[0].compensation_blocked.is_some());
     }
     super::uninitialize_shell_apartment();
     std::fs::remove_dir_all(root).unwrap();
