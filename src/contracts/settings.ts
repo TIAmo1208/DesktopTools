@@ -58,7 +58,8 @@ export interface ApplicationPreferences {
     debugEnabled: boolean; // Debug 格子显隐。
     debugShowDetails: boolean; // 显示详细状态。
     componentSnap: boolean; // 功能格子边缘对齐。
-    interfaceAnimations: boolean; // 界面装饰动画偏好，实际启用还需满足系统动态效果设置。
+    followSystemReducedMotion: boolean; // 是否由 Windows 减少动态效果决定实际动画状态。
+    interfaceAnimations: boolean; // 不跟随系统时使用的界面装饰动画偏好。
     folderPortalEnabled: boolean; // 文件夹门户功能入口显隐。
     pauseOnFullscreen: boolean; // 前台全屏或最大化覆盖本屏时暂停刷新。
     pauseOnFocus: boolean; // 外部应用获得焦点时暂停全部桌面刷新。
@@ -106,6 +107,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         debugEnabled: true,
         debugShowDetails: true,
         componentSnap: true,
+        followSystemReducedMotion: true,
         interfaceAnimations: true,
         folderPortalEnabled: true,
         pauseOnFullscreen: false,
@@ -135,6 +137,10 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         ...features,
     };
 };
+
+/** 解析当前窗口实际使用的动画状态。 */
+export const resolveAnimationsEnabled = (preferences: ApplicationPreferences | undefined, reducedMotion: boolean) =>
+    (preferences?.followSystemReducedMotion ?? true) ? !reducedMotion : (preferences?.interfaceAnimations ?? true);
 
 /** 校验设置窗口的完整初始状态。 */
 export const parseSettingsSnapshot = (value: unknown): SettingsSnapshot => {

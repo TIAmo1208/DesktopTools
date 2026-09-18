@@ -30,15 +30,9 @@
     z-index: 17000 !important;
 }
 
-/* 围栏折叠状态只呈现标题栏。 */
-.desktop-tile--collapsed {
-    grid-template-rows: 28px;
-    overflow: visible;
-}
-
 /* 悬浮标题和无标题组合不占内容轨道。 */
 .desktop-tile[data-title-mode="hover"]:not(.desktop-tile--collapsed),
-.desktop-tile[data-title-mode="none"] {
+.desktop-tile[data-title-mode="none"]:not(.desktop-tile--collapsed) {
     grid-template-rows: minmax(0, 1fr);
 }
 

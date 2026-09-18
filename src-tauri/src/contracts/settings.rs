@@ -83,7 +83,8 @@ pub struct ApplicationPreferences
     pub debug_enabled: bool,                   // Debug 构建中的测试格子显隐。
     pub debug_show_details: bool,              // 测试格子是否显示详细宿主字段。
     pub component_snap: bool,                  // 功能格子拖动与缩放时边缘对齐。
-    pub interface_animations: bool,            // 界面动画默认开启，系统减少动态效果由各窗口解析。
+    pub follow_system_reduced_motion: bool,    // 是否由 Windows 减少动态效果决定实际动画状态。
+    pub interface_animations: bool,            // 不跟随系统时使用的界面动画偏好。
     pub folder_portal_enabled: bool,           // 文件夹门户功能入口显隐。
     pub pause_on_fullscreen: bool,             // 前台全屏或最大化覆盖本屏时暂停刷新。
     pub pause_on_focus: bool,                  // 外部应用获得焦点时暂停全部桌面刷新。
@@ -93,7 +94,7 @@ pub struct ApplicationPreferences
 impl Default for ApplicationPreferences
 {
     /// 创建首次启动的应用偏好，音乐默认关闭。
-    fn default() -> Self { Self { theme: ApplicationTheme::System, desktop_appearance: DesktopAppearance::default(), config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(), double_click_to_open: true, accent_color: "#2563eb".to_string(), use_windows_accent_color: false, corner_radius: 6, font_family: "Segoe UI Variable".to_string(), font_size: 13, desktop_grid: GridPreferences::default(), fence_grid: GridPreferences { column_gap: 6, ..Default::default() }, clock_enabled: true, music_enabled: false, clock_hour12: false, clock_show_seconds: true, debug_enabled: true, debug_show_details: true, component_snap: true, interface_animations: true, folder_portal_enabled: true, pause_on_fullscreen: false, pause_on_focus: false } }
+    fn default() -> Self { Self { theme: ApplicationTheme::System, desktop_appearance: DesktopAppearance::default(), config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(), double_click_to_open: true, accent_color: "#2563eb".to_string(), use_windows_accent_color: false, corner_radius: 6, font_family: "Segoe UI Variable".to_string(), font_size: 13, desktop_grid: GridPreferences::default(), fence_grid: GridPreferences { column_gap: 6, ..Default::default() }, clock_enabled: true, music_enabled: false, clock_hour12: false, clock_show_seconds: true, debug_enabled: true, debug_show_details: true, component_snap: true, follow_system_reduced_motion: true, interface_animations: true, folder_portal_enabled: true, pause_on_fullscreen: false, pause_on_focus: false } }
 }
 
 /// 校验配置文件和命令输入共用的外观边界。
@@ -172,16 +173,21 @@ mod music_tests
         }
     }
 
-    /// 动画缺失时使用当前默认值，显式关闭值通过序列化保留。
+    /// 动画控制缺失时跟随系统，两个开关值分别通过序列化保留。
     #[test]
     fn animation_preference_roundtrip()
     {
         let defaults: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 默认开启装饰动画。
+        assert!(defaults.follow_system_reduced_motion);
         assert!(defaults.interface_animations);
-        let disabled = ApplicationPreferences { interface_animations: false, ..defaults }; // 用户显式关闭。
+        let disabled = ApplicationPreferences { follow_system_reduced_motion: false, interface_animations: false, ..defaults }; // 用户显式改为手动关闭。
         let value = serde_json::to_value(disabled).unwrap(); // 与保存命令相同的 camelCase 字段。
+        assert_eq!(value["followSystemReducedMotion"], false);
         assert_eq!(value["interfaceAnimations"], false);
-        assert!(!serde_json::from_value::<ApplicationPreferences>(value).unwrap().interface_animations);
+        let restored = serde_json::from_value::<ApplicationPreferences>(value).unwrap();
+        assert!(!restored.follow_system_reduced_motion);
+        assert!(!restored.interface_animations);
+        assert!(serde_json::from_str::<ApplicationPreferences>(r#"{"followSystemReducedMotion":"false"}"#).is_err());
         assert!(serde_json::from_str::<ApplicationPreferences>(r#"{"interfaceAnimations":"false"}"#).is_err());
     }
 }

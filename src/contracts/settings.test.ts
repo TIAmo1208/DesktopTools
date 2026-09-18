@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parsePreferences, parseSettingsSnapshot } from "./settings.ts";
+import { parsePreferences, parseSettingsSnapshot, resolveAnimationsEnabled } from "./settings.ts";
 
 test("刷新策略默认关闭，保存往返保留开关并拒绝错误类型", () => {
     const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 当前缺省策略。
@@ -14,10 +14,17 @@ test("刷新策略默认关闭，保存往返保留开关并拒绝错误类型",
 
 test("界面动画使用默认值并严格校验布尔设置", () => {
     const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 缺失字段使用当前默认值。
+    assert.equal(defaults.followSystemReducedMotion, true);
     assert.equal(defaults.interfaceAnimations, true);
-    const disabled = parsePreferences({ ...defaults, interfaceAnimations: false }); // 关闭值必须经过保存回读保留。
+    const disabled = parsePreferences({ ...defaults, followSystemReducedMotion: false, interfaceAnimations: false }); // 两个开关必须独立保存。
+    assert.equal(parsePreferences(JSON.parse(JSON.stringify(disabled))).followSystemReducedMotion, false);
     assert.equal(parsePreferences(JSON.parse(JSON.stringify(disabled))).interfaceAnimations, false);
-    for (const value of [null, 0, "false"]) assert.throws(() => parsePreferences({ ...defaults, interfaceAnimations: value }));
+    for (const key of ["followSystemReducedMotion", "interfaceAnimations"] as const)
+        for (const value of [null, 0, "false"]) assert.throws(() => parsePreferences({ ...defaults, [key]: value }));
+    assert.equal(resolveAnimationsEnabled({ ...defaults, interfaceAnimations: false }, false), true); // 跟随系统时保留但忽略手动值。
+    assert.equal(resolveAnimationsEnabled(defaults, true), false);
+    assert.equal(resolveAnimationsEnabled({ ...defaults, followSystemReducedMotion: false, interfaceAnimations: false }, false), false);
+    assert.equal(resolveAnimationsEnabled({ ...defaults, followSystemReducedMotion: false, interfaceAnimations: true }, true), true);
 });
 
 // 桌面主题缺失时使用固定默认值，后续修改、系统色开关及序列化均不能串组。

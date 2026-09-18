@@ -29,7 +29,7 @@
     --interface-transition-duration: 120ms;
 }
 
-/* 系统减少动态效果优先于应用偏好，不影响进度或实时拖动反馈。 */
+/* 选择跟随系统时，减少动态效果关闭过渡，不影响进度或实时拖动反馈。 */
 @media (prefers-reduced-motion: reduce) {
     :root[data-interface-animations] {
         --interface-transition-duration: 0ms;

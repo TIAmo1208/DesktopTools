@@ -51,7 +51,7 @@ export const DesktopTileViewport = ({
     useEffect(() => () => cancel.current?.(), []);
     const scrollBy = (top: number) => scrollRef.current?.scrollBy({ top }); // 使用当前 46 DIP 步进和分页距离。
     return (
-        <div className="desktop-tile-viewport" hidden={collapsed}>
+        <div className="desktop-tile-viewport" data-collapsed={collapsed ? "true" : "false"} aria-hidden={collapsed || undefined} inert={collapsed}>
             <Content
                 {...props}
                 id={props.id ?? viewportId}

@@ -5,11 +5,19 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+    opacity: 1;
+    visibility: visible;
+    transition: opacity var(--interface-transition-duration, 0ms) ease-out;
 }
 
-/* 折叠不卸载内容，恢复后保留订阅与滚动。 */
-.desktop-tile-viewport[hidden] {
-    display: none;
+/* 折叠不卸载内容，淡出后停止呈现和命中。 */
+.desktop-tile-viewport[data-collapsed="true"] {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition:
+        opacity var(--interface-transition-duration, 0ms) ease-out,
+        visibility 0ms linear var(--interface-transition-duration, 0ms);
 }
 
 /* 公共滚动容器隐藏系统滚动条，使用自绘覆盖轨道。 */

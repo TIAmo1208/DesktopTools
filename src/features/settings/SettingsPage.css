@@ -9,6 +9,7 @@
     background: var(--color-background);
     font-size: var(--interface-font-size);
     letter-spacing: 0;
+    transition: grid-template-columns var(--interface-transition-duration, 0ms) ease-out;
 }
 
 /* 固定宽度的设置导航区域。 */
@@ -20,6 +21,7 @@
     gap: 8px;
     height: 100%;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 16px 4px;
     background: color-mix(in srgb, var(--color-border) 35%, var(--color-background));
 }
@@ -33,6 +35,19 @@
     padding: 0 12px;
     font-weight: 600;
     white-space: nowrap;
+    transition: gap var(--interface-transition-duration, 0ms) ease-out;
+}
+
+/* 品牌文字与侧栏宽度同步收展。 */
+.settings__brand span {
+    max-width: 140px;
+    overflow: hidden;
+    opacity: 1;
+    visibility: visible;
+    transition:
+        max-width var(--interface-transition-duration, 0ms) ease-out,
+        opacity var(--interface-transition-duration, 0ms) ease-out,
+        visibility 0ms linear 0ms;
 }
 
 /* Windows 内置 Fluent 图标字体。 */
@@ -84,6 +99,20 @@
     background: transparent;
     cursor: pointer;
     text-align: left;
+    transition: gap var(--interface-transition-duration, 0ms) ease-out;
+}
+
+/* 分类名称与侧栏宽度同步收展。 */
+.settings__navigation-label {
+    max-width: 140px;
+    overflow: hidden;
+    opacity: 1;
+    visibility: visible;
+    white-space: nowrap;
+    transition:
+        max-width var(--interface-transition-duration, 0ms) ease-out,
+        opacity var(--interface-transition-duration, 0ms) ease-out,
+        visibility 0ms linear 0ms;
 }
 
 /* Windows 风格的导航悬停表面。 */
@@ -115,6 +144,46 @@
     min-height: 0;
     overflow: auto;
     padding: 24px;
+    view-transition-name: settings-content;
+}
+
+/* 设置分类旧内容淡出并轻微上移。 */
+::view-transition-old(settings-content) {
+    animation: settings-content-out var(--interface-transition-duration, 0ms) ease-out both;
+}
+
+/* 设置分类新内容从下方轻微淡入。 */
+::view-transition-new(settings-content) {
+    animation: settings-content-in var(--interface-transition-duration, 0ms) ease-out both;
+}
+
+/* 禁用浏览器默认的整窗快照动画，只保留设置内容区。 */
+::view-transition-group(root),
+::view-transition-old(root),
+::view-transition-new(root) {
+    animation: none;
+}
+
+/* 内容快照分组沿用界面动画时长，关闭时不保留浏览器默认过渡。 */
+::view-transition-group(settings-content) {
+    animation-duration: var(--interface-transition-duration, 0ms);
+    animation-timing-function: ease-out;
+}
+
+/* 旧分类内容离场。 */
+@keyframes settings-content-out {
+    to {
+        opacity: 0;
+        transform: translateY(-4px);
+    }
+}
+
+/* 新分类内容入场。 */
+@keyframes settings-content-in {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
 }
 
 /* 自定义标题栏完整覆盖窗口顶部，原生 DWM 负责窗口阴影。 */
@@ -396,7 +465,19 @@
 /* 收起导航后保留图标与可访问名称。 */
 .settings--collapsed .settings__brand span,
 .settings--collapsed .settings__navigation-label {
-    display: none;
+    max-width: 0;
+    opacity: 0;
+    visibility: hidden;
+    transition:
+        max-width var(--interface-transition-duration, 0ms) ease-out,
+        opacity var(--interface-transition-duration, 0ms) ease-out,
+        visibility 0ms linear var(--interface-transition-duration, 0ms);
+}
+
+/* 收起时移除已隐藏文字对应的弹性间距。 */
+.settings--collapsed .settings__brand,
+.settings--collapsed .settings__navigation-item {
+    gap: 0;
 }
 
 /* 小窗口中保留内容区域可用宽度。 */
@@ -408,7 +489,14 @@
     /* 窄侧栏的文本由按钮可访问名称保留。 */
     .settings__brand span,
     .settings__navigation-label {
-        display: none;
+        max-width: 0;
+        opacity: 0;
+        visibility: hidden;
+    }
+    /* 紧凑侧栏不保留隐藏文字间距。 */
+    .settings__brand,
+    .settings__navigation-item {
+        gap: 0;
     }
     /* 紧凑内容区边距。 */
     .settings__content {

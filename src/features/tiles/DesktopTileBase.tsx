@@ -1,8 +1,9 @@
-import { createContext, useCallback, useEffect, useRef, useState, type ComponentPropsWithRef, type PointerEvent } from "react";
+import { createContext, useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentPropsWithRef, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 
 import type { TileAppearance, TileAppearanceChange } from "../../contracts/tile";
 import type { FenceResizeDirection } from "../fences/fenceGeometry";
+import { usePreferences } from "../settings/PreferencesProvider";
 import { DesktopTileMenu, type DesktopTileMenuItem } from "./DesktopTileMenu";
 import "./DesktopTileBase.css";
 
@@ -40,9 +41,13 @@ export const DesktopTileBase = ({
     onContextMenu,
     onKeyDown,
     onFocus,
+    style,
     ...props
 }: DesktopTileBaseProps) => {
     const surface = useRef<HTMLElement | null>(null); // 外壳节点。
+    const collapseAnimation = useRef<Animation | undefined>(undefined); // 当前折叠高度动画，连续切换从当前帧衔接。
+    const previousCollapsed = useRef(collapsed); // 上次呈现的实际折叠状态。
+    const previousHeight = useRef<number | undefined>(undefined); // 最近一次稳定外壳高度。
     const [titleVisible, setTitleVisible] = useState(false); // 悬浮标题瞬时显示状态。
     const [menu, setMenu] = useState<{ left: number; top: number; sorting: boolean }>(); // 菜单锚点。
     const trigger = useRef<HTMLElement | null>(null); // 菜单焦点恢复位置。
@@ -51,6 +56,7 @@ export const DesktopTileBase = ({
     const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined); // 离开标题后的隐藏延迟。
     const titleMode = appearance?.titleMode ?? "fixed"; // 默认固定标题。
     const buttonMode = appearance?.buttonMode ?? "hover"; // 默认悬停按钮。
+    const { animationsEnabled } = usePreferences(); // 用户偏好与系统减少动态效果合并后的有效状态。
     const visible = titleMode === "fixed" || collapsed || titleVisible || (!frozen.current && renaming); // 包括重命名和折叠入口的实际显示状态。
     const state = useRef({ menu, renaming, visible }); // 原生监听读取最新交互状态。
     state.current = { menu, renaming, visible };
@@ -58,6 +64,30 @@ export const DesktopTileBase = ({
         setMenu(undefined);
         trigger.current?.focus({ preventScroll: true });
     }, []); // 关闭整组菜单。
+
+    useLayoutEffect(() => {
+        const element = surface.current;
+        if (!element) return;
+        const start = collapseAnimation.current ? element.getBoundingClientRect().height : previousHeight.current; // 反向切换读取当前动画帧。
+        collapseAnimation.current?.cancel();
+        collapseAnimation.current = undefined;
+        const target = element.getBoundingClientRect().height; // 取消旧动画后读取当前目标高度。
+        const changed = previousCollapsed.current !== collapsed;
+        previousCollapsed.current = collapsed;
+        previousHeight.current = target;
+        if (!changed || !animationsEnabled || start === undefined || Math.abs(start - target) < 0.5) return;
+        const duration = Number.parseFloat(getComputedStyle(element).getPropertyValue("--interface-transition-duration")); // 复用全局动效时长。
+        if (!duration) return;
+        const animation = element.animate([{ height: `${start}px` }, { height: `${target}px` }], { duration, easing: "ease-out" });
+        collapseAnimation.current = animation;
+        animation.onfinish = () => {
+            if (collapseAnimation.current !== animation) return;
+            collapseAnimation.current = undefined;
+            animation.cancel(); // 底层目标高度已生效，移除完成实例避免连续切换读取旧动画。
+        };
+    }, [animationsEnabled, collapsed, style?.height]);
+
+    useEffect(() => () => collapseAnimation.current?.cancel(), []);
 
     useEffect(() => {
         const handleFreeze = () => {
@@ -190,6 +220,7 @@ export const DesktopTileBase = ({
                 }}
                 className={`desktop-tile${collapsed ? " desktop-tile--collapsed" : ""} ${className}`}
                 data-title-mode={headerPresent ? titleMode : "none"}
+                style={style}
                 onFocus={(event) => {
                     if (!frozen.current && !state.current.menu && event.currentTarget.matches(":focus-visible")) setTitleVisible(true);
                     onFocus?.(event);

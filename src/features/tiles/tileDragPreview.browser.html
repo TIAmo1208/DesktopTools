@@ -13,32 +13,37 @@
             import { DesktopTileViewport } from "./DesktopTileViewport.tsx";
             import { captureTileDragVisual, createTileDragPreview } from "./tileDragPreview.ts";
             import { collectHitRegions } from "../workspace/surface/workspaceSurfaceProjection.ts";
+            import { PreferencesProvider } from "../settings/PreferencesProvider.tsx";
             import "../../styles/global.css";
             import "../fences/FenceWorkspace.css";
             const h = React.createElement; // 实际公共格子组件，内容使用固定时钟文本。
+            let toggleCollapsed; // 浏览器断言触发公共外壳折叠状态。
+            const Fixture = () => {
+                const [collapsed, setCollapsed] = React.useState(false); // 测试公共外壳的连续折叠与展开。
+                toggleCollapsed = () => flushSync(() => setCollapsed((value) => !value));
+                return h(
+                    DesktopTileBase,
+                    {
+                        collapsed,
+                        onResize() {},
+                        "data-hit-id": "clock",
+                        "data-hit-kind": "component",
+                        style: { left: 10, top: 10, width: 240, height: collapsed ? 28 : 180 },
+                    },
+                    h(DesktopTileHeader, { title: "本地时间", editing: false, onRenameEnd() {}, onRename: async () => {} }),
+                    h(
+                        DesktopTileViewport,
+                        { collapsed, className: "official-component__content" },
+                        h("time", { style: { display: "block", alignSelf: "center", justifySelf: "center", fontVariantNumeric: "tabular-nums" } }, "16:23:20"),
+                    ),
+                );
+            };
             const assert = (condition, message) => {
                 if (!condition) throw new Error(message);
             }; // 浏览器 DOM 与几何断言。
             try {
                 const root = createRoot(document.getElementById("fixture")); // 单一测试表面。
-                flushSync(() =>
-                    root.render(
-                        h(
-                            DesktopTileBase,
-                            { onResize() {}, "data-hit-id": "clock", "data-hit-kind": "component", style: { left: 10, top: 10, width: 240, height: 180 } },
-                            h(DesktopTileHeader, { title: "本地时间", editing: false, onRenameEnd() {}, onRename: async () => {} }),
-                            h(
-                                DesktopTileViewport,
-                                { className: "official-component__content" },
-                                h(
-                                    "time",
-                                    { style: { display: "block", alignSelf: "center", justifySelf: "center", fontVariantNumeric: "tabular-nums" } },
-                                    "16:23:20",
-                                ),
-                            ),
-                        ),
-                    ),
-                );
+                flushSync(() => root.render(h(PreferencesProvider, null, h(Fixture))));
                 const source = document.querySelector(".desktop-tile"); // 与正式格子相同的 DOM 及 CSS。
                 const viewport = source.querySelector(".desktop-tile-viewport"); // 实际可滚动视口。
                 viewport.scrollTop = 40;
@@ -66,6 +71,19 @@
                     Math.abs(copyTime.top - copy.getBoundingClientRect().top - (sourceTime.top - source.getBoundingClientRect().top)) < 1,
                     "静态帧时钟垂直位置变化",
                 );
+                toggleCollapsed();
+                const collapse = source.getAnimations().find((animation) => animation.effect?.target === source && animation.playState === "running"); // 公共外壳只为状态切换创建高度动画。
+                assert(collapse && collapse.playState === "running", "格子折叠高度动画未启动");
+                await new Promise((resolve) => setTimeout(resolve, 40));
+                toggleCollapsed();
+                const expand = source.getAnimations().find((animation) => animation.effect?.target === source && animation.playState === "running"); // 展开反向使用同一公共路径。
+                assert(expand && expand.playState === "running", "格子展开高度动画未启动");
+                await expand.finished;
+                assert(source.getBoundingClientRect().height === 180 && !viewport.inert, "格子展开终态或内容命中错误");
+                document.documentElement.dataset.interfaceAnimations = "off";
+                toggleCollapsed();
+                assert(!source.getAnimations().some((animation) => animation.effect?.target === source), "关闭界面动画后仍创建折叠动画");
+                assert(source.getBoundingClientRect().height === 28 && viewport.inert, "关闭界面动画后未立即进入折叠状态");
                 copy.style.opacity = "0";
                 assert(getComputedStyle(copy).opacity === "0", "跨屏源副本未整体透明");
                 assert(copy.inert && !copy.querySelector("[data-hit-id],[data-item-id]"), "副本变成第二份交互映射");
@@ -78,7 +96,7 @@
                     rejected = true;
                 }
                 assert(rejected, "非法标签未拒绝");
-                document.getElementById("result").textContent = "PASS：完整内容、尺寸、惰性副本、源命中排除及标签校验";
+                document.getElementById("result").textContent = "PASS：完整内容、折叠动效、惰性副本、源命中排除及标签校验";
             } catch (error) {
                 document.getElementById("result").textContent = "FAIL：" + error.stack;
             }

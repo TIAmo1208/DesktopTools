@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { getPreferences, getWindowsAccentColor, listenPreferences, listenWindowsAccentColor, settingsErrorMessage } from "../../bridge/settings";
-import type { ApplicationPreferences } from "../../contracts/settings";
+import { resolveAnimationsEnabled, type ApplicationPreferences } from "../../contracts/settings";
 
 /** 当前窗口内共享的偏好加载状态。 */
 interface PreferencesContextValue {
@@ -26,7 +26,7 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
     const [windowsAccentColor, setWindowsAccentColor] = useState<string>(); // 系统颜色独立于持久化的自定义颜色。
     const [accentFailure, setAccentFailure] = useState<string>(); // 系统强调色读取或订阅错误。
     const revision = useRef(0); // 当前窗口已接收偏好的顺序，防止启动读取回退已保存值。
-    const animationsEnabled = (preferences?.interfaceAnimations ?? true) && !reducedMotion; // 缺失设置采用当前默认值。
+    const animationsEnabled = resolveAnimationsEnabled(preferences, reducedMotion); // 跟随系统与手动动画偏好只由一个入口解析。
     useEffect(() => {
         const query = window.matchMedia("(prefers-reduced-motion: reduce)"); // 持续监听系统设置。
         const handleMotion = () => setReducedMotion(query.matches); // 系统改变后立即更新有效状态。

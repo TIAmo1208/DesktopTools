@@ -36,7 +36,7 @@ const PHASE_LABELS: Record<TakeoverPhase, string> = {
 
 /** 设置窗口页面及真实配置操作，不装配桌面工作区交互。 */
 export const SettingsPage = () => {
-    const { preferences, failure: preferencesFailure, onPreferences, reducedMotion } = usePreferences(); // 当前窗口共用的偏好及系统动画限制。
+    const { preferences, failure: preferencesFailure, onPreferences, reducedMotion, animationsEnabled } = usePreferences(); // 当前窗口共用的偏好及系统动画限制。
     const [page, setPage] = useState<(typeof PAGES)[number]["id"]>("general"); // 当前设置导航页面。
     const [collapsed, setCollapsed] = useState(false); // 窄侧栏状态。
     const [gridDetail, setGridDetail] = useState<"desktopGrid" | "fenceGrid">(); // 外观下当前打开的网格二级菜单。
@@ -49,6 +49,20 @@ export const SettingsPage = () => {
     const pending = useRef(false); // 阻止同一事件循环中的重复命令。
     const requestRevision = useRef(0); // 防止较早的加载结果覆盖更新后的设置。
     const title = PAGES.find((entry) => entry.id === page)!.label; // 当前页面可见标题。
+
+    /** 使用 WebView2 原生视图过渡切换设置分类，关闭动画时直接更新。 */
+    const handlePageChange = (next: (typeof PAGES)[number]["id"]) => {
+        if (next === page && gridDetail === undefined) return;
+        const update = () => {
+            setPage(next);
+            setGridDetail(undefined);
+        };
+        if (!animationsEnabled) {
+            update();
+            return;
+        }
+        document.startViewTransition(update);
+    };
 
     /** 重新读取 Windows 实际启动状态，同时刷新诊断信息。 */
     const handleRefresh = useCallback(async () => {
@@ -170,10 +184,7 @@ export const SettingsPage = () => {
                             aria-current={page === entry.id ? "page" : undefined}
                             title={entry.label}
                             aria-label={entry.label}
-                            onClick={() => {
-                                setPage(entry.id);
-                                setGridDetail(undefined);
-                            }}
+                            onClick={() => handlePageChange(entry.id)}
                         >
                             <span className="settings__icon" aria-hidden="true">
                                 {entry.icon}
@@ -342,18 +353,31 @@ export const SettingsPage = () => {
                         ))}
                         <div className="settings__row">
                             <span className="settings__row-title">
+                                <label htmlFor="follow-system-reduced-motion">跟随系统减少动态效果控制</label>
+                                <SettingsInfo label="跟随系统减少动态效果控制" description="开启时由 Windows 动态效果设置控制实际动画，并保留界面动画开关值" />
+                            </span>
+                            <SettingsSwitch
+                                id="follow-system-reduced-motion"
+                                label="跟随系统减少动态效果控制"
+                                checked={preferences?.followSystemReducedMotion ?? true}
+                                disabled={busy || !preferences}
+                                onChange={(checked) => handlePreferences({ followSystemReducedMotion: checked })}
+                            />
+                        </div>
+                        <div className="settings__row">
+                            <span className="settings__row-title">
                                 <label htmlFor="interface-animations">界面动画</label>
-                                <SettingsInfo label="界面动画" description="启用布局切换与状态过渡动画" />
+                                <SettingsInfo label="界面动画" description="未跟随系统减少动态效果时，启用布局切换与状态过渡动画" />
                             </span>
                             <SettingsSwitch
                                 id="interface-animations"
                                 label="界面动画"
                                 checked={preferences?.interfaceAnimations ?? true}
-                                disabled={busy || !preferences}
+                                disabled={busy || !preferences || (preferences?.followSystemReducedMotion ?? true)}
                                 onChange={(checked) => handlePreferences({ interfaceAnimations: checked })}
                             />
                         </div>
-                        {reducedMotion && (
+                        {(preferences?.followSystemReducedMotion ?? true) && reducedMotion && (
                             <p className="settings__status" role="status">
                                 系统已启用减少动态效果，当前动画已关闭
                             </p>
