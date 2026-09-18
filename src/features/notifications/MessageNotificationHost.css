@@ -15,6 +15,15 @@
     box-shadow: 0 4px 18px rgb(0 0 0 / 30%);
     font-size: 12px;
     overflow-wrap: anywhere;
+    animation: message-notification-enter var(--interface-transition-duration, 0ms) ease-out both;
+}
+
+/* 设置动画关闭时不保留消息位移动画。 */
+@keyframes message-notification-enter {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
 }
 
 /* 错误通知保留原有错误表面。 */

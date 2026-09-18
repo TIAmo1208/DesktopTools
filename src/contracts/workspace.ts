@@ -159,6 +159,7 @@ export type WorkspaceInteractionCommand =
 export type WorkspaceCommand =
     | { type: "set-folder-portal-appearance"; portalId: string; change: TileAppearanceChange }
     | { type: "create-folder-portal"; rootPath: string; bounds: WorkspaceRect }
+    | { type: "remap-folder-portal"; portalId: string; rootPath: string }
     | { type: "update-folder-portal-bounds"; portalId: string; bounds: WorkspaceRect }
     | { type: "remove-folder-portal"; portalId: string }
     | { type: "set-tile-appearance"; target: Extract<WorkspaceFocusTarget, { type: "fence" | "component" }>; change: TileAppearanceChange }

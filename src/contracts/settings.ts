@@ -53,6 +53,7 @@ export interface ApplicationPreferences {
     fenceGrid: GridPreferences; // 围栏内网格。
     clockEnabled: boolean; // 时间格子显隐。
     musicEnabled: boolean; // 音乐格子显隐。
+    musicShowSource: boolean; // 音乐格子显示媒体来源。
     clockHour12: boolean; // 十二小时制。
     clockShowSeconds: boolean; // 显示秒数。
     debugEnabled: boolean; // Debug 格子显隐。
@@ -102,6 +103,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     const features = {
         clockEnabled: true,
         musicEnabled: false,
+        musicShowSource: true,
         clockHour12: false,
         clockShowSeconds: true,
         debugEnabled: true,

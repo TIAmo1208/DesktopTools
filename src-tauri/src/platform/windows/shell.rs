@@ -36,7 +36,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::Shell::{ILFindLastID, SHBindToParent};
 use windows::Win32::UI::Shell::{KF_FLAG_DEFAULT, SHGetKnownFolderPath};
-use windows::Win32::UI::WindowsAndMessaging::{AppendMenuW, CREATESTRUCTW, CreatePopupMenu, CreateWindowExW, DI_NORMAL, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, GWLP_USERDATA, GetForegroundWindow, GetWindowLongPtrW, HICON, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOWNORMAL, SetForegroundWindow, SetWindowLongPtrW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE, WM_NULL, WNDCLASSW, WS_POPUP};
+use windows::Win32::UI::WindowsAndMessaging::{AppendMenuW, CREATESTRUCTW, CreatePopupMenu, CreateWindowExW, DI_NORMAL, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, EndMenu, GWLP_USERDATA, GetForegroundWindow, GetWindowLongPtrW, HICON, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOWNORMAL, SetForegroundWindow, SetWindowLongPtrW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_ACTIVATEAPP, WM_APP, WM_CANCELMODE, WM_CLOSE, WM_DESTROY, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE, WM_NULL, WNDCLASSW, WS_POPUP};
 use windows::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT, WM_QUIT};
 use windows::core::{BOOL, HRESULT, HSTRING, IUnknown, Interface, PCSTR, PCWSTR, Ref, implement, w};
 
@@ -444,6 +444,10 @@ pub struct ShellMenuOwner
 /// 将 Shell 菜单消息转发到当前 IContextMenu3/2。
 unsafe extern "system" fn shell_menu_owner_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT
 {
+    if (message == WM_ACTIVATEAPP && wparam.0 == 0) || message == WM_CANCELMODE
+    {
+        let _ = unsafe { EndMenu() }; // 原生菜单失去应用激活时主动结束跟踪。
+    }
     if message == WM_NCCREATE
     {
         // CreateWindowExW 提交的专用菜单状态。

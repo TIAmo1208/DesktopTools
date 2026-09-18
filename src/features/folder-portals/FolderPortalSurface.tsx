@@ -104,6 +104,7 @@ export const FolderPortalSurface = ({
             />
             <DesktopTileViewport collapsed={expansion.collapsed} scrollable={false} className="folder-portal-host__content">
                 <FolderPortal
+                    key={rootPath}
                     ref={contentRef}
                     rootPath={rootPath}
                     monitorId={currentMonitor?.id ?? portal.monitorId}

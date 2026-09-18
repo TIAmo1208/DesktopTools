@@ -57,7 +57,9 @@ export const MusicControl = ({
     const animations = useRef<Animation[]>([]); // 连续拖动时取消旧目标并从当前位置衔接。
     const { animationsEnabled, preferences } = usePreferences(); // 跨窗口共享的动画与字号偏好。
     const [loadedArtwork, setLoadedArtwork] = useState<string>(); // 仅成功加载的封面开启遮罩与白色文字。
+    const showSource = preferences?.musicShowSource !== false; // 用户关闭时只隐藏来源名称。
     const hasArtwork = Boolean(snapshot?.artworkUrl && loadedArtwork === snapshot.artworkUrl); // 缺失与加载失败保持主题背景。
+    const playbackLabel = snapshot?.playback === "playing" ? "正在播放" : snapshot?.playback === "paused" ? "已暂停" : ""; // 播放状态独立于来源显示。
     useLayoutEffect(() => {
         const element = root.current; // 宿主已分配空间的内容根节点。
         const information = metadata.current; // 内部信息固有尺寸。
@@ -180,10 +182,8 @@ export const MusicControl = ({
                 <div ref={metadata} className="music-control__metadata">
                     <strong title={snapshot?.title}>{empty ? "" : snapshot?.title}</strong>
                     <span title={snapshot?.artist}>{empty ? "" : snapshot?.artist}</span>
-                    <small title={snapshot?.source}>
-                        {empty
-                            ? ""
-                            : `${snapshot?.source ?? ""}${snapshot?.playback === "playing" ? " · 正在播放" : snapshot?.playback === "paused" ? " · 已暂停" : ""}`}
+                    <small title={showSource ? snapshot?.source : undefined}>
+                        {empty ? "" : [showSource ? snapshot?.source : "", playbackLabel].filter(Boolean).join(" · ")}
                     </small>
                 </div>
                 <div ref={controls} className="music-control__actions">

@@ -27,6 +27,104 @@
     margin-left: auto;
 }
 
+/* 功能说明在操作按钮左侧保持可收缩布局。 */
+.feature-settings__row-title small {
+    display: block;
+    margin-top: 4px;
+    color: var(--color-muted);
+    font-size: 12px;
+    font-weight: 400;
+}
+
+/* 新建映射的文本占据剩余空间，按钮贴齐设置行右侧。 */
+.feature-settings__folder-action .feature-settings__row-title {
+    flex: 1;
+    min-width: 0;
+}
+
+/* 新建映射按钮沿用应用日志的右侧操作位置。 */
+.feature-settings__folder-action .feature-settings__action {
+    margin-left: auto;
+}
+
+/* 映射创建命令沿用设置页原生按钮尺寸。 */
+.feature-settings__action {
+    min-height: 38px;
+    padding: 6px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text);
+    background: var(--color-subtle);
+    font: inherit;
+    cursor: pointer;
+}
+
+/* 映射表格按标题与路径两列稳定显示。 */
+.feature-settings__portal-table {
+    position: relative;
+    overflow: visible;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    background: var(--color-surface);
+}
+
+/* 仅在存在映射时显示功能与列表之间的分隔线。 */
+.feature-settings__portal-separator {
+    height: 1px;
+    margin: 8px 0;
+    background: var(--color-border);
+}
+
+/* 映射表头固定列语义。 */
+.feature-settings__portal-header,
+.feature-settings__portal-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    min-height: 44px;
+    align-items: center;
+}
+
+/* 映射表头保持弱化层级。 */
+.feature-settings__portal-header {
+    padding: 0 16px;
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-muted);
+    background: var(--color-subtle);
+    font-size: 12px;
+}
+
+/* 映射表行支持整行选择与右键操作。 */
+.feature-settings__portal-row {
+    position: relative;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--color-border);
+    cursor: default;
+}
+
+/* 最后一行不重复绘制底部分隔线。 */
+.feature-settings__portal-row:last-child {
+    border-bottom: 0;
+}
+
+/* 当前映射的选中表面。 */
+.feature-settings__portal-row.is-selected,
+.feature-settings__portal-row:hover {
+    background: var(--color-subtle);
+}
+
+/* 路径列保留单行高度并提供完整路径提示。 */
+.feature-settings__portal-row > span:last-of-type {
+    overflow: hidden;
+    color: var(--color-muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 映射右键菜单贴近目标行，不改变表格尺寸。 */
+.feature-settings__portal-menu {
+    z-index: 21000;
+}
+
 /* 二级菜单行建立整行点击区域的定位边界。 */
 .feature-settings__row--link {
     position: relative;

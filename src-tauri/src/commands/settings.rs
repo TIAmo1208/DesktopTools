@@ -18,6 +18,24 @@ pub async fn choose_config_directory(window: tauri::WebviewWindow) -> Result<Opt
     tauri::async_runtime::spawn_blocking(move || receiver.recv().map_err(|error| error.to_string())).await.map_err(|error| error.to_string())??
 }
 
+/// 在设置窗口选择文件夹映射的绑定目录。
+#[tauri::command]
+pub async fn choose_folder_portal_directory(window: tauri::WebviewWindow) -> Result<Option<String>, String>
+{
+    if window.label() != "main"
+    {
+        return Err("目录选择仅适用于设置窗口".to_string());
+    }
+    let owner = window.hwnd().map_err(|error| error.to_string())?.0 as isize;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    window
+        .run_on_main_thread(move || {
+            let _ = sender.send(settings::choose_directory(owner, "选择文件夹映射目录"));
+        })
+        .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || receiver.recv().map_err(|error| error.to_string())).await.map_err(|error| error.to_string())??
+}
+
 use crate::{
     app::settings::SettingsState,
     contracts::settings::{ApplicationPreferences, ApplicationTheme, SettingsSnapshot},

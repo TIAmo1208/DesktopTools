@@ -498,6 +498,12 @@ pub enum WorkspaceCommand
     {
         root_path: String, bounds: WorkspaceRect
     },
+    /// 更新指定映射的绑定目录。
+    #[serde(rename = "remap-folder-portal")]
+    RemapFolderPortal
+    {
+        portal_id: String, root_path: String
+    },
     /// 提交门户的移动和缩放结果。
     #[serde(rename = "update-folder-portal-bounds")]
     UpdateFolderPortalBounds

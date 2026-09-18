@@ -1393,6 +1393,16 @@ impl WorkspaceSnapshot
                 self.folder_portals.push(crate::contracts::FolderPortalInstance { id: format!("portal-{sequence}"), root_path, monitor_id: monitor_id.unwrap_or_default().to_string(), bounds, z_index: self.folder_portals.len() as u32, appearance: Default::default() });
                 Ok("创建文件夹门户")
             }
+            WorkspaceCommand::RemapFolderPortal { portal_id, root_path } =>
+            {
+                if !Path::new(&root_path).is_absolute() || !Path::new(&root_path).is_dir()
+                {
+                    return Err(WorkspaceError::invalid_command("绑定路径必须是可访问的绝对目录"));
+                }
+                let portal = self.folder_portals.iter_mut().find(|portal| portal.id == portal_id).ok_or_else(|| WorkspaceError::invalid_command("门户不存在"))?;
+                portal.root_path = root_path;
+                Ok("重新映射文件夹门户")
+            }
             WorkspaceCommand::UpdateFolderPortalBounds { portal_id, bounds } =>
             {
                 validate_component_rect(bounds)?;

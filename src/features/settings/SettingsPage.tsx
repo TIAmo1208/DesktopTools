@@ -3,8 +3,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import applicationIcon from "../../../resources/application.png";
 import { getDesktopHostSnapshot } from "../../bridge/desktopHost";
 import { getSettings, openLogs, savePreferences, setAutostart, settingsErrorMessage } from "../../bridge/settings";
+import { applyWorkspaceCommand, getWorkspaceSnapshot, listenWorkspaceSnapshots } from "../../bridge/workspace";
 import type { DesktopHostSnapshot, TakeoverPhase } from "../../contracts/desktopHost";
 import type { ApplicationPreferences, SettingsSnapshot } from "../../contracts/settings";
+import type { WorkspaceCommand, WorkspaceSnapshot } from "../../contracts/workspace";
 import { usePreferences } from "./PreferencesProvider";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { GridSettings } from "./GridSettings";
@@ -12,6 +14,8 @@ import { FeatureSettings } from "./FeatureSettings";
 import { SettingsSwitch } from "./SettingsSwitch";
 import { SettingsInfo } from "./SettingsInfo";
 import { invokeRuntime } from "../../bridge/runtime";
+import { MessageNotificationHost } from "../notifications/MessageNotificationHost";
+import { publishMessage } from "../notifications/messageNotification";
 import "./SettingsPage.css";
 
 // 设置页使用 Windows 自带的 Fluent 图标字体，不新增图标依赖。
@@ -42,8 +46,7 @@ export const SettingsPage = () => {
     const [gridDetail, setGridDetail] = useState<"desktopGrid" | "fenceGrid">(); // 外观下当前打开的网格二级菜单。
     const [snapshot, setSnapshot] = useState<SettingsSnapshot>(); // Windows 启动状态与构建版本。
     const [host, setHost] = useState<DesktopHostSnapshot>(); // 最近读取的实际宿主状态。
-    const [failure, setFailure] = useState<string>(); // 当前命令的用户可见错误。
-    const [hostFailure, setHostFailure] = useState<string>(); // 不阻塞其他设置的诊断读取错误。
+    const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(); // 当前工作区映射快照。
     const [busy, setBusy] = useState(false); // 配置变更的控件禁用状态。
     const [directoryDraft, setDirectoryDraft] = useState<string>(); // 尚未保存的配置目录输入。
     const pending = useRef(false); // 阻止同一事件循环中的重复命令。
@@ -73,19 +76,34 @@ export const SettingsPage = () => {
             if (revision !== requestRevision.current) return;
             setSnapshot(next);
             onPreferences(next.preferences);
-            setFailure(undefined);
         } catch (error: unknown) {
-            if (revision === requestRevision.current) setFailure(settingsErrorMessage(error));
+            if (revision === requestRevision.current) publishMessage({ type: "error", content: settingsErrorMessage(error), source: "settings" });
         }
         try {
             const next = await getDesktopHostSnapshot(); // 后端当前桌面运行状态。
             if (revision !== requestRevision.current) return;
             setHost(next);
-            setHostFailure(undefined);
         } catch (error: unknown) {
-            if (revision === requestRevision.current) setHostFailure(settingsErrorMessage(error));
+            if (revision === requestRevision.current) publishMessage({ type: "error", content: settingsErrorMessage(error), source: "settings-host" });
         }
     }, [onPreferences]);
+
+    useEffect(() => {
+        let active = true;
+        const handleSnapshot = (next: WorkspaceSnapshot) => {
+            if (active) setWorkspace(next);
+        };
+        const handleFailure = (error: unknown) => {
+            if (active) publishMessage({ type: "error", content: settingsErrorMessage(error), source: "settings-workspace" });
+        };
+        const subscription = listenWorkspaceSnapshots(handleSnapshot, handleFailure);
+        void subscription.catch(handleFailure);
+        void getWorkspaceSnapshot().then(handleSnapshot).catch(handleFailure);
+        return () => {
+            active = false;
+            void subscription.then((unlisten) => unlisten()).catch(() => undefined);
+        };
+    }, []);
 
     useEffect(() => {
         void handleRefresh();
@@ -100,17 +118,20 @@ export const SettingsPage = () => {
         };
     }, [handleRefresh]);
 
+    useEffect(() => {
+        if (preferencesFailure) publishMessage({ type: "error", content: preferencesFailure, source: "settings-preferences" });
+    }, [preferencesFailure]);
+
     /** 串行执行设置命令，只在后端成功后更新控件。 */
     const handleCommand = async (command: () => Promise<void>) => {
         if (pending.current) return;
         pending.current = true;
         requestRevision.current++;
         setBusy(true);
-        setFailure(undefined);
         try {
             await command();
         } catch (error: unknown) {
-            setFailure(settingsErrorMessage(error));
+            publishMessage({ type: "error", content: settingsErrorMessage(error), source: "settings-command" });
         } finally {
             pending.current = false;
             setBusy(false);
@@ -125,6 +146,41 @@ export const SettingsPage = () => {
         });
     };
 
+    const handleWorkspaceCommand = async (command: WorkspaceCommand) => {
+        const monitorId = host?.hosts[0]?.monitor.id;
+        if (!monitorId) {
+            publishMessage({ type: "error", content: "桌面宿主尚未就绪", source: "settings-workspace" });
+            return;
+        }
+        try {
+            await applyWorkspaceCommand(monitorId, command);
+            publishMessage({
+                type: "success",
+                content:
+                    command.type === "remove-folder-portal"
+                        ? "文件夹映射已移除"
+                        : command.type === "remap-folder-portal"
+                          ? "文件夹映射路径已更新"
+                          : "文件夹映射已创建",
+                source: "settings-workspace",
+            });
+        } catch (error: unknown) {
+            publishMessage({ type: "error", content: settingsErrorMessage(error), source: "settings-workspace" });
+        }
+    };
+
+    const chooseFolderPortalDirectory = async () => {
+        try {
+            const selected = await invokeRuntime<unknown>("choose_folder_portal_directory");
+            if (selected === null) return null;
+            if (typeof selected !== "string" || !selected) throw new Error("选择目录返回数据无效");
+            return selected;
+        } catch (error: unknown) {
+            publishMessage({ type: "error", content: settingsErrorMessage(error), source: "settings-folder-chooser" });
+            return null;
+        }
+    };
+
     return (
         <div className={`settings${collapsed ? " settings--collapsed" : ""}`}>
             <header
@@ -132,7 +188,7 @@ export const SettingsPage = () => {
                 onMouseDown={(event) => {
                     if (event.button === 0 && event.target instanceof Element && !event.target.closest("button"))
                         void invokeRuntime("control_settings_window", { action: event.detail === 2 ? "maximize" : "drag" }).catch((error) =>
-                            setFailure(settingsErrorMessage(error)),
+                            publishMessage({ type: "error", content: settingsErrorMessage(error), source: "settings-window" }),
                         );
                 }}
             >
@@ -151,7 +207,11 @@ export const SettingsPage = () => {
                             type="button"
                             title={label}
                             aria-label={label}
-                            onClick={() => void invokeRuntime("control_settings_window", { action }).catch((error) => setFailure(settingsErrorMessage(error)))}
+                            onClick={() =>
+                                void invokeRuntime("control_settings_window", { action }).catch((error) =>
+                                    publishMessage({ type: "error", content: settingsErrorMessage(error), source: "settings-window" }),
+                                )
+                            }
                         >
                             {icon}
                         </button>
@@ -201,15 +261,7 @@ export const SettingsPage = () => {
                     </button>
                 )}
                 <h1 id="settings-title">{page === "appearance" && gridDetail ? (gridDetail === "desktopGrid" ? "桌面网格" : "围栏内网格") : title}</h1>
-                {(failure || preferencesFailure) && (
-                    <div className="settings__error" role="alert">
-                        <span>{failure ?? preferencesFailure}</span>
-                        <button type="button" className="settings__button" disabled={busy} onClick={() => void handleRefresh()}>
-                            重试
-                        </button>
-                    </div>
-                )}
-                {!snapshot && !failure && (
+                {!snapshot && (
                     <p className="settings__status" role="status">
                         正在读取设置…
                     </p>
@@ -327,7 +379,15 @@ export const SettingsPage = () => {
                     <GridSettings key={gridDetail} kind={gridDetail} preferences={preferences} disabled={busy} onPreferences={handlePreferences} />
                 )}
                 {page === "features" && (
-                    <FeatureSettings preferences={preferences} disabled={busy} debugBuild={snapshot?.debugBuild ?? false} onPreferences={handlePreferences} />
+                    <FeatureSettings
+                        preferences={preferences}
+                        disabled={busy}
+                        debugBuild={snapshot?.debugBuild ?? false}
+                        onPreferences={handlePreferences}
+                        workspace={workspace}
+                        onWorkspaceCommand={handleWorkspaceCommand}
+                        onChooseFolder={chooseFolderPortalDirectory}
+                    />
                 )}
                 {page === "performance" && (
                     <div className="settings__rows">
@@ -423,11 +483,6 @@ export const SettingsPage = () => {
                                 打开目录
                             </button>
                         </div>
-                        {hostFailure && (
-                            <p className="settings__error" role="alert">
-                                {hostFailure}
-                            </p>
-                        )}
                         <button type="button" className="settings__button settings__refresh" disabled={busy} onClick={() => void handleRefresh()}>
                             <span className="settings__icon" aria-hidden="true">
                                 {"\uE72C"}
@@ -449,6 +504,7 @@ export const SettingsPage = () => {
                     </div>
                 )}
             </main>
+            <MessageNotificationHost />
         </div>
     );
 };

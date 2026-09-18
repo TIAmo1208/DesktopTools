@@ -70,6 +70,8 @@ fn folder_portals_persist_independent_duplicate_paths()
     assert_eq!(snapshot.folder_portals[0].bounds, moved);
     assert!(snapshot.folder_portals[0].appearance.collapsed);
     assert_eq!(snapshot.folder_portals[1].bounds, bounds);
+    let remapped = restored.apply(WorkspaceCommand::RemapFolderPortal { portal_id: snapshot.folder_portals[0].id.clone(), root_path: std::env::current_dir().unwrap().to_string_lossy().into_owned() }).unwrap();
+    assert_eq!(remapped.folder_portals[0].root_path, std::env::current_dir().unwrap().to_string_lossy());
     let removed = restored.apply(WorkspaceCommand::RemoveFolderPortal { portal_id: snapshot.folder_portals[0].id.clone() }).unwrap();
     assert_eq!(removed.folder_portals.len(), 1);
     assert!(std::path::Path::new(&removed.folder_portals[0].root_path).is_dir());

@@ -78,6 +78,7 @@ pub struct ApplicationPreferences
     pub fence_grid: GridPreferences,           // 围栏平铺格子尺寸与间距。
     pub clock_enabled: bool,                   // 本地时间格子显隐，隐藏不删除布局。
     pub music_enabled: bool,                   // 音乐控制显隐，默认关闭且保留布局。
+    pub music_show_source: bool,               // 音乐控制显示媒体来源。
     pub clock_hour12: bool,                    // 本地时间使用十二小时制。
     pub clock_show_seconds: bool,              // 本地时间显示秒数。
     pub debug_enabled: bool,                   // Debug 构建中的测试格子显隐。
@@ -94,7 +95,7 @@ pub struct ApplicationPreferences
 impl Default for ApplicationPreferences
 {
     /// 创建首次启动的应用偏好，音乐默认关闭。
-    fn default() -> Self { Self { theme: ApplicationTheme::System, desktop_appearance: DesktopAppearance::default(), config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(), double_click_to_open: true, accent_color: "#2563eb".to_string(), use_windows_accent_color: false, corner_radius: 6, font_family: "Segoe UI Variable".to_string(), font_size: 13, desktop_grid: GridPreferences::default(), fence_grid: GridPreferences { column_gap: 6, ..Default::default() }, clock_enabled: true, music_enabled: false, clock_hour12: false, clock_show_seconds: true, debug_enabled: true, debug_show_details: true, component_snap: true, follow_system_reduced_motion: true, interface_animations: true, folder_portal_enabled: true, pause_on_fullscreen: false, pause_on_focus: false } }
+    fn default() -> Self { Self { theme: ApplicationTheme::System, desktop_appearance: DesktopAppearance::default(), config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(), double_click_to_open: true, accent_color: "#2563eb".to_string(), use_windows_accent_color: false, corner_radius: 6, font_family: "Segoe UI Variable".to_string(), font_size: 13, desktop_grid: GridPreferences::default(), fence_grid: GridPreferences { column_gap: 6, ..Default::default() }, clock_enabled: true, music_enabled: false, music_show_source: true, clock_hour12: false, clock_show_seconds: true, debug_enabled: true, debug_show_details: true, component_snap: true, follow_system_reduced_motion: true, interface_animations: true, folder_portal_enabled: true, pause_on_fullscreen: false, pause_on_focus: false } }
 }
 
 /// 校验配置文件和命令输入共用的外观边界。
