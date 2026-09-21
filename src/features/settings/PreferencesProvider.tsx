@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 
 import { getPreferences, getWindowsAccentColor, listenPreferences, listenWindowsAccentColor, settingsErrorMessage } from "../../bridge/settings";
 import { resolveAnimationsEnabled, type ApplicationPreferences } from "../../contracts/settings";
+import { invokeRuntime } from "../../bridge/runtime";
 
 /** 当前窗口内共享的偏好加载状态。 */
 interface PreferencesContextValue {
@@ -104,11 +105,17 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
             document.documentElement.dataset.theme = theme === "system" ? (systemTheme.matches ? "dark" : "light") : theme;
             const desktopTheme = preferences?.desktopAppearance.theme ?? "system"; // 桌面独立解析系统深浅模式。
             document.documentElement.dataset.desktopTheme = desktopTheme === "system" ? (systemTheme.matches ? "dark" : "light") : desktopTheme;
+            if (preferences)
+                void invokeRuntime("sync_message_appearance", {
+                    preferences,
+                    dark: document.documentElement.dataset.theme === "dark",
+                    animationsEnabled,
+                }).catch((error: unknown) => setFailure(settingsErrorMessage(error))); // 原生消息只消费程序已经解析的界面外观，不另行监听系统颜色。
         };
         handleTheme();
         systemTheme.addEventListener("change", handleTheme);
         return () => systemTheme.removeEventListener("change", handleTheme);
-    }, [preferences?.theme, preferences?.desktopAppearance.theme]);
+    }, [preferences, animationsEnabled]);
 
     useEffect(() => {
         if (!preferences) return;

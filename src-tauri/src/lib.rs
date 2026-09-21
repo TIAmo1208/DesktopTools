@@ -3,6 +3,7 @@ mod commands;
 mod component_runtime;
 pub mod contracts;
 mod host;
+mod notifications;
 mod persistence;
 mod platform;
 pub mod recovery;
@@ -12,10 +13,12 @@ pub mod tools;
 mod workspace;
 
 use app::ApplicationState;
-use commands::{apply_workspace_command, apply_workspace_interaction, begin_desktop_host_input_drag, delete_desktop_items, end_desktop_host_input_drag, execute_music_action, exit_desktop_tools, get_application_snapshot, get_component_runtime_snapshot, get_current_music_session, get_desktop_host_snapshot, get_desktop_item_snapshot, get_workspace_snapshot, inspect_workspace_backup, invoke_component_capability, list_workspace_auto_snapshots, open_desktop_items, paste_desktop_items, publish_desktop_host_readiness, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, redo_workspace, rename_desktop_item, restore_workspace_backup, set_application_status, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag, undo_workspace, update_desktop_host_hit_map, write_workspace_backup};
+use commands::sync_message_appearance;
+use commands::{apply_workspace_command, apply_workspace_interaction, begin_desktop_host_input_drag, delete_desktop_items, end_desktop_host_input_drag, execute_music_action, exit_desktop_tools, get_application_snapshot, get_component_runtime_snapshot, get_current_music_session, get_desktop_host_snapshot, get_desktop_item_snapshot, get_workspace_snapshot, inspect_workspace_backup, invoke_component_capability, list_workspace_auto_snapshots, open_desktop_items, paste_desktop_items, publish_desktop_host_readiness, publish_message_notification, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, redo_workspace, rename_desktop_item, restore_workspace_backup, set_application_status, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag, undo_workspace, update_desktop_host_hit_map, write_workspace_backup};
 use commands::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
 use component_runtime::ComponentRuntimeState;
 use host::DesktopHostRuntime;
+use notifications::ToastManager;
 use shell::DesktopItemState;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -110,6 +113,8 @@ pub fn run()
             record_desktop_host_input_probe,
             record_desktop_host_renderer_heartbeat,
             set_application_status,
+            publish_message_notification,
+            sync_message_appearance,
             update_desktop_host_hit_map,
         ])
         .setup(move |app| {
@@ -117,6 +122,7 @@ pub fn run()
             let settings_path = config_directory.join("settings.json"); // 当前用户的正式设置文件。
             app.manage(crate::app::settings::SettingsState::load(settings_path)?);
             app.manage(crate::platform::windows::settings::WindowsAccentMonitor::install(app.handle().clone())?);
+            app.manage(ToastManager::install(app.state::<crate::app::settings::SettingsState>().preferences()?)?);
             crate::app::tray::install(app.handle())?;
             // 当前 Windows 用户独占的正式工作区快照路径。
             let workspace_path = config_directory.join("workspace-layout.json");
@@ -174,6 +180,10 @@ pub fn run()
             {
                 runtime.cleanup();
             }
+            if let Some(toast) = app.try_state::<Arc<ToastManager>>()
+            {
+                toast.inner().cleanup();
+            }
         }
         RunEvent::Exit =>
         {
@@ -185,6 +195,10 @@ pub fn run()
             if let Some(runtime) = app.try_state::<Arc<DesktopHostRuntime>>()
             {
                 runtime.cleanup();
+            }
+            if let Some(toast) = app.try_state::<Arc<ToastManager>>()
+            {
+                toast.inner().cleanup();
             }
         }
         _ =>

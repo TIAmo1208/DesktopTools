@@ -14,7 +14,7 @@ fn drop_fence_uses_confirmed_geometry_and_current_membership()
     assert_eq!(super::drop_fence_at(&point, &regions, &snapshot).as_deref(), Some("fence"));
     assert_eq!(super::drop_fence_at(&WorkspacePoint { left: 110.0, top: 30.0 }, &regions, &snapshot), None);
     regions.push(HitRegion { id: "member".into(), kind: "desktop-item".into(), priority: 2, ..regions[0].clone() });
-    assert_eq!(super::drop_before_item_at(&point, &regions, &snapshot.fences[0], &[]).as_deref(), Some("member"));
+    assert_eq!(super::drop_before_item_at(&point, &regions, &snapshot.fences[0], &[]).flatten().as_deref(), Some("member"));
     assert_eq!(super::drop_before_item_at(&point, &regions, &snapshot.fences[0], &["member".into()]), None);
     assert_eq!(super::drop_fence_at(&point, &regions, &snapshot).as_deref(), Some("fence"));
     snapshot.fences[0].members.clear();
@@ -24,6 +24,19 @@ fn drop_fence_uses_confirmed_geometry_and_current_membership()
     regions.pop();
     snapshot.fences.clear();
     assert_eq!(super::drop_fence_at(&point, &regions, &snapshot), None);
+}
+
+/// 同围栏无预览保持原序，显式末尾插入与跨来源追加仍可提交。
+#[test]
+fn same_fence_without_insertion_keeps_order_but_explicit_end_is_valid()
+{
+    let snapshot: WorkspaceSnapshot = serde_json::from_value(serde_json::json!({"schemaVersion":1,"revision":0,"unclassifiedItems":[],"fences":[{"id":"fence","title":"","bounds":{"left":0,"top":0,"width":200,"height":200},"members":["source","last"],"layoutMode":"tile","scrollTop":0,"collapsed":false,"lastExpandedHeight":200,"zIndex":1}]})).unwrap(); // 手动排序的两项围栏。
+    let input = |x: f64| DropInput { monitor_id: "screen".into(), pointer: WorkspacePoint { left: x, top: 50.0 }, regions: vec![HitRegion { id: "fence".into(), kind: "fence".into(), left: 0.0, top: 0.0, width: 200.0, height: 200.0, priority: 1, target_path: None }, HitRegion { id: "last".into(), kind: "desktop-item".into(), left: 20.0, top: 20.0, width: 80.0, height: 80.0, priority: 2, target_path: None }], scrolls: Vec::new() }; // 目标项目中心与左右插入区。
+    assert!(target_at(input(60.0), &snapshot, &["source".into()]).unwrap().is_none());
+    assert!(target_at(input(150.0), &snapshot, &["source".into()]).unwrap().is_none());
+    assert_eq!(target_at(input(25.0), &snapshot, &["source".into()]).unwrap().unwrap().before_item_id.as_deref(), Some("last"));
+    assert!(target_at(input(95.0), &snapshot, &["source".into()]).unwrap().unwrap().before_item_id.is_none());
+    assert!(target_at(input(150.0), &snapshot, &["external".into()]).unwrap().is_some());
 }
 
 /// 门户命中使用已发布的当前目录，不能把普通组件当作目录目标。

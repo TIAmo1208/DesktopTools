@@ -1,28 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dismissMessage, getMessages, publishMessage, subscribeMessages } from "./messageNotification.ts";
+import { publishMessage } from "./messageNotification.ts";
 
-test("消息挂载前保留、来源隔离去重、按顺序关闭及订阅释放", () => {
-    const message = { type: "error" as const, content: "连接失败", source: "music", dedupeKey: "connection" }; // 当前故障消息。
-    publishMessage(message);
-    message.content = "不应影响快照";
-    assert.equal(getMessages()[0].content, "连接失败");
-    let updates = 0; // 当前有效订阅收到的更新数。
-    const unsubscribe = subscribeMessages(() => updates++); // 当前测试订阅的释放入口。
-    publishMessage(message);
-    publishMessage({ ...message, source: "workspace" });
-    assert.equal(getMessages().length, 2);
-    assert.equal(updates, 1);
-    const first = getMessages()[0]; // 关闭时绑定的具体消息，防止误删下一条。
-    dismissMessage(first);
-    dismissMessage(first);
-    assert.equal(getMessages()[0].source, "workspace");
-    unsubscribe();
-    const count = updates; // 释放订阅后的通知计数。
-    publishMessage({ ...message, content: " " });
-    assert.equal(getMessages().length, 1);
-    publishMessage(message);
-    assert.equal(updates, count);
-    assert.equal(getMessages().length, 2);
-    for (const item of getMessages()) dismissMessage(item);
+test("消息提交不在调用方同步抛错", () => {
+    assert.doesNotThrow(() => publishMessage({ type: "error", content: "连接失败", source: "music" }));
+});
+
+test("消息发送携带毫秒期限，非法期限不进入原生队列", async () => {
+    const sent: unknown[] = []; // 捕获真正交给运行时桥的载荷。
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { __DESKTOP_TOOLS_NATIVE__: { invoke: async (_command: string, payload: unknown) => { sent.push(payload); } } } });
+    try {
+        publishMessage({ type: "info", content: "默认", source: "test" });
+        publishMessage({ type: "info", content: "短消息", source: "test", durationMs: 1000 });
+        for (const durationMs of [0, -1, 1.5, NaN, Infinity, 0x100000000]) publishMessage({ type: "info", content: "非法", source: "test", durationMs });
+        await Promise.resolve();
+        assert.deepEqual(sent, [
+            { message: { type: "info", content: "默认", source: "test", durationMs: 4000 } },
+            { message: { type: "info", content: "短消息", source: "test", durationMs: 1000 } },
+        ]);
+    } finally {
+        Reflect.deleteProperty(globalThis, "window");
+    }
 });

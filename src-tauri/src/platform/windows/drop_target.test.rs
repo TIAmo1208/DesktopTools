@@ -16,6 +16,7 @@ fn preview_requires_live_session_and_matching_view()
     assert!(confirmed_preview(&preview.session, 3, 7, &monitor, &point).is_none());
     assert!(confirmed_preview(&preview.session, 2, 8, &monitor, &point).is_none());
     assert!(confirmed_preview(&preview.session, 2, 7, &monitor, &POINTL { x: -968, y: 60 }).is_none());
+    PREVIEW_CHECKS.with(|checks| assert_eq!(checks.borrow().get(&preview.session).unwrap(), &[1, 0, 1, 1, 0, 1, 0])); // 三类失败须能独立归因，不能全记为旧帧。
     let mut older = preview.clone(); // 迟到帧不能覆盖已确认的新序号。
     older.sequence = 1;
     publish_preview(older).unwrap();

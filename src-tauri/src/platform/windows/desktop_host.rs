@@ -467,10 +467,16 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                             let Some(geometry) = geometry
                             else
                             {
+                                crate::log_warn!("拖放：内部释放拒绝，缺少匹配渲染确认，显示器={}，位置=({},{})，布局版本={}，原生预览={}", monitor.id, point.x, point.y, snapshot.revision, preview.borrow().as_ref().map(|payload| serde_json::json!({"session": payload["session"], "sequence": payload["sequence"], "revision": payload["revision"], "pointer": payload["pointer"]})).unwrap_or_default());
+                                if let Some(session) = preview.borrow().as_ref().and_then(|payload| payload["session"].as_str())
+                                {
+                                    super::drop_target::trace_rejected_preview(session);
+                                }
                                 return Ok(DROPEFFECT_NONE);
                             };
                             let source_positions = preview.borrow().as_ref().and_then(|payload| payload["visuals"].as_array()).map(|visuals| visuals.iter().filter_map(|visual| Some(crate::contracts::WorkspacePoint { left: visual["bounds"]["left"].as_f64()?, top: visual["bounds"]["top"].as_f64()? })).collect::<Vec<_>>()).unwrap_or_default(); // Enter 已冻结的真实来源排列，不使用旧桌面占位。
                             let committed = crate::app::desktop_drop::commit_internal(&app, snapshot, crate::app::desktop_drop::DropInput { monitor_id: monitor.id.clone(), pointer: crate::contracts::WorkspacePoint { left: (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, top: (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor }, regions: geometry.regions, scrolls: geometry.fence_scrolls }, session.item_ids.clone(), &session.pointer_offset, keys.0 & windows::Win32::System::Ole::MK_ALT != 0, &source_positions).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 应用层只提交布局，原生会话保留独立完成标记。
+                            crate::log_info!("拖放：内部释放布局结果，显示器={}，已提交={}", monitor.id, committed);
                             if committed
                             {
                                 session.layout_committed.store(true, std::sync::atomic::Ordering::Release);

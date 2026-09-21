@@ -62,7 +62,7 @@ impl Default for DesktopAppearance
 
 /// 原子保存的用户界面与项目打开偏好。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct ApplicationPreferences
 {
     pub config_directory: String,              // 下次启动使用的配置目录，支持 %APPDATA% 前缀。

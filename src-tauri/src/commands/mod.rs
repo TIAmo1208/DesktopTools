@@ -5,6 +5,7 @@ mod desktop_item;
 pub mod folder_portal;
 pub use desktop_item::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
 pub mod music;
+mod notifications;
 pub mod settings;
 mod workspace;
 mod workspace_menu;
@@ -76,6 +77,7 @@ pub use component::{get_component_runtime_snapshot, invoke_component_capability}
 pub use desktop_host::{begin_desktop_host_input_drag, end_desktop_host_input_drag, exit_desktop_tools, get_desktop_host_snapshot, publish_desktop_host_readiness, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, update_desktop_host_hit_map};
 pub(crate) use desktop_item::refresh_desktop_item_snapshot;
 pub use desktop_item::{delete_desktop_items, get_desktop_item_snapshot, open_desktop_items, paste_desktop_items, rename_desktop_item, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag};
+pub use notifications::{publish_message_notification, sync_message_appearance};
 pub(crate) use workspace::reconcile_workspace_environment;
 pub use workspace::{apply_workspace_command, apply_workspace_interaction, get_workspace_snapshot, inspect_workspace_backup, list_workspace_auto_snapshots, redo_workspace, restore_workspace_backup, undo_workspace, write_workspace_backup};
 
@@ -175,6 +177,19 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let _ = app.emit("desktop-refresh-policy-changed", ());
             crate::log_info!("桌面刷新：显示器={}，状态={}", monitor_id, if paused { "已暂停" } else { "已恢复" });
             serialize_result(())
+        }
+        "sync_message_appearance" =>
+        {
+            let preferences = command_argument(&arguments, "preferences", "消息外观偏好无效").map_err(serialize_error)?; // 页面已解析的当前程序偏好。
+            let dark = command_argument(&arguments, "dark", "消息深浅色无效").map_err(serialize_error)?;
+            let animations = command_argument(&arguments, "animationsEnabled", "消息动画状态无效").map_err(serialize_error)?;
+            app.state::<std::sync::Arc<crate::notifications::ToastManager>>().sync_appearance(preferences, dark, animations);
+            serialize_result(())
+        }
+        "publish_message_notification" =>
+        {
+            let message: crate::notifications::ToastRequest = command_argument(&arguments, "message", "消息参数无效").map_err(serialize_error)?;
+            app.state::<std::sync::Arc<crate::notifications::ToastManager>>().inner().publish(app, message).map_err(serialize_error).and_then(serialize_result)
         }
         "open_folder_portal_path" =>
         {

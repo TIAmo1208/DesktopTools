@@ -14,6 +14,7 @@ export const renderCrossMonitorDragPreview = (
     snapTargets: WorkspaceRect[] = [], // 目标适配器提供本帧真实几何，呈现与释放共用吸附算法。
 ) => {
     const nodes: HTMLElement[] = []; // 当前帧拖动内容节点。
+    if (drag.source === "ole") return () => {}; // OLE 图像由 Windows 持有，页面落位提示由目标适配器保留。
     for (const visual of drag.visuals) {
         if (![visual.bounds?.left, visual.bounds?.top, visual.bounds?.width, visual.bounds?.height].every(Number.isFinite)) continue;
         const item = items?.items.find((item) => item.stableReference === visual.itemId); // 权威系统图像与名称。

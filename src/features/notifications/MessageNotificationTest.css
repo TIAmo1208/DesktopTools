@@ -1,0 +1,30 @@
+/* Debug 格子内的消息测试命令，沿用桌面主题并随内容滚动。 */
+.message-notification-test {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+    padding: 1px;
+}
+
+/* 测试命令沿用 Debug 按钮尺寸与桌面颜色。 */
+.message-notification-test button {
+    min-height: 32px;
+    padding: 4px 10px;
+    border: 1px solid var(--fence-border);
+    border-radius: 4px;
+    font: inherit;
+    color: var(--fence-text);
+    background: var(--fence-surface);
+}
+
+/* 悬停状态不改变布局。 */
+.message-notification-test button:hover {
+    background: color-mix(in srgb, var(--color-accent) 25%, var(--fence-surface));
+}
+
+/* 键盘命令保持可见焦点。 */
+.message-notification-test button:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 1px;
+}

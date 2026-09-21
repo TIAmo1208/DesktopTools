@@ -138,7 +138,8 @@ impl ComponentRuntimeState
     /// 暂停策略变化唤醒计时源重新判断活动消费者。
     pub(crate) fn wake_time_source()
     {
-        let _consumers = TIME_CONSUMERS.0.lock().unwrap_or_else(|error| error.into_inner()); // 与条件等待配对，防止丢失唤醒。
+        let consumers_guard = TIME_CONSUMERS.0.lock().unwrap_or_else(|error| error.into_inner()); // 与条件等待配对，防止丢失唤醒。
+        std::hint::black_box(&consumers_guard); // 锁必须保持到唤醒通知完成。
         TIME_CONSUMERS.1.notify_one();
     }
 

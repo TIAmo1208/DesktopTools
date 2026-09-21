@@ -1,5 +1,6 @@
 /* 设置窗口根布局，仅负责侧栏与内容区的编排。 */
 .settings {
+    user-select: none;
     display: grid;
     grid-template-columns: 224px minmax(0, 1fr);
     grid-template-rows: 38px minmax(0, 1fr);
@@ -10,6 +11,13 @@
     font-size: var(--interface-font-size);
     letter-spacing: 0;
     transition: grid-template-columns var(--interface-transition-duration, 0ms) ease-out;
+}
+
+/* 设置输入值保留编辑、选择与复制能力。 */
+.settings input,
+.settings textarea,
+.settings [contenteditable="true"] {
+    user-select: text;
 }
 
 /* 固定宽度的设置导航区域。 */

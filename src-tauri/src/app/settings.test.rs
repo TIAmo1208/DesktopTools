@@ -109,3 +109,24 @@ fn preferences_are_persisted_and_validated()
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir(directory).unwrap();
 }
+
+/// 已删除的顶层偏好不阻塞启动，并在下一次保存时自然移除。
+#[test]
+fn retired_preference_fields_do_not_block_startup()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-retired-settings-{}", std::process::id())); // 本测试独占目录。
+    let path = directory.join("settings.json"); // 包含已删除字段的旧设置文件。
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(&path, r#"{"theme":"light","musicEnabled":true,"musicShowArtwork":true}"#).unwrap();
+
+    let state = SettingsState::load(path.clone()).unwrap(); // 旧字段被忽略，当前字段继续恢复。
+    let preferences = state.preferences().unwrap();
+    assert_eq!(preferences.theme, ApplicationTheme::Light);
+    assert!(preferences.music_enabled);
+    state.save(preferences).unwrap();
+
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(saved.get("musicShowArtwork").is_none());
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+}

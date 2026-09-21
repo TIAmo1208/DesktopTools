@@ -38,7 +38,13 @@ fn target_at(input: DropInput, snapshot: &WorkspaceSnapshot, dragged: &[String])
     {
         return Ok(None);
     }
-    let before_item_id = fence_id.as_ref().and_then(|id| snapshot.fences.iter().find(|fence| &fence.id == id)).and_then(|fence| drop_before_item_at(&input.pointer, &input.regions, fence, dragged)); // 手动排序的稳定后继。
+    let fence = fence_id.as_ref().and_then(|id| snapshot.fences.iter().find(|fence| &fence.id == id)); // 目标围栏的当前成员顺序。
+    let fence_insertion = fence.and_then(|fence| drop_before_item_at(&input.pointer, &input.regions, fence, dragged)); // 外层表示有插入意图，内层 None 表示明确插到末尾。
+    if fence_insertion.is_none() && !dragged.is_empty() && fence.is_some_and(|fence| dragged.iter().all(|id| fence.members.contains(id)))
+    {
+        return Ok(None);
+    } // 原围栏内无插入预览时保持原顺序。
+    let before_item_id = fence_insertion.flatten(); // 跨围栏空白投放仍追加到末尾。
     let insertion = if fence_id.is_none()
     {
         drop_grid_insertion_at(&input.pointer, &input.regions, dragged)
@@ -61,8 +67,10 @@ pub(crate) fn commit_internal(app: &AppHandle, snapshot: WorkspaceSnapshot, inpu
     let Some(mut target) = target_at(input, &snapshot, &item_ids)?
     else
     {
+        crate::log_info!("拖放：内部释放未提交，同围栏无插入意图或目标不可用，布局版本={}", snapshot.revision);
         return Ok(false);
     }; // 遮挡或失效目标拒绝投放。
+    crate::log_info!("拖放：内部释放目标，围栏={:?}，插入后继={:?}，桌面插入={:?}", target.fence_id, target.before_item_id, target.insertion);
     target.position = WorkspacePoint { left: (target.position.left - pointer_offset.left).max(0.0), top: (target.position.top - pointer_offset.top).max(0.0) };
     let placements = if target.fence_id.is_some()
     {
@@ -247,7 +255,7 @@ fn drop_grid_insertion_at(point: &WorkspacePoint, regions: &[HitRegion], dragged
 }
 
 /// 按围栏布局轴解析当前可见成员的前后插入点。
-fn drop_before_item_at(point: &WorkspacePoint, regions: &[HitRegion], fence: &crate::contracts::FenceSnapshot, dragged: &[String]) -> Option<String>
+fn drop_before_item_at(point: &WorkspacePoint, regions: &[HitRegion], fence: &crate::contracts::FenceSnapshot, dragged: &[String]) -> Option<Option<String>>
 {
     if fence.sort_mode != crate::contracts::FenceSortMode::None
     {
@@ -274,7 +282,7 @@ fn drop_before_item_at(point: &WorkspacePoint, regions: &[HitRegion], fence: &cr
     {
         return None;
     }
-    members.get(index + usize::from(distance > 0.0)).map(|id| (*id).clone())
+    Some(members.get(index + usize::from(distance > 0.0)).map(|id| (*id).clone()))
 }
 
 #[cfg(test)]

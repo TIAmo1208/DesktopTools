@@ -10,6 +10,11 @@ use windows::core::{Ref, implement};
 /// 原生已登记会话的最新渲染确认，不允许页面创建拖放会话。
 static DROP_PREVIEWS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Option<DropPreview>>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+thread_local! {
+    // 每个原生会话只在结束时输出统计，覆盖 OLE 未调用 Drop 的禁止放置路径。
+    static PREVIEW_CHECKS: RefCell<std::collections::HashMap<String, [u64; 7]>> = RefCell::new(std::collections::HashMap::new());
+}
+
 /// 当前已渲染落点的版本、几何和滚动事实，释放时由原生重新命中。
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,10 +38,19 @@ pub(crate) fn set_preview_session(session: &str, active: bool)
         if active
         {
             previews.insert(session.to_string(), None);
+            PREVIEW_CHECKS.with(|checks| {
+                checks.borrow_mut().insert(session.to_string(), [0; 7]);
+            });
         }
         else
         {
             previews.remove(session);
+            PREVIEW_CHECKS.with(|checks| {
+                if let Some(counts) = checks.borrow_mut().remove(session)
+                {
+                    crate::log_info!("拖放：预览校验统计，会话={}，匹配={}，无确认={}，序号不符={}，布局版本不符={}，显示器不符={}，坐标不符={}，几何无效={}（拒绝原因可重叠）", session, counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6]);
+                }
+            });
         }
     }
 }
@@ -60,15 +74,39 @@ pub(crate) fn publish_preview(preview: DropPreview) -> Result<(), String>
 /// 释放不等待 Renderer；缺少匹配当前落点和布局的确认就拒绝。
 pub(crate) fn confirmed_preview(session: &str, sequence: u64, revision: u64, monitor: &crate::contracts::DesktopHostMonitor, point: &POINTL) -> Option<DropPreview>
 {
-    let preview = DROP_PREVIEWS.lock().ok()?.get(session)?.clone()?; // 固定释放时的完整几何快照。
+    let preview = DROP_PREVIEWS.lock().ok()?.get(session)?.clone(); // 未登记会话不创建统计，固定本次校验的完整几何快照。
     let x = (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor; // 当前实际释放位置。
     let y = (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor;
-    if preview.sequence != sequence || preview.revision != revision || preview.monitor_id != monitor.id || (preview.pointer.left - x).abs() > 0.01 || (preview.pointer.top - y).abs() > 0.01
+    let mut failures = preview.as_ref().map_or([true, false, false, false, false, false], |preview| [false, preview.sequence != sequence, preview.revision != revision, preview.monitor_id != monitor.id, (preview.pointer.left - x).abs() > 0.01 || (preview.pointer.top - y).abs() > 0.01, false]); // 坐标、序号与布局版本分别计数。
+    if !failures.iter().any(|failed| *failed)
+        && let Some(preview) = preview.as_ref()
     {
-        return None;
+        failures[5] = crate::host::validate_hit_regions(&preview.regions, f64::from(monitor.work_width) / monitor.scale_factor, f64::from(monitor.work_height) / monitor.scale_factor).is_err();
+    } // 保持原来的短路行为，过期帧不重复扫描完整几何。
+    let accepted = !failures.iter().any(|failed| *failed); // 不改变原有安全门槛。
+    PREVIEW_CHECKS.with(|checks| {
+        let mut checks = checks.borrow_mut(); // 原生线程本地计数，无日志 IO 和跨线程锁。
+        let counts = checks.entry(session.to_string()).or_default(); // 本次会话的聚合统计。
+        counts[0] += u64::from(accepted);
+        for (index, failed) in failures.iter().enumerate()
+        {
+            counts[index + 1] += u64::from(*failed);
+        }
+    });
+    if accepted { preview } else { None }
+}
+
+/// 只在实际释放失败时记录 Renderer 确认，避免移动回调刷屏。
+pub(crate) fn trace_rejected_preview(session: &str)
+{
+    if let Ok(previews) = DROP_PREVIEWS.lock()
+    {
+        match previews.get(session).and_then(Option::as_ref)
+        {
+            Some(preview) => crate::log_warn!("拖放：释放时页面确认，会话={}，序号={}，布局版本={}，几何版本={}，显示器={}，位置=({},{})，区域数={}", session, preview.sequence, preview.revision, preview.geometry_revision, preview.monitor_id, preview.pointer.left, preview.pointer.top, preview.regions.len()),
+            None => crate::log_warn!("拖放：释放时尚无页面确认，会话={session}"),
+        }
     }
-    crate::host::validate_hit_regions(&preview.regions, f64::from(monitor.work_width) / monitor.scale_factor, f64::from(monitor.work_height) / monitor.scale_factor).ok()?;
-    Some(preview)
 }
 
 /// 当前源会话由进程登记，不从外部数据格式或项目路径推断内部身份。
@@ -301,8 +339,7 @@ impl IDropTarget_Impl for DesktopDropTarget_Impl
             Ok(selected) =>
             {
                 unsafe { *effect = selected & allowed };
-                if source_drag_session(data).is_none()
-                    && let Some(helper) = &self.helper
+                if let Some(helper) = &self.helper
                 {
                     let _ = unsafe { helper.DragEnter(self.window, data, &windows::Win32::Foundation::POINT { x: point.x, y: point.y }, selected & allowed) };
                 }
@@ -372,6 +409,10 @@ impl IDropTarget_Impl for DesktopDropTarget_Impl
             let _ = unsafe { helper.Show(false) };
         } // 文件操作等待期间移除浮动图像。
         let result = data.as_ref().ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG)).and_then(|data| (self.handler)(DropPhase::Drop(data, keys, point, allowed))); // Drop 的数据对象由系统提供，不缓存过期接口。
+        if let Err(error) = &result
+        {
+            crate::log_error!("拖放：释放处理失败，错误={error}");
+        }
         if let Some(helper) = &self.helper
             && let Some(data) = data.as_ref()
         {

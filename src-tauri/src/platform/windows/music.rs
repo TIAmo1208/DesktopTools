@@ -267,6 +267,7 @@ pub fn start_monitor(app: tauri::AppHandle)
             let mut cache = MEDIA_CACHE.lock().unwrap_or_else(|error| error.into_inner()); // 更新缓存后再广播。
             if cache.as_ref() != Some(&current)
             {
+                crate::log_info!("媒体：权威快照更新，会话存在={}，来源={}，标题长度={}，艺人长度={}，封面存在={}", !current["media"].is_null(), current["media"]["source"].as_str().unwrap_or("<无>"), current["media"]["title"].as_str().unwrap_or_default().chars().count(), current["media"]["artist"].as_str().unwrap_or_default().chars().count(), current["media"]["artworkUrl"].is_string()); // 只记录字段是否完整，不记录曲目正文或图片数据。
                 if let Some(error) = current.get("error").and_then(|value| value.as_str())
                 {
                     let _ = crate::tools::log::warn(format!("媒体同步失败：{error}"));
@@ -495,7 +496,8 @@ pub fn execute_action(action: &str, expected_session: &str) -> Result<(), String
     }
     let (reply, response) = mpsc::channel(); // 调用方有界等待，不 join 潜在卡住的 COM 调用。
     std::thread::spawn(move || {
-        let _guard = ActionGuard; // 在线程真实结束时解锁。
+        let action_guard = ActionGuard; // 在线程真实结束时解锁。
+        std::hint::black_box(&action_guard); // 守卫必须保持到线程闭包结束。
         let result = (|| -> Result<(), String> {
             use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
             unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(|error| format!("初始化媒体控制失败：{error}"))?;
@@ -704,6 +706,7 @@ mod empty_session_tests
             assert!(snapshot["media"]["sessionId"].as_str().is_some_and(|value| !value.is_empty()));
         }
         eprintln!("GSMTC 只读验证通过：存在会话={}", !snapshot["media"].is_null());
+        eprintln!("媒体诊断：来源={}，标题长度={}，艺人长度={}，封面存在={}", snapshot["media"]["source"].as_str().unwrap_or("<无>"), snapshot["media"]["title"].as_str().unwrap_or_default().chars().count(), snapshot["media"]["artist"].as_str().unwrap_or_default().chars().count(), snapshot["media"]["artworkUrl"].is_string());
         let next = super::read_snapshot(true).expect("重复读取媒体"); // 同一会话连续读取身份必须稳定。
         assert_eq!(snapshot["media"]["sessionId"], next["media"]["sessionId"]);
         if !snapshot["media"].is_null()

@@ -1217,7 +1217,7 @@ pub fn start_desktop_item_drag(data_object: IDataObject, references: &[String], 
         crate::log_error!("拖放：释放检查线程异常结束");
     }
     SHELL_DRAG_ACTIVE.store(false, Ordering::Release);
-    crate::log_info!("拖放：OLE 源会话结束，状态={status:?}");
+    crate::log_info!("拖放：OLE 源会话结束，状态={status:?}，系统效果={}，内部布局已提交={}", effect.0, session.layout_committed());
     if status.is_err() && !session.layout_committed()
     {
         return Err(format!("系统 OLE 拖放失败: {status:?}"));
@@ -1512,14 +1512,34 @@ pub(crate) fn desktop_data_object(hwnd: HWND, references: &[String]) -> Result<I
 /// 按来源身份创建完整拖放数据对象；门户路径不经过桌面命名空间解析。
 pub(crate) fn drag_data_object(hwnd: HWND, references: &[String], portal_source: bool) -> Result<IDataObject, String>
 {
-    if portal_source
+    validate_reference_selection(references)?;
+    let data_object = if portal_source
     {
         filesystem_data_object(references)
     }
     else
     {
         desktop_data_object(hwnd, references)
+    }?; // 数据对象及系统图像在异步准备阶段完成，不延迟 OLE 交接。
+    // 系统持有拖动图像，目标页面只呈现落位与插入提示。
+    let drag_image_result = (|| -> Result<(), String> {
+        use windows::Win32::UI::Shell::{CLSID_DragDropHelper, IDragSourceHelper, IShellItemImageFactory, SHDRAGIMAGE, SIIGBF_ICONONLY};
+        let image_factory: IShellItemImageFactory = resolve_shell_item(&references[0])?.cast().map_err(|error| format!("读取系统图像接口失败：{error}"))?; // 锚点项目的系统图像。
+        let size = windows::Win32::Foundation::SIZE { cx: 48, cy: 48 }; // 现有桌面系统图像尺寸。
+        let bitmap = unsafe { image_factory.GetImage(size, SIIGBF_ICONONLY) }.map_err(|error| format!("读取拖动图像失败：{error}"))?; // 调用方拥有的系统位图。
+        let initialized = (|| -> windows::core::Result<()> {
+            let helper: IDragSourceHelper = unsafe { CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_ALL)? }; // Windows 拖动图像服务。
+            let image = SHDRAGIMAGE { sizeDragImage: size, ptOffset: windows::Win32::Foundation::POINT { x: 24, y: 24 }, hbmpDragImage: bitmap, crColorKey: windows::Win32::Foundation::COLORREF(0xffffffff) }; // 使用位图 Alpha 而不是色键。
+            unsafe { helper.InitializeFromBitmap(&image, &data_object) }
+        })(); // helper 将图像复制到数据对象，不借用源位图。
+        let _ = unsafe { windows::Win32::Graphics::Gdi::DeleteObject(bitmap.into()) };
+        initialized.map_err(|error| format!("初始化系统拖动图像失败：{error}"))
+    })();
+    if let Err(error) = drag_image_result
+    {
+        crate::log_warn!("拖放：{error}");
     }
+    Ok(data_object)
 }
 
 /// 从绝对文件系统路径创建可复制/剪切的 Shell 数据对象。

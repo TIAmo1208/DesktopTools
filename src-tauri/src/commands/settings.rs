@@ -90,6 +90,7 @@ pub fn save_preferences(app: AppHandle, state: State<'_, SettingsState>, prefere
     let monitors = app.state::<std::sync::Arc<crate::host::DesktopHostRuntime>>().snapshot().map_err(|error| error.message)?.hosts.into_iter().map(|host| host.monitor).collect::<Vec<_>>(); // 原生宿主的当前工作区尺寸。
     let workspace = app.state::<crate::workspace::WorkspaceState>(); // 全部布局共同使用的权威状态。
     let saved = workspace.save_preferences(&state, preferences, &monitors).inspect_err(|error| crate::log_error!("设置：{error}"))?; // 原子保存后的权威偏好。
+    app.state::<std::sync::Arc<crate::notifications::ToastManager>>().update_preferences(saved.clone()); // 原生 Toast 读取同一已保存界面主题。
     if let Some(window) = app.get_webview_window("main")
     {
         let theme = match saved.theme

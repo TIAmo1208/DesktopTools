@@ -1,6 +1,7 @@
 import { exitDesktopTools } from "../../bridge/desktopHost";
 import type { DesktopHostMonitor, DesktopHostSnapshot } from "../../contracts/desktopHost";
 import { usePreferences } from "../settings/PreferencesProvider";
+import { MessageNotificationTest } from "../notifications/MessageNotificationTest";
 import "./DebugTest.css";
 
 /** 只由已注册的 Debug 格子呈现宿主状态及测试命令。 */
@@ -60,6 +61,7 @@ export const DebugTest = ({
                     </>
                 )}
             </dl>
+            <MessageNotificationTest />
             <div className="debug-test__actions">
                 <button type="button" title="重载渲染器" aria-label="重载渲染器" onClick={() => window.location.reload()}>
                     {"\uE72C"}

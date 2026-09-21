@@ -33,7 +33,8 @@ fn read_log(directory: &Path) -> String
 fn restores_tool_log_behavior()
 {
     // 进程级日志测试串行锁。
-    let _guard = TEST_LOCK.lock().expect("日志测试锁应可获取");
+    let test_lock_guard = TEST_LOCK.lock().expect("日志测试锁应可获取");
+    std::hint::black_box(&test_lock_guard); // 测试锁必须保持到测试函数结束。
     let defaults = LogConfig::default(); // 正式运行默认目录及输出等级。
     assert_eq!(defaults.console_level, if cfg!(debug_assertions) { LogLevel::Debug } else { LogLevel::None });
     assert_eq!(defaults.file_level, LogLevel::Info);
