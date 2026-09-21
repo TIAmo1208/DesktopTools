@@ -114,6 +114,7 @@ impl Frame
 /// 单锁持有非 COM 状态，调用窗口 API 前释放，防止同步重入死锁。
 struct Runtime
 {
+    suppressed: bool,                    // 全屏或锁屏期间不绘制，恢复时清理过期消息。
     queue: ToastState,                   // 有界消息与动画状态。
     preferences: ApplicationPreferences, // 已保存偏好。
     appearance: Appearance,              // 当前有效外观。
@@ -136,7 +137,7 @@ impl ToastManager
     pub fn install(preferences: ApplicationPreferences) -> Result<Arc<Self>, String>
     {
         let appearance = Appearance::resolve(&preferences, false, true); // 系统值随后在窗口线程解析。
-        let manager = Arc::new(Self { hwnd: AtomicIsize::new(0), runtime: Mutex::new(Runtime { queue: ToastState::default(), preferences, appearance, frames: Vec::new(), scale: 1.0, hover_id: None }) }); // HWND 引用的稳定地址。
+        let manager = Arc::new(Self { hwnd: AtomicIsize::new(0), runtime: Mutex::new(Runtime { suppressed: false, queue: ToastState::default(), preferences, appearance, frames: Vec::new(), scale: 1.0, hover_id: None }) }); // HWND 引用的稳定地址。
         let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(|error| error.to_string())?; // 当前模块。
         let class = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(window_proc), hInstance: HINSTANCE(module.0), lpszClassName: w!("DesktopToolsNativeToast"), ..Default::default() }; // 无不透明背景刷。
         if unsafe { RegisterClassExW(&class) } == 0 && unsafe { windows::Win32::Foundation::GetLastError() } != windows::Win32::Foundation::ERROR_CLASS_ALREADY_EXISTS
@@ -145,6 +146,7 @@ impl ToastManager
         }
         let hwnd = unsafe { CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, w!("DesktopToolsNativeToast"), w!("Desktop Tools"), WS_POPUP, 0, 0, 300, 420, None, None, Some(HINSTANCE(module.0)), Some(Arc::as_ptr(&manager) as *const c_void)) }.map_err(|error| error.to_string())?; // 独立顶层窗口。
         manager.hwnd.store(hwnd.0 as isize, Ordering::Release);
+        crate::platform::windows::refresh_policy::install_session_notifications(hwnd)?;
         Ok(manager)
     }
 
@@ -166,6 +168,7 @@ impl ToastManager
                 let animated = runtime.appearance.animated; // 当前有效动画。
                 runtime.queue.enqueue(request, 64.0, Instant::now(), animated);
             }
+            crate::platform::windows::refresh_policy::check_before_notification();
             manager.refresh();
         })
         .map_err(|error| error.to_string())
@@ -219,6 +222,10 @@ impl ToastManager
     {
         let hwnd = HWND(self.hwnd.swap(0, Ordering::AcqRel) as *mut c_void); // 先阻止迟到任务。
         if !hwnd.is_invalid()
+        {
+            crate::platform::windows::refresh_policy::stop_events(hwnd);
+        }
+        if !hwnd.is_invalid()
             && let Err(error) = unsafe { DestroyWindow(hwnd) }
         {
             crate::log_warn!("Toast：销毁窗口失败，错误={error}");
@@ -239,6 +246,9 @@ impl ToastManager
         }
     }
 
+    /// 前台快照变化立即隐藏或恢复；主线程调用，不经页面转发。
+    pub(crate) fn refresh_policy_changed(&self) { self.refresh(); }
+
     /// 采样逐条动画，提交窗口前释放状态锁。
     fn paint(&self) -> Result<(), String>
     {
@@ -246,6 +256,34 @@ impl ToastManager
         if hwnd.is_invalid()
         {
             return Ok(());
+        }
+        if crate::platform::windows::refresh_policy::notifications_suppressed()
+        {
+            if let Ok(mut runtime) = self.runtime.lock()
+            {
+                let now = Instant::now(); // 隐藏不延长消息寿命。
+                runtime.queue.hover(false, now, false);
+                runtime.queue.tick(now, false);
+                runtime.frames.clear();
+                runtime.hover_id = None;
+                runtime.suppressed = true;
+            }
+            unsafe {
+                let _ = KillTimer(Some(hwnd), 1);
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+            SURFACE.with(|surface| surface.borrow_mut().take());
+            return Ok(());
+        }
+        if let Ok(mut runtime) = self.runtime.lock()
+        {
+            let now = Instant::now(); // 绘制前移除隐藏期间已过期项，避免补弹。
+            if runtime.suppressed
+            {
+                runtime.queue.items.retain(|item| !item.closing && item.expires_at > now);
+                runtime.queue.reflow(now, false);
+                runtime.suppressed = false;
+            }
         }
         if self.runtime.lock().map_err(|_| "Toast 状态不可用")?.queue.items.is_empty()
         {
@@ -403,6 +441,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         let manager = &*pointer; // manager 活到窗口销毁之后。
         match message
         {
+            WM_WTSSESSION_CHANGE =>
+            {
+                crate::platform::windows::refresh_policy::session_changed(wparam.0);
+                LRESULT(0)
+            }
             WM_PAINT =>
             {
                 let _ = ValidateRect(Some(hwnd), None);
@@ -439,6 +482,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             }
             WM_DISPLAYCHANGE | WM_DPICHANGED =>
             {
+                crate::platform::windows::refresh_policy::request_sample();
                 manager.refresh();
                 LRESULT(0)
             }

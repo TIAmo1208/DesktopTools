@@ -22,7 +22,7 @@ use notifications::ToastManager;
 use shell::DesktopItemState;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
-use tauri::{Manager, RunEvent};
+use tauri::{Listener, Manager, RunEvent};
 use workspace::WorkspaceState;
 
 /// 创建并运行 Desktop Tools 正式应用。
@@ -64,6 +64,7 @@ pub fn run()
         .manage(desktop_items)
         .manage(component_runtime)
         .invoke_handler(tauri::generate_handler![
+            commands::get_foreground_snapshot,
             commands::settings::get_settings,
             commands::settings::control_settings_window,
             commands::settings::get_preferences,
@@ -133,6 +134,17 @@ pub fn run()
 
             // 正式逐屏宿主运行时。
             crate::platform::windows::install_host_events(app.handle());
+            let session_handle = app.handle().clone(); // 锁屏时隐藏按需设置窗口，解锁后不强制打开。
+            app.listen("desktop-refresh-policy-changed", move |event| {
+                let locked = serde_json::from_str::<serde_json::Value>(event.payload()).ok().and_then(|value| value.get("locked").and_then(serde_json::Value::as_bool)).unwrap_or(false);
+                if locked
+                {
+                    if let Some(window) = session_handle.get_webview_window("main")
+                    {
+                        let _ = window.hide();
+                    }
+                }
+            });
             let desktop_host = DesktopHostRuntime::start(app.handle())?;
             app.manage(Arc::clone(&desktop_host));
             // Shell 变化通知由唯一协调线程消费。

@@ -82,3 +82,9 @@ html[data-desktop-host="true"] #root {
     --color-error: #fda29b;
     --color-error-surface: #3b2020;
 }
+/* 锁屏暂停普通页面 CSS 动画，保留页面和恢复入口。 */
+html[data-session-locked="true"] *,
+html[data-session-locked="true"] *::before,
+html[data-session-locked="true"] *::after {
+    animation-play-state: paused !important;
+}

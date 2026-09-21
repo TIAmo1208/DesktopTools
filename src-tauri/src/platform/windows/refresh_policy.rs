@@ -1,8 +1,58 @@
-use crate::contracts::DesktopHostMonitor;
+use serde::Serialize;
+use std::sync::{
+    LazyLock, Mutex, OnceLock,
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+};
+use tauri::{Emitter, Listener, Manager};
+use windows::Win32::{
+    Foundation::{HWND, LPARAM, RECT, WPARAM},
+    Graphics::Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
+    System::{RemoteDesktop::*, Threading::GetCurrentThreadId},
+    UI::{
+        Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
+        Shell::{QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState},
+        WindowsAndMessaging::*,
+    },
+};
 
-static PAUSED_HOSTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(Default::default); // 页面实际暂停状态，不替代健康心跳。
+/// 一台显示器被当前前台窗口覆盖的事实，不含用户策略。
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Coverage
+{
+    pub monitor_id: String, // 稳定显示器身份。
+    pub work: bool,         // 完全覆盖工作区。
+    pub screen: bool,       // 完全覆盖物理屏幕。
+}
 
-/// 保存页面已应用的暂停状态，新建或重载页面时清除旧值。
+/// 内存中的唯一前台快照；Option 的 None 表示未确认。
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ForegroundSnapshot
+{
+    pub revision: u64,                      // 实际发布次序。
+    pub window: Option<String>,             // HWND 的十六进制身份，避免 JS 整数精度损失。
+    pub process_id: Option<u32>,            // 窗口所属进程。
+    pub external_focus: Option<bool>,       // 外部前台归属。
+    pub maximized: Option<bool>,            // 独立最大化属性。
+    pub fullscreen: Option<bool>,           // 几何或系统全屏证据的合并结果。
+    pub exclusive_fullscreen: Option<bool>, // 系统级独占全屏证据，不归属到 HWND。
+    pub locked: Option<bool>,               // 当前会话锁定状态。
+    pub coverage: Option<Vec<Coverage>>,    // None 表示覆盖查询失败。
+}
+static SNAPSHOT: LazyLock<Mutex<ForegroundSnapshot>> = LazyLock::new(Default::default); // 全部消费者共用快照。
+static PAUSED_HOSTS: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(Default::default); // 页面实际应用状态。
+static EVENT_APP: OnceLock<tauri::AppHandle> = OnceLock::new(); // 发布出口。
+static EVENT_THREAD: AtomicU32 = AtomicU32::new(0); // 已建立消息队列的线程。
+static GENERATION: AtomicU64 = AtomicU64::new(0); // 新事件使在途采样失效。
+static SWITCHING: AtomicBool = AtomicBool::new(false); // Alt+Tab 显式切换阶段。
+static EVENT_FALLBACK: AtomicBool = AtomicBool::new(true); // Hook 失败时保留页面低频兜底。
+const SAMPLE: u32 = WM_APP + 71; // 合并采样通知。
+
+/// 返回是否需要保留页面故障兜底。
+pub(crate) fn fallback_enabled() -> bool { EVENT_FALLBACK.load(Ordering::Acquire) }
+
+/// 保存实际应用的单屏暂停状态。
 pub(crate) fn set_paused(monitor: &str, paused: bool)
 {
     let mut hosts = PAUSED_HOSTS.lock().unwrap_or_else(|error| error.into_inner()); // 当前暂停集合。
@@ -16,60 +66,277 @@ pub(crate) fn set_paused(monitor: &str, paused: bool)
     }
 }
 
-/// 判断是否需要停止向该屏交付视觉事件。
-pub(crate) fn is_paused(monitor: &str) -> bool { PAUSED_HOSTS.lock().unwrap_or_else(|error| error.into_inner()).contains(monitor) }
+/// 后端只过滤已实际暂停屏幕的视觉事件。
+pub(crate) fn is_paused(monitor: &str) -> bool { SNAPSHOT.lock().unwrap_or_else(|error| error.into_inner()).locked == Some(true) || PAUSED_HOSTS.lock().unwrap_or_else(|error| error.into_inner()).contains(monitor) }
 
-/// 前台钩子线程持有事件出口，回调只发布重新检查通知。
-static EVENT_APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
-static EVENT_FALLBACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true); // 全部 Hook 成功前保守保留低频检查。
+/// 返回同一份缓存，不按页面重新查询系统。
+pub(crate) fn foreground_snapshot() -> ForegroundSnapshot { SNAPSHOT.lock().unwrap_or_else(|error| error.into_inner()).clone() }
 
-/// 返回页面是否需要保留 5 秒故障兜底。
-pub(crate) fn fallback_enabled() -> bool { EVENT_FALLBACK.load(std::sync::atomic::Ordering::Acquire) }
+/// 唤醒一次采样；正常运行没有永久周期检查。
+pub(crate) fn request_sample()
+{
+    GENERATION.fetch_add(1, Ordering::AcqRel);
+    let thread = EVENT_THREAD.load(Ordering::Acquire); // 初始化完成前不发线程消息。
+    if thread != 0
+    {
+        let _ = unsafe { PostThreadMessageW(thread, SAMPLE, WPARAM(0), LPARAM(0)) };
+    }
+}
 
-/// 用 Windows 前台及窗口边界事件唤醒页面，失败时页面仍有低频检查。
+/// 发布实际变化，原生 UI 直接消费相同缓存。
+fn publish(mut next: ForegroundSnapshot, generation: u64)
+{
+    let mut current = SNAPSHOT.lock().unwrap_or_else(|error| error.into_inner()); // 原子比较和提交。
+    if generation != GENERATION.load(Ordering::Acquire)
+    {
+        return;
+    }
+    next.revision = current.revision;
+    next.locked = current.locked;
+    if *current == next
+    {
+        return;
+    }
+    next.revision += 1;
+    *current = next.clone();
+    drop(current);
+    if let Some(app) = EVENT_APP.get()
+    {
+        let _ = app.emit("desktop-refresh-policy-changed", next);
+    }
+}
+
+/// 消息准备显示前只查一次系统证据，再请求事件驱动采样。
+pub(crate) fn check_before_notification()
+{
+    let generation = GENERATION.load(Ordering::Acquire); // 按需读取不能覆盖更新代次。
+    let evidence = unsafe { SHQueryUserNotificationState() }.ok().map(|state| state == QUNS_RUNNING_D3D_FULL_SCREEN); // 失败保留未知。
+    let mut next = foreground_snapshot(); // 不将系统级证据归给某块屏幕。
+    let window = unsafe { GetForegroundWindow() }; // 缓存的窗口已改变时不沿用旧覆盖。
+    if next.window.as_deref() != Some(&format!("{:x}", window.0 as usize))
+    {
+        next = ForegroundSnapshot { locked: next.locked, ..Default::default() };
+    }
+    next.exclusive_fullscreen = evidence;
+    next.fullscreen = combine_fullscreen(next.coverage.as_ref(), evidence);
+    if !SWITCHING.load(Ordering::Acquire)
+    {
+        publish(next, generation);
+    }
+    request_sample();
+}
+
+/// 抑制未知、锁屏和全屏状态，不影响业务消息入队。
+pub(crate) fn notifications_suppressed() -> bool
+{
+    let snapshot = foreground_snapshot(); // 一致读取。
+    SWITCHING.load(Ordering::Acquire) || snapshot.locked != Some(false) || snapshot.fullscreen != Some(false)
+}
+
+/// 合并独立证据；任一确认全屏即可抑制，全部否定才确认非全屏。
+fn combine_fullscreen(coverage: Option<&Vec<Coverage>>, exclusive: Option<bool>) -> Option<bool>
+{
+    if exclusive == Some(true) || coverage.is_some_and(|screens| screens.iter().any(|screen| screen.screen))
+    {
+        return Some(true);
+    }
+    if coverage.is_some() && exclusive == Some(false) { Some(false) } else { None }
+}
+
+/// 当前会话通知先注册再查询，通知与初始读取在同一窗口线程串行。
+pub(crate) fn install_session_notifications(hwnd: HWND) -> Result<(), String>
+{
+    unsafe { WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) }.map_err(|error| format!("注册锁屏通知失败：{error}"))?;
+    update_session(query_locked());
+    Ok(())
+}
+
+/// 精确查询会话锁定状态，不读取输入桌面名称或通知适宜状态。
+fn query_locked() -> Option<bool>
+{
+    unsafe {
+        let mut buffer = windows::core::PWSTR::null(); // 系统分配的会话结构。
+        let mut bytes = 0; // 验证结构长度。
+        if WTSQuerySessionInformationW(None, WTS_CURRENT_SESSION, WTSSessionInfoEx, &mut buffer, &mut bytes).is_err()
+        {
+            return None;
+        }
+        let result = if !buffer.is_null() && bytes as usize >= size_of::<WTSINFOEXW>()
+        {
+            let info = &*buffer.0.cast::<WTSINFOEXW>(); // 已验证长度。
+            if info.Level == 1
+            {
+                match info.Data.WTSInfoExLevel1.SessionFlags
+                {
+                    0 => Some(true),
+                    1 => Some(false),
+                    _ => None,
+                }
+            }
+            else
+            {
+                None
+            }
+        }
+        else
+        {
+            None
+        }; // 未知结构不推断已解锁。
+        WTSFreeMemory(buffer.0.cast());
+        result
+    }
+}
+
+/// 窗口过程传入 WTS 会话事件；锁屏立即发布，不等待切换收敛。
+pub(crate) fn session_changed(event: usize)
+{
+    match event as u32
+    {
+        WTS_SESSION_LOCK => update_session(Some(true)),
+        WTS_SESSION_UNLOCK => update_session(Some(false)),
+        _ => request_sample(),
+    }
+}
+
+/// 锁屏使旧采样失效；解锁先清除旧窗口事实再重新读取。
+fn update_session(locked: Option<bool>)
+{
+    GENERATION.fetch_add(1, Ordering::AcqRel);
+    SWITCHING.store(false, Ordering::Release);
+    let mut current = SNAPSHOT.lock().unwrap_or_else(|error| error.into_inner()); // 独立更新锁屏事实。
+    if current.locked != locked
+    {
+        *current = ForegroundSnapshot { revision: current.revision + 1, locked, ..Default::default() };
+        let next = current.clone(); // 释放锁后发布。
+        drop(current);
+        if let Some(app) = EVENT_APP.get()
+        {
+            let _ = app.emit("desktop-refresh-policy-changed", next);
+        }
+    }
+    request_sample();
+}
+
+/// 注销会话通知并终止采样消息循环。
+pub(crate) fn stop_events(hwnd: HWND)
+{
+    let _ = unsafe { WTSUnRegisterSessionNotification(hwnd) };
+    let thread = EVENT_THREAD.swap(0, Ordering::AcqRel); // 退出后拒绝再次唤醒。
+    if thread != 0
+    {
+        let _ = unsafe { PostThreadMessageW(thread, WM_QUIT, WPARAM(0), LPARAM(0)) };
+    }
+}
+
+/// 查询失败后最多三次；成功、新事件和锁屏均取消原预算。
+fn retry_delay(attempt: usize) -> Option<u32> { [100, 300, 1000].get(attempt).copied() }
+
+/// 监听前台窗口并在唯一线程合并事件、采样和有限复查。
 pub(crate) fn start_events(app: &tauri::AppHandle)
 {
-    use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
-    use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_FOREGROUND, GetMessageW, MSG, WINEVENT_OUTOFCONTEXT};
     if EVENT_APP.set(app.clone()).is_err()
     {
         return;
     }
-    let (ready, initialized) = std::sync::mpsc::sync_channel(0); // 宿主创建前确定是否需要页面低频兜底。
-    unsafe extern "system" fn notify(_: HWINEVENTHOOK, event: u32, window: windows::Win32::Foundation::HWND, object: i32, _: i32, _: u32, _: u32)
-    {
-        use tauri::Emitter;
-        if !matches!(event, EVENT_SYSTEM_FOREGROUND | EVENT_SYSTEM_DESKTOPSWITCH) && (object != 0 || window != unsafe { GetForegroundWindow() })
-        {
-            return;
-        }
-        if let Some(app) = EVENT_APP.get()
-        {
-            let _ = app.emit("desktop-refresh-policy-changed", ());
-        }
-    }
+    let handle = app.clone(); // 原生 UI 更新必须调度回主线程。
+    app.listen("desktop-refresh-policy-changed", move |_| {
+        let app = handle.clone(); // 主线程回调持有应用。
+        let _ = handle.run_on_main_thread(move || {
+            if let Some(toast) = app.try_state::<std::sync::Arc<crate::notifications::ToastManager>>()
+            {
+                toast.refresh_policy_changed();
+            }
+        });
+    });
+    let (ready, initialized) = std::sync::mpsc::sync_channel(0); // 确保线程消息队列先就绪。
     std::thread::spawn(move || unsafe {
-        let mut hooks = Vec::new(); // 线程生命周期内保持钩子句柄。
-        let events = [EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_DESKTOPSWITCH, EVENT_OBJECT_SHOW, EVENT_OBJECT_HIDE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_LOCATIONCHANGE]; // 前台、解锁/桌面切换和窗口可见边界事件。
+        let mut message = MSG::default(); // WinEvent 需要持续消息循环。
+        let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
+        EVENT_THREAD.store(GetCurrentThreadId(), Ordering::Release);
+        let events = [EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_SWITCHSTART, EVENT_SYSTEM_SWITCHEND, EVENT_SYSTEM_MOVESIZEEND, EVENT_OBJECT_SHOW, EVENT_OBJECT_HIDE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_LOCATIONCHANGE]; // 有限事件源。
+        let mut hooks = Vec::new(); // 线程退出时成对释放。
+        let mut failed = false; // 任一 Hook 失败才启用页面兜底。
         for event in events
         {
-            let hook = SetWinEventHook(event, event, None, Some(notify), 0, 0, WINEVENT_OUTOFCONTEXT); // 不注入其他进程。
+            let hook = SetWinEventHook(event, event, None, Some(notify), 0, 0, WINEVENT_OUTOFCONTEXT); // 不注入外部进程。
             if hook.0.is_null()
             {
-                crate::log_warn!("桌面刷新：窗口事件钩子注册失败，事件={event}，保留低频检查");
+                failed = true;
+                crate::log_error!("前台快照：窗口事件注册失败，事件={event}");
             }
             else
             {
                 hooks.push(hook);
             }
         }
-        let fallback = hooks.len() != events.len(); // 任一 Hook 失败才保留页面低频兜底。
-        EVENT_FALLBACK.store(fallback, std::sync::atomic::Ordering::Release);
+        EVENT_FALLBACK.store(failed, Ordering::Release);
         let _ = ready.send(());
-        let mut message = MSG::default(); // WinEvent 回调要求安装线程持续泵消息。
+        request_sample();
+        let mut timer = 0; // 只用于事件合并与有限复查。
+        let mut attempt = 0; // 当前事件代次已用复查次数。
         while GetMessageW(&mut message, None, 0, 0).0 > 0
         {
-            DispatchMessageW(&message);
+            if message.message == SAMPLE
+            {
+                if timer != 0
+                {
+                    let _ = KillTimer(None, timer);
+                    timer = 0;
+                }
+                attempt = 0;
+                if !SWITCHING.load(Ordering::Acquire) && foreground_snapshot().locked != Some(true)
+                {
+                    timer = SetTimer(None, 0, 50, None);
+                }
+            }
+            else if message.message == WM_TIMER && message.wParam.0 == timer
+            {
+                let _ = KillTimer(None, timer);
+                timer = 0;
+                let generation = GENERATION.load(Ordering::Acquire); // 采样期间任何新事件均取消提交。
+                let mut next = sample(); // 同一次系统读取供全部屏幕共享。
+                if next.locked.is_none()
+                {
+                    let locked = query_locked(); // 初始会话查询失败时使用同一有限预算。
+                    if locked.is_some()
+                    {
+                        update_session(locked);
+                        continue;
+                    }
+                }
+                if generation != GENERATION.load(Ordering::Acquire) || SWITCHING.load(Ordering::Acquire)
+                {
+                    continue;
+                }
+                if next.external_focus.is_some() && next.coverage.is_some() && next.exclusive_fullscreen.is_some() && next.locked.is_some()
+                {
+                    publish(next, generation);
+                }
+                else if let Some(delay) = retry_delay(attempt)
+                {
+                    attempt += 1;
+                    timer = SetTimer(None, 0, delay, None);
+                }
+                else
+                {
+                    next.window = None;
+                    next.process_id = None;
+                    next.external_focus = None;
+                    next.maximized = None;
+                    next.coverage = None;
+                    next.fullscreen = combine_fullscreen(None, next.exclusive_fullscreen);
+                    publish(next, generation);
+                    crate::log_debug!("前台快照：有限复查耗尽，等待新事件");
+                }
+            }
+            else
+            {
+                DispatchMessageW(&message);
+            }
+        }
+        if timer != 0
+        {
+            let _ = KillTimer(None, timer);
         }
         for hook in hooks
         {
@@ -78,69 +345,84 @@ pub(crate) fn start_events(app: &tauri::AppHandle)
     });
     if initialized.recv().is_err()
     {
-        EVENT_FALLBACK.store(true, std::sync::atomic::Ordering::Release);
+        crate::log_error!("前台快照：事件线程初始化失败");
     }
 }
-use windows::Win32::Foundation::RECT;
-use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
-use windows::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, WS_EX_LAYERED, WS_EX_TRANSPARENT};
 
-/// 读取当前前台窗口事实；无法确认覆盖或窗口归属时保持桌面刷新。
-pub(crate) fn should_pause(monitor: &DesktopHostMonitor, on_fullscreen: bool, on_focus: bool) -> bool
+/// 回调只记录切换阶段并唤醒，避免系统回调内重复查询。
+unsafe extern "system" fn notify(_: HWINEVENTHOOK, event: u32, window: HWND, object: i32, _: i32, _: u32, _: u32)
 {
-    if !on_fullscreen && !on_focus
+    if event >= EVENT_OBJECT_SHOW && (object != 0 || (window != unsafe { GetForegroundWindow() } && foreground_snapshot().window.as_deref() != Some(&format!("{:x}", window.0 as usize))))
     {
-        return false;
+        return;
     }
+    if event == EVENT_SYSTEM_SWITCHSTART
+    {
+        SWITCHING.store(true, Ordering::Release);
+    }
+    if event == EVENT_SYSTEM_SWITCHEND
+    {
+        SWITCHING.store(false, Ordering::Release);
+    }
+    request_sample();
+}
+
+/// 一次读取前台窗口所有事实；前后台身份变化时拒绝整次结果。
+fn sample() -> ForegroundSnapshot
+{
+    let mut next = ForegroundSnapshot { locked: foreground_snapshot().locked, ..Default::default() }; // 不覆盖独立会话事实。
     unsafe {
-        let window = GetForegroundWindow(); // 当前前台顶层窗口。
-        if window.0.is_null() || !IsWindowVisible(window).as_bool() || IsIconic(window).as_bool()
+        next.exclusive_fullscreen = SHQueryUserNotificationState().ok().map(|state| state == QUNS_RUNNING_D3D_FULL_SCREEN);
+        let window = GetForegroundWindow(); // 采样前身份。
+        if window.0.is_null()
         {
-            return false;
+            return next;
         }
-        let mut process_id = 0; // 排除本程序设置和宿主。
-        GetWindowThreadProcessId(window, Some(&mut process_id));
-        if process_id == 0 || process_id == std::process::id()
+        next.window = Some(format!("{:x}", window.0 as usize));
+        let mut process = 0; // 窗口进程身份。
+        GetWindowThreadProcessId(window, Some(&mut process));
+        if process == 0
         {
-            return false;
+            return next;
         }
-        let mut class = [0_u16; 256]; // 系统桌面与瞬态 Shell 窗口类。
-        let length = GetClassNameW(window, &mut class); // 实际类名长度。
+        next.process_id = Some(process);
+        let mut class = [0_u16; 256]; // 系统桌面与瞬态 Shell 类。
+        let length = GetClassNameW(window, &mut class); // 有效类名长度。
         if length == 0
         {
-            return false;
+            return next;
         }
-        let class = String::from_utf16_lossy(&class[..length as usize]); // 可比较的 Windows 类名。
-        if matches!(class.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "#32768" | "XamlExplorerHostIslandWindow" | "Windows.UI.Core.CoreWindow")
+        let class = String::from_utf16_lossy(&class[..length as usize]); // 排除已有系统窗口规则。
+        let excluded = process == std::process::id() || matches!(class.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "#32768" | "XamlExplorerHostIslandWindow" | "Windows.UI.Core.CoreWindow") || !IsWindowVisible(window).as_bool() || IsIconic(window).as_bool(); // 不把自身和桌面算作外部应用。
+        let mut cloaked = 0_u32; // DWM 隐藏事实。
+        if !excluded && DwmGetWindowAttribute(window, DWMWA_CLOAKED, (&mut cloaked as *mut u32).cast(), size_of::<u32>() as u32).is_err()
         {
-            return false;
+            return next;
         }
-        let mut cloaked = 0_u32; // 虚拟桌面或系统隐藏状态。
-        if DwmGetWindowAttribute(window, DWMWA_CLOAKED, (&mut cloaked as *mut u32).cast(), size_of::<u32>() as u32).is_err() || cloaked != 0
+        next.external_focus = Some(!excluded && cloaked == 0);
+        next.maximized = Some(next.external_focus == Some(true) && IsZoomed(window).as_bool());
+        if next.external_focus == Some(false) || GetWindowLongPtrW(window, GWL_EXSTYLE) as u32 & (WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0) != 0
         {
-            return false;
+            next.coverage = Some(Vec::new());
         }
-        if on_focus
+        else
         {
-            return true;
+            let mut bounds = RECT::default(); // 不含阴影的物理边界。
+            if DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, (&mut bounds as *mut RECT).cast(), size_of::<RECT>() as u32).is_ok()
+            {
+                next.coverage = super::enumerate_desktop_monitors().ok().map(|monitors| monitors.iter().map(|monitor| Coverage { monitor_id: monitor.id.clone(), work: covers(bounds, monitor.work_x, monitor.work_y, monitor.work_width, monitor.work_height), screen: covers(bounds, monitor.x, monitor.y, monitor.width, monitor.height) }).collect());
+            }
         }
-        let style = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32; // 保守排除透明与分层窗口。
-        if style & (WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0) != 0
+        if GetForegroundWindow() != window
         {
-            return false;
+            return ForegroundSnapshot { locked: next.locked, ..Default::default() };
         }
-        let mut bounds = RECT::default(); // 不含阴影的可见窗口边界。
-        if DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, (&mut bounds as *mut RECT).cast(), size_of::<RECT>() as u32).is_err()
-        {
-            return false;
-        }
-        let covers_work = covers(bounds, monitor.work_x, monitor.work_y, monitor.work_width, monitor.work_height); // 最大化窗口覆盖工作区。
-        let covers_screen = covers(bounds, monitor.x, monitor.y, monitor.width, monitor.height); // 无边框全屏覆盖物理屏幕。
-        (IsZoomed(window).as_bool() && covers_work) || covers_screen
+        next.fullscreen = combine_fullscreen(next.coverage.as_ref(), next.exclusive_fullscreen);
     }
+    next
 }
 
-/// 用宽整数比较逐屏覆盖，支持负坐标与跨屏窗口。
+/// 宽整数支持负坐标与跨屏窗口。
 fn covers(bounds: RECT, x: i32, y: i32, width: u32, height: u32) -> bool { bounds.left <= x && bounds.top <= y && i64::from(bounds.right) >= i64::from(x) + i64::from(width) && i64::from(bounds.bottom) >= i64::from(y) + i64::from(height) }
 
 #[cfg(test)]

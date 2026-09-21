@@ -159,15 +159,16 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
     }
   };
 
-  // 快照事件对应的只读轮询命令。
-  let refreshPaused = false; // 主动暂停只影响视觉订阅，心跳继续运行。
-  let monitorId; // 从权威宿主快照解析本页显示器。
-  let pauseSince = 0; // 连续满足条件的起点。
-  let interacting = false; // 指针交互期间不进入暂停。
-  let policyTimer; // 事件去抖与低频检查共用一个计时器。
-  const policyFallback = __REFRESH_POLICY_FALLBACK__; // 仅 WinEvent 注册失败时保留永久低频检查。
-  const resumePolls = new Set(); // 恢复时立即读取最新值，不重放中间事件。
-  const pausedAnimations = new Set(); // 仅恢复由本策略暂停的动画。
+  // 页面从结构化事实与已保存偏好计算策略，后端只记录实际应用结果。
+  let refreshPaused = false; // 非必要视觉暂停，健康心跳不变。
+  let monitorId; // 本页显示器身份。
+  let foreground; // 最新修订的共享快照。
+  let pauseSince = 0; // 普通暂停稳定期。
+  let interacting = false; // 指针交互保护。
+  let policyTimer; // 仅候选暂停期间使用。
+  let policyGeneration = 0; // 事件和读取的先后代次。
+  const resumePolls = new Set(); // 恢复只读最新事实。
+  const pausedAnimations = new Set(); // 只恢复本策略暂停的动画。
   const setPaused = (paused) => {
     if (refreshPaused === paused) return;
     refreshPaused = paused;
@@ -180,28 +181,45 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
       for (const poll of resumePolls) void poll();
     }
     window.dispatchEvent(new CustomEvent("desktop-refresh-changed", { detail: paused }));
-    void invoke("record_desktop_refresh_state", { monitorId, paused }).catch(() => {});
+    if (monitorId) void invoke("record_desktop_refresh_state", { monitorId, paused }).catch(() => {});
   };
-  window.addEventListener("pointerdown", () => { interacting = true; pauseSince = 0; setPaused(false); }, true);
-  window.addEventListener("pointerup", () => { interacting = false; }, true);
-  window.addEventListener("pointercancel", () => { interacting = false; }, true);
-  window.addEventListener("focus", () => { interacting = false; pauseSince = 0; setPaused(false); });
-  const wakeRefresh = () => { window.clearTimeout(policyTimer); policyTimer = window.setTimeout(checkRefresh, 0); };
-  window.addEventListener("pageshow", wakeRefresh);
-  window.addEventListener("visibilitychange", () => { if (!document.hidden) wakeRefresh(); });
-  // 事件驱动判定；仅候选去抖或 Hook 注册失败时安排后续检查。
+  const acceptForeground = (snapshot) => {
+    if (!snapshot || !Number.isSafeInteger(snapshot.revision) || (foreground && snapshot.revision < foreground.revision)) return;
+    foreground = snapshot;
+    if (snapshot.locked === true) { pauseSince = 0; window.clearTimeout(policyTimer); setPaused(true); }
+  };
+  window.addEventListener("pointerdown", () => { interacting = true; if (foreground?.locked !== true) { pauseSince = 0; setPaused(false); } }, true);
+  window.addEventListener("pointerup", () => { interacting = false; wakeRefresh(); }, true);
+  window.addEventListener("pointercancel", () => { interacting = false; wakeRefresh(); }, true);
+  window.addEventListener("focus", () => { interacting = false; if (foreground?.locked !== true) { pauseSince = 0; setPaused(false); } requestRefresh(); });
+  const wakeRefresh = () => { policyGeneration++; window.clearTimeout(policyTimer); policyTimer = window.setTimeout(checkRefresh, 0); };
+  const requestRefresh = () => { void invoke("refresh_foreground_snapshot").catch(() => {}); wakeRefresh(); };
+  window.addEventListener("pageshow", requestRefresh);
+  window.addEventListener("visibilitychange", () => { if (!document.hidden) requestRefresh(); });
   const checkRefresh = async () => {
     window.clearTimeout(policyTimer);
+    const requested = ++policyGeneration; // 旧读取不得覆盖锁屏通知或更新的设置。
     try {
       if (monitorId) {
-        const pause = await invoke("get_desktop_refresh_policy", { monitorId });
+        const policy = await invoke("get_desktop_refresh_policy", { monitorId });
+        if (requested !== policyGeneration) return;
+        acceptForeground(policy.snapshot);
+        if (foreground?.locked === true) { setPaused(true); return; }
+        const covered = foreground?.coverage?.find((screen) => screen.monitorId === monitorId);
+        const pause = policy.committed && (
+          (policy.pauseOnFocus && foreground?.externalFocus === true) ||
+          (policy.pauseOnFullscreen && foreground?.externalFocus === true &&
+            (covered?.screen === true || (foreground.maximized === true && covered?.work === true)))
+        );
         if (pause && !interacting && pendingInteractions === 0 && !document.querySelector('.desktop-tile-menu, [role="menu"], input:focus, textarea:focus')) {
           pauseSince ||= performance.now();
           if (performance.now() - pauseSince >= 300) setPaused(true);
         } else { pauseSince = 0; setPaused(false); }
       }
-    } catch { pauseSince = 0; setPaused(false); }
-    finally { policyTimer = pauseSince && !refreshPaused ? window.setTimeout(checkRefresh, 350) : policyFallback ? window.setTimeout(checkRefresh, 5000) : undefined; }
+    } catch { if (requested === policyGeneration && foreground?.locked !== true) { pauseSince = 0; setPaused(false); } }
+    finally {
+      if (requested === policyGeneration && pauseSince && !refreshPaused) policyTimer = window.setTimeout(checkRefresh, 350);
+    }
   };
 
   const eventCommands = {
@@ -217,6 +235,8 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
 
   const eventSubscriptions = new Map(); // 已迁移事件的本页订阅，不保留历史消息。
   const dispatch = (name, payload) => {
+    if (name === "desktop-refresh-policy-changed") acceptForeground(payload);
+    if (name === "desktop-host-snapshot-changed") requestRefresh();
     if (name === "desktop-refresh-policy-changed" || name === "preferences-changed") {
       wakeRefresh();
     }
@@ -239,11 +259,12 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
       let generation = 0; // 事件先到时废弃旧的初始读取。
       const receive = (payload) => {
         generation++;
-        if (!active || refreshPaused || payload == null) return;
+        if (!active || payload == null) return;
         if (eventName === "desktop-host-snapshot-changed" && !monitorId) {
           monitorId = payload.hosts?.[Number(new URLSearchParams(location.search).get("monitor") || 0)]?.monitor.id;
           if (monitorId) window.setTimeout(checkRefresh, 0);
         }
+        if (refreshPaused) return;
         handler(payload);
       };
       const refresh = async () => {

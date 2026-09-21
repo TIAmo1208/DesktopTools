@@ -78,6 +78,10 @@ pub use desktop_host::{begin_desktop_host_input_drag, end_desktop_host_input_dra
 pub(crate) use desktop_item::refresh_desktop_item_snapshot;
 pub use desktop_item::{delete_desktop_items, get_desktop_item_snapshot, open_desktop_items, paste_desktop_items, rename_desktop_item, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag};
 pub use notifications::{publish_message_notification, sync_message_appearance};
+
+/// 普通 Tauri 页面读取与桌面宿主相同的锁屏及前台快照。
+#[tauri::command]
+pub(crate) fn get_foreground_snapshot() -> crate::platform::windows::refresh_policy::ForegroundSnapshot { crate::platform::windows::refresh_policy::foreground_snapshot() }
 pub(crate) use workspace::reconcile_workspace_environment;
 pub use workspace::{apply_workspace_command, apply_workspace_interaction, get_workspace_snapshot, inspect_workspace_backup, list_workspace_auto_snapshots, redo_workspace, restore_workspace_backup, undo_workspace, write_workspace_backup};
 
@@ -157,9 +161,15 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         {
             let monitor_id: String = command_argument(&arguments, "monitorId", "显示器标识无效").map_err(serialize_error)?; // 当前页面的显示器身份。
             let snapshot = runtime.snapshot().map_err(serialize_error)?; // 暂停只适用于已完成接管的宿主。
-            let monitor = snapshot.hosts.iter().find(|host| host.monitor.id == monitor_id).ok_or_else(|| serialize_error("显示器不存在"))?; // 不接受页面外的未知显示器。
+            runtime.validate_monitor_id(&monitor_id).map_err(serialize_error)?;
             let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?; // 每次读取已保存的开关。
-            serialize_result(snapshot.committed && crate::platform::windows::refresh_policy::should_pause(&monitor.monitor, preferences.pause_on_fullscreen, preferences.pause_on_focus))
+            let foreground = crate::platform::windows::refresh_policy::foreground_snapshot(); // 页面与原生消息共享同一前台事实。
+            serialize_result(serde_json::json!({ "snapshot": foreground, "committed": snapshot.committed, "pauseOnFocus": preferences.pause_on_focus, "pauseOnFullscreen": preferences.pause_on_fullscreen }))
+        }
+        "refresh_foreground_snapshot" =>
+        {
+            crate::platform::windows::refresh_policy::request_sample();
+            serialize_result(())
         }
         "record_renderer_diagnostic" =>
         {
