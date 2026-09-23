@@ -303,6 +303,22 @@ fn component_layout_persists_and_projects_without_losing_ownership()
     }
 }
 
+/// 新组件默认边界避开同一显示器上的已有格子。
+#[test]
+fn next_component_bounds_avoids_existing_tiles()
+{
+    let path = snapshot_path("component-position");
+    let existing = ComponentInstanceSnapshot { instance_id: "official.collect-box.default".to_string(), component_id: "official.collect-box".to_string(), monitor_id: "DISPLAY1".to_string(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 24.0, top: 24.0, width: 360.0, height: 280.0 }, state_version: 1, state: serde_json::json!({}) };
+    let state = WorkspaceState::load_with_components(path.clone(), &[existing]).unwrap();
+    let next = state.next_component_bounds("DISPLAY1", 360.0, 280.0).unwrap();
+    assert_ne!((next.left, next.top), (24.0, 24.0));
+    drop(state);
+    if path.exists()
+    {
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 /// 验证排序事务覆盖归属、拖动、重命名、历史和持久化边界。
 #[test]
 fn fence_sorting_is_persisted_and_applies_to_every_membership_path()

@@ -245,8 +245,8 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
 
   // 权威布局、桌面项目及组件注册事件使用真实投递。
   const listen = async (eventName, handler) => {
-    if (eventName === "folder-portal-changed") {
-      const subscription = { receive: (payload) => { if (!refreshPaused || payload.error) handler(payload); } }; // 暂停仍交付监听失效，避免恢复时保留已终止订阅。
+    if (eventName === "folder-portal-changed" || eventName === "collect-items-changed") {
+      const subscription = { receive: (payload) => { if (!refreshPaused || payload?.error || payload?.deletedName) handler(payload); } }; // 主动删除即使暂停也必须移除会话缓存。
       if (!eventSubscriptions.has(eventName)) eventSubscriptions.set(eventName, new Set());
       eventSubscriptions.get(eventName).add(subscription);
       return () => eventSubscriptions.get(eventName)?.delete(subscription);
@@ -296,7 +296,7 @@ fn raw_hwnd(raw: isize) -> HWND { HWND(raw as *mut c_void) }
 pub(crate) fn install_host_events(app: &AppHandle)
 {
     super::refresh_policy::start_events(app);
-    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed"]
+    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed"]
     {
         let handle = app.clone(); // 原生窗口所属的 UI 调度器。
         app.listen(name, move |event| {
@@ -311,7 +311,7 @@ pub(crate) fn install_host_events(app: &AppHandle)
                         {
                             continue;
                         }
-                        if !matches!(name, "desktop-refresh-policy-changed" | "preferences-changed") && !watcher_failed && super::refresh_policy::is_paused(&host.monitor_id)
+                        if !matches!(name, "desktop-refresh-policy-changed" | "preferences-changed" | "collect-items-changed") && !watcher_failed && super::refresh_policy::is_paused(&host.monitor_id)
                         {
                             continue;
                         }

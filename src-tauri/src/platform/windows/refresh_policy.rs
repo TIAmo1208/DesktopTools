@@ -133,6 +133,19 @@ pub(crate) fn notifications_suppressed() -> bool
     SWITCHING.load(Ordering::Acquire) || snapshot.locked != Some(false) || snapshot.fullscreen != Some(false)
 }
 
+/// 为不依赖真实前台采样的原生通知绘制测试提供确定的可见状态。
+#[cfg(test)]
+pub(crate) fn assume_notifications_visible_for_test()
+{
+    if let Ok(mut snapshot) = SNAPSHOT.lock()
+    {
+        snapshot.locked = Some(false);
+        snapshot.fullscreen = Some(false);
+        snapshot.exclusive_fullscreen = Some(false);
+        snapshot.coverage = Some(Vec::new());
+    }
+}
+
 /// 合并独立证据；任一确认全屏即可抑制，全部否定才确认非全屏。
 fn combine_fullscreen(coverage: Option<&Vec<Coverage>>, exclusive: Option<bool>) -> Option<bool>
 {

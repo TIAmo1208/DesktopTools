@@ -75,7 +75,7 @@ fn migrate_config_directory(source: &std::path::Path, target: &std::path::Path, 
         return Err(io::Error::other("配置目录不能互相包含，且目标目录必须为空"));
     }
     // 只复制本应用拥有的数据；显式队列遍历备份目录，不跟随链接或重解析点。
-    let mut pending = vec![(source.join("settings.json"), target.join("settings.json")), (source.join("workspace-layout.json"), target.join("workspace-layout.json")), (source.join("workspace-layout.snapshots"), target.join("workspace-layout.snapshots"))]; // 等待复制的固定数据入口及备份子项。
+    let mut pending = vec![(source.join("settings.json"), target.join("settings.json")), (source.join("workspace-layout.json"), target.join("workspace-layout.json")), (source.join("workspace-layout.snapshots"), target.join("workspace-layout.snapshots")), (source.join("collect"), target.join("collect"))]; // 等待复制的固定数据入口、备份及共享收集箱。
     while let Some((from, to)) = pending.pop()
     {
         use std::os::windows::fs::MetadataExt;

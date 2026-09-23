@@ -1,0 +1,7 @@
+{
+    "$schema": "../gen/schemas/desktop-schema.json",
+    "identifier": "collect-editor-close",
+    "description": "收集项编辑窗完成保存或明确放弃后关闭自身",
+    "windows": ["collect-editor-*"],
+    "permissions": ["core:window:allow-destroy"]
+}

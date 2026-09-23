@@ -52,7 +52,10 @@ const ensureSession = () => {
             document.documentElement.dataset.sessionLocked = String(locked);
             if (locked) {
                 for (const animation of document.getAnimations()) {
-                    if (animation.playState === "running") { sessionAnimations.add(animation); animation.pause(); }
+                    if (animation.playState === "running") {
+                        sessionAnimations.add(animation);
+                        animation.pause();
+                    }
                 }
             } else {
                 for (const animation of sessionAnimations) animation.play();
@@ -71,7 +74,10 @@ const ensureSession = () => {
 const waitForUnlock = async () => {
     if (!locked) return;
     await new Promise<void>((resolve) => {
-        const resume = () => { resumeWindow.delete(resume); resolve(); }; // 一次性等待，不使用计时器。
+        const resume = () => {
+            resumeWindow.delete(resume);
+            resolve();
+        }; // 一次性等待，不使用计时器。
         resumeWindow.add(resume);
     });
 };
@@ -95,7 +101,11 @@ const listenWindow = async <T>(eventName: string, handler: (payload: T) => void)
     let active = true; // 退订后拒绝迟到交付。
     let pending: T | undefined; // 最新完整事件，不保存历史序列。
     const resume = () => {
-        if (active && pending !== undefined) { const latest = pending; pending = undefined; handler(latest); }
+        if (active && pending !== undefined) {
+            const latest = pending;
+            pending = undefined;
+            handler(latest);
+        }
     }; // 当前非桌面页面订阅均为完整状态事件。
     resumeWindow.add(resume);
     const stop = await tauriListen<T>(eventName, (event) => {
@@ -103,5 +113,10 @@ const listenWindow = async <T>(eventName: string, handler: (payload: T) => void)
         if (locked) pending = event.payload;
         else handler(event.payload);
     });
-    return () => { active = false; pending = undefined; resumeWindow.delete(resume); stop(); };
+    return () => {
+        active = false;
+        pending = undefined;
+        resumeWindow.delete(resume);
+        stop();
+    };
 };

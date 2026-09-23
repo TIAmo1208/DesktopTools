@@ -13,6 +13,7 @@ build/
 .scratch/
 release/
 node_modules/
+/public/vditor/
 .node-gyp/
 .npm-cache/
 dist
@@ -24,6 +25,9 @@ dist-ssr
 !src/contracts/settings.test.ts
 !src/bridge/folderPortal.test.ts
 !src/bridge/nativeHostEvents.test.ts
+!src/features/components/collectEditorLinks.test.ts
+!src/bridge/collect.test.ts
+!src/features/components/collectItemState.test.ts
 *.spec.*
 temp/
 

@@ -633,6 +633,12 @@ pub enum WorkspaceCommand
         /// 拖动期间产生的围栏滚动位置。
         fence_scrolls: Vec<WorkspaceFenceScroll>,
     },
+    /// 创建一个可共享布局的官方组件实例。
+    #[serde(rename = "create-component")]
+    CreateComponent
+    {
+        component_id: String, bounds: WorkspaceRect
+    },
     /// 提交组件移动后的显示器归属和完整边界。
     #[serde(rename = "update-component-bounds")]
     UpdateComponentBounds

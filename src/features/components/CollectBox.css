@@ -1,0 +1,106 @@
+/* 收集箱仅拥有手风琴内容，外层视口负责滚动与留白。 */
+.official-component__collect {
+    min-width: 0;
+    color: inherit;
+    font-size: var(--interface-font-size);
+    align-self: start;
+}
+
+/* 默认仅展示标题的条目列表。 */
+.official-component__collect ul {
+    display: grid;
+    gap: 6px;
+    padding: 1px;
+    margin: 0;
+    list-style: none;
+}
+
+/* 手风琴标题表面与整行命中。 */
+.official-component__collect-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    min-height: 38px;
+    padding: 6px 10px;
+    border: 1px solid var(--fence-border);
+    border-radius: 2px;
+    color: inherit;
+    background: var(--fence-surface);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* 长标题省略，图标保持固定尺寸。 */
+.collect-box__title-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* 所有条目图标复用当前文本主题色。 */
+.collect-box__icon,
+.collect-box__icon svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+    flex: none;
+}
+
+/* 展开的摘要区域使用公共焦点色与边框，不改变文字大小。 */
+.official-component__collect-summary {
+    padding: 8px 10px;
+    border: 1px solid var(--fence-focus-border);
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
+/* 摘要最多三行，独立保留编辑命令。 */
+.official-component__collect-summary-text {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    opacity: 0.8;
+}
+
+/* Markdown 摘要不引入段落边距。 */
+.official-component__collect-summary-text :is(p, h1, h2, h3, h4, h5, h6) {
+    margin: 0;
+    font: inherit;
+}
+
+/* 编辑入口与标题工具保持同一命中尺寸。 */
+.official-component__collect-summary button {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    margin-top: 8px;
+    border: 1px solid var(--fence-border);
+    border-radius: 2px;
+    color: inherit;
+    background: transparent;
+}
+
+/* 鼠标悬停与键盘焦点保持可辨识。 */
+.official-component__collect button:hover {
+    background: color-mix(in srgb, var(--fence-text) 14%, transparent);
+}
+
+/* 键盘焦点不依赖壁纸颜色。 */
+.official-component__collect button:focus-visible {
+    outline: 1px solid var(--fence-focus-border);
+    outline-offset: 1px;
+}
+
+/* 不可用条目不能打开编辑窗。 */
+.official-component__collect button:disabled {
+    opacity: 0.5;
+}

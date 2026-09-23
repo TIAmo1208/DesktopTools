@@ -183,6 +183,7 @@ export type WorkspaceCommand =
           beforeItemId: string | null;
           fenceScrolls: WorkspaceFenceScroll[];
       }
+    | { type: "create-component"; componentId: string; bounds: WorkspaceRect }
     | { type: "update-component-bounds"; instanceId: string; bounds: WorkspaceRect }
     | { type: "update-component-state"; instanceId: string; stateVersion: number; state: unknown }
     | { type: "undo-layout" }

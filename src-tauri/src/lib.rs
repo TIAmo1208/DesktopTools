@@ -1,4 +1,5 @@
 mod app;
+mod collect;
 mod commands;
 mod component_runtime;
 pub mod contracts;
@@ -85,6 +86,18 @@ pub fn run()
             commands::folder_portal::show_folder_portal_menu,
             commands::folder_portal::rename_folder_portal_item,
             commands::folder_portal::prepare_folder_portal_drag,
+            commands::collect::get_collect_items,
+            commands::collect::open_collect_editor,
+            commands::collect::create_collect_item,
+            commands::collect::save_collect_item,
+            commands::collect::import_collect_resource,
+            commands::collect::import_collect_rendered_resource,
+            commands::collect::write_collect_resource,
+            commands::collect::rename_collect_item,
+            commands::collect::set_collect_item_pinned,
+            commands::collect::delete_collect_item,
+            commands::collect::restore_collect_item,
+            commands::create_collect_box,
             get_component_runtime_snapshot,
             invoke_component_capability,
             get_current_music_session,
@@ -122,6 +135,8 @@ pub fn run()
             let config_directory = crate::app::settings::prepare_config_directory(&app.path().app_data_dir()?)?; // 在后台写入线程启动前完成配置迁移。
             let settings_path = config_directory.join("settings.json"); // 当前用户的正式设置文件。
             app.manage(crate::app::settings::SettingsState::load(settings_path)?);
+            std::fs::create_dir_all(config_directory.join("collect"))?;
+            let _ = crate::platform::windows::directory_watch::start(app.handle().clone(), "collect".to_string(), config_directory.join("collect"));
             app.manage(crate::platform::windows::settings::WindowsAccentMonitor::install(app.handle().clone())?);
             app.manage(ToastManager::install(app.state::<crate::app::settings::SettingsState>().preferences()?)?);
             crate::app::tray::install(app.handle())?;

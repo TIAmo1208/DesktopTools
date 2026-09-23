@@ -1,0 +1,196 @@
+use crate::app::settings::SettingsState;
+use crate::collect::{self, CollectItem};
+use std::path::Path;
+use tauri::{AppHandle, Emitter, Manager, State};
+
+/// 只在当前会话维护文件与窗口的关联；不同文件分配独立窗口。
+#[derive(Default)]
+struct EditorWindows
+{
+    labels: std::collections::BTreeMap<std::path::PathBuf, String>, // 规范文件路径到窗口标识。
+    next_id: u64,                                                   // 单调分配，重命名后旧路径再次创建也不会复用活跃窗口标识。
+}
+
+impl EditorWindows
+{
+    /// 文件改名后保留原窗口，旧文件名可独立创建新条目。
+    fn rename(&mut self, old: &Path, new: std::path::PathBuf) -> Option<String>
+    {
+        let label = self.labels.remove(old)?; // 已打开文件的窗口标识。
+        self.labels.insert(new, label.clone());
+        Some(label)
+    }
+
+    /// 同一文件复用标识，不同文件分配新的独立窗口标识。
+    fn label(&mut self, path: std::path::PathBuf) -> String
+    {
+        self.labels
+            .entry(path)
+            .or_insert_with(|| {
+                self.next_id += 1;
+                format!("collect-editor-{}", self.next_id)
+            })
+            .clone()
+    }
+}
+
+static EDITORS: std::sync::LazyLock<std::sync::Mutex<EditorWindows>> = std::sync::LazyLock::new(Default::default); // 打开和应用内重命名串行维护关联。
+
+/// 使用规范绝对路径统一 Windows 文件名大小写和相对路径表示。
+fn editor_path(root: &Path, name: &str) -> Result<std::path::PathBuf, String>
+{
+    let path = collect::safe_file(root, name).and_then(|path| path.canonicalize()).map_err(|error| format!("收集项不可用：{error}"))?; // 必须是已存在的收集项。
+    if !path.is_file()
+    {
+        return Err("收集项不是文件".into());
+    }
+    Ok(std::path::PathBuf::from(path.to_string_lossy().to_lowercase()))
+}
+
+fn config(state: &State<'_, SettingsState>) -> Result<std::path::PathBuf, String> { crate::app::settings::resolve_config_directory(&state.preferences()?.config_directory) }
+fn changed(app: &AppHandle) { let _ = app.emit("collect-items-changed", ()); }
+#[tauri::command]
+pub async fn open_collect_editor(app: AppHandle, name: String) -> Result<(), String> { tauri::async_runtime::spawn_blocking(move || execute_open_collect_editor(app, name)).await.map_err(|error| format!("编辑窗任务失败：{error}"))? }
+
+/// 在后台线程创建或聚焦文件编辑窗，避免同步 IPC 阻塞 Windows 消息循环。
+pub(crate) fn execute_open_collect_editor(app: AppHandle, name: String) -> Result<(), String>
+{
+    let settings = app.state::<SettingsState>(); // 当前配置目录。
+    let root = collect::directory(&config(&settings)?); // 工作区共享收集箱。
+    let mut editors = EDITORS.lock().map_err(|_| "编辑窗状态不可用")?; // 串行检查和创建，避免重复打开。
+    let path = editor_path(&root, &name)?; // 当前文件身份。
+    editors.labels.retain(|_, label| app.get_webview_window(label).is_some());
+    let label = editors.label(path.clone()); // 文件独立的窗口标识。
+    if let Some(window) = app.get_webview_window(&label)
+    {
+        window.unminimize().and_then(|_| window.show()).and_then(|_| window.set_focus()).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let result = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(format!("index.html?collect-editor=1&name={}", percent_encode_query(&name)).into())).title(format!("编辑收集项 — {name}")).inner_size(720.0, 520.0).min_inner_size(420.0, 320.0).build(); // 按需创建，不限制其他文件的窗口。
+    if result.is_err()
+    {
+        editors.labels.remove(&path);
+    }
+    result.map(|_| ()).map_err(|e| format!("打开收集项编辑窗失败：{e}"))
+}
+
+/// 将文件名安全编码为编辑窗查询参数，避免 `&` 等字符改变条目身份。
+fn percent_encode_query(value: &str) -> String
+{
+    value
+        .bytes()
+        .flat_map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte)
+            {
+                vec![byte as char]
+            }
+            else
+            {
+                format!("%{byte:02X}").chars().collect()
+            }
+        })
+        .collect()
+}
+#[tauri::command]
+pub fn get_collect_items(settings: State<'_, SettingsState>) -> Result<Vec<CollectItem>, String> { collect::list(Path::new(&config(&settings)?)).map_err(|e| format!("读取收集箱失败：{e}")) }
+#[tauri::command]
+pub fn create_collect_item(app: AppHandle, settings: State<'_, SettingsState>, content: String) -> Result<CollectItem, String>
+{
+    let item = collect::create(Path::new(&config(&settings)?), &content).map_err(|e| format!("创建收集项失败：{e}"))?;
+    changed(&app);
+    Ok(item)
+}
+#[tauri::command]
+pub fn save_collect_item(app: AppHandle, settings: State<'_, SettingsState>, name: String, content: String) -> Result<(), String>
+{
+    collect::save(Path::new(&config(&settings)?), &name, &content).map_err(|e| format!("保存收集项失败：{e}"))?;
+    changed(&app);
+    Ok(())
+}
+#[tauri::command]
+pub fn import_collect_resource(settings: State<'_, SettingsState>, name: String, source: String, mode: String) -> Result<String, String> { collect::import_resource(Path::new(&config(&settings)?), &name, Path::new(&source), &mode).map_err(|e| format!("收入图片失败：{e}")) }
+#[tauri::command]
+pub fn import_collect_rendered_resource(settings: State<'_, SettingsState>, name: String, reference: String, mode: String) -> Result<String, String> { collect::import_rendered_resource(Path::new(&config(&settings)?), &name, &reference, &mode).map_err(|e| format!("收入图片失败：{e}")) }
+#[tauri::command]
+pub fn write_collect_resource(settings: State<'_, SettingsState>, name: String, file_name: String, bytes: Vec<u8>) -> Result<String, String> { collect::write_resource_bytes(Path::new(&config(&settings)?), &name, &file_name, &bytes).map_err(|e| format!("写入图片资源失败：{e}")) }
+#[tauri::command]
+pub async fn rename_collect_item(app: AppHandle, old_name: String, new_name: String, draft: Option<String>) -> Result<String, String> { tauri::async_runtime::spawn_blocking(move || execute_rename_collect_item(app, old_name, new_name, draft)).await.map_err(|error| format!("重命名任务失败：{error}"))? }
+
+/// 与窗口创建共用后台锁，主线程保持可处理窗口创建和标题更新。
+pub(crate) fn execute_rename_collect_item(app: AppHandle, old_name: String, new_name: String, draft: Option<String>) -> Result<String, String>
+{
+    let settings = app.state::<SettingsState>(); // 后台任务读取当前配置。
+    let config = config(&settings)?; // 当前共享配置目录。
+    let root = collect::directory(&config); // 文件身份解析范围。
+    let mut editors = EDITORS.lock().map_err(|_| "编辑窗状态不可用")?; // 与打开窗口共用互斥边界。
+    let old_path = editor_path(&root, &old_name)?; // 改名前的文件身份。
+    let renamed_draft = collect::rename(&config, &old_name, &new_name, draft.as_deref()).map_err(|e| format!("重命名收集项失败：{e}"))?; // 草稿仅转换返回，不写入磁盘。
+    let new_path = editor_path(&root, &new_name)?; // 成功改名后的文件身份。
+    if let Some(label) = editors.rename(&old_path, new_path)
+    {
+        if let Some(window) = app.get_webview_window(&label)
+        {
+            let _ = window.set_title(&format!("编辑收集项 — {new_name}"));
+        }
+    }
+    changed(&app);
+    Ok(renamed_draft)
+}
+#[tauri::command]
+pub fn set_collect_item_pinned(app: AppHandle, settings: State<'_, SettingsState>, name: String, pinned: bool) -> Result<(), String>
+{
+    collect::set_pinned(Path::new(&config(&settings)?), &name, pinned).map_err(|e| format!("更新置顶失败：{e}"))?;
+    changed(&app);
+    Ok(())
+}
+#[tauri::command]
+pub fn delete_collect_item(app: AppHandle, settings: State<'_, SettingsState>, name: String) -> Result<(), String>
+{
+    collect::delete(Path::new(&config(&settings)?), &name).map_err(|e| format!("删除收集项失败：{e}"))?;
+    let _ = app.emit("collect-items-changed", serde_json::json!({ "deletedName": name })); // 主动删除清理所有格子的会话缓存。
+    Ok(())
+}
+#[tauri::command]
+pub fn restore_collect_item(app: AppHandle, settings: State<'_, SettingsState>) -> Result<Option<CollectItem>, String>
+{
+    let item = collect::restore_latest(Path::new(&config(&settings)?)).map_err(|e| format!("恢复收集项失败：{e}"))?;
+    changed(&app);
+    Ok(item)
+}
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+
+    /// 同文件去重、不同文件并行以及改名后旧名称复用均保持窗口隔离。
+    #[test]
+    fn editor_windows_are_scoped_to_each_file()
+    {
+        let mut editors = EditorWindows::default(); // 独立会话关联。
+        let first = std::path::PathBuf::from("first.md"); // 第一份文件。
+        let second = std::path::PathBuf::from("second.md"); // 第二份文件。
+        let first_label = editors.label(first.clone()); // 第一扇窗口。
+        assert_eq!(editors.label(first.clone()), first_label);
+        assert_ne!(editors.label(second.clone()), first_label);
+        let renamed = std::path::PathBuf::from("renamed.md"); // 改名后的同一文件。
+        assert_eq!(editors.rename(&first, renamed.clone()), Some(first_label.clone()));
+        assert_eq!(editors.label(renamed.clone()), first_label);
+        assert_ne!(editors.label(first), first_label);
+        editors.labels.remove(&renamed);
+        assert_ne!(editors.label(renamed), first_label);
+    }
+
+    /// 文件名经校验后按真实路径去重，路径越界和缺失文件不能建立窗口。
+    #[test]
+    fn editor_paths_validate_files_and_windows_case()
+    {
+        let root = std::env::temp_dir().join(format!("desktop-tools-editor-{}", std::process::id())); // 测试专用目录。
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Note.md"), "content").unwrap();
+        assert_eq!(editor_path(&root, "Note.md").unwrap(), editor_path(&root, "note.md").unwrap());
+        assert!(editor_path(&root, "../Note.md").is_err());
+        assert!(editor_path(&root, "missing.md").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

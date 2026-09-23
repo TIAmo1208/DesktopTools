@@ -30,6 +30,7 @@ pub(crate) fn start(app: tauri::AppHandle, monitor: String, path: std::path::Pat
     let stop = unsafe { OwnedHandle::from_raw_handle(stop.0) }; // 保持至线程退出。
     let stop_raw = stop.as_raw_handle() as usize; // 线程借用，所有者由注册表保持。
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed); // 本次订阅身份。
+    let event_monitor = monitor.clone();
     WATCHES.lock().map_err(|_| "目录监听锁不可用")?.insert(id, Subscription { monitor, stop });
     let (ready, initialized) = std::sync::mpsc::sync_channel(1); // 首次 I/O 已提交后才确认订阅成功。
     // ponytail: 每个活动门户一个阻塞线程；大量同路径门户时按规范化路径共享监听。
@@ -95,7 +96,7 @@ pub(crate) fn start(app: tauri::AppHandle, monitor: String, path: std::path::Pat
                         let _ = GetOverlappedResult(*directory, &overlap, &mut bytes, true);
                         result?;
                     }
-                    let _ = app.emit("folder-portal-changed", serde_json::json!({"subscription": id}));
+                    let _ = app.emit("folder-portal-changed", serde_json::json!({"subscription": id, "monitor": WATCHES.lock().ok().and_then(|watches| watches.get(&id).map(|watch| watch.monitor.clone()))}));
                 }
             }
         })(); // 溢出零字节不解释增量，直接通知完整重读。
@@ -103,7 +104,7 @@ pub(crate) fn start(app: tauri::AppHandle, monitor: String, path: std::path::Pat
         {
             let _ = ready.try_send(Err(error.to_string()));
             crate::log_warn!("门户：目录监听失效，目录={}，错误={error}", path.display());
-            let _ = app.emit("folder-portal-changed", serde_json::json!({"subscription": id,"error":error.to_string()}));
+            let _ = app.emit("folder-portal-changed", serde_json::json!({"subscription": id,"monitor":event_monitor,"error":error.to_string()}));
         }
         if let Ok(mut watches) = WATCHES.lock()
         {

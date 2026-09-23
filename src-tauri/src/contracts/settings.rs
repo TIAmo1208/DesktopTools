@@ -78,6 +78,9 @@ pub struct ApplicationPreferences
     pub fence_grid: GridPreferences,           // 围栏平铺格子尺寸与间距。
     pub clock_enabled: bool,                   // 本地时间格子显隐，隐藏不删除布局。
     pub music_enabled: bool,                   // 音乐控制显隐，默认关闭且保留布局。
+    pub collect_enabled: bool,                 // 收集箱格子显隐。
+    pub collect_auto_save_on_exit: bool,       // 编辑窗退出时自动保存。
+    pub collect_image_import_mode: String,     // 图片收入方式：copy、move 或 link。
     pub music_show_source: bool,               // 音乐控制显示媒体来源。
     pub clock_hour12: bool,                    // 本地时间使用十二小时制。
     pub clock_show_seconds: bool,              // 本地时间显示秒数。
@@ -95,7 +98,7 @@ pub struct ApplicationPreferences
 impl Default for ApplicationPreferences
 {
     /// 创建首次启动的应用偏好，音乐默认关闭。
-    fn default() -> Self { Self { theme: ApplicationTheme::System, desktop_appearance: DesktopAppearance::default(), config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(), double_click_to_open: true, accent_color: "#2563eb".to_string(), use_windows_accent_color: false, corner_radius: 6, font_family: "Segoe UI Variable".to_string(), font_size: 13, desktop_grid: GridPreferences::default(), fence_grid: GridPreferences { column_gap: 6, ..Default::default() }, clock_enabled: true, music_enabled: false, music_show_source: true, clock_hour12: false, clock_show_seconds: true, debug_enabled: true, debug_show_details: true, component_snap: true, follow_system_reduced_motion: true, interface_animations: true, folder_portal_enabled: true, pause_on_fullscreen: false, pause_on_focus: false } }
+    fn default() -> Self { Self { theme: ApplicationTheme::System, desktop_appearance: DesktopAppearance::default(), config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(), double_click_to_open: true, accent_color: "#2563eb".to_string(), use_windows_accent_color: false, corner_radius: 6, font_family: "Segoe UI Variable".to_string(), font_size: 13, desktop_grid: GridPreferences::default(), fence_grid: GridPreferences { column_gap: 6, ..Default::default() }, clock_enabled: true, music_enabled: false, collect_enabled: true, collect_auto_save_on_exit: false, collect_image_import_mode: "copy".to_string(), music_show_source: true, clock_hour12: false, clock_show_seconds: true, debug_enabled: true, debug_show_details: true, component_snap: true, follow_system_reduced_motion: true, interface_animations: true, folder_portal_enabled: true, pause_on_fullscreen: false, pause_on_focus: false } }
 }
 
 /// 校验配置文件和命令输入共用的外观边界。
@@ -116,6 +119,10 @@ impl ApplicationPreferences
         if directory.is_empty() || suffix.contains(['%', '\0', '*', '?', '"', '<', '>', '|'])
         {
             return Err("配置目录不能为空，且不能包含未知变量或特殊字符".to_string());
+        }
+        if !matches!(self.collect_image_import_mode.as_str(), "copy" | "move" | "link")
+        {
+            return Err("图片收入方式无效".to_string());
         }
         self.desktop_grid.validate()?;
         self.fence_grid.validate()?;

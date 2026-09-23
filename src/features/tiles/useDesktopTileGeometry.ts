@@ -12,6 +12,7 @@ interface DesktopTileGeometryOptions {
     surfaceRef: RefObject<HTMLElement | null>; // 当前公共表面。
     bounds: WorkspaceRect; // 权威展开边界。
     collapsed: boolean; // 当前可见折叠状态。
+    collapsedSize?: { width?: number; height?: number }; // 与公共外壳一致的折叠边界。
     title: string; // 跨屏预览标题。
     minimum: { width: number; height: number }; // 内容最小可读尺寸。
     snap: boolean; // 宿主吸附偏好。
@@ -40,7 +41,10 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
         const handle = event.currentTarget; // 异步等待前保存指针捕获节点。
         const pointerId = event.pointerId; // 当前交互唯一指针。
         const startPointer = { x: event.clientX, y: event.clientY }; // 当前客户区起点。
-        const start = { ...options.bounds }; // 取消恢复的完整权威边界。
+        const start = {
+            ...options.bounds,
+            ...(options.collapsed ? { width: options.collapsedSize?.width ?? options.bounds.width, height: options.collapsedSize?.height ?? 28 } : {}),
+        }; // 拖动和吸附使用当前可见尺寸。
         const content = direction ? undefined : captureTileDragVisual(element); // 移动冻结当前帧，缩放保留真实组件的响应式布局。
         const frozen = content ? createTileDragPreview(content) : undefined; // 缩放不复制计算后的固定轨道和内容尺寸。
         const originalOpacity = element.style.opacity; // 跨屏隐藏源表面，结束时恢复。
@@ -109,8 +113,8 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
             Object.assign((frozen ?? element).style, {
                 left: `${rect.left}px`,
                 top: `${rect.top}px`,
-                width: `${rect.width}px`,
-                height: `${options.collapsed ? 28 : rect.height}px`,
+                width: `${options.collapsed ? (options.collapsedSize?.width ?? rect.width) : rect.width}px`,
+                height: `${options.collapsed ? (options.collapsedSize?.height ?? 28) : rect.height}px`,
             });
         };
         /** 更新本屏几何和跨屏物理指针预览。 */
@@ -148,7 +152,18 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                         pointer: physicalPointToMonitorDip(physical, target),
                         origin: { left: startPointer.x, top: startPointer.y },
                         delta: { left: delta.x, top: delta.y },
-                        visuals: [{ title: options.title, content, bounds: { ...start, height: options.collapsed ? 28 : start.height } }],
+                        visuals: [
+                            {
+                                title: options.title,
+                                content,
+                                bounds: {
+                                    ...start,
+                                    ...(options.collapsed
+                                        ? { width: options.collapsedSize?.width ?? start.width, height: options.collapsedSize?.height ?? 28 }
+                                        : {}),
+                                },
+                            },
+                        ],
                     };
                     void publishCrossMonitorDrag(cross, "move").catch(options.onFailure);
                 }
@@ -259,7 +274,7 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                     window.removeEventListener("keydown", handlePendingKey);
                     window.removeEventListener("blur", handlePendingCancel);
                     cancel.current = () => undefined; // 领域提交开始后只等待结果，禁止新手势并避免承诺撤回已提交命令。
-                    await options.onCommit(target, monitor?.id);
+                    await options.onCommit(options.collapsed ? { ...target, width: options.bounds.width, height: options.bounds.height } : target, monitor?.id); // 折叠移动只提交位置，保留展开尺寸。
                 } catch (error) {
                     render(start);
                     if (!abandoned) options.onFailure(error);
@@ -305,8 +320,14 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
             y: event.key === "ArrowUp" ? -8 : event.key === "ArrowDown" ? 8 : 0,
         }; // 既有功能格子键盘步进。
         const viewport = { width: window.innerWidth, height: window.innerHeight }; // 当前逻辑工作区。
-        const next = event.shiftKey ? resizeFence("se", options.bounds, delta, viewport, options.minimum) : moveFence(options.bounds, delta, viewport); // 复用鼠标交互的几何算法。
-        void options.onCommit(next, options.currentMonitor?.id).catch(options.onFailure);
+        const visible = {
+            ...options.bounds,
+            ...(options.collapsed ? { width: options.collapsedSize?.width ?? options.bounds.width, height: options.collapsedSize?.height ?? 28 } : {}),
+        }; // 键盘沿用当前可见边界。
+        const next = event.shiftKey ? resizeFence("se", options.bounds, delta, viewport, options.minimum) : moveFence(visible, delta, viewport); // 复用鼠标交互的几何算法。
+        void options
+            .onCommit(options.collapsed ? { ...next, width: options.bounds.width, height: options.bounds.height } : next, options.currentMonitor?.id)
+            .catch(options.onFailure);
     };
     return { handlePointerDown, handleKeyDown };
 };
