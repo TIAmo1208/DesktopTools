@@ -2,7 +2,7 @@
 .desktop-tile {
     position: absolute;
     display: grid;
-    grid-template-rows: 28px minmax(0, 1fr);
+    grid-template-rows: var(--tile-header-height, 28px) minmax(0, 1fr);
     overflow: visible;
     box-sizing: border-box;
     padding: 1px;
@@ -28,6 +28,11 @@
 /* 当前语义焦点格子临时置顶，持久布局层级保持原值。 */
 .desktop-tile[data-keyboard-focus="true"] {
     z-index: 17000 !important;
+}
+
+/* 临时展开覆盖焦点格子，离开后恢复布局层级，菜单与拖动预览仍在上方。 */
+.desktop-tile[data-auto-expanded="true"] {
+    z-index: 18000 !important;
 }
 
 /* 悬浮标题和无标题组合不占内容轨道。 */

@@ -9,7 +9,7 @@ fn registration_replaces_stale_actions()
     super::write_value(&obsolete, "MUIVerb", "编辑布局").unwrap();
     for _ in 0..2
     {
-        super::register_actions(&path, executable).unwrap();
+        super::register_actions(&path, executable, true).unwrap();
     }
     let mut key = super::HKEY::default(); // 测试读取句柄。
     assert_eq!(unsafe { RegOpenKeyExW(super::HKEY_CURRENT_USER, &super::HSTRING::from(obsolete), None, KEY_READ, &mut key) }.0, 2);
@@ -23,7 +23,7 @@ fn registration_replaces_stale_actions()
 }
 /// 安装后从 Shell 桌面视图直接枚举菜单，验证注册项由系统加载而非应用追加。
 #[test]
-#[ignore = "要求先运行正式程序的 --register-desktop-menu"]
+#[ignore = "要求正式程序保持运行以提供二级功能菜单；退出态是一级打开程序"]
 fn registered_desktop_menu_is_loaded_by_shell()
 {
     use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
@@ -73,4 +73,57 @@ fn desktop_menu_commands_quote_paths_and_reject_unknown_actions()
     let path = std::path::Path::new(r"C:\Program Files\桌面工具\desktop-tools.exe"); // 有空格的 Unicode 安装路径。
     assert_eq!(super::command_line(path, "settings").unwrap(), "\"C:\\Program Files\\桌面工具\\desktop-tools.exe\" --desktop-menu settings");
     assert!(super::command_line(path, "settings & calc").is_err());
+}
+
+/// 退出态必须是一级命令，反复切换后不能遗留级联或启动子键。
+#[test]
+fn registration_switches_between_root_command_and_cascade()
+{
+    use windows::Win32::System::Registry::{KEY_READ, RegOpenKeyExW, RegQueryValueExW};
+    let path = format!(r"Software\DesktopToolsMenuStateTest-{}", std::process::id()); // 隔离注册表测试键。
+    let executable = std::path::Path::new(r"C:\Program Files\Desktop Tools\desktop-tools.exe"); // 不启动真实程序。
+    for running in [false, true, false, true]
+    {
+        super::register_actions(&path, executable, running).unwrap();
+        let mut root = super::HKEY::default(); // 当前产品父键。
+        unsafe { RegOpenKeyExW(super::HKEY_CURRENT_USER, &super::HSTRING::from(&path), None, KEY_READ, &mut root) }.ok().unwrap();
+        let root = unsafe { super::Owned::new(root) }; // 自动释放句柄。
+        for name in ["SeparatorBefore", "SeparatorAfter"]
+        {
+            unsafe { RegQueryValueExW(*root, &super::HSTRING::from(name), None, None, None, None) }.ok().unwrap();
+        }
+        let cascade = unsafe { RegQueryValueExW(*root, &super::HSTRING::from("SubCommands"), None, None, None, None) }; // 退出态没有级联值。
+        assert_eq!(cascade.0, if running { 0 } else { 2 });
+        for (child, present) in [("command", !running), ("shell", running)]
+        {
+            let mut key = super::HKEY::default(); // 验证真实子键层级。
+            let result = unsafe { RegOpenKeyExW(*root, &super::HSTRING::from(child), None, KEY_READ, &mut key) };
+            assert_eq!(result.0, if present { 0 } else { 2 });
+            if present
+            {
+                drop(unsafe { super::Owned::new(key) });
+            }
+        }
+    }
+    unsafe { super::RegDeleteTreeW(super::HKEY_CURRENT_USER, &super::HSTRING::from(path)) }.ok().unwrap();
+}
+
+/// 每个功能的缓存 ICO 都能由 Windows 实际加载。
+#[test]
+fn menu_icons_load_as_windows_icons()
+{
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, HICON, IMAGE_ICON, LR_LOADFROMFILE, LoadImageW};
+    let directory = std::env::temp_dir().join(format!("desktop-tools-menu-icons-{}", std::process::id())); // 隔离生成资源。
+    super::prepare_menu_icons(&directory).unwrap();
+    for (action, _, _) in super::ACTIONS
+    {
+        let path = directory.join(format!("{action}.ico")); // 真实生成的多尺寸资源。
+        for size in [16, 24, 32, 48]
+        {
+            let icon = unsafe { LoadImageW(None, &super::HSTRING::from(path.as_os_str()), IMAGE_ICON, size, size, LR_LOADFROMFILE) }.unwrap(); // 用系统解码器验证。
+            unsafe { DestroyIcon(HICON(icon.0)) }.unwrap();
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    std::fs::remove_dir(directory).unwrap();
 }

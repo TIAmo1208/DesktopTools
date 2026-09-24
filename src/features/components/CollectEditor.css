@@ -1,0 +1,358 @@
+/* 编辑窗填满内容区，系统标题栏由原生窗口负责。 */
+.collect-editor {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-text);
+    background: var(--color-surface);
+    font: inherit;
+}
+
+/* 信息行固定高度，为输入和按钮边框留足空间。 */
+.collect-editor__header {
+    display: flex;
+    flex: 0 0 52px;
+    align-items: center;
+    gap: 16px;
+    min-width: 0;
+    padding: 7px 16px;
+}
+
+/* 文件区承担压缩，短名称与改名入口相邻。 */
+.collect-editor__name,
+.collect-editor__rename {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+/* 长文件名只在自身范围省略。 */
+.collect-editor__filename {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-weight: 600;
+}
+
+/* 按需输入沿用界面字体、语义颜色和圆角。 */
+.collect-editor__rename input {
+    flex: 1;
+    width: 0;
+    min-width: 32px;
+    height: 38px;
+    padding: 0 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    color: var(--color-text);
+    background: var(--color-surface);
+    font: inherit;
+}
+
+/* 输入焦点不改变布局。 */
+.collect-editor__rename input:focus {
+    outline: none;
+    border-color: var(--color-focus);
+}
+
+/* 状态与扩展名保持单行、固定占位。 */
+.collect-editor__extension,
+.collect-editor__status {
+    flex-shrink: 0;
+    color: var(--color-muted);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+/* 保存失败除文字外使用错误色加强识别。 */
+.collect-editor__status[data-error] {
+    color: var(--color-error);
+}
+
+/* 保存区不参与宽度压缩。 */
+.collect-editor__save {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 16px;
+}
+
+/* 自有命令使用 38px 基线，不覆盖 Vditor 工具。 */
+.collect-editor__header button,
+.collect-editor__actions button,
+.collect-editor__image-menu button {
+    min-height: 38px;
+    min-width: 64px;
+    padding: 0 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    color: var(--color-text);
+    background: var(--color-surface);
+    font: inherit;
+    cursor: pointer;
+}
+
+/* 命令悬停保持尺寸。 */
+.collect-editor__header button:hover:not(:disabled),
+.collect-editor__actions button:hover:not(:disabled),
+.collect-editor__image-menu button:hover:not(:disabled) {
+    background: var(--color-subtle);
+}
+
+/* 禁用命令保留可读标签。 */
+.collect-editor__header button:disabled,
+.collect-editor__actions button:disabled {
+    color: var(--color-muted);
+    background: var(--color-subtle);
+    cursor: default;
+}
+
+/* 文件名图标命令采用紧凑命中区。 */
+.collect-editor__header .collect-editor__icon-button {
+    display: grid;
+    place-items: center;
+    flex: 0 0 28px;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 6px;
+    border: 0;
+    background: transparent;
+}
+
+/* 禁用图标保持尺寸并弱化。 */
+.collect-editor__icon-button:disabled .collect-editor__icon {
+    opacity: 0.5;
+}
+
+/* Lucide 图标继承前景色。 */
+.collect-editor__icon,
+.collect-editor__icon svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+/* 键盘焦点使用统一外环。 */
+.collect-editor button:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
+/* Vditor 由本组件集成，其外观变量映射至应用主题。 */
+.collect-editor__content.vditor {
+    --border-color: var(--color-border);
+    --second-color: var(--color-muted);
+    --panel-background-color: var(--color-surface);
+    --toolbar-background-color: var(--color-subtle);
+    --toolbar-icon-color: var(--color-text);
+    --toolbar-icon-hover-color: var(--color-text);
+    --textarea-background-color: var(--color-surface);
+    --textarea-text-color: var(--color-text);
+    --heading-border-color: var(--color-border);
+    --blockquote-color: var(--color-muted);
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    border: 0;
+    border-radius: 0;
+    font: inherit;
+}
+
+/* 固定工具栏；局部覆盖 Vditor resize 写入的行内左边距。 */
+.collect-editor__content .vditor-toolbar {
+    display: flex;
+    flex: 0 0 40px;
+    align-items: center;
+    padding: 5px 16px;
+    padding-left: 16px !important;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    border-bottom: 1px solid var(--color-border);
+}
+
+/* 去掉 Vditor 手机端工具额外间距。 */
+.collect-editor__content .vditor-toolbar__item {
+    flex: 0 0 28px;
+    float: none;
+    padding: 0;
+}
+
+/* 格式工具采用 28px 命中区。 */
+.collect-editor__content .vditor-toolbar__item > button {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 6px;
+    border-radius: 4px;
+}
+
+/* 线性 SVG 不继承 Vditor 默认的填充和零描边。 */
+.collect-editor__content .vditor-toolbar__item > button svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+}
+
+/* 悬停和启用格式保持工具轨道稳定。 */
+.collect-editor__content .vditor-toolbar__item > button:hover:not(.vditor-menu--disabled),
+.collect-editor__content .vditor-menu--current {
+    background: var(--color-surface);
+}
+
+/* 当前格式使用内边界区分。 */
+.collect-editor__content .vditor-menu--current {
+    box-shadow: inset 0 0 0 1px var(--color-focus);
+}
+
+/* 工具按钮不显示 Vditor 默认提示箭头，避免触发时在工具栏上方出现黑线。 */
+.collect-editor__content .vditor-toolbar__item > button.vditor-tooltipped::before,
+.collect-editor__content .vditor-toolbar__item > button.vditor-tooltipped::after {
+    display: none;
+}
+
+/* 禁用工具不移位。 */
+.collect-editor__content .vditor-menu--disabled {
+    opacity: 0.5;
+}
+
+/* 工具分组预留 12px 分隔轨道。 */
+.collect-editor__content .vditor-toolbar__divider {
+    flex: 0 0 1px;
+    height: 16px;
+    margin: 0 5px 0 6px;
+    border-color: var(--color-border);
+}
+
+/* 标题菜单脱离滚动裁切，锚点位于固定信息行和工具栏下方。 */
+.collect-editor__content .vditor-toolbar .vditor-hint {
+    position: fixed;
+    top: 92px;
+    left: 16px;
+    max-height: calc(100vh - 108px);
+    overflow-y: auto;
+}
+
+/* 正文余高由 flex 分配，不撑开整个窗口。 */
+.collect-editor__content .vditor-content {
+    min-height: 0;
+}
+
+/* 正文独立滚动；局部覆盖 Vditor 重算的行内 padding。 */
+.collect-editor__content .vditor-wysiwyg > .vditor-reset {
+    padding: 24px !important;
+    overflow: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border) transparent;
+    color: var(--color-text);
+    background: var(--color-surface);
+    font-family: var(--interface-font);
+    font-size: var(--interface-font-size);
+    line-height: 1.6;
+}
+
+/* 一级标题按稿保持层级，去掉默认装饰边线。 */
+.collect-editor__content .vditor-reset h1 {
+    font-size: 1.6923em;
+    border: 0;
+    padding-bottom: 0;
+}
+
+/* 标题源码标记不占用正文边距。 */
+.collect-editor__content .vditor-reset > :is(h1, h2, h3, h4, h5, h6)::before {
+    content: none;
+}
+
+/* 空错误插槽不占高度。 */
+.collect-editor__error-slot {
+    flex-shrink: 0;
+}
+
+/* 长错误原因换行，不覆盖保存命令。 */
+.collect-editor__error {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 0;
+    padding: 12px 16px;
+    color: var(--color-error);
+    background: var(--color-error-surface);
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+}
+
+/* 错误图标与首行对齐。 */
+.collect-editor__error .collect-editor__icon {
+    margin-top: 2px;
+}
+
+/* 图片菜单沿用既有动作与界面主题。 */
+.collect-editor__image-menu {
+    position: fixed;
+    z-index: 2;
+    display: grid;
+    min-width: 160px;
+    padding: 4px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    background: var(--color-surface);
+}
+
+/* 图片菜单命令保持紧凑高度。 */
+.collect-editor__image-menu button {
+    min-height: 32px;
+    border: 0;
+    text-align: left;
+}
+
+/* 原生 dialog 管理焦点，窄窗时缩至可用宽度。 */
+.collect-editor__dialog {
+    width: min(624px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
+    padding: 16px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    background: var(--color-surface);
+    color: var(--color-text);
+    overflow: auto;
+}
+
+/* 对话框标题允许长文件名换行。 */
+.collect-editor__dialog h2 {
+    margin: 0 0 16px;
+    font-size: 15px;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+/* 关闭后果与错误分别呈现。 */
+.collect-editor__dialog-description {
+    margin: 0 0 16px;
+    color: var(--color-muted);
+}
+
+/* 对话框错误条沿用圆角。 */
+.collect-editor__dialog .collect-editor__error {
+    border-radius: var(--surface-radius);
+}
+
+/* 决策按钮按不保存、取消、保存排列。 */
+.collect-editor__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 24px;
+    padding: 3px;
+}
+
+/* 关闭按钮固定宽度，处理中不跳动。 */
+.collect-editor__actions button {
+    min-width: 88px;
+    padding: 0 8px;
+}

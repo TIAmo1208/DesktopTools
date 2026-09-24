@@ -128,6 +128,7 @@ fn native_surface_theme_and_close_follow_rendered_frames()
 {
     let preferences = ApplicationPreferences { theme: ApplicationTheme::Light, follow_system_reduced_motion: false, interface_animations: false, ..Default::default() }; // 确定性原生测试。
     let manager = ToastManager::install(preferences).unwrap(); // 真实分层窗口。
+    crate::platform::windows::refresh_policy::assume_notifications_visible_for_test();
     {
         let mut runtime = manager.runtime.lock().unwrap(); // 原生主线程入队。
         runtime.queue.enqueue(message(&"长正文换行测试。".repeat(15)), 64.0, Instant::now(), false);

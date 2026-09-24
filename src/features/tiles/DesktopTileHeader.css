@@ -11,7 +11,7 @@
 /* 围栏标题、成员数量与命令布局。 */
 .desktop-tile-header {
     box-sizing: border-box;
-    height: 28px;
+    height: var(--tile-header-height, 28px);
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
@@ -49,12 +49,37 @@
 }
 
 /* 围栏标题。 */
+.desktop-tile-header__text {
+    min-width: 0;
+    overflow: hidden;
+}
+
+/* 预览使用正常字号与行距，不挤占右侧工具列。 */
+.desktop-tile-header__text[data-has-subtitle="true"] {
+    display: grid;
+    gap: 6px;
+}
+
+/* 围栏标题。 */
 .desktop-tile-header h2 {
     min-width: 0;
     margin: 0;
     overflow: hidden;
     font-size: var(--interface-font-size);
     font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 收集箱折叠态的最新摘要，不挤占工具按钮轨道。 */
+.desktop-tile-header__subtitle {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    color: var(--fence-text);
+    opacity: 0.78;
+    font-size: 12px;
+    line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
 }

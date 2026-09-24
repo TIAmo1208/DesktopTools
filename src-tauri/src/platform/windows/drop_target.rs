@@ -320,19 +320,14 @@ impl IDropTarget_Impl for DesktopDropTarget_Impl
     /// 检查数据对象后开始会话，失败时确保系统收到拒绝效果。
     fn DragEnter(&self, data: Ref<'_, IDataObject>, keys: MODIFIERKEYS_FLAGS, point: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()>
     {
-        crate::log_info!("[DEBUG-drop-entry] DragEnter，窗口={:?}，位置=({},{})，按键={}，effect空={}，data空={}", self.window, point.x, point.y, keys.0, effect.is_null(), data.as_ref().is_none());
         if effect.is_null()
         {
-            crate::log_error!("[DEBUG-drop-entry] DragEnter 拒绝：effect 指针为空，窗口={:?}", self.window);
             return Err(E_INVALIDARG.into());
         }
         let allowed = unsafe { *effect }; // 源允许的效果，回调前先将输出设为拒绝。
         unsafe { *effect = DROPEFFECT_NONE };
         self.DragLeave()?;
-        let data = data.as_ref().ok_or_else(|| {
-            crate::log_error!("[DEBUG-drop-entry] DragEnter 拒绝：IDataObject 为空，窗口={:?}", self.window);
-            windows::core::Error::from_hresult(E_INVALIDARG)
-        })?; // Enter 必须提供有效数据对象。
+        let data = data.as_ref().ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?; // Enter 必须提供有效数据对象。
         *self.active.borrow_mut() = true;
         match (self.handler)(DropPhase::Enter(data, keys, point, allowed))
         {
@@ -393,7 +388,6 @@ impl IDropTarget_Impl for DesktopDropTarget_Impl
     /// 投放结束无论成功或失败都清理一次，输出只来自实际处理结果。
     fn Drop(&self, data: Ref<'_, IDataObject>, keys: MODIFIERKEYS_FLAGS, point: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()>
     {
-        crate::log_info!("[DEBUG-drop-entry] Drop，窗口={:?}，位置=({},{})，按键={}，effect空={}，data空={}，active={}", self.window, point.x, point.y, keys.0, effect.is_null(), data.as_ref().is_none(), *self.active.borrow());
         if effect.is_null()
         {
             return Err(E_INVALIDARG.into());

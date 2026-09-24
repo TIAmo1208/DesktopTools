@@ -14,6 +14,7 @@ export const DesktopTileContext = createContext({ titleVisible: true, titleMode:
 interface DesktopTileBaseProps extends Omit<ComponentPropsWithRef<"section">, "onResize"> {
     "data-hit-id"?: string; // 宿主提供的稳定表面身份。
     collapsed?: boolean; // 当前有效折叠状态。
+    collapsedSize?: { width?: number; height?: number }; // 调用方指定折叠尺寸，缺省高度为 28px。
     appearance?: TileAppearance; // 共享外观。
     headerPresent?: boolean; // 开发者组合能力。
     renaming?: boolean; // 重命名允许临时显示标题。
@@ -29,6 +30,7 @@ export const DesktopTileBase = ({
     children,
     className = "",
     collapsed = false,
+    collapsedSize,
     appearance,
     headerPresent = true,
     renaming = false,
@@ -85,7 +87,7 @@ export const DesktopTileBase = ({
             collapseAnimation.current = undefined;
             animation.cancel(); // 底层目标高度已生效，移除完成实例避免连续切换读取旧动画。
         };
-    }, [animationsEnabled, collapsed, style?.height]);
+    }, [animationsEnabled, collapsed, style?.height, collapsedSize?.height]);
 
     useEffect(() => () => collapseAnimation.current?.cancel(), []);
 
@@ -220,7 +222,14 @@ export const DesktopTileBase = ({
                 }}
                 className={`desktop-tile${collapsed ? " desktop-tile--collapsed" : ""} ${className}`}
                 data-title-mode={headerPresent ? titleMode : "none"}
-                style={style}
+                data-auto-expanded={appearance?.collapsed && !collapsed ? "true" : undefined}
+                style={
+                    {
+                        ...style,
+                        ...(collapsed ? { ...collapsedSize, height: collapsedSize?.height ?? 28, minHeight: collapsedSize?.height ?? 28 } : {}),
+                        "--tile-header-height": collapsed && (collapsedSize?.height ?? 28) > 28 ? `${(collapsedSize?.height ?? 28) - 4}px` : "28px",
+                    } as import("react").CSSProperties
+                }
                 onFocus={(event) => {
                     if (!frozen.current && !state.current.menu && event.currentTarget.matches(":focus-visible")) setTitleVisible(true);
                     onFocus?.(event);

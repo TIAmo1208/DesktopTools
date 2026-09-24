@@ -246,6 +246,28 @@ impl WorkspaceState
         Ok(snapshot.clone())
     }
 
+    /// 为新增组件选择当前显示器中不与已有格子重叠的默认边界。
+    pub fn next_component_bounds(&self, monitor_id: &str, width: f64, height: f64) -> Result<WorkspaceRect, WorkspaceError>
+    {
+        let snapshot = self.snapshot()?;
+        let overlaps = |candidate: WorkspaceRect| {
+            let intersects = |bounds: WorkspaceRect| candidate.left < bounds.left + bounds.width && candidate.left + candidate.width > bounds.left && candidate.top < bounds.top + bounds.height && candidate.top + candidate.height > bounds.top;
+            snapshot.components.iter().filter(|component| component.monitor_id == monitor_id).any(|component| intersects(component.bounds)) || snapshot.fences.iter().filter(|fence| fence.monitor_id == monitor_id).any(|fence| intersects(fence.bounds)) || snapshot.folder_portals.iter().filter(|portal| portal.monitor_id == monitor_id).any(|portal| intersects(portal.bounds))
+        };
+        for row in 0..100
+        {
+            for column in 0..100
+            {
+                let candidate = WorkspaceRect { left: 24.0 + f64::from(column) * 24.0, top: 24.0 + f64::from(row) * 24.0, width, height };
+                if !overlaps(candidate)
+                {
+                    return Ok(candidate);
+                }
+            }
+        }
+        Err(WorkspaceError::invalid_command("工作区没有可用的组件位置"))
+    }
+
     /// 将当前完整工作区写入用户指定的手动备份文件。
     pub fn write_manual_backup(&self, path: &Path) -> Result<WorkspaceBackupSummary, WorkspaceError>
     {
@@ -1716,6 +1738,27 @@ impl WorkspaceSnapshot
                     next_index = (available_index + 1) % capacity;
                 }
                 Ok("解散围栏")
+            }
+            WorkspaceCommand::CreateComponent { component_id, bounds } =>
+            {
+                validate_component_rect(bounds)?;
+                if component_id != "official.collect-box"
+                {
+                    return Err(WorkspaceError::invalid_command("不支持创建该组件"));
+                }
+                let monitor_id = self.command_monitor_id(monitor_id)?;
+                let mut suffix = self.components.len() + 1;
+                let instance_id = loop
+                {
+                    let candidate = format!("{component_id}.{suffix}");
+                    if !self.components.iter().any(|component| component.instance_id == candidate)
+                    {
+                        break candidate;
+                    }
+                    suffix += 1;
+                };
+                self.components.push(ComponentInstanceSnapshot { instance_id, component_id, monitor_id, projection_monitor_id: None, projection_bounds: None, bounds, state_version: 1, state: serde_json::json!({}) });
+                Ok("创建组件")
             }
             WorkspaceCommand::UpdateComponentBounds { instance_id, bounds } =>
             {

@@ -14,6 +14,7 @@ export const FeatureSettings = ({
     workspace,
     onWorkspaceCommand,
     onChooseFolder,
+    onCreateCollectBox,
 }: {
     preferences?: ApplicationPreferences; // 已保存的格子偏好。
     disabled: boolean; // 提交中的互斥状态。
@@ -22,8 +23,9 @@ export const FeatureSettings = ({
     workspace?: WorkspaceSnapshot; // 当前工作区映射快照。
     onWorkspaceCommand: (command: WorkspaceCommand) => Promise<void>; // 提交映射事务。
     onChooseFolder: () => Promise<string | null>; // 打开系统目录选择器。
+    onCreateCollectBox: () => Promise<void>; // 调用统一收集箱创建入口。
 }) => {
-    const [detail, setDetail] = useState<"clock" | "music" | "folder" | "debug">(); // 当前二级菜单。
+    const [detail, setDetail] = useState<"clock" | "music" | "collect" | "folder" | "debug">(); // 当前二级菜单。
     const [selectedPortalId, setSelectedPortalId] = useState<string>(); // 当前单击选中的映射。
     const [portalMenu, setPortalMenu] = useState<{ portalId: string; left: number; top: number }>(); // 当前跟随鼠标的映射菜单。
     const portalMenuRef = useRef<HTMLMenuElement>(null); // 右键菜单外部点击边界。
@@ -66,11 +68,13 @@ export const FeatureSettings = ({
                     ? "本地时间"
                     : detail === "music"
                       ? "音乐控制"
-                      : detail === "folder"
-                        ? "文件夹映射"
-                        : detail === "debug"
-                          ? "Debug 测试"
-                          : "功能格子"}
+                      : detail === "collect"
+                        ? "收集箱"
+                        : detail === "folder"
+                          ? "文件夹映射"
+                          : detail === "debug"
+                            ? "Debug 测试"
+                            : "功能格子"}
             </h2>
             {!detail ? (
                 <>
@@ -78,6 +82,7 @@ export const FeatureSettings = ({
                         [
                             { id: "clock", key: "clockEnabled", label: "本地时间" },
                             { id: "music", key: "musicEnabled", label: "音乐控制" },
+                            { id: "collect", key: "collectEnabled", label: "收集箱" },
                             { id: "folder", key: "folderPortalEnabled", label: "文件夹映射" },
                             ...(debugBuild ? [{ id: "debug", key: "debugEnabled", label: "Debug 测试" }] : []),
                         ] as const
@@ -88,14 +93,16 @@ export const FeatureSettings = ({
                                 type="button"
                                 title={`${feature.label}设置`}
                                 aria-label={`${feature.label}设置`}
-                                onClick={() => setDetail(feature.id as "clock" | "music" | "folder" | "debug")}
+                                onClick={() => setDetail(feature.id as "clock" | "music" | "collect" | "folder" | "debug")}
                             >
                                 {feature.label}
                             </button>
                             <SettingsSwitch
                                 label={feature.label}
                                 disabled={unavailable}
-                                checked={Boolean(preferences?.[feature.key as "clockEnabled" | "musicEnabled" | "folderPortalEnabled" | "debugEnabled"])}
+                                checked={Boolean(
+                                    preferences?.[feature.key as "clockEnabled" | "musicEnabled" | "collectEnabled" | "folderPortalEnabled" | "debugEnabled"],
+                                )}
                                 onChange={(checked) => onPreferences({ [feature.key]: checked } as Partial<ApplicationPreferences>)}
                             />
                             <span className="feature-settings__chevron" aria-hidden="true">
@@ -126,6 +133,18 @@ export const FeatureSettings = ({
                             onChange={(checked) => onPreferences({ clockShowSeconds: checked })}
                         />
                     </div>
+                    <label className="feature-settings__row">
+                        <span>图片收入方式</span>
+                        <select
+                            disabled={unavailable}
+                            value={preferences?.collectImageImportMode ?? "copy"}
+                            onChange={(event) => onPreferences({ collectImageImportMode: event.currentTarget.value as "copy" | "move" | "link" })}
+                        >
+                            <option value="copy">复制到资源目录</option>
+                            <option value="move">移动到资源目录</option>
+                            <option value="link">只保存原路径链接</option>
+                        </select>
+                    </label>
                 </>
             ) : detail === "music" ? (
                 <>
@@ -137,6 +156,28 @@ export const FeatureSettings = ({
                             checked={preferences?.musicShowSource ?? true}
                             onChange={(checked) => onPreferences({ musicShowSource: checked })}
                         />
+                    </div>
+                </>
+            ) : detail === "collect" ? (
+                <>
+                    <p className="feature-settings__hint">收集项保存在配置目录的 collect 文件夹中，多个收集箱格子共享同一批条目。</p>
+                    <div className="feature-settings__row">
+                        <span>编辑窗退出时自动保存</span>
+                        <SettingsSwitch
+                            label="编辑窗退出时自动保存"
+                            disabled={unavailable}
+                            checked={preferences?.collectAutoSaveOnExit ?? false}
+                            onChange={(checked) => onPreferences({ collectAutoSaveOnExit: checked })}
+                        />
+                    </div>
+                    <div className="feature-settings__row feature-settings__folder-action">
+                        <span className="feature-settings__row-title">
+                            添加收集箱
+                            <small>在桌面创建新的收集箱格子。</small>
+                        </span>
+                        <button className="feature-settings__action" type="button" disabled={unavailable} onClick={() => void onCreateCollectBox()}>
+                            添加
+                        </button>
                     </div>
                 </>
             ) : detail === "folder" ? (

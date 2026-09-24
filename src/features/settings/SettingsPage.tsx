@@ -169,6 +169,13 @@ export const SettingsPage = () => {
         }
     };
 
+    const handleCreateCollectBox = async () => {
+        await handleCommand(async () => {
+            await invokeRuntime("create_collect_box");
+            publishMessage({ type: "success", content: "收集箱已创建", source: "settings-workspace" });
+        });
+    };
+
     const chooseFolderPortalDirectory = async () => {
         try {
             const selected = await invokeRuntime<unknown>("choose_folder_portal_directory");
@@ -219,10 +226,6 @@ export const SettingsPage = () => {
                 </div>
             </header>
             <aside className="settings__sidebar">
-                <div className="settings__brand">
-                    <img src={applicationIcon} alt="" width="28" height="28" />
-                    <span>Desktop Tools</span>
-                </div>
                 <button
                     type="button"
                     className="settings__navigation-toggle"
@@ -387,6 +390,7 @@ export const SettingsPage = () => {
                         workspace={workspace}
                         onWorkspaceCommand={handleWorkspaceCommand}
                         onChooseFolder={chooseFolderPortalDirectory}
+                        onCreateCollectBox={handleCreateCollectBox}
                     />
                 )}
                 {page === "performance" && (

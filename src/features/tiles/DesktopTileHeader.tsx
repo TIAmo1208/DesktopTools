@@ -6,6 +6,7 @@ import "./DesktopTileHeader.css";
 /** 公共标题栏提供编辑入口和由内容组合的工具区。 */
 interface DesktopTileHeaderProps extends Omit<ComponentPropsWithoutRef<"header">, "title"> {
     title: string; // 当前标题，允许空字符串。
+    subtitle?: string; // 可选的折叠态摘要。
     editing: boolean; // 宿主管理的编辑状态。
     onRenameEnd: () => void; // 退出标题编辑。
     onRename: (title: string) => Promise<unknown>; // 保存成功后关闭编辑器。
@@ -14,7 +15,7 @@ interface DesktopTileHeaderProps extends Omit<ComponentPropsWithoutRef<"header">
 }
 
 /** 共用标题编辑的取消、输入法与保存边界。 */
-export const DesktopTileHeader = ({ title, editing, onRenameEnd, onRename, onRenameStart, commands, ...props }: DesktopTileHeaderProps) => {
+export const DesktopTileHeader = ({ title, subtitle, editing, onRenameEnd, onRename, onRenameStart, commands, ...props }: DesktopTileHeaderProps) => {
     const cancelled = useRef(false); // Escape 取消时阻止失焦提交。
     const shell = useContext(DesktopTileContext); // 外壳持有显隐状态，标题只负责呈现。
     return (
@@ -57,17 +58,20 @@ export const DesktopTileHeader = ({ title, editing, onRenameEnd, onRename, onRen
                     }}
                 />
             ) : (
-                <h2
-                    tabIndex={onRenameStart ? 0 : undefined}
-                    onDoubleClick={onRenameStart}
-                    onKeyDown={(event) => {
-                        if (event.key !== "F2" || !onRenameStart) return;
-                        event.stopPropagation();
-                        onRenameStart();
-                    }}
-                >
-                    {title || "\u00a0"}
-                </h2>
+                <div className="desktop-tile-header__text" data-has-subtitle={Boolean(subtitle)}>
+                    <h2
+                        tabIndex={onRenameStart ? 0 : undefined}
+                        onDoubleClick={onRenameStart}
+                        onKeyDown={(event) => {
+                            if (event.key !== "F2" || !onRenameStart) return;
+                            event.stopPropagation();
+                            onRenameStart();
+                        }}
+                    >
+                        {title || "\u00a0"}
+                    </h2>
+                    {subtitle && <p className="desktop-tile-header__subtitle">{subtitle}</p>}
+                </div>
             )}
             {commands && <div className="desktop-tile-header__commands">{typeof commands === "function" ? commands(shell.sortMenuOpen) : commands}</div>}
         </header>

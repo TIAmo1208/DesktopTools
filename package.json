@@ -4,13 +4,15 @@
     "version": "0.1.0",
     "type": "module",
     "scripts": {
+        "predev": "node scripts/prepare-vditor.mjs",
+        "prebuild": "node scripts/prepare-vditor.mjs",
         "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
         "build": "npm run typecheck && vite build --outDir build/frontend",
         "typecheck": "tsc --noEmit",
         "test": "npm run test:frontend && npm run test:music && npm run test:folder-portals && node --test src/bridge/refreshPolicy.test.ts src/bridge/nativeHostEvents.test.ts && npm run test:rust",
         "test:folder-portals": "node --test src/bridge/folderPortal.test.ts",
         "test:music": "node --test src/bridge/music.test.ts src/contracts/music.test.ts src/features/notifications/messageNotification.test.ts src/features/music/musicLayout.test.ts",
-        "test:frontend": "node --test src/contracts/application.test.ts src/contracts/component.test.ts src/contracts/desktopHost.test.ts src/contracts/desktopItem.test.ts src/contracts/settings.test.ts src/contracts/workspace.test.ts src/features/desktop-items/desktopItemViewModel.test.ts src/features/desktop-items/desktopItemReadiness.test.ts src/features/fences/fenceGeometry.test.ts src/features/workspace/interaction/workspaceInteraction.test.ts src/features/workspace/interaction/workspaceDrag.test.ts src/features/workspace/state/useWorkspace.test.ts src/features/workspace/surface/workspaceSurface.test.ts src/features/workspace/interaction/crossMonitorDrag.test.ts",
+        "test:frontend": "node --test src/contracts/application.test.ts src/contracts/component.test.ts src/contracts/desktopHost.test.ts src/contracts/desktopItem.test.ts src/contracts/settings.test.ts src/contracts/workspace.test.ts src/bridge/collect.test.ts src/features/components/collectItemState.test.ts src/features/components/collectEditorLinks.test.ts src/features/desktop-items/desktopItemViewModel.test.ts src/features/desktop-items/desktopItemReadiness.test.ts src/features/fences/fenceGeometry.test.ts src/features/workspace/interaction/workspaceInteraction.test.ts src/features/workspace/interaction/workspaceDrag.test.ts src/features/workspace/state/useWorkspace.test.ts src/features/workspace/surface/workspaceSurface.test.ts src/features/workspace/interaction/crossMonitorDrag.test.ts",
         "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --all-targets",
         "format": "prettier --write index.html package.json tsconfig.json src && npm run format:rust",
         "format:rust": "cargo +nightly-2026-09-08 fmt --manifest-path src-tauri/Cargo.toml",
@@ -29,7 +31,9 @@
     "dependencies": {
         "@radix-ui/react-tooltip": "^1.2.16",
         "@tauri-apps/api": "^2.11.1",
+        "markdown-to-jsx": "^9.10.3",
         "react": "^19.2.8",
-        "react-dom": "^19.2.8"
+        "react-dom": "^19.2.8",
+        "vditor": "^4.0.0"
     }
 }

@@ -53,6 +53,9 @@ export interface ApplicationPreferences {
     fenceGrid: GridPreferences; // 围栏内网格。
     clockEnabled: boolean; // 时间格子显隐。
     musicEnabled: boolean; // 音乐格子显隐。
+    collectEnabled: boolean; // 收集箱格子显隐。
+    collectAutoSaveOnExit: boolean; // 编辑窗退出时自动保存。
+    collectImageImportMode: "copy" | "move" | "link"; // 图片收入方式。
     musicShowSource: boolean; // 音乐格子显示媒体来源。
     clockHour12: boolean; // 十二小时制。
     clockShowSeconds: boolean; // 显示秒数。
@@ -103,6 +106,8 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     const features = {
         clockEnabled: true,
         musicEnabled: false,
+        collectEnabled: true,
+        collectAutoSaveOnExit: false,
         musicShowSource: true,
         clockHour12: false,
         clockShowSeconds: true,
@@ -120,6 +125,14 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         if (typeof candidate[key] !== "boolean") throw new Error("功能格子配置无效");
         features[key] = candidate[key];
     }
+    if (
+        candidate.collectImageImportMode !== undefined &&
+        candidate.collectImageImportMode !== "copy" &&
+        candidate.collectImageImportMode !== "move" &&
+        candidate.collectImageImportMode !== "link"
+    )
+        throw new Error("图片收入方式无效");
+    const collectImageImportMode = (candidate.collectImageImportMode as "copy" | "move" | "link" | undefined) ?? "copy";
     return {
         theme: candidate.theme,
         desktopAppearance: {
@@ -137,6 +150,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         desktopGrid: parseGridPreferences(candidate.desktopGrid === undefined ? DEFAULT_DESKTOP_GRID : candidate.desktopGrid),
         fenceGrid: parseGridPreferences(candidate.fenceGrid === undefined ? DEFAULT_FENCE_GRID : candidate.fenceGrid),
         ...features,
+        collectImageImportMode,
     };
 };
 

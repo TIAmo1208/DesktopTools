@@ -3,6 +3,7 @@ use tauri::AppHandle;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW};
+use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 use windows::Win32::UI::WindowsAndMessaging::{CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowExW, GWLP_USERDATA, GetWindowLongPtrW, HWND_MESSAGE, RegisterClassW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, SetWindowLongPtrW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_NCCREATE, WNDCLASSW};
 use windows::core::{HSTRING, Owned, PCWSTR, w};
 
@@ -11,7 +12,7 @@ const RECEIVER: PCWSTR = w!("DesktopToolsDesktopMenu"); // 当前会话的命令
 const MESSAGE: u32 = WM_APP + 0x64; // 仅传递固定数字动词，不接收路径或脚本。
 const DISPATCH_MESSAGE: u32 = MESSAGE + 1; // 脱离跨进程 SendMessage 的同步调用栈后再访问 COM。
 static OWN_RECEIVER: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0); // 退出时只销毁本进程创建的窗口。
-const ACTIONS: [(&str, &str, u32); 5] = [("create-fence", "新建围栏", 0x7804), ("create-folder-portal", "新建文件夹门户", 0x7808), ("edit-layout", "编辑布局", 0x7805), ("refresh", "刷新桌面项目", 0x7806), ("settings", "打开设置", 0x7807)]; // 注册表、启动参数与消息校验共用的动作清单。
+const ACTIONS: [(&str, &str, u32); 5] = [("create-fence", "新建围栏", 0x7804), ("create-folder-portal", "新建文件夹映射", 0x7808), ("create-collect-box", "添加收集箱", 0x780A), ("settings", "打开软件设置", 0x7807), ("exit", "退出整理", 0x7809)]; // 运行态注册表、启动参数与消息校验共用的动作清单。
 
 /// 区分已经处理的命令与需要启动应用的初始动作。
 pub enum Startup
@@ -41,32 +42,82 @@ fn command_line(executable: &std::path::Path, action: &str) -> Result<String, St
     Ok(format!("\"{executable}\" --desktop-menu {action}"))
 }
 
+/// 通知 Explorer 重新读取当前用户的桌面菜单注册表。
+fn refresh_shell_menu() { unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) }; }
+
 /// 将产品菜单登记到 Explorer 的桌面背景，不获取或修改任何 HMENU。
 pub fn register() -> Result<(), String>
 {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?; // 当前安装或开发程序。
-    register_actions(REGISTRY_PATH, &executable)?;
+    prepare_menu_icons(&crate::tools::log::default_directory()?.join("menu-icons"))?;
+    register_actions(REGISTRY_PATH, &executable, true)?;
+    refresh_shell_menu();
     crate::log_info!("桌面菜单：已注册当前用户菜单，路径=HKCU\\{REGISTRY_PATH}");
     Ok(())
 }
 
 /// 用当前动作全集替换产品菜单子树，供正式注册和隔离注册表验证共用。
-fn register_actions(registry_path: &str, executable: &std::path::Path) -> Result<(), String>
+fn register_actions(registry_path: &str, executable: &std::path::Path, running: bool) -> Result<(), String>
 {
-    let child_path = format!(r"{registry_path}\shell"); // 产品菜单动作的唯一子树。
-    let result = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(&child_path)) }; // 重注册前清除旧序号，避免菜单动作重复。
+    let result = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(registry_path)) }; // 仅重建产品键，清除另一状态的命令和级联标记。
     if result.0 != 2
     {
         result.ok().map_err(|error| error.to_string())?;
     }
-    write_value(registry_path, "MUIVerb", "Desktop Tools")?;
-    write_value(registry_path, "SubCommands", "")?;
+    write_value(registry_path, "MUIVerb", if running { "Desktop Tools" } else { "打开程序" })?;
     write_value(registry_path, "Icon", &format!("\"{}\",0", executable.display()))?;
+    write_value(registry_path, "SeparatorBefore", "")?;
+    write_value(registry_path, "SeparatorAfter", "")?;
+    if !running
+    {
+        return write_value(&format!(r"{registry_path}\command"), "", &format!("\"{}\"", executable.display()));
+    }
+    write_value(registry_path, "SubCommands", "")?;
+    let icons = crate::tools::log::default_directory()?.join("menu-icons"); // 独立于配置目录迁移，退出后仍可由 Explorer 读取。
     for (index, (action, label, _)) in ACTIONS.iter().enumerate()
     {
         let key = format!(r"{registry_path}\shell\{index:02}-{action}"); // 序号保证菜单顺序稳定。
         write_value(&key, "MUIVerb", label)?;
+        write_value(&key, "Icon", &format!("\"{}\",0", icons.join(format!("{action}.ico")).display()))?;
         write_value(&format!(r"{key}\command"), "", &command_line(executable, action)?)?;
+    }
+    Ok(())
+}
+
+/// 从嵌入的 Lucide SVG 生成多尺寸 ICO，仅在内容变化时写入。
+fn prepare_menu_icons(directory: &std::path::Path) -> Result<(), String>
+{
+    let sources = [include_str!("../../../resources/menu-fence.svg"), include_str!("../../../resources/menu-folder.svg"), include_str!("../../../resources/menu-collect.svg"), include_str!("../../../resources/menu-settings.svg"), include_str!("../../../resources/menu-exit.svg")]; // 顺序与动作表一致。
+    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    for ((action, _, _), source) in ACTIONS.iter().zip(sources)
+    {
+        let svg = source.replace("currentColor", "#687481"); // 中性图标兼顾 Explorer 的浅深菜单背景。
+        let tree = resvg::usvg::Tree::from_data(svg.as_bytes(), &resvg::usvg::Options::default()).map_err(|error| error.to_string())?; // 官方 SVG 几何。
+        let mut images = Vec::new(); // Windows 按 DPI 选择的 PNG 图像。
+        for size in [16u32, 24, 32, 48]
+        {
+            let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size).ok_or("菜单图标分配失败")?; // 一次性栅格缓冲。
+            resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(size as f32 / tree.size().width(), size as f32 / tree.size().height()), &mut pixmap.as_mut());
+            images.push((size, pixmap.encode_png().map_err(|error| error.to_string())?));
+        }
+        let mut ico = vec![0, 0, 1, 0, images.len() as u8, 0]; // ICONDIR，后接目录项和 PNG 数据。
+        let mut offset = 6 + images.len() as u32 * 16; // 首个图像偏移。
+        for (size, png) in &images
+        {
+            ico.extend_from_slice(&[*size as u8, *size as u8, 0, 0, 1, 0, 32, 0]);
+            ico.extend_from_slice(&(png.len() as u32).to_le_bytes());
+            ico.extend_from_slice(&offset.to_le_bytes());
+            offset += png.len() as u32;
+        }
+        for (_, png) in images
+        {
+            ico.extend_from_slice(&png);
+        }
+        let path = directory.join(format!("{action}.ico")); // 每个动作独立资源。
+        if std::fs::read(&path).ok().as_deref() != Some(ico.as_slice())
+        {
+            std::fs::write(path, ico).map_err(|error| error.to_string())?;
+        }
     }
     Ok(())
 }
@@ -80,7 +131,9 @@ pub fn prepare_startup() -> Result<Startup, String>
         [] => None,
         [flag] if flag == "--register-desktop-menu" =>
         {
-            register()?;
+            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+            register_actions(REGISTRY_PATH, &executable, false)?;
+            refresh_shell_menu();
             return Ok(Startup::Exit);
         }
         [flag] if flag == "--unregister-desktop-menu" =>
@@ -90,6 +143,7 @@ pub fn prepare_startup() -> Result<Startup, String>
             {
                 result.ok().map_err(|error| error.to_string())?;
             }
+            refresh_shell_menu();
             return Ok(Startup::Exit);
         }
         [flag, action] if flag == "--desktop-menu" => Some(ACTIONS.iter().find(|entry| entry.0 == action).ok_or("未知桌面菜单动作")?.2),
@@ -183,9 +237,20 @@ pub fn install(app: &AppHandle, initial: Option<u32>) -> Result<(), String>
     Ok(())
 }
 
-/// 主线程退出时销毁接收窗口并释放应用引用，注册表保留供下次启动。
+/// 主线程退出时回退菜单、销毁接收窗口并释放应用引用。
 pub fn shutdown()
 {
+    if let Ok(executable) = std::env::current_exe()
+    {
+        if let Err(error) = register_actions(REGISTRY_PATH, &executable, false)
+        {
+            crate::log_error!("桌面菜单：退出时回退为打开程序失败，错误：{error}");
+        }
+        else
+        {
+            refresh_shell_menu();
+        }
+    }
     let hwnd = HWND(OWN_RECEIVER.swap(0, std::sync::atomic::Ordering::Relaxed) as *mut std::ffi::c_void); // 当前实例的接收窗口。
     if !hwnd.is_invalid()
     {

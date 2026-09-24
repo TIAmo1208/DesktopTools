@@ -1,0 +1,7 @@
+{
+  "id": "official.collect-box",
+  "name": "收集箱",
+  "entry": "official:collect-box",
+  "requiredCapabilities": [],
+  "persistenceVersion": 1
+}

@@ -1,4 +1,4 @@
-import { Component, useEffect, useMemo, useRef, useState, type ErrorInfo, type PointerEvent, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type PointerEvent, type ReactNode } from "react";
 
 import { getComponentRuntimeSnapshot, listenComponentHostEvents, listenComponentRuntimeSnapshots } from "../../bridge/components";
 import type { ComponentInstanceSnapshot, ComponentRegistrationSnapshot, ComponentRuntimeSnapshot } from "../../contracts/component";
@@ -9,6 +9,7 @@ import { usePreferences } from "../settings/PreferencesProvider";
 import "./OfficialComponentHost.css";
 import { MUSIC_CONTROL_MINIMUM_SIZE, type MusicControlMinimumSize } from "../music/MusicControl";
 import { MusicWidget } from "../music/MusicWidget";
+import { CollectBox, type CollectBoxToolbarActions } from "./CollectBox";
 import { publishMessage } from "../notifications/messageNotification";
 import { DesktopTileBase } from "../tiles/DesktopTileBase";
 import { DesktopTileHeader } from "../tiles/DesktopTileHeader";
@@ -19,6 +20,8 @@ import type { TileAppearance, TileAppearanceChange } from "../../contracts/tile"
 import type { WorkspaceFocusTarget } from "../../contracts/workspace";
 import fenceToggleCollapseIcon from "../../../resources/fence-toggle-collapse.svg?raw";
 import fenceToggleExpandIcon from "../../../resources/fence-toggle-expand.svg?raw";
+import fenceSortIcon from "../../../resources/fence-sort.svg?raw";
+import collectNewIcon from "../../../resources/collect-new.svg?raw";
 
 /** 官方组件宿主接收的工作区实例和命令边界。 */
 interface OfficialComponentHostProps {
@@ -157,18 +160,32 @@ const ComponentSurface = ({
 }) => {
     const surfaceRef = useRef<HTMLElement>(null); // 当前组件实例表面。
     const [editingTitle, setEditingTitle] = useState(false); // 双击标题进入编辑，允许空字符串。
+    const [collectPeek, setCollectPeek] = useState({ title: "收集箱", summary: "" }); // 折叠态显示的最新条目预览。
+    const [collectToolbar, setCollectToolbar] = useState<CollectBoxToolbarActions>(); // 折叠标题轨道复用的收集箱命令。
+    const collectToolbarReady = useCallback((actions: CollectBoxToolbarActions) => setCollectToolbar(actions), []); // 保持回调稳定，避免重复注册。
     const appearance: TileAppearance = savedAppearance ?? { title: null, titleMode: "fixed", buttonMode: "hover", collapsed: false, autoExpand: false }; // 未设置外观采用公共默认值。
+    const expansion = useDesktopTileExpansion(surfaceRef, appearance.collapsed, appearance.autoExpand, currentMonitor?.id); // 临时展开同步标题和摘要状态。
     const title =
-        appearance.title ??
-        (instance.componentId === "official.music-control" ? "音乐控制" : instance.componentId === "official.debug-test" ? "Debug 测试" : "本地时间"); // 空标题不回退。
-    const expansion = useDesktopTileExpansion(surfaceRef, appearance.collapsed, appearance.autoExpand, currentMonitor?.id); // 折叠不卸载内容。
+        instance.componentId === "official.collect-box" && expansion.collapsed
+            ? collectPeek.title
+            : (appearance.title ??
+              (instance.componentId === "official.music-control"
+                  ? "音乐控制"
+                  : instance.componentId === "official.debug-test"
+                    ? "Debug 测试"
+                    : instance.componentId === "official.collect-box"
+                      ? "收集箱"
+                      : "本地时间")); // 空标题不回退。
+    const collapsedSize = instance.componentId === "official.collect-box" ? { height: 56 } : undefined; // 收集箱使用两倍标题轨道，其余格子沿用基类默认值。
     const music = instance.componentId === "official.music-control"; // 音乐内容自适应外壳，同时限制最小可读尺寸。
     const [contentMinimum, setContentMinimum] = useState(MUSIC_CONTROL_MINIMUM_SIZE); // 组件上报的最终内容需求，不解释内部布局。
     const minimum = music
         ? { width: contentMinimum.width + 24, height: contentMinimum.height + 24 + (appearance.titleMode === "fixed" ? 28 : 0) }
         : instance.componentId === "official.debug-test"
           ? { width: 280, height: 154 }
-          : { width: 164, height: 90 }; // 音乐包含内容、20px 留白和4px外壳占用。
+          : instance.componentId === "official.collect-box"
+            ? { width: 240, height: 120 }
+            : { width: 164, height: 90 }; // 音乐包含内容、20px 留白和4px外壳占用。
     const bounds = music
         ? { ...instance.bounds, width: Math.max(instance.bounds.width, minimum.width), height: Math.max(instance.bounds.height, minimum.height) }
         : instance.bounds; // 旧小布局先按有效下限呈现，下次几何提交保存修正值。
@@ -186,6 +203,7 @@ const ComponentSurface = ({
         surfaceRef,
         bounds,
         collapsed: expansion.collapsed,
+        collapsedSize,
         title,
         minimum,
         snap: preferences?.componentSnap !== false,
@@ -208,15 +226,37 @@ const ComponentSurface = ({
             ref={surfaceRef}
             appearance={appearance}
             collapsed={expansion.collapsed}
+            collapsedSize={collapsedSize}
             renaming={editingTitle}
             onRenameStart={() => setEditingTitle(true)}
             onAppearanceChange={handleAppearance}
+            sortItems={instance.componentId === "official.collect-box" ? collectToolbar?.sortItems : undefined}
+            menuItems={
+                instance.componentId === "official.collect-box"
+                    ? [
+                          {
+                              label: "新建收集箱格子",
+                              onSelect: () =>
+                                  void onCommand({
+                                      type: "create-component",
+                                      componentId: "official.collect-box",
+                                      bounds: { left: bounds.left + 24, top: bounds.top + 24, width: bounds.width, height: bounds.height },
+                                  }).catch(handleFailure),
+                          },
+                          {
+                              label: "恢复最近删除",
+                              disabled: !collectToolbar,
+                              onSelect: () => collectToolbar?.restore(),
+                          },
+                      ]
+                    : []
+            }
             onPointerEnter={expansion.onPointerEnter}
             onPointerLeave={expansion.onPointerLeave}
             data-keyboard-focus={keyboardFocus?.type === "component" && keyboardFocus.componentId === instance.instanceId ? "true" : undefined}
             onResize={(event, direction) => void handleGeometry(event, direction)}
             className={`official-component${failed ? " official-component--failed" : ""}`}
-            style={{ left: bounds.left, top: bounds.top, width: bounds.width, height: expansion.collapsed ? 28 : bounds.height }}
+            style={{ left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height }}
             data-component-id={instance.instanceId}
             data-hit-id={instance.instanceId}
             data-hit-kind="component"
@@ -233,6 +273,7 @@ const ComponentSurface = ({
         >
             <DesktopTileHeader
                 title={title}
+                subtitle={instance.componentId === "official.collect-box" && expansion.collapsed ? collectPeek.summary : undefined}
                 editing={editingTitle}
                 onRenameStart={() => setEditingTitle(true)}
                 onRenameEnd={() => setEditingTitle(false)}
@@ -247,16 +288,45 @@ const ComponentSurface = ({
                         throw error;
                     })
                 }
-                commands={
-                    <button
-                        type="button"
-                        title={appearance.collapsed ? "展开格子" : "折叠格子"}
-                        aria-label={appearance.collapsed ? "展开格子" : "折叠格子"}
-                        onClick={() => handleAppearance({ type: "collapsed", value: !appearance.collapsed })}
-                    >
-                        <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: appearance.collapsed ? fenceToggleExpandIcon : fenceToggleCollapseIcon }} />
-                    </button>
-                }
+                commands={(sortMenuOpen) => (
+                    <>
+                        {instance.componentId === "official.collect-box" && collectToolbar && (
+                            <>
+                                <button
+                                    type="button"
+                                    title="排序方式"
+                                    aria-label="排序方式"
+                                    aria-haspopup="menu"
+                                    aria-expanded={sortMenuOpen}
+                                    onClick={(event) => {
+                                        const rect = event.currentTarget.getBoundingClientRect(); // 与围栏共用菜单锚点与键盘焦点恢复。
+                                        event.currentTarget.closest(".desktop-tile")?.dispatchEvent(
+                                            new CustomEvent("desktop-tile-menu", {
+                                                detail: { left: rect.left, top: rect.bottom, sorting: true, trigger: event.currentTarget },
+                                            }),
+                                        );
+                                    }}
+                                >
+                                    <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: fenceSortIcon }} />
+                                </button>
+                                <button type="button" title="新建收集项" aria-label="新建收集项" onClick={collectToolbar.create}>
+                                    <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: collectNewIcon }} />
+                                </button>
+                            </>
+                        )}
+                        <button
+                            type="button"
+                            title={appearance.collapsed ? "展开格子" : "折叠格子"}
+                            aria-label={appearance.collapsed ? "展开格子" : "折叠格子"}
+                            onClick={() => handleAppearance({ type: "collapsed", value: !appearance.collapsed })}
+                        >
+                            <span
+                                aria-hidden="true"
+                                dangerouslySetInnerHTML={{ __html: appearance.collapsed ? fenceToggleExpandIcon : fenceToggleCollapseIcon }}
+                            />
+                        </button>
+                    </>
+                )}
             />
             <DesktopTileViewport
                 scrollable={!music}
@@ -279,6 +349,8 @@ const ComponentSurface = ({
                         debugContent
                     ) : registration.entry === "official:music-control" ? (
                         <MusicWidget onMinimumSizeChange={setContentMinimum} />
+                    ) : registration.entry === "official:collect-box" ? (
+                        <CollectBox onLatestChange={setCollectPeek} onToolbarReady={collectToolbarReady} />
                     ) : (
                         <p className="official-component__error">组件前端入口不存在</p>
                     )}
@@ -317,7 +389,9 @@ export const OfficialComponentHost = ({
               ? preferences?.debugEnabled !== false && runtime?.manifests.some((manifest) => manifest.id === "official.debug-test")
               : instance.componentId === "official.music-control"
                 ? preferences?.musicEnabled === true
-                : true,
+                : instance.componentId === "official.collect-box"
+                  ? preferences?.collectEnabled !== false
+                  : true,
     ); // Release 没有 Debug 注册入口。
 
     useEffect(() => {

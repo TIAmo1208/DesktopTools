@@ -17,6 +17,7 @@ const MUSIC_ENTRY: &str = "official:music-control";
 /// 内置官方组件清单来源。
 const LOCAL_CLOCK_MANIFEST: &str = include_str!("../../components/official.local-clock.json");
 const MUSIC_MANIFEST: &str = include_str!("../../components/official.music-control.json");
+const COLLECT_MANIFEST: &str = include_str!("../../components/official.collect-box.json");
 
 static TIME_CONSUMERS: LazyLock<(Mutex<HashMap<u64, String>>, Condvar)> = LazyLock::new(|| (Mutex::new(HashMap::new()), Condvar::new())); // 独立订阅身份映射到原生宿主。
 static NEXT_TIME_SUBSCRIPTION: AtomicU64 = AtomicU64::new(1); // 重载后的身份不复用。
@@ -44,7 +45,7 @@ impl ComponentRuntimeState
     /// 加载全部官方组件清单，单个失败只形成隔离错误。
     pub fn new() -> Self
     {
-        let mut sources = vec![("official.local-clock", LOCAL_CLOCK_MANIFEST), ("official.music-control", MUSIC_MANIFEST)]; // Release 只注册正式功能。
+        let mut sources = vec![("official.local-clock", LOCAL_CLOCK_MANIFEST), ("official.music-control", MUSIC_MANIFEST), ("official.collect-box", COLLECT_MANIFEST)]; // Release 只注册正式功能。
         if cfg!(debug_assertions)
         {
             sources.push(("official.debug-test", include_str!("../../components/official.debug-test.json")));
@@ -63,6 +64,10 @@ impl ComponentRuntimeState
         if self.manifests.contains_key("official.music-control")
         {
             instances.push(ComponentInstanceSnapshot { instance_id: "official.music-control.default".to_string(), component_id: "official.music-control".to_string(), monitor_id: String::new(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 0.0, top: 140.0, width: 220.0, height: 150.0 }, state_version: 1, state: json!({}) });
+        }
+        if self.manifests.contains_key("official.collect-box")
+        {
+            instances.push(ComponentInstanceSnapshot { instance_id: "official.collect-box.default".to_string(), component_id: "official.collect-box".to_string(), monitor_id: String::new(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 0.0, top: 300.0, width: 360.0, height: 280.0 }, state_version: 1, state: json!({}) });
         }
         if self.manifests.contains_key("official.debug-test")
         {
@@ -244,7 +249,8 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
         return Err(ComponentRuntimeError::invalid_manifest("组件清单名称无效"));
     }
     let debug_manifest = cfg!(debug_assertions) && manifest.id == "official.debug-test" && manifest.entry == "official:debug-test"; // 仅 Debug 可注册测试入口。
-    if manifest.entry != LOCAL_CLOCK_ENTRY && manifest.entry != MUSIC_ENTRY && !debug_manifest
+    let collect_manifest = manifest.id == "official.collect-box" && manifest.entry == "official:collect-box";
+    if manifest.entry != LOCAL_CLOCK_ENTRY && manifest.entry != MUSIC_ENTRY && !debug_manifest && !collect_manifest
     {
         return Err(ComponentRuntimeError::invalid_manifest("组件前端入口不受支持"));
     }
@@ -252,7 +258,7 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
     {
         return Err(ComponentRuntimeError::invalid_manifest("组件持久化版本无效"));
     }
-    if debug_manifest && manifest.required_capabilities.is_empty()
+    if (debug_manifest || collect_manifest) && manifest.required_capabilities.is_empty()
     {
         return Ok(());
     }

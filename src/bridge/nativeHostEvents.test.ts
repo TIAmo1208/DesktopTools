@@ -4,6 +4,31 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 
+test("收集箱主动删除事件同时交付所有格子，退订后停止", async () => {
+    const source = readFileSync(new URL("../../src-tauri/src/platform/windows/desktop_host.rs", import.meta.url), "utf8");
+    const script = source.split('const NATIVE_BRIDGE_SCRIPT: &str = r#"')[1].split('"#;')[0];
+    const window: any = { addEventListener() {}, setTimeout() {}, clearTimeout() {} };
+    runInNewContext(script, {
+        window,
+        __DESKTOP_NATIVE_ORIGIN__: "http://host.localhost",
+        __REFRESH_POLICY_FALLBACK__: false,
+        URLSearchParams,
+        location: { search: "?monitor=0" },
+    });
+    const first: string[] = [];
+    const second: string[] = [];
+    const bridge = window.__DESKTOP_TOOLS_NATIVE__;
+    const stop = await bridge.listen("collect-items-changed", (event: { deletedName: string }) => first.push(event.deletedName));
+    await bridge.listen("collect-items-changed", (event: { deletedName: string }) => second.push(event.deletedName));
+    bridge.dispatch("collect-items-changed", { deletedName: "测试.md" });
+    assert.deepEqual(first, ["测试.md"]);
+    assert.deepEqual(second, ["测试.md"]);
+    stop();
+    bridge.dispatch("collect-items-changed", { deletedName: "另一条.md" });
+    assert.deepEqual(first, ["测试.md"]);
+    assert.deepEqual(second, ["测试.md", "另一条.md"]);
+});
+
 test("时间消费者先订阅再登记，释放与登记失败均解除接收入口", async () => {
     const source = readFileSync(new URL("./components.ts", import.meta.url), "utf8")
         .replace(/^import [\s\S]*?;\r?$/gm, "")

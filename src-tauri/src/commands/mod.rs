@@ -1,4 +1,5 @@
 mod application;
+pub mod collect;
 mod component;
 mod desktop_host;
 mod desktop_item;
@@ -11,6 +12,30 @@ mod workspace;
 mod workspace_menu;
 pub use music::{execute_music_action, get_current_music_session};
 
+/// 统一创建一个收集箱格子，设置页、桌面菜单和其他入口共用此逻辑。
+pub(crate) fn execute_create_collect_box(app: &tauri::AppHandle, monitor_id: String) -> Result<(), String>
+{
+    use tauri::Manager;
+    let runtime = app.state::<std::sync::Arc<DesktopHostRuntime>>();
+    let workspace = app.state::<WorkspaceState>();
+    let items = app.state::<DesktopItemState>();
+    let bounds = workspace.next_component_bounds(&monitor_id, 360.0, 280.0).map_err(|error| error.message)?;
+    workspace::execute_apply_workspace_command(app, &workspace, &items, &runtime, monitor_id.clone(), WorkspaceCommand::CreateComponent { component_id: "official.collect-box".to_string(), bounds }).map_err(|error| error.message)?;
+    crate::log_info!("收集箱：已创建格子，显示器={monitor_id}");
+    Ok(())
+}
+
+/// 设置页从当前主显示器创建收集箱，兼容 Tauri 和独立宿主命令通道。
+#[tauri::command]
+pub fn create_collect_box(app: tauri::AppHandle) -> Result<(), String>
+{
+    use tauri::Manager;
+    let runtime = app.state::<std::sync::Arc<DesktopHostRuntime>>();
+    let hosts = runtime.snapshot().map_err(|error| error.message)?;
+    let monitor_id = hosts.hosts.iter().find(|host| host.monitor.primary).or_else(|| hosts.hosts.first()).map(|host| host.monitor.id.clone()).ok_or("桌面宿主尚未就绪")?;
+    execute_create_collect_box(&app, monitor_id)
+}
+
 /// 执行 Explorer 注册表菜单回传的动作，复用现有布局事务和事件发布。
 pub(crate) fn execute_registered_desktop_menu(app: &tauri::AppHandle, selected: u32) -> Result<(), String>
 {
@@ -19,6 +44,11 @@ pub(crate) fn execute_registered_desktop_menu(app: &tauri::AppHandle, selected: 
     {
         return crate::app::tray::set_settings_visible(app, true).map_err(|error| error.to_string());
     }
+    if selected == 0x7809
+    {
+        app.exit(0);
+        return Ok(());
+    }
     let runtime = app.state::<std::sync::Arc<DesktopHostRuntime>>(); // 当前逐屏宿主。
     let hosts = runtime.snapshot().map_err(|error| error.message)?; // 当前显示器环境。
     let mut point = windows::Win32::Foundation::POINT::default(); // 执行动作时的物理指针位置。
@@ -26,6 +56,10 @@ pub(crate) fn execute_registered_desktop_menu(app: &tauri::AppHandle, selected: 
     let monitor = hosts.hosts.iter().map(|host| &host.monitor).find(|monitor| point.x >= monitor.x && point.y >= monitor.y && i64::from(point.x) < i64::from(monitor.x) + i64::from(monitor.width) && i64::from(point.y) < i64::from(monitor.y) + i64::from(monitor.height)).or_else(|| hosts.hosts.first().map(|host| &host.monitor)).ok_or("桌面宿主尚未就绪")?; // 跨屏命令按实际指针选择宿主。
     let workspace = app.state::<WorkspaceState>(); // 权威工作区。
     let items = app.state::<DesktopItemState>(); // Shell 项目状态。
+    if selected == 0x780A
+    {
+        return execute_create_collect_box(app, monitor.id.clone());
+    }
     let snapshot = workspace.snapshot().map_err(|error| error.message)?; // 解析动作时的当前布局。
     let action = workspace_menu::choose_workspace_menu(&snapshot, monitor, WorkspaceContextMenuTarget::Background, (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor, |_, _, _, _| Ok(Some(selected))).map_err(|error| error.message)?; // 只解释已选择的动作，不获取或弹出菜单。
     if selected == 0x7808
@@ -128,6 +162,102 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         }
         "get_windows_accent_color" => app.state::<crate::platform::windows::settings::WindowsAccentMonitor>().color().map_err(serialize_error).and_then(serialize_result),
         "get_preferences" => app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error).and_then(serialize_result),
+        "get_collect_items" =>
+        {
+            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            crate::collect::list(&path).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(serialize_result)
+        }
+        "create_collect_item" =>
+        {
+            let content: String = command_argument(&arguments, "content", "收集项内容无效").map_err(serialize_error)?;
+            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            crate::collect::create(&path, &content).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(|item| {
+                let _ = app.emit("collect-items-changed", ());
+                serialize_result(item)
+            })
+        }
+        "save_collect_item" =>
+        {
+            let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
+            let content: String = command_argument(&arguments, "content", "收集项内容无效").map_err(serialize_error)?;
+            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            crate::collect::save(&path, &name, &content).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(|_| {
+                let _ = app.emit("collect-items-changed", ());
+                serialize_result(())
+            })
+        }
+        "rename_collect_item" =>
+        {
+            let old_name: String = command_argument(&arguments, "oldName", "原收集项名称无效").map_err(serialize_error)?;
+            let new_name: String = command_argument(&arguments, "newName", "新收集项名称无效").map_err(serialize_error)?;
+            let draft: Option<String> = serde_json::from_value(arguments.get("draft").cloned().unwrap_or(Value::Null)).map_err(|error| serialize_error(error.to_string()))?; // 可选未保存草稿仍须严格校验类型。
+            collect::execute_rename_collect_item(app.clone(), old_name, new_name, draft).map_err(serialize_error).and_then(serialize_result)
+        }
+        "import_collect_resource" =>
+        {
+            let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
+            let source: String = command_argument(&arguments, "source", "图片路径无效").map_err(serialize_error)?;
+            let mode: String = command_argument(&arguments, "mode", "图片收入方式无效").map_err(serialize_error)?;
+            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            crate::collect::import_resource(&path, &name, std::path::Path::new(&source), &mode).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(serialize_result)
+        }
+        "write_collect_resource" =>
+        {
+            let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
+            let file_name: String = command_argument(&arguments, "fileName", "图片文件名无效").map_err(serialize_error)?;
+            let bytes: Vec<u8> = command_argument(&arguments, "bytes", "图片内容无效").map_err(serialize_error)?;
+            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            crate::collect::write_resource_bytes(&path, &name, &file_name, &bytes).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(serialize_result)
+        }
+        "import_collect_rendered_resource" =>
+        {
+            let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
+            let reference: String = command_argument(&arguments, "reference", "图片引用无效").map_err(serialize_error)?;
+            let mode: String = command_argument(&arguments, "mode", "图片收入方式无效").map_err(serialize_error)?;
+            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            crate::collect::import_rendered_resource(&path, &name, &reference, &mode).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(serialize_result)
+        }
+        "set_collect_item_pinned" =>
+        {
+            let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
+            let pinned: bool = command_argument(&arguments, "pinned", "置顶状态无效").map_err(serialize_error)?;
+            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            crate::collect::set_pinned(&path, &name, pinned).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(|_| {
+                let _ = app.emit("collect-items-changed", ());
+                serialize_result(())
+            })
+        }
+        "delete_collect_item" =>
+        {
+            let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
+            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            crate::collect::delete(&path, &name).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(|_| {
+                let _ = app.emit("collect-items-changed", json!({ "deletedName": name })); // 主动删除不生成不可用占位。
+                serialize_result(())
+            })
+        }
+        "restore_collect_item" =>
+        {
+            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            crate::collect::restore_latest(&path).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(|item| {
+                let _ = app.emit("collect-items-changed", ());
+                serialize_result(item)
+            })
+        }
+        "open_collect_editor" =>
+        {
+            let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
+            collect::execute_open_collect_editor(app.clone(), name).map_err(serialize_error).and_then(serialize_result)
+        }
         "watch_folder_portal" =>
         {
             let root: String = command_argument(&arguments, "rootPath", "门户根路径无效").map_err(serialize_error)?; // 校验绑定根。
@@ -327,6 +457,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let command: WorkspaceCommand = command_argument(&arguments, "command", "命令参数无效").map_err(serialize_error)?; // 已解码的 command。
             workspace::execute_apply_workspace_command(app, &app.state::<WorkspaceState>(), &app.state::<DesktopItemState>(), runtime, monitor_id, command).map_err(serialize_error).and_then(serialize_result)
         }
+        "create_collect_box" => create_collect_box(app.clone()).map_err(serialize_error).and_then(serialize_result),
         "apply_workspace_interaction" =>
         {
             let monitor_id: String = command_argument(&arguments, "monitorId", "命令参数无效").map_err(serialize_error)?; // 已解码的 monitorId。
