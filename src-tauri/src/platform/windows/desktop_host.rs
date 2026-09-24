@@ -359,7 +359,6 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
     let mut targets = Vec::new(); // 必须保持到宿主销毁的已注册 COM 投放目标。
     for target_window in windows
     {
-        crate::log_info!("[DEBUG-drop-entry] 准备注册 OLE 目标，宿主={:?}，目标窗口={:?}", hwnd, target_window);
         let app = app.clone(); // 原生回调访问当前 Shell 操作代理。
         let monitor = monitor.clone(); // 释放坐标所属宿主的物理空间与 DPI。
         let accepted = std::cell::Cell::new(false); // Enter 对完整来源集合的接受性结果。
