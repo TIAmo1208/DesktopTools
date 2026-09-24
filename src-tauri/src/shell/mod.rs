@@ -15,7 +15,7 @@ use crate::platform::windows::{NativeMenuCommand, NativeMenuTarget, ShellChangeE
 /// 表示发送到专用 Shell STA 线程的请求。
 enum ShellRequest
 {
-    /// 在原指针拖动仍有效时准备完整数据对象，失败返回内部布局回退。
+    /// 在原指针拖动仍有效时准备完整数据对象，失败向调用方传播。
     PrepareDrag
     {
         references: Vec<String>, portal_source: bool, reply: SyncSender<Result<Option<ShellDragPreparation>, String>>
@@ -240,8 +240,8 @@ impl ShellStaRuntime
                                 }
                                 Err(error) =>
                                 {
-                                    crate::log_debug!("拖放：完整选择无法创建 Shell 数据对象，保留内部布局：{error}");
-                                    Ok(None)
+                                    crate::log_warn!("拖放：完整选择无法创建 Shell 数据对象，拒绝拖动：{error}");
+                                    Err(error.to_string())
                                 }
                             }; // 不缩减项目集合，也不改变原指针会话。
                             if reply.send(result).is_err()
@@ -737,14 +737,10 @@ impl DesktopItemState
     /// 向应用层交接完整源数据，Shell STA 继续泵送跨 apartment 调用。
     pub(crate) fn take_prepared_drag(&self, token: u64) -> Result<PreparedShellDrag, DesktopItemError> { self.runtime.take_prepared_drag(token).map_err(|error| DesktopItemError::shell_operation_failed(&error)) }
 
-    /// 完整选择不可用时保留内部拖动；仅成功准备才返回可启动凭据。
+    /// 校验并准备完整选择；任一项目或 Shell 数据对象失败都拒绝拖动。
     pub fn prepare_drag(&self, item_ids: &[String]) -> Result<Option<ShellDragPreparation>, DesktopItemError>
     {
-        let references = match self.selection_references(item_ids)
-        {
-            Ok(references) => references,
-            Err(_) => return Ok(None),
-        }; // 不从选择中丢弃失效项目。
+        let references = self.selection_references(item_ids)?; // 不从选择中丢弃失效项目。
         let (reply, response) = mpsc::sync_channel(0); // 指针会话不等待，前端异步接收准备结果。
         self.runtime.send(ShellRequest::PrepareDrag { references, portal_source: false, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
         response.recv().map_err(|error| DesktopItemError::shell_operation_failed(&error))?.map_err(|error| DesktopItemError::shell_operation_failed(&error))

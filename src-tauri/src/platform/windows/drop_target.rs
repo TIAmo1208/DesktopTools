@@ -71,13 +71,11 @@ pub(crate) fn publish_preview(preview: DropPreview) -> Result<(), String>
     Ok(())
 }
 
-/// 释放不等待 Renderer；缺少匹配当前落点和布局的确认就拒绝。
-pub(crate) fn confirmed_preview(session: &str, sequence: u64, revision: u64, monitor: &crate::contracts::DesktopHostMonitor, point: &POINTL) -> Option<DropPreview>
+/// 释放不等待 Renderer；缺少当前布局有效的确认就拒绝，实时指针负责重新命中区域。
+pub(crate) fn confirmed_preview(session: &str, sequence: u64, revision: u64, monitor: &crate::contracts::DesktopHostMonitor, _point: &POINTL) -> Option<DropPreview>
 {
     let preview = DROP_PREVIEWS.lock().ok()?.get(session)?.clone(); // 未登记会话不创建统计，固定本次校验的完整几何快照。
-    let x = (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor; // 当前实际释放位置。
-    let y = (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor;
-    let mut failures = preview.as_ref().map_or([true, false, false, false, false, false], |preview| [false, preview.sequence != sequence, preview.revision != revision, preview.monitor_id != monitor.id, (preview.pointer.left - x).abs() > 0.01 || (preview.pointer.top - y).abs() > 0.01, false]); // 坐标、序号与布局版本分别计数。
+    let mut failures = preview.as_ref().map_or([true, false, false, false, false, false], |preview| [false, preview.sequence > sequence, preview.revision != revision, preview.monitor_id != monitor.id, false, false]); // 允许确认帧落后当前序号，实时指针不再与旧帧坐标比较。
     if !failures.iter().any(|failed| *failed)
         && let Some(preview) = preview.as_ref()
     {
@@ -94,6 +92,14 @@ pub(crate) fn confirmed_preview(session: &str, sequence: u64, revision: u64, mon
         }
     });
     if accepted { preview } else { None }
+}
+
+/// 使用当前原生指针在已确认几何上命中最高优先级区域。
+pub(crate) fn hit_region_at_point(preview: &DropPreview, monitor: &crate::contracts::DesktopHostMonitor, point: &POINTL) -> Option<crate::contracts::HitRegion>
+{
+    let x = (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor;
+    let y = (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor;
+    preview.regions.iter().filter(|region| x >= region.left && x < region.left + region.width && y >= region.top && y < region.top + region.height).max_by_key(|region| region.priority).cloned()
 }
 
 /// 只在实际释放失败时记录 Renderer 确认，避免移动回调刷屏。

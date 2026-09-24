@@ -143,7 +143,7 @@ export const createTileDragPreview = (visual: TileDragVisual): HTMLElement => {
             ? document.createElementNS("http://www.w3.org/2000/svg", value.tag)
             : document.createElement(value.tag); // SVG 保留原图标几何。
         for (const [property, content] of Object.entries(value.style ?? {})) {
-            if (styles.includes(property) && typeof content === "string" && !/url\s*\(/i.test(content)) node.style.setProperty(property, content);
+            if (styles.includes(property) && typeof content === "string" && !/url\s*\(/i.test(content)) node.style.setProperty(property, property === "overflow" && /auto|scroll/i.test(content) ? "hidden" : content);
         }
         for (const [name, content] of Object.entries(value.attributes ?? {})) {
             if (!attributes.includes(name) || typeof content !== "string") continue;

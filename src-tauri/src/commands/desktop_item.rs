@@ -98,7 +98,7 @@ pub(crate) fn execute_start_desktop_item_drag(app: &AppHandle, state: &DesktopIt
     Ok(result)
 }
 
-/// 准备完整选择集合，返回空值表示沿用内部布局拖动。
+/// 准备完整选择集合；失败直接拒绝桌面项目拖动。
 #[tauri::command]
 pub async fn prepare_desktop_item_drag(state: State<'_, DesktopItemState>, item_ids: Vec<String>) -> Result<Option<crate::contracts::ShellDragPreparation>, DesktopItemError> { state.prepare_drag(&item_ids) }
 

@@ -447,10 +447,10 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                             {
                                 return Ok(DROPEFFECT_NONE);
                             }; // 新帧确认前不显示可投放光标。
-                            let top = geometry.regions.iter().filter(|region| geometry.pointer.left >= region.left && geometry.pointer.left < region.left + region.width && geometry.pointer.top >= region.top && geometry.pointer.top < region.top + region.height).max_by_key(|region| region.priority);
-                            portal_target = top.is_some_and(|region| region.kind == "component" && region.target_path.is_some());
-                            portal_path = top.filter(|_| portal_target).and_then(|region| region.target_path.clone());
-                            if !top.is_some_and(|region| matches!(region.kind.as_str(), "workspace-background" | "fence" | "desktop-item") || (region.kind == "component" && region.target_path.is_some()))
+                            let top = super::drop_target::hit_region_at_point(&geometry, &monitor, point);
+                            portal_target = top.as_ref().is_some_and(|region| region.kind == "component" && region.target_path.is_some());
+                            portal_path = top.as_ref().filter(|_| portal_target).and_then(|region| region.target_path.clone());
+                            if !top.as_ref().is_some_and(|region| matches!(region.kind.as_str(), "workspace-background" | "fence" | "desktop-item") || (region.kind == "component" && region.target_path.is_some()))
                             {
                                 return Ok(DROPEFFECT_NONE);
                             }
@@ -479,7 +479,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                             return Ok(DROPEFFECT_NONE);
                         }
                         let source_session = super::drop_target::source_drag_session(data);
-                        let portal_target = preview.borrow().as_ref().and_then(|payload| super::drop_target::confirmed_preview(payload["session"].as_str()?, payload["sequence"].as_u64()?, payload["revision"].as_u64()?, &monitor, point)).is_some_and(|geometry| geometry.regions.iter().filter(|region| geometry.pointer.left >= region.left && geometry.pointer.left < region.left + region.width && geometry.pointer.top >= region.top && geometry.pointer.top < region.top + region.height).max_by_key(|region| region.priority).is_some_and(|region| region.kind == "component" && region.target_path.is_some()));
+                        let portal_target = preview.borrow().as_ref().and_then(|payload| super::drop_target::confirmed_preview(payload["session"].as_str()?, payload["sequence"].as_u64()?, payload["revision"].as_u64()?, &monitor, point)).and_then(|geometry| super::drop_target::hit_region_at_point(&geometry, &monitor, point)).is_some_and(|region| region.kind == "component" && region.target_path.is_some());
                         if let Some(session) = source_session.as_ref().filter(|session| !session.portal_source && !portal_target)
                         {
                             let snapshot = crate::app::desktop_drop::snapshot(&app).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 应用层提供释放时布局版本。

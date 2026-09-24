@@ -47,6 +47,22 @@ export interface CrossMonitorPreviewEvent extends CrossMonitorDrag {
 
 let activeDrag: CrossMonitorDrag | undefined; // 当前页面拥有的最新拖动，静止时仍需保持目标预览。
 let heartbeat: ReturnType<typeof setInterval> | undefined; // 源页面结束或卸载时自动释放。
+let moveFrame = 0; // 每帧最多发送一次最新跨屏预览。
+let pendingMove: CrossMonitorDrag | undefined; // 合并连续指针事件，避免重复序列化视觉树。
+
+/** 在下一帧发送最新跨屏状态，保留释放消息的即时通道。 */
+const flushMove = () => {
+    moveFrame = 0;
+    const drag = pendingMove;
+    pendingMove = undefined;
+    if (drag) void invokeRuntime("relay_workspace_drag", { payload: { ...drag, phase: "move" } }).catch(() => undefined);
+};
+
+/** 浏览器帧调度不可用时使用一次短延迟，保持消息合并语义。 */
+const scheduleMove = () => (typeof window.requestAnimationFrame === "function" ? window.requestAnimationFrame(flushMove) : window.setTimeout(flushMove, 16));
+
+/** 取消尚未发送的合并帧。 */
+const cancelMove = (frame: number) => (typeof window.cancelAnimationFrame === "function" ? window.cancelAnimationFrame(frame) : window.clearTimeout(frame));
 
 /** 经原生宿主转发消息，静止拖动也维持目标页的过期保护。 */
 export const publishCrossMonitorDrag = (drag: CrossMonitorDrag, phase: "move" | "drop" | "end") => {
@@ -55,12 +71,18 @@ export const publishCrossMonitorDrag = (drag: CrossMonitorDrag, phase: "move" | 
         heartbeat ??= setInterval(() => {
             if (activeDrag) void invokeRuntime("relay_workspace_drag", { payload: { ...activeDrag, phase: "move" } }).catch(() => undefined);
         }, 500);
+        pendingMove = drag;
+        if (!moveFrame) moveFrame = scheduleMove();
     }
     if ((phase === "end" || phase === "drop") && activeDrag?.session === drag.session) {
         clearInterval(heartbeat);
         heartbeat = undefined;
+        if (moveFrame) cancelMove(moveFrame);
+        moveFrame = 0;
+        pendingMove = undefined;
         activeDrag = undefined;
     }
+    if (phase === "move") return Promise.resolve();
     return invokeRuntime<void>("relay_workspace_drag", { payload: { ...drag, phase } });
 };
 

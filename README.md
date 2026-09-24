@@ -1,6 +1,42 @@
 # Desktop Tools
 
-Desktop Tools 是面向 Windows 的桌面内容工作区，负责呈现和组织桌面项目、围栏、文件夹门户与组件。Windows Explorer 继续提供桌面命名空间、Shell 操作和恢复兜底。
+Desktop Tools 是面向个人效率用户、专业创作者和开发者的 Windows 桌面内容工作区，负责呈现和组织桌面项目、围栏、文件夹门户与功能格子。Windows Explorer 继续提供桌面命名空间、Shell 操作和恢复兜底。
+
+## 功能介绍
+
+- 组织文件、目录、快捷方式和其他 Shell 桌面项目。
+- 使用围栏管理项目归属、顺序、排序、滚动、折叠和布局。
+- 使用文件夹门户浏览绑定目录及其子目录，并支持真实文件拖入和拖出。
+- 提供收集箱、音乐、时间和 Debug 等功能格子。
+- 统一功能格子的移动、尺寸调整、边缘吸附、折叠、标题工具和跨屏交互。
+- 桌面项目拖动统一使用 Windows OLE；功能格子移动和尺寸调整使用工作区内部交互。
+- 通过 Windows Shell 执行打开、重命名、删除、复制、移动、剪贴板和原生上下文菜单操作。
+- 支持多显示器、DPI 坐标转换、跨屏预览和布局恢复。
+
+桌面项目布局、围栏归属、门户配置和功能格子状态由 Desktop Tools 维护；文件事实和 Shell 恢复仍由 Windows Explorer 提供。
+
+## 构建与运行
+
+常用验证命令：
+
+```text
+npm run typecheck
+npm run test:frontend
+npm run test:rust
+npm run build
+npm run tauri:build
+```
+
+发布构建使用 `npm run tauri:build`。直接执行 Cargo 时沿用项目指定工具链、共享构建目录和 `src-tauri/Cargo.toml` 的 features。
+
+## 文档入口
+
+- [前端目录结构](src/README.md)
+- [Rust/Tauri 目录结构](src-tauri/README.md)
+- [领域词汇](CONTEXT.md)
+- [正式架构规格](docs/adr/0016-正式项目架构.md)
+- [共享格子外观与公共交互决策](docs/adr/0018-共享格子外观并隔离布局撤销.md)
+- [视觉规范](docs/design/视觉规范.md)
 
 ## 当前文件结构
 

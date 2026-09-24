@@ -4,7 +4,7 @@ import type { WorkspaceSnapshot } from "../../../contracts/workspace";
 import { invokeRuntime } from "../../../bridge/runtime";
 import type { CrossMonitorPreviewEvent } from "../interaction/crossMonitorDrag";
 import { createWorkspaceDropTarget } from "./workspaceDropTarget";
-import { renderCrossMonitorDragPreview } from "./crossMonitorDragPreview";
+import { createCrossMonitorDragPreview } from "./crossMonitorDragPreview";
 
 /** 目标宿主拥有预览节点与真实 DOM 命中，源宿主仍独占事务提交。 */
 export const useCrossMonitorPreview = (monitorId: string | undefined, items: DesktopItemSnapshot | undefined, workspace: WorkspaceSnapshot | undefined) => {
@@ -12,7 +12,7 @@ export const useCrossMonitorPreview = (monitorId: string | undefined, items: Des
     state.current = { items, workspace };
     useEffect(() => {
         if (!monitorId) return;
-        let clearVisuals = () => {}; // 当前拖动内容的释放入口。
+        const preview = createCrossMonitorDragPreview(); // 当前会话复用的目标预览。
         let timeout = 0; // 源 Renderer 失效后清理预览。
         let session: string | undefined; // 当前接收会话。
         let renderFrame = 0; // 等待悬停展开提交后的单一渲染帧。
@@ -31,7 +31,7 @@ export const useCrossMonitorPreview = (monitorId: string | undefined, items: Des
             cancelAnimationFrame(renderFrame);
             renderFrame = 0;
             pendingSession = undefined;
-            clearVisuals();
+            preview.clear();
             target.clear(restoreScroll, finish);
         };
         const handleMessage = (event: Event, deferDrop = true) => {
@@ -68,13 +68,12 @@ export const useCrossMonitorPreview = (monitorId: string | undefined, items: Des
             if (![drag.pointer?.left, drag.pointer?.top, drag.origin?.left, drag.origin?.top].every(Number.isFinite)) return;
             if (session && session !== drag.session) clear(true, true);
             session = drag.session;
-            clear();
             if (!replaying) {
                 window.clearTimeout(timeout);
                 timeout = window.setTimeout(() => clear(true, true), 2500);
             }
             const geometry = target.update(drag, state.current.workspace); // 只消费目标适配器的投放和几何结果。
-            clearVisuals = renderCrossMonitorDragPreview(drag, state.current.items, state.current.workspace, geometry.drop.snapTargets);
+            preview.update(drag, state.current.items, state.current.workspace, geometry.drop.snapTargets);
             const drop = geometry.drop; // 源宿主独占布局事务提交。
             if (drag.source === "ole" && drag.phase === "move" && Number.isSafeInteger(drag.sequence) && drag.revision === state.current.workspace?.revision) {
                 void invokeRuntime("relay_workspace_drag", {

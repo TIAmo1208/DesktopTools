@@ -311,6 +311,12 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
 
     /** 表面方向键移动，Shift 加方向键缩放；内容控件保留自身键盘行为。 */
     const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+        if (event.key === "Escape" && cancel.current) {
+            event.preventDefault();
+            event.stopPropagation();
+            cancel.current();
+            return;
+        }
         if (event.target !== event.currentTarget || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
         if (cancel.current || event.ctrlKey || event.altKey || (event.shiftKey && options.collapsed)) return;
         event.preventDefault();
