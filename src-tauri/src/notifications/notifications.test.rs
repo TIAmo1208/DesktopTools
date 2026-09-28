@@ -109,10 +109,8 @@ fn independent_durations_and_visible_loading_control_wakeups()
 #[test]
 fn appearance_uses_interface_preferences_only()
 {
-    let mut preferences = ApplicationPreferences::default(); // 产品默认偏好。
-    preferences.theme = ApplicationTheme::Light;
+    let mut preferences = ApplicationPreferences { theme: ApplicationTheme::Light, interface_animations: true, ..Default::default() }; // 产品默认偏好。
     preferences.desktop_appearance.theme = ApplicationTheme::Dark;
-    preferences.interface_animations = true;
     let appearance = Appearance::resolve(&preferences, true, false); // 系统深色并关闭动画。
     assert!(!appearance.dark);
     assert!(!appearance.animated);

@@ -152,12 +152,9 @@ pub fn run()
             let session_handle = app.handle().clone(); // 锁屏时隐藏按需设置窗口，解锁后不强制打开。
             app.listen("desktop-refresh-policy-changed", move |event| {
                 let locked = serde_json::from_str::<serde_json::Value>(event.payload()).ok().and_then(|value| value.get("locked").and_then(serde_json::Value::as_bool)).unwrap_or(false);
-                if locked
+                if locked && let Some(window) = session_handle.get_webview_window("main")
                 {
-                    if let Some(window) = session_handle.get_webview_window("main")
-                    {
-                        let _ = window.hide();
-                    }
+                    let _ = window.hide();
                 }
             });
             let desktop_host = DesktopHostRuntime::start(app.handle())?;

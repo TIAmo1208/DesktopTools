@@ -24,8 +24,10 @@ src-tauri/
 ├─ components/            # Tauri 组件配置
 ├─ gen/                   # Tauri 生成文件
 ├─ icons/                 # 应用图标资源
+├─ installer/             # NSIS 安装与卸载生命周期钩子
 ├─ Cargo.toml             # Rust 依赖和构建配置
-└─ tauri.conf.json        # Tauri 应用和打包配置
+├─ tauri.conf.json        # Tauri 应用配置
+└─ tauri.installer.conf.json # 当前用户 NSIS 测试安装包覆盖配置
 ```
 
 ## 关键边界
@@ -48,3 +50,5 @@ React feature -> bridge -> commands
 ```
 
 修改 Rust 或 Cargo 配置前，按根目录 `AGENTS.md` 停止开发监听；Cargo 检查、测试和构建必须串行并沿用项目指定工具链与共享构建目录。
+
+`npm run tauri:installer` 先由 `scripts/prepare-licenses.mjs` 整理当前锁定依赖许可，再加载安装包覆盖配置构建与打包。普通开发和纯程序构建不依赖生成的许可文件。安装钩子复用应用桌面菜单命令，不持有业务状态；生命周期与分发边界见 [ADR-0024](../docs/adr/0024-采用当前用户NSIS安装包.md)。

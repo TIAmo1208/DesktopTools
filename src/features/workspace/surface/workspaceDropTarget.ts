@@ -33,6 +33,8 @@ export const createWorkspaceDropTarget = (monitorId: string, onScroll: (drag: Cr
 
     /** 消费已验证指针，返回投放结果与实际渲染几何，不暴露围栏节点。 */
     const update = (drag: CrossMonitorPreviewEvent, workspace: WorkspaceSnapshot | undefined) => {
+        clear(); // 每帧替换投放预览，保留会话初始滚动位置供结束时恢复。
+
         const drop: CrossMonitorDrop = {}; // 本帧目标屏真实命中。
         if (drag.kind === "fence")
             drop.snapTargets = [...document.querySelectorAll<HTMLElement>(".desktop-tile[data-hit-id]")]

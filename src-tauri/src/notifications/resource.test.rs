@@ -62,7 +62,10 @@ fn sample(manager: Option<&ToastManager>, round: usize, scenario: &str, seconds:
 #[ignore = "会短暂显示真实 Toast；使用 Release、单测试线程测量"]
 fn native_toast_resource_usage()
 {
-    assert!(!cfg!(debug_assertions), "资源测量必须使用 --release");
+    if cfg!(debug_assertions)
+    {
+        panic!("资源测量必须使用 --release");
+    }
     unsafe { windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }.unwrap(); // 与 Tauri/Tao 的 Windows 10 初始化一致。
     sample(None, 0, "未创建窗口", 3);
     let preferences = ApplicationPreferences { follow_system_reduced_motion: false, interface_animations: true, ..Default::default() }; // 固定开启动画，不改变用户设置。

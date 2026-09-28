@@ -109,9 +109,9 @@ impl ToastState
     {
         let expanded = self.hovered_since.is_some(); // 当前悬停目标。
         let newest_height = self.items.iter().rev().find(|item| !item.closing).map_or(64.0, |item| item.height); // 前景顶部是 peek 层的锚点。
-        let mut depth = 0usize; // 不包括退出中的层。
         let mut bottom = 0.0; // 展开时从下向上累计真实高度。
-        for item in self.items.iter_mut().rev().filter(|item| !item.closing)
+        // 枚举非退出层，层深与有效消息保持一致。
+        for (depth, item) in self.items.iter_mut().rev().filter(|item| !item.closing).enumerate()
         {
             let scale = if expanded { 1.0 } else { 1.0 - 0.06 * depth.min(2) as f32 }; // 100% / 94% / 88%。
             let target = Visual { top: if expanded { bottom - item.height } else { -newest_height - 14.0 * depth.min(2) as f32 }, height: if expanded { item.height } else { newest_height }, scale, alpha: if expanded || depth < 3 { 1.0 } else { 0.0 }, content: if expanded || depth == 0 { 1.0 } else { 0.0 } }; // 折叠后层沿用前景高度，长旧消息不能从底部露出。
@@ -121,7 +121,6 @@ impl ToastState
                 item.motion = Motion { from: current, to: target, started: now };
             }
             bottom -= item.height + 14.0;
-            depth += 1;
         }
     }
 

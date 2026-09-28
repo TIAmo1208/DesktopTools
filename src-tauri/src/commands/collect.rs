@@ -127,11 +127,9 @@ pub(crate) fn execute_rename_collect_item(app: AppHandle, old_name: String, new_
     let renamed_draft = collect::rename(&config, &old_name, &new_name, draft.as_deref()).map_err(|e| format!("重命名收集项失败：{e}"))?; // 草稿仅转换返回，不写入磁盘。
     let new_path = editor_path(&root, &new_name)?; // 成功改名后的文件身份。
     if let Some(label) = editors.rename(&old_path, new_path)
+        && let Some(window) = app.get_webview_window(&label)
     {
-        if let Some(window) = app.get_webview_window(&label)
-        {
-            let _ = window.set_title(&format!("编辑收集项 — {new_name}"));
-        }
+        let _ = window.set_title(&format!("编辑收集项 — {new_name}"));
     }
     changed(&app);
     Ok(renamed_draft)

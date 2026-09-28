@@ -57,11 +57,11 @@ fn pixels_match_theme_alpha_and_dpi()
                 {
                     pixel.swap(0, 2);
                     let alpha = u32::from(pixel[3]); // 还原预乘颜色。
-                    if alpha > 0
+                    for channel in &mut pixel[..3]
                     {
-                        for channel in &mut pixel[..3]
+                        if let Some(value) = (u32::from(*channel) * 255).checked_div(alpha)
                         {
-                            *channel = (u32::from(*channel) * 255 / alpha).min(255) as u8;
+                            *channel = value.min(255) as u8;
                         }
                     }
                 }

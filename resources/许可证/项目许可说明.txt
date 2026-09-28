@@ -1,0 +1,6 @@
+Desktop Tools 核心应用采用 GPL-3.0-or-later。
+许可证完整正文见 GPL-3.0.txt，允许按照 GNU GPL 第 3 版或后续版本使用。
+公开组件 SDK、公开契约和 Schema 的许可决策见仓库 docs/adr/0003-采用完整开源与免费官方发行版.md。
+
+项目源码：https://github.com/TIAmo1208/DesktopTools
+本次未签名安装包仅用于本地测试；公开分发前须同时提供与二进制对应的完整源码及构建材料，并核对第三方许可声明。

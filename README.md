@@ -29,6 +29,8 @@ npm run tauri:build
 
 发布构建使用 `npm run tauri:build`。直接执行 Cargo 时沿用项目指定工具链、共享构建目录和 `src-tauri/Cargo.toml` 的 features。
 
+Windows x64 未签名测试安装包入口为 `npm run tauri:installer`，产物目录为 `build/target/release/bundle/nsis/`。NSIS 使用当前用户安装，缺少 WebView2 时联网安装，安装包包含主程序、guardian 和许可声明；升级与卸载钩子请求正常退出并保留用户数据。实际打包及中文空格路径下的首次安装、同版本覆盖和卸载已验证；运行中恢复等剩余边界见[安装包验证](docs/validation/安装包验证.md)。此入口不执行签名或 GitHub 发布，发行约束见 [ADR-0024](docs/adr/0024-采用当前用户NSIS安装包.md)。
+
 ## 文档入口
 
 - [前端目录结构](src/README.md)

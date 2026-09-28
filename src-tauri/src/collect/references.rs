@@ -58,7 +58,7 @@ fn html_resource_edits(source: &str, old: &str, new: &str) -> Vec<(usize, usize,
         let relative = value.strip_prefix("./").unwrap_or(value);
         if let Some(suffix) = relative.strip_prefix(&format!("{old}/"))
         {
-            edits.push((start, end, format!("{}{}{}", if explicit { "./" } else { "" }, new, format!("/{suffix}"))));
+            edits.push((start, end, format!("{}{new}/{suffix}", if explicit { "./" } else { "" })));
         }
         index = end + 1;
     }
@@ -97,7 +97,7 @@ pub(super) fn rename_resources(content: &str, old: &str, new: &str) -> String
         {
             continue;
         }; // 不修改外链和同名片段。
-        if !source_is_markdown_span(&content, &span)
+        if !source_is_markdown_span(content, &span)
         {
             edits.push((span, destination));
             continue;
