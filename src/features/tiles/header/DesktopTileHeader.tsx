@@ -1,5 +1,5 @@
 import { useContext, useRef, type ComponentPropsWithoutRef, type ReactNode } from "react";
-import { DesktopTileContext } from "./DesktopTileBase";
+import { DesktopTileContext } from "../DesktopTileBase";
 
 import "./DesktopTileHeader.css";
 
@@ -15,12 +15,26 @@ interface DesktopTileHeaderProps extends Omit<ComponentPropsWithoutRef<"header">
 }
 
 /** 共用标题编辑的取消、输入法与保存边界。 */
-export const DesktopTileHeader = ({ title, subtitle, editing, onRenameEnd, onRename, onRenameStart, commands, ...props }: DesktopTileHeaderProps) => {
+export const DesktopTileHeader = ({
+    title,
+    subtitle,
+    editing,
+    onRenameEnd,
+    onRename,
+    onRenameStart,
+    commands,
+    onPointerDown,
+    ...props
+}: DesktopTileHeaderProps) => {
     const cancelled = useRef(false); // Escape 取消时阻止失焦提交。
     const shell = useContext(DesktopTileContext); // 外壳持有显隐状态，标题只负责呈现。
     return (
         <header
             {...props}
+            onPointerDown={(event) => {
+                shell.onHeaderPointerDown?.(event);
+                if (!event.defaultPrevented) onPointerDown?.(event);
+            }}
             className="desktop-tile-header"
             data-visible={shell.titleVisible}
             data-title-mode={shell.titleMode}

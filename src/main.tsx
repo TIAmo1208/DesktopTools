@@ -7,7 +7,7 @@ import { SettingsPage } from "./features/settings/SettingsPage";
 import "./styles/global.css";
 
 // 编辑器及其样式只在按需编辑窗加载，桌面宿主不承担其初始化成本。
-const CollectEditor = lazy(() => import("./features/components/CollectEditor").then((module) => ({ default: module.CollectEditor })));
+const CollectEditor = lazy(() => import("./features/tile-content/collect-box/CollectEditor").then((module) => ({ default: module.CollectEditor })));
 
 // React 应用挂载节点。
 const rootElement = document.getElementById("root");

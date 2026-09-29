@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { executeMusicAction, getCurrentMusicSession, listenMusicSession } from "../../bridge/music";
-import { publishMessage } from "../notifications/messageNotification";
+import { executeMusicAction, getCurrentMusicSession, listenMusicSession } from "../../../bridge/music";
+import { publishMessage } from "../../notifications/messageNotification";
 import { MusicControl, type MusicControlMinimumSize } from "./MusicControl";
 
 /** 读取当前 GSMTC 会话并绑定三项媒体动作。 */
 export const MusicWidget = ({ onMinimumSizeChange }: { onMinimumSizeChange: (minimum: MusicControlMinimumSize) => void }) => {
-    const [snapshot, setSnapshot] = useState<import("../../contracts/music").MusicMediaSnapshot>(); // 当前媒体快照。
+    const [snapshot, setSnapshot] = useState<import("../../../contracts/music").MusicMediaSnapshot>(); // 当前媒体快照。
     const generation = useRef(0); // 丢弃早于事件或卸载的读取结果。
     const mounted = useRef(false); // 禁止卸载后的异步结果更新界面。
     const failed = useRef(false); // 当前连接故障周期是否已经通知。

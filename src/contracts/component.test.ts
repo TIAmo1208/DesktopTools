@@ -42,6 +42,15 @@ test("parses the official component runtime snapshot", () => {
     assert.equal(snapshot.instances[1].status, "failed");
 });
 
+// 投射边界不能误用持久尺寸底线，非有限值始终拒绝。
+test("组件持久尺寸和小视口投射分别校验", () => {
+    const instance = { instanceId: "clock", componentId: "official.local-clock", monitorId: "A", projectionMonitorId: "B", projectionBounds: { left: 0, top: 0, width: 40, height: 24 }, bounds: { left: 0, top: 0, width: 80, height: 48 }, stateVersion: 1, state: {} }; // 最小持久矩形与临时投射。
+    assert.equal(parseComponentInstanceSnapshot(instance).projectionBounds?.width, 40);
+    for (const size of [0, -1, NaN, Infinity, 79]) assert.throws(() => parseComponentInstanceSnapshot({ ...instance, bounds: { ...instance.bounds, width: size } }));
+    for (const size of [0, -1, NaN, Infinity, 47]) assert.throws(() => parseComponentInstanceSnapshot({ ...instance, bounds: { ...instance.bounds, height: size } }));
+    assert.throws(() => parseComponentInstanceSnapshot({ ...instance, projectionBounds: { ...instance.projectionBounds, height: NaN } }));
+});
+
 // 验证组件位置、显示器投射和版本化状态通过持久实例契约。
 test("parses a persisted component instance and host event", () => {
     const instance = parseComponentInstanceSnapshot({

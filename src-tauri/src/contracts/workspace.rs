@@ -10,11 +10,11 @@ pub const WORKSPACE_SCHEMA_VERSION: u32 = 1;
 /// 当前完整工作区备份文件的 Schema 版本。
 pub const WORKSPACE_BACKUP_SCHEMA_VERSION: u32 = 5;
 
-/// 围栏允许的最小宽度，单位为 DIP。
-pub const FENCE_MIN_WIDTH: f64 = 164.0;
+/// 所有格子持久展开边界的最小宽度，单位为 DIP。
+pub const TILE_MIN_WIDTH: f64 = 80.0;
 
-/// 围栏允许的最小展开高度，单位为 DIP。
-pub const FENCE_MIN_HEIGHT: f64 = 154.0;
+/// 所有格子持久展开边界的最小高度，单位为 DIP。
+pub const TILE_MIN_HEIGHT: f64 = 48.0;
 
 /// 未归类网格相对工作区左侧的起点。
 pub const WORKSPACE_GRID_LEFT: f64 = 0.0;
@@ -638,6 +638,13 @@ pub enum WorkspaceCommand
     CreateComponent
     {
         component_id: String, bounds: WorkspaceRect
+    },
+    /// 移除可重新创建的收集箱实例，不删除共享收集内容。
+    #[serde(rename = "remove-component")]
+    RemoveComponent
+    {
+        /// 需要移除的稳定实例标识。
+        instance_id: String,
     },
     /// 提交组件移动后的显示器归属和完整边界。
     #[serde(rename = "update-component-bounds")]

@@ -9,13 +9,14 @@
             import { createRoot } from "react-dom/client";
             import { flushSync } from "react-dom";
             import { DesktopTileBase } from "./DesktopTileBase.tsx";
-            import { DesktopTileHeader } from "./DesktopTileHeader.tsx";
+            import { DesktopTileHeader } from "./header/DesktopTileHeader.tsx";
             import { DesktopTileViewport } from "./DesktopTileViewport.tsx";
             import { captureTileDragVisual, createTileDragPreview } from "./tileDragPreview.ts";
             import { collectHitRegions } from "../workspace/surface/workspaceSurfaceProjection.ts";
             import { PreferencesProvider } from "../settings/PreferencesProvider.tsx";
+            import { CollectBoxTile } from "../tile-content/collect-box/CollectBoxTile.tsx";
             import "../../styles/global.css";
-            import "../fences/FenceWorkspace.css";
+            import "../workspace/surface/DesktopWorkspace.css";
             const h = React.createElement; // 实际公共格子组件，内容使用固定时钟文本。
             let toggleCollapsed; // 浏览器断言触发公共外壳折叠状态。
             const Fixture = () => {
@@ -25,7 +26,20 @@
                     DesktopTileBase,
                     {
                         collapsed,
-                        onResize() {},
+                        geometry: {
+                            bounds: { left: 10, top: 10, width: 240, height: 180 },
+                            title: "本地时间",
+                            minimum: { width: 164, height: 90 },
+                            snap: true,
+                            monitors: [],
+                            onFocus() {},
+                            async onCommit() {},
+                            async onBeginInputDrag() {},
+                            async onEndInputDrag() {},
+                            onFailure(error) {
+                                throw error;
+                            },
+                        },
                         "data-hit-id": "clock",
                         "data-hit-kind": "component",
                         style: { left: 10, top: 10, width: 240, height: collapsed ? 28 : 180 },
@@ -96,7 +110,226 @@
                     rejected = true;
                 }
                 assert(rejected, "非法标签未拒绝");
-                document.getElementById("result").textContent = "PASS：完整内容、折叠动效、惰性副本、源命中排除及标签校验";
+                // 使用真实 React/DOM 事件传播验证公共入口优先于内容的 Escape。
+                let releaseInput; // 原生输入准备的受控结果。
+                let preparing = true; // 首次手势停留在准备阶段。
+                let ended = 0; // 输入释放次数。
+                let committed = 0; // 领域提交次数。
+                let contentEscapes = 0; // 空闲内容自己处理的 Escape。
+                let collapseGeometry; // 触发共享展开状态。
+                const GeometryFixture = () => {
+                    const [collapsed, setCollapsed] = React.useState(false); // 保存的折叠偏好。
+                    collapseGeometry = () => flushSync(() => setCollapsed(true));
+                    return h(
+                        DesktopTileBase,
+                        {
+                            appearance: { title: "格子", titleMode: "fixed", buttonMode: "hover", collapsed, autoExpand: true },
+                            collapsedSize: { height: 56 },
+                            tabIndex: 0,
+                            geometry: {
+                                bounds: { left: 10, top: 10, width: 240, height: 180 },
+                                title: "格子",
+                                minimum: { width: 164, height: 90 },
+                                snap: true,
+                                monitors: [],
+                                onFocus() {},
+                                async onCommit() {
+                                    committed++;
+                                },
+                                onBeginInputDrag: () =>
+                                    preparing
+                                        ? new Promise((resolve) => {
+                                              releaseInput = resolve;
+                                          })
+                                        : Promise.resolve(),
+                                async onEndInputDrag() {
+                                    ended++;
+                                },
+                                onFailure(error) {
+                                    throw error;
+                                },
+                            },
+                        },
+                        (effectiveCollapsed) =>
+                            h(
+                                React.Fragment,
+                                null,
+                                h(DesktopTileHeader, {
+                                    title: effectiveCollapsed ? "最新条目" : "格子",
+                                    subtitle: effectiveCollapsed ? "摘要" : undefined,
+                                    editing: false,
+                                    onRenameEnd() {},
+                                    onRename: async () => {},
+                                }),
+                                h(
+                                    DesktopTileViewport,
+                                    null,
+                                    h("input", {
+                                        "aria-label": "内容输入",
+                                        onKeyDown: (event) => {
+                                            if (event.key === "Escape") contentEscapes++;
+                                            event.stopPropagation();
+                                        },
+                                    }),
+                                ),
+                            ),
+                    );
+                };
+                flushSync(() => root.render(h(PreferencesProvider, null, h(GeometryFixture))));
+                const surface = document.querySelector(".desktop-tile"); // 正式公共外框。
+                const header = surface.querySelector("header"); // 不由业务接线的公共标题。
+                const input = surface.querySelector("input"); // 会阻断冒泡的内容控件。
+                const pointerDown = () =>
+                    header.dispatchEvent(
+                        new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, pointerId: 1, clientX: 20, clientY: 20 }),
+                    );
+                const escape = () => {
+                    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+                    input.dispatchEvent(event);
+                    return event;
+                };
+                pointerDown();
+                assert(escape().defaultPrevented && contentEscapes === 0, "准备阶段 Escape 被内容阻断");
+                releaseInput();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                assert(ended === 1 && committed === 0, "准备阶段取消后仍捕获或提交");
+                assert(!escape().defaultPrevented && contentEscapes === 1, "空闲 Escape 丢失内容语义");
+                preparing = false;
+                header.setPointerCapture = () => {}; // 合成 PointerEvent 无法建立 OS 指针，唯一原生边界使用替身。
+                header.hasPointerCapture = () => false;
+                pointerDown();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                assert(surface.dataset.geometryActive === "true" && surface.dataset.crossDragHidden === "true", "标题未进入唯一公共几何入口");
+                assert(escape().defaultPrevented && contentEscapes === 1, "拖动阶段 Escape 被内容阻断");
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                assert(ended === 2 && committed === 0 && !surface.dataset.crossDragHidden, "拖动取消未恢复源表面");
+                collapseGeometry();
+                assert(
+                    surface.style.height === "56px" &&
+                        surface.querySelector(".desktop-tile-viewport").inert &&
+                        surface.querySelector("h2").textContent === "最新条目",
+                    "公共折叠状态未同步标题和内容",
+                );
+                surface.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, relatedTarget: document.body }));
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                assert(
+                    !surface.querySelector(".desktop-tile-viewport").inert && surface.querySelector("h2").textContent === "格子",
+                    "临时展开未同步内容和标题",
+                );
+                // 收集箱菜单只发送统一创建意图；已存在的展开尺寸与折叠覆盖分别保留。
+                const originalNative = window.__DESKTOP_TOOLS_NATIVE__; // 验证结束后恢复原生边界。
+                const commands = []; // 实际经过 bridge 的命令及载荷。
+                window.__DESKTOP_TOOLS_NATIVE__ = {
+                    invoke: async (command, payload) => commands.push({ command, payload }),
+                    listen: async () => () => {},
+                };
+                try {
+                    const bounds = { left: 80, top: 100, width: 640, height: 480 }; // 故意与新实例默认尺寸不同。
+                    flushSync(() =>
+                        root.render(
+                            h(CollectBoxTile, {
+                                instance: { instanceId: "collect-test", componentId: "official.collect-box", monitorId: "A", bounds },
+                                appearance: { title: null, titleMode: "fixed", buttonMode: "hover", collapsed: true, autoExpand: false },
+                                monitors: [],
+                                async onCommand() {
+                                    throw new Error("创建入口绕过统一流程自行提交布局");
+                                },
+                                async onInteraction() {},
+                                async onBeginInputDrag() {},
+                                async onEndInputDrag() {},
+                            }),
+                        ),
+                    );
+                    const collect = document.querySelector(".desktop-tile"); // 正式收集箱公共外框与菜单。
+                    assert(collect.style.width === "640px" && collect.style.height === "56px", "收集箱折叠覆盖未保留展开宽度");
+                    flushSync(() => collect.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 110 })));
+                    const create = [...document.querySelectorAll("[role=menuitem]")].find((item) => item.textContent === "新建收集箱格子"); // 用户实际的新建入口。
+                    assert(create, "收集箱创建菜单缺失");
+                    flushSync(() => create.click());
+                    await Promise.resolve();
+                    const requests = commands.filter((entry) => entry.command === "create_collect_box"); // 不依赖其他公共菜单命令的数量。
+                    assert(requests.length === 1 && requests[0].payload === undefined, "创建入口传入了自算位置或展开尺寸");
+                    assert(bounds.width === 640 && bounds.height === 480, "折叠尺寸污染权威展开边界");
+
+                    // 正式围栏验证内容视口下限、标题占位和几何提交使用同一边界。
+                    const { FenceTile } = await import("../tile-content/fence/FenceTile.tsx");
+                    const fenceBounds = { left: 10, top: 10, width: 80, height: 48 }; // 后端允许、前端需满足内容需求的尺寸。
+                    const fence = {
+                        id: "minimum-fence",
+                        title: "围栏",
+                        bounds: fenceBounds,
+                        projectionBounds: null,
+                        members: [],
+                        collapsed: false,
+                        scrollTop: 0,
+                        zIndex: 0,
+                        layoutMode: "tile",
+                    }; // 不自动改写持久数据。
+                    const fenceCommands = []; // 验证真实键盘路径的布局提交。
+                    const renderFence = (titleMode, collapsed = false, projection = false) =>
+                        flushSync(() =>
+                            root.render(
+                                h(FenceTile, {
+                                    fence: projection
+                                        ? {
+                                              ...fence,
+                                              bounds: { left: 0, top: 0, width: 40, height: 24 },
+                                              projectionBounds: { left: 0, top: 0, width: 40, height: 24 },
+                                          }
+                                        : fence,
+                                    appearance: { title: null, titleMode, buttonMode: "hover", collapsed, autoExpand: false },
+                                    items: [],
+                                    monitors: [],
+                                    selectedItemIds: new Set(),
+                                    renaming: false,
+                                    renameValue: "",
+                                    onRenameStart() {},
+                                    onRenameEnd() {},
+                                    async onCommand(command) {
+                                        fenceCommands.push(command);
+                                    },
+                                    async onInteraction() {},
+                                    async onBeginInputDrag() {},
+                                    async onEndInputDrag() {},
+                                }),
+                            ),
+                        ); // 只替换业务回调，使用真实公共外壳和内容视口。
+                    for (const [titleMode, height] of [
+                        ["fixed", 142],
+                        ["hover", 114],
+                        ["fixed", 142],
+                    ]) {
+                        renderFence(titleMode);
+                        const tile = document.querySelector(".fence"); // 当前正式围栏。
+                        const viewportBounds = tile.querySelector(".desktop-tile-viewport").getBoundingClientRect(); // 扣除外壳和标题后的真实内容区。
+                        assert(tile.getBoundingClientRect().width === 168 && tile.getBoundingClientRect().height === height, "围栏整体下限未跟随标题占位");
+                        assert(viewportBounds.width === 164 && viewportBounds.height === 110, "围栏内容区下限不等于 164 × 110");
+                        tile.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", shiftKey: true, bubbles: true, cancelable: true }));
+                        await Promise.resolve();
+                        assert(fenceCommands.at(-1)?.bounds.height === height, "键盘缩放与围栏真实外框下限不一致");
+                    }
+                    renderFence("fixed", true);
+                    document
+                        .querySelector(".fence")
+                        .getAnimations()
+                        .forEach((animation) => animation.finish());
+                    await Promise.resolve();
+                    assert(document.querySelector(".fence").getBoundingClientRect().height === 28, "内容下限阻止公共折叠");
+                    renderFence("hover", false, true);
+                    document
+                        .querySelector(".fence")
+                        .getAnimations()
+                        .forEach((animation) => animation.finish());
+                    await Promise.resolve();
+                    assert(document.querySelector(".fence").getBoundingClientRect().height === 24, "内容下限撑破极小临时投射");
+                    assert(fenceBounds.width === 80 && fenceBounds.height === 48, "呈现计算自动改写了持久边界");
+                } finally {
+                    root.unmount();
+                    if (originalNative) window.__DESKTOP_TOOLS_NATIVE__ = originalNative;
+                    else delete window.__DESKTOP_TOOLS_NATIVE__;
+                }
+                document.getElementById("result").textContent =
+                    "PASS：完整静态帧、折叠动效、命中排除、标签校验、准备与拖动 Escape、内容键盘、临时展开、收集箱统一创建及围栏内容尺寸";
             } catch (error) {
                 document.getElementById("result").textContent = "FAIL：" + error.stack;
             }

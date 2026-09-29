@@ -3,7 +3,7 @@ import type { WorkspaceSnapshot, WorkspaceRect } from "../../../contracts/worksp
 import type { CrossMonitorPreviewEvent } from "../interaction/crossMonitorDrag";
 import { createDesktopItemPreview } from "../../desktop-items/desktopItemPreview";
 import { createTileDragPreview } from "../../tiles/tileDragPreview";
-import { moveFence, snapFenceEdges } from "../../fences/fenceGeometry";
+import { moveTile, snapTileEdges } from "../../tiles/tileGeometry";
 
 interface PreviewNode {
     node: HTMLElement;
@@ -12,12 +12,17 @@ interface PreviewNode {
 
 /** 管理一个跨屏拖动会话的预览 DOM，连续消息只更新几何。 */
 export interface CrossMonitorDragPreview {
-    update: (drag: CrossMonitorPreviewEvent, items: DesktopItemSnapshot | undefined, workspace: WorkspaceSnapshot | undefined, snapTargets?: WorkspaceRect[]) => void;
+    update: (
+        drag: CrossMonitorPreviewEvent,
+        items: DesktopItemSnapshot | undefined,
+        workspace: WorkspaceSnapshot | undefined,
+        snapTargets?: WorkspaceRect[],
+    ) => void;
     clear: () => void;
 }
 
 const visualKey = (drag: CrossMonitorPreviewEvent) =>
-    `${drag.kind}:${drag.visuals.map((visual) => `${visual.itemId ?? ""}:${visual.title ?? ""}:${visual.bounds.left},${visual.bounds.top},${visual.bounds.width},${visual.bounds.height}`).join("|")}`;
+    `${drag.session}:${drag.kind}:${drag.visuals.map((visual) => `${visual.itemId ?? ""}:${visual.title ?? ""}:${visual.bounds.left},${visual.bounds.top},${visual.bounds.width},${visual.bounds.height}`).join("|")}`;
 
 /** 创建会话级跨屏预览控制器。 */
 export const createCrossMonitorDragPreview = (): CrossMonitorDragPreview => {
@@ -32,7 +37,12 @@ export const createCrossMonitorDragPreview = (): CrossMonitorDragPreview => {
         currentKind = undefined;
     };
 
-    const createNode = (drag: CrossMonitorPreviewEvent, visual: CrossMonitorPreviewEvent["visuals"][number], items: DesktopItemSnapshot | undefined, workspace: WorkspaceSnapshot | undefined) => {
+    const createNode = (
+        drag: CrossMonitorPreviewEvent,
+        visual: CrossMonitorPreviewEvent["visuals"][number],
+        items: DesktopItemSnapshot | undefined,
+        workspace: WorkspaceSnapshot | undefined,
+    ) => {
         const item = items?.items.find((entry) => entry.stableReference === visual.itemId);
         const fence = workspace?.fences.find((entry) => entry.members.includes(visual.itemId ?? ""));
         const node =
@@ -61,9 +71,15 @@ export const createCrossMonitorDragPreview = (): CrossMonitorDragPreview => {
         return node;
     };
 
-    const update = (drag: CrossMonitorPreviewEvent, items: DesktopItemSnapshot | undefined, workspace: WorkspaceSnapshot | undefined, snapTargets: WorkspaceRect[] = []) => {
-        if (drag.source === "ole") return;
+    const update = (
+        drag: CrossMonitorPreviewEvent,
+        items: DesktopItemSnapshot | undefined,
+        workspace: WorkspaceSnapshot | undefined,
+        snapTargets: WorkspaceRect[] = [],
+    ) => {
+        if (drag.source === "ole" || (drag.kind === "fence" && drag.visuals.length === 0)) return;
         const nextKey = visualKey(drag);
+        if (drag.kind === "fence" && nextKey !== key && drag.visuals.some((visual) => !visual.content)) return; // 没有首帧时不重建空白预览。
         if (nextKey !== key || currentKind !== drag.kind || nodes.length !== drag.visuals.length) {
             clear();
             nodes = drag.visuals.flatMap((visual) => {
@@ -74,11 +90,15 @@ export const createCrossMonitorDragPreview = (): CrossMonitorDragPreview => {
             currentKind = drag.kind;
         }
         nodes.forEach(({ node, visual }) => {
-            let rect = { ...visual.bounds, left: drag.pointer.left + visual.bounds.left - drag.origin.left, top: drag.pointer.top + visual.bounds.top - drag.origin.top };
+            let rect = {
+                ...visual.bounds,
+                left: drag.pointer.left + visual.bounds.left - drag.origin.left,
+                top: drag.pointer.top + visual.bounds.top - drag.origin.top,
+            };
             if (drag.kind === "fence") {
                 const viewport = { width: window.innerWidth, height: window.innerHeight };
-                rect = moveFence(rect, { x: 0, y: 0 }, viewport);
-                if (drag.snap) rect = snapFenceEdges(rect, snapTargets, viewport, 8, undefined, drag.minimum);
+                rect = moveTile(rect, { x: 0, y: 0 }, viewport);
+                if (drag.snap) rect = snapTileEdges(rect, snapTargets, viewport, 8, undefined, drag.minimum);
             }
             Object.assign(node.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
         });

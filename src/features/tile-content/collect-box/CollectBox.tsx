@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import { createPortal } from "react-dom";
-import { DesktopTileMenu } from "../tiles/DesktopTileMenu";
+import { DesktopTileMenu } from "../../tiles/DesktopTileMenu";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { DragDropEvent } from "@tauri-apps/api/webview";
 import Markdown from "markdown-to-jsx";
@@ -15,16 +15,16 @@ import {
     saveCollectItem,
     setCollectItemPinned,
     type CollectItem,
-} from "../../bridge/collect";
-import { usePreferences } from "../settings/PreferencesProvider";
-import { settingsErrorMessage } from "../../bridge/settings";
-import { publishMessage } from "../notifications/messageNotification";
+} from "../../../bridge/collect";
+import { usePreferences } from "../../settings/PreferencesProvider";
+import { settingsErrorMessage } from "../../../bridge/settings";
+import { publishMessage } from "../../notifications/messageNotification";
 import { mergeCollectItems } from "./collectItemState";
-import type { DesktopTileMenuItem } from "../tiles/DesktopTileMenu";
-import editIcon from "../../../resources/collect-edit.svg?raw";
-import pinIcon from "../../../resources/collect-pin.svg?raw";
-import expandIcon from "../../../resources/fence-toggle-expand.svg?raw";
-import collapseIcon from "../../../resources/fence-toggle-collapse.svg?raw";
+import type { DesktopTileMenuItem } from "../../tiles/DesktopTileMenu";
+import editIcon from "../../../../resources/collect-edit.svg?raw";
+import pinIcon from "../../../../resources/collect-pin.svg?raw";
+import expandIcon from "../../../../resources/fence-toggle-expand.svg?raw";
+import collapseIcon from "../../../../resources/fence-toggle-collapse.svg?raw";
 import "./CollectBox.css";
 
 /** 收集箱操作失败保留当前数据，并通过已有消息管道说明原因。 */

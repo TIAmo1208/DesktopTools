@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type Ref } from "react";
 import { createPortal } from "react-dom";
-import { cancelDesktopItemDragPreparation, startDesktopItemDrag } from "../../bridge/desktopItems";
-import { redoWorkspace, undoWorkspace } from "../../bridge/workspace";
+import { cancelDesktopItemDragPreparation, startDesktopItemDrag } from "../../../bridge/desktopItems";
+import { redoWorkspace, undoWorkspace } from "../../../bridge/workspace";
 
 import {
     deleteFolderPortalItems,
@@ -12,9 +12,9 @@ import {
     pasteFolderPortalItems,
     watchFolderPortal,
     prepareFolderPortalDrag,
-} from "../../bridge/folderPortal";
-import type { FolderPortalItem, FolderPortalSnapshot } from "../../contracts/folderPortal";
-import { publishMessage } from "../notifications/messageNotification";
+} from "../../../bridge/folderPortal";
+import type { FolderPortalItem, FolderPortalSnapshot } from "../../../contracts/folderPortal";
+import { publishMessage } from "../../notifications/messageNotification";
 import "./FolderPortal.css";
 
 /** 当前门户内容公开给其公共标题和菜单的操作。 */

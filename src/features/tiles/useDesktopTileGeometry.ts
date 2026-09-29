@@ -2,19 +2,20 @@ import { useEffect, useRef, type KeyboardEvent, type PointerEvent, type RefObjec
 
 import type { DesktopHostMonitor } from "../../contracts/desktopHost";
 import type { WorkspaceRect } from "../../contracts/workspace";
-import { moveFence, resizeFence, snapFenceEdges, type FenceResizeDirection } from "../fences/fenceGeometry";
+import { moveTile, resizeTile, resolveTileMinimum, snapTileEdges, type TileResizeDirection } from "./tileGeometry";
 import { clientPointToPhysical, monitorAtPhysicalPoint, physicalPointToMonitorDip } from "../workspace/interaction/workspaceDrag";
 import { publishCrossMonitorDrag, resolveCrossMonitorDrop, type CrossMonitorDrag } from "../workspace/interaction/crossMonitorDrag";
-import { captureTileDragVisual, createTileDragPreview } from "./tileDragPreview";
+import { captureTileDragVisual, createTileDragPreview, type TileDragVisual } from "./tileDragPreview";
 
 /** 公共几何交互使用内容的最小尺寸与领域提交入口。 */
-interface DesktopTileGeometryOptions {
+export interface DesktopTileGeometryOptions {
+    locked?: boolean; // 锁定仅限制位置和尺寸，内容仍可交互。
     surfaceRef: RefObject<HTMLElement | null>; // 当前公共表面。
     bounds: WorkspaceRect; // 权威展开边界。
     collapsed: boolean; // 当前可见折叠状态。
     collapsedSize?: { width?: number; height?: number }; // 与公共外壳一致的折叠边界。
     title: string; // 跨屏预览标题。
-    minimum: { width: number; height: number }; // 内容最小可读尺寸。
+    minimum?: { width: number; height: number }; // 内容换算后的外框下限，缺省使用公共底线。
     snap: boolean; // 宿主吸附偏好。
     currentMonitor?: DesktopHostMonitor; // 当前显示器。
     monitors: DesktopHostMonitor[]; // 所有跨屏目标。
@@ -27,12 +28,45 @@ interface DesktopTileGeometryOptions {
 
 /** 共用桌面格子几何算法、跨屏预览与取消恢复，不重写内容逻辑。 */
 export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
+    const minimum = resolveTileMinimum(options.minimum); // 所有输入和跨屏消息复用同一有效下限。
+    const commitBounds = async (bounds: WorkspaceRect, monitorId?: string) => options.onCommit({ ...bounds, ...resolveTileMinimum(bounds) }, monitorId); // 小视口投射只在用户提交时恢复持久数据底线。
     const cancel = useRef<(() => void) | undefined>(undefined); // 卸载、取消或失焦时的清理入口。
-    useEffect(() => () => cancel.current?.(), []);
+    const mounted = useRef(false); // 迟到的输入释放结果不能更新已卸载宿主。
+    const handleFailure = (error: unknown) => {
+        if (mounted.current) options.onFailure(error);
+    }; // 当前挂载期间才交付操作错误。
+    useEffect(() => {
+        mounted.current = true;
+        const handleCancel = () => cancel.current?.(); // 所有阶段统一读取当前取消入口。
+        const handleKey = (event: globalThis.KeyboardEvent) => {
+            if (event.key !== "Escape" || !cancel.current) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            handleCancel();
+        }; // 捕获阶段先于输入框、门户与菜单，空闲时不占用 Escape。
+        window.addEventListener("keydown", handleKey, true);
+        window.addEventListener("blur", handleCancel);
+        return () => {
+            mounted.current = false;
+            handleCancel();
+            window.removeEventListener("keydown", handleKey, true);
+            window.removeEventListener("blur", handleCancel);
+        };
+    }, []);
+    useEffect(() => {
+        if (options.locked) cancel.current?.();
+    }, [options.locked]);
 
     /** 开始移动或八向缩放，仅在释放时提交一次布局。 */
-    const handlePointerDown = async (event: PointerEvent<HTMLElement>, direction?: FenceResizeDirection) => {
-        if (event.button !== 0 || cancel.current || (event.target instanceof Element && event.target.closest("button,input"))) return;
+    const handlePointerDown = async (event: PointerEvent<HTMLElement>, direction?: TileResizeDirection) => {
+        if (
+            event.button !== 0 ||
+            options.locked ||
+            cancel.current ||
+            (direction && options.collapsed) ||
+            (event.target instanceof Element && event.target.closest("button,input,textarea,select,[contenteditable=true],[role=button]"))
+        )
+            return;
         const element = options.surfaceRef.current; // 当前实际表面。
         if (!element) return;
         event.preventDefault();
@@ -45,8 +79,15 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
             ...options.bounds,
             ...(options.collapsed ? { width: options.collapsedSize?.width ?? options.bounds.width, height: options.collapsedSize?.height ?? 28 } : {}),
         }; // 拖动和吸附使用当前可见尺寸。
-        const content = direction ? undefined : captureTileDragVisual(element); // 移动冻结当前帧，缩放保留真实组件的响应式布局。
-        const frozen = content ? createTileDragPreview(content) : undefined; // 缩放不复制计算后的固定轨道和内容尺寸。
+        let content: TileDragVisual | undefined; // 移动只捕获一次完整静态帧。
+        let frozen: HTMLElement | undefined; // 缩放始终使用实际组件排版。
+        try {
+            content = direction ? undefined : captureTileDragVisual(element);
+            frozen = content ? createTileDragPreview(content) : undefined;
+        } catch (error) {
+            handleFailure(error);
+            return;
+        }
         const originalOpacity = element.style.opacity; // 跨屏隐藏源表面，结束时恢复。
         const session = crypto.randomUUID(); // 所有宿主共享的预览身份。
         const targets = [...document.querySelectorAll<HTMLElement>(".desktop-tile[data-hit-id]")]
@@ -56,48 +97,40 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
         let cross: CrossMonitorDrag | undefined; // 最近一次跨屏预览。
         let finished = false; // 清理必须只执行一次。
         let abandoned = false; // 原生输入建立期间卸载时禁止继续。
-        cancel.current = () => {
-            abandoned = true;
-        };
+        const releaseAbort = new AbortController(); // 释放等待可立即取消且不会提交迟到结果。
         const handlePendingCancel = () => {
             abandoned = true;
+            releaseAbort.abort();
+            window.removeEventListener("pointerup", handlePendingPointer, true);
+            window.removeEventListener("pointercancel", handlePendingPointer, true);
         }; // 输入建立前的失焦、释放和卸载都禁止迟到启动。
         const handlePendingPointer = (pending: globalThis.PointerEvent) => {
             if (pending.pointerId === pointerId) handlePendingCancel();
         }; // 其他指针不取消本次输入。
-        const handlePendingKey = (key: globalThis.KeyboardEvent) => {
-            if (key.key === "Escape") {
-                key.preventDefault();
-                handlePendingCancel();
-            }
-        }; // 原生输入仍在等待时也接受取消。
-        window.addEventListener("blur", handlePendingCancel);
-        window.addEventListener("keydown", handlePendingKey);
+        cancel.current = handlePendingCancel;
         window.addEventListener("pointerup", handlePendingPointer, true);
         window.addEventListener("pointercancel", handlePendingPointer, true);
         try {
             await options.onBeginInputDrag();
         } catch (error) {
             cancel.current = undefined;
-            options.onFailure(error);
+            if (!abandoned) handleFailure(error);
             return;
         } finally {
-            window.removeEventListener("blur", handlePendingCancel);
-            window.removeEventListener("keydown", handlePendingKey);
             window.removeEventListener("pointerup", handlePendingPointer, true);
             window.removeEventListener("pointercancel", handlePendingPointer, true);
         }
         if (abandoned || !handle.isConnected) {
             cancel.current = undefined;
-            await options.onEndInputDrag().catch(options.onFailure);
+            await options.onEndInputDrag().catch(handleFailure);
             return;
         }
         try {
             handle.setPointerCapture(pointerId);
         } catch (error) {
             cancel.current = undefined;
-            await options.onEndInputDrag().catch(options.onFailure);
-            options.onFailure(error);
+            await options.onEndInputDrag().catch(handleFailure);
+            handleFailure(error);
             return;
         }
         element.dataset.geometryActive = "true";
@@ -122,9 +155,9 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
             if (moveEvent.pointerId !== pointerId) return;
             const viewport = { width: window.innerWidth, height: window.innerHeight }; // 当前 DIP 工作区。
             const delta = { x: moveEvent.clientX - startPointer.x, y: moveEvent.clientY - startPointer.y }; // 当前指针位移。
-            preview = direction ? resizeFence(direction, start, delta, viewport, options.minimum) : moveFence(start, delta, viewport);
+            preview = direction ? resizeTile(direction, start, delta, viewport, minimum) : moveTile(start, delta, viewport);
             if (options.snap)
-                preview = snapFenceEdges(
+                preview = snapTileEdges(
                     preview,
                     targets,
                     viewport,
@@ -132,7 +165,7 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                     direction
                         ? { left: direction.includes("w"), right: direction.includes("e"), top: direction.includes("n"), bottom: direction.includes("s") }
                         : undefined,
-                    options.minimum,
+                    minimum,
                 );
             render(preview);
             if (frozen && options.currentMonitor) {
@@ -147,7 +180,7 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                         target: target.id,
                         kind: "fence",
                         snap: options.snap,
-                        minimum: options.minimum,
+                        minimum,
                         itemIds: [],
                         pointer: physicalPointToMonitorDip(physical, target),
                         origin: { left: startPointer.x, top: startPointer.y },
@@ -165,7 +198,7 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                             },
                         ],
                     };
-                    void publishCrossMonitorDrag(cross, "move").catch(options.onFailure);
+                    void publishCrossMonitorDrag(cross, "move").catch(handleFailure);
                 }
             }
         };
@@ -179,16 +212,14 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
             handle.removeEventListener("pointerup", handleUp);
             handle.removeEventListener("pointercancel", handleCancel);
             handle.removeEventListener("lostpointercapture", handleCancel);
-            window.removeEventListener("keydown", handleKey);
-            window.removeEventListener("blur", handleCancel);
             if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
             if (!commit) {
                 element.style.opacity = originalOpacity;
                 frozen?.remove();
                 delete element.dataset.crossDragHidden;
-                if (cross) void publishCrossMonitorDrag(cross, "end").catch(options.onFailure);
+                if (cross) void publishCrossMonitorDrag(cross, "end").catch(handleFailure);
                 render(start);
-                void options.onEndInputDrag().catch(options.onFailure);
+                void options.onEndInputDrag().catch(handleFailure);
                 return;
             }
             const center = options.currentMonitor
@@ -211,7 +242,7 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
             const viewport = monitor
                 ? { width: monitor.workWidth / monitor.scaleFactor, height: monitor.workHeight / monitor.scaleFactor }
                 : { width: window.innerWidth, height: window.innerHeight }; // 目标工作区。
-            let target = moveFence(
+            let target = moveTile(
                 {
                     ...preview,
                     left: targetCenter ? targetCenter.left - preview.width / 2 : preview.left,
@@ -221,8 +252,6 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                 viewport,
             ); // 保留逻辑尺寸并约束目标位置。
             cancel.current = handlePendingCancel;
-            window.addEventListener("keydown", handlePendingKey);
-            window.addEventListener("blur", handlePendingCancel);
             void (async () => {
                 try {
                     let snapTargets: WorkspaceRect[] = targets; // 本屏使用开始时的真实表面，跨屏在释放时重新读取。
@@ -233,14 +262,14 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                             target: monitor.id,
                             kind: "fence",
                             snap: options.snap,
-                            minimum: options.minimum,
+                            minimum,
                             visuals: [],
                             itemIds: [],
                             pointer: targetCenter ?? { left: target.left, top: target.top },
                             origin: { left: startPointer.x, top: startPointer.y },
                             delta: { left: 0, top: 0 },
                         };
-                        const drop = await resolveCrossMonitorDrop(cross); // 目标宿主提供当前可见边界，不猜测隐藏或临时展开状态。
+                        const drop = await resolveCrossMonitorDrop(cross, releaseAbort.signal); // 目标宿主提供当前可见边界，不猜测隐藏或临时展开状态。
                         if (
                             !Array.isArray(drop.snapTargets) ||
                             drop.snapTargets.some(
@@ -256,7 +285,7 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                         return;
                     }
                     if (options.snap)
-                        target = snapFenceEdges(
+                        target = snapTileEdges(
                             target,
                             snapTargets,
                             viewport,
@@ -269,24 +298,20 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
                                       bottom: direction.includes("s"),
                                   }
                                 : undefined,
-                            options.minimum,
+                            minimum,
                         );
-                    window.removeEventListener("keydown", handlePendingKey);
-                    window.removeEventListener("blur", handlePendingCancel);
-                    cancel.current = () => undefined; // 领域提交开始后只等待结果，禁止新手势并避免承诺撤回已提交命令。
-                    await options.onCommit(options.collapsed ? { ...target, width: options.bounds.width, height: options.bounds.height } : target, monitor?.id); // 折叠移动只提交位置，保留展开尺寸。
+                    cancel.current = handlePendingCancel; // 提交开始后只标记取消，不撤回领域命令或启动新手势。
+                    await commitBounds(options.collapsed ? { ...target, width: options.bounds.width, height: options.bounds.height } : target, monitor?.id); // 折叠移动只提交位置，保留展开尺寸。
                 } catch (error) {
                     render(start);
-                    if (!abandoned) options.onFailure(error);
+                    if (!abandoned) handleFailure(error);
                 } finally {
                     element.style.opacity = originalOpacity;
                     frozen?.remove();
                     delete element.dataset.crossDragHidden;
                     cancel.current = undefined;
-                    window.removeEventListener("keydown", handlePendingKey);
-                    window.removeEventListener("blur", handlePendingCancel);
-                    if (cross) await publishCrossMonitorDrag(cross, "end").catch(options.onFailure);
-                    await options.onEndInputDrag().catch(options.onFailure);
+                    if (cross) await publishCrossMonitorDrag(cross, "end").catch(handleFailure);
+                    await options.onEndInputDrag().catch(handleFailure);
                 }
             })();
         };
@@ -294,19 +319,11 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
             if (release.pointerId === pointerId) finish(true, release);
         }; // 只有当前指针可以提交。
         const handleCancel = () => finish(false); // 所有取消路径恢复原始边界。
-        const handleKey = (key: globalThis.KeyboardEvent) => {
-            if (key.key === "Escape") {
-                key.preventDefault();
-                handleCancel();
-            }
-        }; // Escape 优先取消几何。
         cancel.current = handleCancel;
         handle.addEventListener("pointermove", handleMove);
         handle.addEventListener("pointerup", handleUp);
         handle.addEventListener("pointercancel", handleCancel);
         handle.addEventListener("lostpointercapture", handleCancel);
-        window.addEventListener("keydown", handleKey);
-        window.addEventListener("blur", handleCancel);
     };
 
     /** 表面方向键移动，Shift 加方向键缩放；内容控件保留自身键盘行为。 */
@@ -318,7 +335,7 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
             return;
         }
         if (event.target !== event.currentTarget || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
-        if (cancel.current || event.ctrlKey || event.altKey || (event.shiftKey && options.collapsed)) return;
+        if (options.locked || cancel.current || event.ctrlKey || event.altKey || (event.shiftKey && options.collapsed)) return;
         event.preventDefault();
         event.stopPropagation();
         const delta = {
@@ -330,10 +347,10 @@ export const useDesktopTileGeometry = (options: DesktopTileGeometryOptions) => {
             ...options.bounds,
             ...(options.collapsed ? { width: options.collapsedSize?.width ?? options.bounds.width, height: options.collapsedSize?.height ?? 28 } : {}),
         }; // 键盘沿用当前可见边界。
-        const next = event.shiftKey ? resizeFence("se", options.bounds, delta, viewport, options.minimum) : moveFence(visible, delta, viewport); // 复用鼠标交互的几何算法。
-        void options
-            .onCommit(options.collapsed ? { ...next, width: options.bounds.width, height: options.bounds.height } : next, options.currentMonitor?.id)
-            .catch(options.onFailure);
+        const next = event.shiftKey ? resizeTile("se", options.bounds, delta, viewport, minimum) : moveTile(visible, delta, viewport); // 复用鼠标交互的几何算法。
+        void commitBounds(options.collapsed ? { ...next, width: options.bounds.width, height: options.bounds.height } : next, options.currentMonitor?.id).catch(
+            handleFailure,
+        );
     };
     return { handlePointerDown, handleKeyDown };
 };

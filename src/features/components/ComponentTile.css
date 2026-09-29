@@ -1,0 +1,33 @@
+/* 功能内容在公共外壳中的默认层级。 */
+.official-component {
+    z-index: 7000;
+}
+/* 内容单独滚动，不裁掉外层缩放命中区域。 */
+.official-component__content {
+    display: grid;
+    padding: 10px;
+}
+/* 固定内容填满可用区域，最小尺寸由宿主几何约束保障。 */
+.official-component__content--fill {
+    container-type: size;
+    place-items: stretch;
+    align-content: stretch;
+}
+
+/* 单个组件的失败边界。 */
+.official-component--failed {
+    border-color: var(--color-error);
+}
+/* 实例内部错误说明。 */
+.official-component__error {
+    margin: 0;
+    color: var(--color-error);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+/* 实例加载状态。 */
+.official-component__status {
+    margin: 0;
+    font-size: 12px;
+}

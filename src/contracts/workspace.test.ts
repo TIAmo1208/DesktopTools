@@ -19,6 +19,18 @@ const emptyWorkspace = {
     },
 };
 
+// 数据底线与内容呈现、临时投射和折叠高度相互独立。
+test("围栏持久尺寸使用公共底线，临时投射允许更小视口", () => {
+    const bounds = { left: 0, top: 0, width: 80, height: 48 }; // 恰好满足公共底线。
+    const fence = { id: "fence-minimum", title: "围栏", monitorId: "A", projectionMonitorId: "B", projectionBounds: { ...bounds, width: 40, height: 24 }, bounds, members: [], layoutMode: "tile", sortMode: "none", scrollTop: 0, collapsed: false, lastExpandedHeight: 48, zIndex: 0 }; // 内容下限不属于数据解码约束。
+    const parse = (value: typeof fence) => parseWorkspaceSnapshot({ ...emptyWorkspace, fences: [value] }); // 真实契约入口。
+    assert.equal(parse(fence).fences[0].projectionBounds?.height, 24);
+    for (const size of [0, -1, NaN, Infinity, 47]) assert.throws(() => parse({ ...fence, lastExpandedHeight: size }));
+    for (const size of [0, -1, NaN, Infinity, 79]) assert.throws(() => parse({ ...fence, bounds: { ...bounds, width: size } }));
+    for (const size of [0, -1, NaN, Infinity, 47]) assert.throws(() => parse({ ...fence, bounds: { ...bounds, height: size } }));
+    assert.throws(() => parse({ ...fence, projectionBounds: { ...bounds, height: 0 } }));
+});
+
 // 验证旧排序字段默认值、完整状态和非法输入边界。
 test("门户允许重复路径但拒绝重复身份和非法几何", () => {
     const portal = { id: "portal-1", rootPath: "C:\\资料", monitorId: "DISPLAY1", bounds: { left: 0, top: 0, width: 360, height: 280 }, zIndex: 0, appearance: { title: null, titleMode: "fixed", buttonMode: "hover", collapsed: false, autoExpand: false } }; // 真实工作区门户契约。

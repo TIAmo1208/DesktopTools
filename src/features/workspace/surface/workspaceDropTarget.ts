@@ -43,6 +43,7 @@ export const createWorkspaceDropTarget = (monitorId: string, onScroll: (drag: Cr
                     const bounds = tile.getBoundingClientRect(); // 当前目标格子的可见 DIP 边界。
                     return { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height };
                 }); // 释放时读取目标屏实际展开状态和位置。
+        if (drag.kind === "fence") return { drop, regions: [], fenceScrolls: [] }; // 格子移动只需吸附边界，不扫描 OLE 项目命中图。
         const layoutIds = drag.external && (drag.modifiers ?? 0) & 8 ? [] : drag.itemIds; // Ctrl 复制保留来源在原围栏中的可见位置。
         if (drag.kind === "items") {
             const tile = document

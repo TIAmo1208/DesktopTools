@@ -1,4 +1,5 @@
 import type { WorkspaceRect } from "./workspace";
+import { TILE_MIN_HEIGHT, TILE_MIN_WIDTH } from "./tile.ts";
 
 /** 官方组件可以声明并由宿主授权的能力。 */
 export type ComponentCapability = "read-host-time" | "read-current-media";
@@ -79,13 +80,14 @@ export class ComponentContractError extends Error {
 /** 判断未知值是否为有限数字。 */
 const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 
-/** 校验组件持久边界。 */
-const parseBounds = (value: unknown): WorkspaceRect => {
+/** 持久边界遵守公共底线，临时投射可以适应更小的视口。 */
+const parseBounds = (value: unknown, projection = false): WorkspaceRect => {
     if (typeof value !== "object" || value === null) throw new ComponentContractError();
     const candidate = value as Record<string, unknown>; // 等待字段校验的组件边界。
     if (!isFiniteNumber(candidate.left) || !isFiniteNumber(candidate.top)) throw new ComponentContractError();
-    if (!isFiniteNumber(candidate.width) || candidate.width < 80 || !isFiniteNumber(candidate.height) || candidate.height < 48)
+    if (!isFiniteNumber(candidate.width) || candidate.width <= 0 || !isFiniteNumber(candidate.height) || candidate.height <= 0)
         throw new ComponentContractError();
+    if (!projection && (candidate.width < TILE_MIN_WIDTH || candidate.height < TILE_MIN_HEIGHT)) throw new ComponentContractError();
     return { left: candidate.left, top: candidate.top, width: candidate.width, height: candidate.height };
 };
 
@@ -103,7 +105,7 @@ export const parseComponentInstanceSnapshot = (value: unknown): ComponentInstanc
         componentId: candidate.componentId,
         monitorId: candidate.monitorId,
         projectionMonitorId: candidate.projectionMonitorId as string | null,
-        projectionBounds: candidate.projectionBounds === null ? null : parseBounds(candidate.projectionBounds),
+        projectionBounds: candidate.projectionBounds === null ? null : parseBounds(candidate.projectionBounds, true),
         bounds: parseBounds(candidate.bounds),
         stateVersion: candidate.stateVersion as number,
         state: candidate.state,

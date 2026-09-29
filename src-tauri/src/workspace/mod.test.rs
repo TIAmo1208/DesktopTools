@@ -2,6 +2,37 @@ use super::{AUTO_SNAPSHOT_LIMIT, PersistedWorkspacePayload, WorkspaceState, deco
 use crate::contracts::{ComponentInstanceSnapshot, DesktopHostMonitor, UnclassifiedItemSnapshot, WorkspaceCommand, WorkspaceFocusTarget, WorkspaceInteractionCommand, WorkspaceItemPlacement, WorkspacePoint, WorkspaceRect, WorkspaceSelectionMode, WorkspaceSnapshot};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// 公共数据底线不承担内容可读性，小视口投射不覆盖持久展开尺寸。
+#[test]
+fn tile_minimum_and_projection_contracts_are_independent()
+{
+    let bounds = WorkspaceRect { left: 100.0, top: 100.0, width: 80.0, height: 48.0 }; // 所有格子的公共持久下限。
+    assert!(super::validate_rect(bounds, false).is_ok());
+    for value in [0.0, -1.0, f64::NAN, f64::INFINITY, 79.0]
+    {
+        assert!(super::validate_rect(WorkspaceRect { width: value, ..bounds }, false).is_err());
+    }
+    for value in [0.0, -1.0, f64::NAN, f64::INFINITY, 47.0]
+    {
+        assert!(super::validate_rect(WorkspaceRect { height: value, ..bounds }, false).is_err());
+    }
+    let projected = super::project_rect(bounds, 40.0, 24.0); // 临时矩形受目标视口限制。
+    assert_eq!(projected, WorkspaceRect { left: 0.0, top: 0.0, width: 40.0, height: 24.0 });
+    assert!(super::validate_rect(projected, true).is_ok());
+    assert!(super::validate_rect(projected, false).is_err());
+    assert!(super::validate_rect(WorkspaceRect { height: f64::NAN, ..projected }, true).is_err());
+    let mut snapshot = WorkspaceSnapshot::default(); // 使用真实创建、快照和展开高度校验。
+    snapshot.apply(WorkspaceCommand::CreateFence { title: "最小围栏".into(), bounds }, None).unwrap();
+    snapshot.fences[0].projection_monitor_id = Some("B".into());
+    snapshot.fences[0].projection_bounds = Some(projected);
+    snapshot.components.push(ComponentInstanceSnapshot { instance_id: "clock".into(), component_id: "official.local-clock".into(), monitor_id: "A".into(), projection_monitor_id: Some("B".into()), projection_bounds: Some(projected), bounds, state_version: 1, state: serde_json::json!({}) });
+    assert!(snapshot.validate().is_ok());
+    assert_eq!(snapshot.fences[0].bounds, bounds);
+    assert_eq!(snapshot.fences[0].last_expanded_height, 48.0);
+    snapshot.fences[0].last_expanded_height = 47.0;
+    assert!(snapshot.validate().is_err());
+}
+
 /// 新增项目使用准确身份的坐标，已有项目不随 Explorer 布局移动。
 #[test]
 fn shell_positions_only_place_new_items()
@@ -301,6 +332,54 @@ fn component_layout_persists_and_projects_without_losing_ownership()
     {
         std::fs::remove_dir_all(snapshot_directory).expect("组件测试自动快照目录应可清理");
     }
+}
+
+/// 移除只影响目标收集箱，支持撤销重做、焦点清理和重启持久化，旧身份不被新格子复用。
+#[test]
+fn remove_collect_box_preserves_other_tiles_and_restores_layout()
+{
+    let path = snapshot_path("remove-collect-box"); // 独立测试工作区。
+    let bounds = WorkspaceRect { left: 24.0, top: 24.0, width: 360.0, height: 280.0 }; // 默认格子展开边界。
+    let collect = ComponentInstanceSnapshot { instance_id: "official.collect-box.default".into(), component_id: "official.collect-box".into(), monitor_id: "DISPLAY1".into(), projection_monitor_id: None, projection_bounds: None, bounds, state_version: 1, state: serde_json::json!({"test": "保留私有状态"}) }; // 可以移除的默认收集箱。
+    let music = ComponentInstanceSnapshot { instance_id: "official.music-control.default".into(), component_id: "official.music-control".into(), ..collect.clone() }; // 不提供移除入口的默认音乐格子。
+    let defaults = [collect.clone(), music.clone()]; // 重启时仍传入原有默认实例。
+    let state = WorkspaceState::load_with_components(path.clone(), &defaults).unwrap(); // 实际事务与持久化入口。
+    state.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0)], &[], &[], &[]).unwrap();
+    let created = state.apply_on_monitor(Some("DISPLAY1"), WorkspaceCommand::CreateComponent { component_id: collect.component_id.clone(), bounds }).unwrap(); // 共享内容的第二个格子。
+    let second = created.components.last().unwrap().clone(); // 后续验证保留和身份隔离。
+    state.apply(WorkspaceCommand::SetTileAppearance { target: WorkspaceFocusTarget::Component { component_id: collect.instance_id.clone() }, change: crate::contracts::TileAppearanceChange::Title("我的收集箱".into()) }).unwrap();
+    state.apply_interaction_on_monitor("DISPLAY1", WorkspaceInteractionCommand::FocusSurface { focus: WorkspaceFocusTarget::Component { component_id: collect.instance_id.clone() } }).unwrap();
+    let before = state.snapshot().unwrap(); // 错误请求必须保持整个快照。
+    for instance_id in ["", "missing", music.instance_id.as_str()]
+    {
+        assert!(state.apply(WorkspaceCommand::RemoveComponent { instance_id: instance_id.into() }).is_err());
+        assert_eq!(state.snapshot().unwrap(), before);
+    }
+    let command: WorkspaceCommand = serde_json::from_value(serde_json::json!({"type": "remove-component", "instanceId": collect.instance_id})).unwrap(); // 前端实际发送的协议载荷。
+    let removed = state.apply(command).unwrap(); // 原子保存后再发布格子移除结果。
+    assert_eq!(removed.components, vec![music.clone(), second.clone()]);
+    assert_eq!(removed.interaction.keyboard_focus, WorkspaceFocusTarget::Background);
+    assert!(removed.interaction.revision > before.interaction.revision);
+    let undone = state.apply(WorkspaceCommand::UndoLayout).unwrap(); // 一次撤销恢复原身份、位置、私有状态与外观。
+    assert_eq!(undone.components, before.components);
+    assert_eq!(undone.tile_appearances, before.tile_appearances);
+    let redone = state.apply(WorkspaceCommand::RedoLayout).unwrap(); // 重做仍仅移除同一个格子。
+    assert_eq!(redone.components, removed.components);
+    drop(state);
+
+    let restored = WorkspaceState::load_with_components(path.clone(), &defaults).unwrap(); // 已移除的默认格子不在重启时补回。
+    assert_eq!(restored.snapshot().unwrap().components, removed.components);
+    restored.apply(WorkspaceCommand::SetTileAppearance { target: WorkspaceFocusTarget::Component { component_id: second.instance_id.clone() }, change: crate::contracts::TileAppearanceChange::Title("旧格子".into()) }).unwrap();
+    let last_removed = restored.apply(WorkspaceCommand::RemoveComponent { instance_id: second.instance_id.clone() }).unwrap(); // 移除最后一个收集箱后保留其他类型。
+    assert_eq!(last_removed.components, vec![music]);
+    let recreated = restored.apply_on_monitor(Some("DISPLAY1"), WorkspaceCommand::CreateComponent { component_id: collect.component_id, bounds }).unwrap(); // 通过现有入口重新创建。
+    let new = recreated.components.last().unwrap(); // 新格子不能继承已移除实例的外观。
+    assert_ne!(new.instance_id, second.instance_id);
+    assert!(!recreated.tile_appearances.contains_key(&format!("component:{}", new.instance_id)));
+    assert_eq!(restored.apply(WorkspaceCommand::UndoLayout).unwrap().components, last_removed.components);
+    assert_eq!(restored.apply(WorkspaceCommand::UndoLayout).unwrap().components, removed.components);
+    drop(restored);
+    std::fs::remove_file(path).unwrap();
 }
 
 /// 新组件默认边界避开同一显示器上的已有格子。

@@ -1,4 +1,4 @@
-use crate::contracts::{DesktopHostMonitor, DesktopItemError, FENCE_MIN_HEIGHT, FENCE_MIN_WIDTH, WorkspaceCommand, WorkspaceContextMenuTarget, WorkspacePoint, WorkspaceRect, WorkspaceSnapshot};
+use crate::contracts::{DesktopHostMonitor, DesktopItemError, TILE_MIN_HEIGHT, TILE_MIN_WIDTH, WorkspaceCommand, WorkspaceContextMenuTarget, WorkspacePoint, WorkspaceRect, WorkspaceSnapshot};
 use crate::platform::windows::{NativeMenuCommand, NativeMenuTarget};
 
 /// 菜单返回的产品动作，原生 Shell 动词仍由 Windows 执行。
@@ -154,8 +154,8 @@ pub(super) fn choose_workspace_menu(snapshot: &WorkspaceSnapshot, monitor: &Desk
                 let viewport_width = monitor.work_width as f64 / monitor.scale_factor;
                 // 当前 CSS 工作区可容纳的新围栏初始高度。
                 let viewport_height = monitor.work_height as f64 / monitor.scale_factor;
-                let width = FENCE_MIN_WIDTH.max(320.0_f64.min(viewport_width));
-                let height = FENCE_MIN_HEIGHT.max(240.0_f64.min(viewport_height));
+                let width = TILE_MIN_WIDTH.max(320.0_f64.min(viewport_width));
+                let height = TILE_MIN_HEIGHT.max(240.0_f64.min(viewport_height));
                 WorkspaceCommand::CreateFence { title: format!("新围栏 {}", snapshot.fences.len() + 1), bounds: WorkspaceRect { left: client_x.clamp(0.0, (viewport_width - width).max(0.0)), top: client_y.clamp(0.0, (viewport_height - height).max(0.0)), width, height } }
             }
             _ => return Ok(WorkspaceMenuAction::None),

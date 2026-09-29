@@ -1,12 +1,6 @@
 import { parseComponentInstanceSnapshot, type ComponentInstanceSnapshot } from "./component.ts";
-import { parseTileAppearances, type TileAppearance, type TileAppearanceChange } from "./tile.ts";
+import { TILE_MIN_HEIGHT, TILE_MIN_WIDTH, parseTileAppearances, type TileAppearance, type TileAppearanceChange } from "./tile.ts";
 import { parseShellOperationResult, type ShellOperationResult } from "./desktopItem.ts";
-
-/** 围栏允许的最小宽度，单位为 DIP。 */
-export const FENCE_MIN_WIDTH = 164;
-
-/** 围栏允许的最小展开高度，单位为 DIP。 */
-export const FENCE_MIN_HEIGHT = 154;
 
 /** 工作区中的二维位置。 */
 export interface WorkspacePoint {
@@ -184,6 +178,7 @@ export type WorkspaceCommand =
           fenceScrolls: WorkspaceFenceScroll[];
       }
     | { type: "create-component"; componentId: string; bounds: WorkspaceRect }
+    | { type: "remove-component"; instanceId: string }
     | { type: "update-component-bounds"; instanceId: string; bounds: WorkspaceRect }
     | { type: "update-component-state"; instanceId: string; stateVersion: number; state: unknown }
     | { type: "undo-layout" }
@@ -213,14 +208,15 @@ const parsePoint = (value: unknown): WorkspacePoint => {
     return { left: candidate.left, top: candidate.top };
 };
 
-/** 校验围栏边界。 */
-const parseRect = (value: unknown): WorkspaceRect => {
+/** 持久边界遵守公共底线，临时投射仅要求有限正尺寸。 */
+const parseRect = (value: unknown, projection = false): WorkspaceRect => {
     // 已完成基础坐标校验的边界位置。
     const point = parsePoint(value);
     // 等待尺寸字段校验的边界载荷。
     const candidate = value as Record<string, unknown>;
     if (!isFiniteNumber(candidate.width) || candidate.width <= 0 || !isFiniteNumber(candidate.height) || candidate.height <= 0)
         throw new WorkspaceContractError();
+    if (!projection && (candidate.width < TILE_MIN_WIDTH || candidate.height < TILE_MIN_HEIGHT)) throw new WorkspaceContractError();
     return { ...point, width: candidate.width, height: candidate.height };
 };
 
@@ -309,7 +305,7 @@ export const parseWorkspaceSnapshot = (value: unknown): WorkspaceSnapshot => {
         if (!isFiniteNumber(fenceCandidate.scrollTop) || fenceCandidate.scrollTop < 0) throw new WorkspaceContractError();
         if (typeof fenceCandidate.collapsed !== "boolean") throw new WorkspaceContractError();
         if (fenceCandidate.autoExpand !== undefined && typeof fenceCandidate.autoExpand !== "boolean") throw new WorkspaceContractError();
-        if (!isFiniteNumber(fenceCandidate.lastExpandedHeight) || fenceCandidate.lastExpandedHeight <= 0) throw new WorkspaceContractError();
+        if (!isFiniteNumber(fenceCandidate.lastExpandedHeight) || fenceCandidate.lastExpandedHeight < TILE_MIN_HEIGHT) throw new WorkspaceContractError();
         if (!Number.isSafeInteger(fenceCandidate.zIndex) || (fenceCandidate.zIndex as number) < 0) throw new WorkspaceContractError();
 
         // 已完成契约校验的围栏布局模式。
@@ -320,7 +316,7 @@ export const parseWorkspaceSnapshot = (value: unknown): WorkspaceSnapshot => {
             title: fenceCandidate.title,
             monitorId: typeof fenceCandidate.monitorId === "string" ? fenceCandidate.monitorId : "",
             projectionMonitorId: typeof fenceCandidate.projectionMonitorId === "string" ? fenceCandidate.projectionMonitorId : null,
-            projectionBounds: fenceCandidate.projectionBounds ? parseRect(fenceCandidate.projectionBounds) : null,
+            projectionBounds: fenceCandidate.projectionBounds ? parseRect(fenceCandidate.projectionBounds, true) : null,
             bounds: parseRect(fenceCandidate.bounds),
             members: [...fenceCandidate.members] as string[],
             layoutMode,
