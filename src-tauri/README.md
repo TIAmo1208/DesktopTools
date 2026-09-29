@@ -13,6 +13,7 @@ src-tauri/
 │  ├─ commands/           # 前端命令边界、校验和用例调度
 │  ├─ workspace/          # 布局、围栏、门户、组件和事务规则
 │  ├─ shell/              # 桌面项目事实、Shell 身份、菜单、剪贴板和拖放
+│  ├─ collect/            # Markdown 条目、资源、拖入内容与删除恢复
 │  ├─ host/               # 透明宿主、WebView2、DPI、命中图和接管
 │  ├─ persistence/        # 布局快照和备份
 │  ├─ component_runtime/  # 组件清单、能力和运行时状态
@@ -37,6 +38,8 @@ src-tauri/
 - `shell/` 负责 Shell 项目身份、真实文件操作、菜单、剪贴板和 Shell OLE 数据对象。
 - `host/` 负责逐显示器透明窗口、WebView2、坐标、命中图和桌面接管。
 - `platform/windows/` 集中维护 COM、OLE、DPI、窗口消息和 Windows API 适配。
+- `platform/windows/drop_content.rs` 探测有界源格式、声明业务白名单、协商效果并提取自有数据；`desktop_host.rs` 在既有 OLE 入口按最高命中目标分流。`app/desktop_drop.rs` 复核实例、功能开关与运行时注册，再交给 `collect/drop.rs` 或 Shell STA；后台不持有原生拖放数据对象。
+- `collect/drop.rs` 负责一次拖入的格式去重、Markdown 追加及资源收入，正文保存使用既有 Windows 原子替换能力，失败保留已保存正文与可追踪的资源路径。
 - `contracts/` 与前端 `src/contracts/` 对齐跨边界数据形状。
 
 ## 数据方向

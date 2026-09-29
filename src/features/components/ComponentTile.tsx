@@ -68,6 +68,7 @@ export const ComponentTile = ({
     menuItems,
     sortItems,
     scrollable = true,
+    expandOnDrop = false,
     children,
 }: ComponentTileProps & {
     title: string; // 功能提供的默认标题，空用户标题不会回退。
@@ -79,6 +80,7 @@ export const ComponentTile = ({
     menuItems?: DesktopTileMenuItem[]; // 实例业务菜单。
     sortItems?: DesktopTileMenuItem[]; // 公共排序菜单。
     scrollable?: boolean; // 固定内容使用填充布局。
+    expandOnDrop?: boolean; // 内容模块声明匹配白名单后临时展开，不改变悬停偏好。
     children?: ReactNode | ((collapsed: boolean) => ReactNode); // 活动内容读取实际展开状态。
 }) => {
     const [editingTitle, setEditingTitle] = useState(false); // 原有标题编辑状态。
@@ -121,6 +123,8 @@ export const ComponentTile = ({
             }}
             className={`official-component${failed ? " official-component--failed" : ""}`}
             data-component-id={instance.instanceId}
+            data-drop-component-type={!loading && !failed ? instance.componentId : undefined}
+            data-expand-on-drop={expandOnDrop ? "true" : undefined}
             data-hit-id={instance.instanceId}
             data-hit-kind="component"
             data-hit-priority="60"

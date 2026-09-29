@@ -649,6 +649,16 @@ impl DesktopItemState
         Ok(())
     }
 
+    /// 原生投放已完成白名单验证的媒体交给现有 Shell STA 默认打开。
+    pub(crate) fn open_media_drop(&self, path: String) -> Result<(), String>
+    {
+        if !crate::platform::windows::drop_content::file_targets(std::slice::from_ref(&path)).contains(&crate::platform::windows::drop_content::MEDIA)
+        {
+            return Err("媒体文件已失效或不受支持".into());
+        }
+        self.runtime.open(vec![path])
+    }
+
     /// 重命名单个当前可用项目并记录 Shell 确认结果。
     pub fn rename(&self, item_id: &str, new_name: String) -> Result<ShellOperationResult, DesktopItemError>
     {

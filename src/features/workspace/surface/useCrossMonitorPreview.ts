@@ -100,6 +100,39 @@ export const useCrossMonitorPreview = (monitorId: string | undefined, items: Des
                         monitorId,
                         pointer: drag.pointer,
                         regions: geometry.regions,
+                        collectItems: (drag.contentTargets?.includes("official.collect-box")
+                            ? [...document.querySelectorAll<HTMLElement>("[data-collect-name]")]
+                            : []
+                        ).flatMap((element) => {
+                            const tile = element.closest<HTMLElement>("[data-component-id]"); // 收集项必须归属当前可见实例。
+                            const viewport = element.closest<HTMLElement>(".desktop-tile-viewport__content"); // 内容裁剪范围。
+                            if (
+                                !tile ||
+                                !viewport ||
+                                element.closest("[inert]") ||
+                                element.getClientRects().length === 0 ||
+                                getComputedStyle(element).visibility === "hidden"
+                            )
+                                return [];
+                            const bounds = element.getBoundingClientRect(); // 收集项真实位置。
+                            const clip = viewport.getBoundingClientRect(); // 避免滚出视口的条目接收投放。
+                            const left = Math.max(0, bounds.left, clip.left); // 裁剪左边界。
+                            const top = Math.max(0, bounds.top, clip.top); // 裁剪上边界。
+                            const right = Math.min(window.innerWidth, bounds.right, clip.right); // 裁剪右边界。
+                            const bottom = Math.min(window.innerHeight, bounds.bottom, clip.bottom); // 裁剪下边界。
+                            return right > left && bottom > top
+                                ? [
+                                      {
+                                          instanceId: tile.dataset.componentId,
+                                          name: element.dataset.collectName,
+                                          left,
+                                          top,
+                                          width: right - left,
+                                          height: bottom - top,
+                                      },
+                                  ]
+                                : [];
+                        }),
                         fenceScrolls: geometry.fenceScrolls,
                     },
                 }).catch(() => undefined);

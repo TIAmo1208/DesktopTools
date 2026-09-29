@@ -51,7 +51,9 @@ export const createWorkspaceDropTarget = (monitorId: string, onScroll: (drag: Cr
                 .map((node) => node.closest<HTMLElement>(".desktop-tile"))
                 .find(Boolean); // 最高格子决定接收能力，不能穿透。
             const portal = tile?.dataset.portalId;
-            drop.rejected = Boolean(tile && !tile.dataset.fenceId && !portal);
+            const contentTarget = tile?.dataset.dropComponentType && drag.contentTargets?.includes(tile.dataset.dropComponentType); // 白名单来自原生摘要。
+            drop.rejected = Boolean(tile && !tile.dataset.fenceId && !portal && !contentTarget) || (drag.fileContent === false && !contentTarget);
+            if (contentTarget) return { drop, regions: collectHitRegions(), fenceScrolls: [] }; // 内容业务不预览桌面落位。
             if (portal) drop.portalId = portal;
             const element = drop.rejected
                 ? undefined

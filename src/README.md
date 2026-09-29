@@ -44,6 +44,8 @@ src/
 
 ## 依赖方向
 
+原生内容拖放沿 `useCrossMonitorPreview` 和 `workspaceDropTarget` 交付类型白名单、可见格子与收集项几何。`ComponentTile` 声明实例类型，内容层通过 `expandOnDrop` 请求匹配后临时展开；公共外框不处理收集或媒体业务。`CollectBox` 只呈现条目与监听更新，不另建 Tauri 或 HTML 拖放执行路径。`tiles/contentDrop.browser.html` 验证设置归属、临时展开、条目命中确认与拒绝不穿透。
+
 ```text
 工作区装配 -> 内容与组件运行时装配 -> 公共格子
 React feature -> bridge -> Tauri command/event -> src-tauri/src

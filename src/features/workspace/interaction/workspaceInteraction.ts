@@ -51,6 +51,34 @@ export const selectionModeForDirectionalKey = ({ ctrlKey, shiftKey }: SelectionM
     return ctrlKey ? "preserve" : "replace";
 };
 
+/** 将矩形裁剪到视口，零面积区域不参与框选。 */
+export const intersectInteractionRects = (rect: InteractionRect, clip: InteractionRect): InteractionRect | undefined => {
+    const left = Math.max(rect.left, clip.left); // 相交区域左边界。
+    const top = Math.max(rect.top, clip.top); // 相交区域上边界。
+    const width = Math.min(rect.left + rect.width, clip.left + clip.width) - left; // 相交宽度。
+    const height = Math.min(rect.top + rect.height, clip.top + clip.height) - top; // 相交高度。
+    return width > 0 && height > 0 ? { left, top, width, height } : undefined;
+};
+
+/** 扣除上层语义表面，保留仍可见的矩形片段。 */
+export const uncoveredInteractionRects = (rect: InteractionRect, occluders: InteractionRect[]): InteractionRect[] => {
+    let visible = [rect]; // 当前未被上层表面覆盖的片段。
+    for (const cover of occluders) {
+        visible = visible.flatMap((part) => {
+            const overlap = intersectInteractionRects(part, cover); // 当前遮挡与片段的交集。
+            if (!overlap) return [part];
+            return [
+                { left: part.left, top: part.top, width: part.width, height: overlap.top - part.top },
+                { left: part.left, top: overlap.top + overlap.height, width: part.width, height: part.top + part.height - overlap.top - overlap.height },
+                { left: part.left, top: overlap.top, width: overlap.left - part.left, height: overlap.height },
+                { left: overlap.left + overlap.width, top: overlap.top, width: part.left + part.width - overlap.left - overlap.width, height: overlap.height },
+            ].filter((piece) => piece.width > 0 && piece.height > 0);
+        });
+        if (visible.length === 0) break;
+    }
+    return visible;
+};
+
 /** 按输入视觉顺序返回与框选矩形相交的项目。 */
 export const itemIdsIntersectingRect = (selection: InteractionRect, items: InteractionItem[]): string[] => {
     const selectionRight = selection.left + selection.width; // 框选区域右边界。

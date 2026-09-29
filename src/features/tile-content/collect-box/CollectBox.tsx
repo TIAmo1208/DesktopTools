@@ -1,18 +1,14 @@
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DesktopTileMenu } from "../../tiles/DesktopTileMenu";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { DragDropEvent } from "@tauri-apps/api/webview";
 import Markdown from "markdown-to-jsx";
 import {
     createCollectItem,
     deleteCollectItem,
-    importCollectResource,
     getCollectItems,
     listenCollectChanges,
     openCollectEditor,
     restoreCollectItem,
-    saveCollectItem,
     setCollectItemPinned,
     type CollectItem,
 } from "../../../bridge/collect";
@@ -93,41 +89,6 @@ export const CollectBox = ({
             void subscription.then((stop) => stop()).catch(() => undefined);
         };
     }, []);
-    useEffect(() => {
-        if (window.__DESKTOP_TOOLS_NATIVE__) return; // 独立桌面 WebView2 没有 Tauri 窗口元数据。
-        const subscription = getCurrentWindow().onDragDropEvent((event) => {
-            const payload = event.payload as DragDropEvent;
-            if (payload.type !== "drop" || payload.paths.length === 0) return;
-            const hit = document.elementFromPoint(payload.position.x, payload.position.y)?.closest<HTMLElement>("[data-collect-box]");
-            if (hit !== rootRef.current) return;
-            const target = document.elementFromPoint(payload.position.x, payload.position.y)?.closest<HTMLElement>("[data-collect-name]")?.dataset.collectName;
-            const targetItem = target ? items.find((item) => item.name === target) : undefined;
-            void (targetItem ? Promise.resolve(targetItem) : createCollectItem())
-                .then(async (created) => {
-                    const entries = await Promise.all(
-                        payload.paths.map(async (source) => ({
-                            source,
-                            resource: await importCollectResource(created.name, source, preferences?.collectImageImportMode ?? "copy"),
-                        })),
-                    );
-                    if (targetItem)
-                        await saveCollectItem(
-                            targetItem.name,
-                            `${targetItem.content}${targetItem.content.endsWith("\n") || !targetItem.content ? "" : "\n\n"}${entries.map(({ source, resource }) => `![${source.split(/[\\/]/).pop() ?? "图片"}](${resource})`).join("\n")}`,
-                        );
-                    else
-                        await saveCollectItem(
-                            created.name,
-                            entries.map(({ source, resource }) => `![${source.split(/[\\/]/).pop() ?? "图片"}](${resource})`).join("\n"),
-                        );
-                    reload();
-                })
-                .catch(handleFailure);
-        });
-        return () => {
-            void subscription.then((stop) => stop()).catch(() => undefined);
-        };
-    }, [items, preferences?.collectImageImportMode]);
     createRef.current = () => {
         void createCollectItem()
             .then((item) => {
@@ -159,15 +120,6 @@ export const CollectBox = ({
         );
         onLatestChange?.(latest ? { title: title(latest), summary: excerpt(latest.content) } : { title: "收集箱", summary: "" });
     }, [items, onLatestChange]);
-    const handleDrop = (event: DragEvent<HTMLDivElement>) => {
-        event.preventDefault();
-        const text = event.dataTransfer.getData("text/plain");
-        if (!text.trim()) return;
-        const target = (event.target as HTMLElement).closest<HTMLElement>("[data-collect-name]")?.dataset.collectName;
-        const item = target ? items.find((candidate) => candidate.name === target) : undefined;
-        const content = item ? `${item.content}${item.content.endsWith("\n") || !item.content ? "" : "\n\n"}${text}` : text;
-        void (item ? saveCollectItem(item.name, content) : createCollectItem(content)).then(() => reload()).catch(handleFailure);
-    };
     return (
         <div
             ref={rootRef}
@@ -191,8 +143,6 @@ export const CollectBox = ({
                 window.dispatchEvent(new Event("desktop-tile-menu-opening"));
                 setItemMenu({ x: event.clientX, y: event.clientY, name: target.dataset.collectName });
             }}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={handleDrop}
         >
             {items.length === 0 ? (
                 <p>暂无收集项</p>

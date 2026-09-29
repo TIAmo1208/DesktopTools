@@ -1471,6 +1471,18 @@ impl WorkspaceSnapshot
                 self.fences.push(FenceSnapshot { id, title, monitor_id, projection_monitor_id: None, projection_bounds: None, bounds, members: Vec::new(), layout_mode: FenceLayoutMode::Tile, sort_mode: FenceSortMode::None, auto_expand: false, scroll_top: 0.0, collapsed: false, last_expanded_height: bounds.height, z_index });
                 Ok("创建围栏")
             }
+            WorkspaceCommand::CreateFenceWithItems { title, bounds, item_ids } =>
+            {
+                let anchor_item_id = match &self.interaction.keyboard_focus
+                {
+                    WorkspaceFocusTarget::Item { item_id } if item_ids.contains(item_id) => item_id.clone(),
+                    _ => item_ids.first().cloned().ok_or_else(|| WorkspaceError::invalid_command("新建围栏的项目选择为空"))?,
+                }; // 保留仍在完整选择中的项目焦点。
+                self.apply(WorkspaceCommand::CreateFence { title, bounds }, monitor_id)?;
+                let fence_id = self.fences.last().expect("创建命令已追加新围栏").id.clone(); // 同一事务副本中的新身份。
+                self.apply(WorkspaceCommand::CommitItemDrag { anchor_item_id, item_ids, placements: Vec::new(), target_fence_id: Some(fence_id), before_item_id: None, fence_scrolls: Vec::new() }, monitor_id)?;
+                Ok("新建围栏并移入")
+            }
             WorkspaceCommand::UpdateFenceBounds { fence_id, bounds } =>
             {
                 validate_rect(bounds, false)?;

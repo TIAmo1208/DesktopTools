@@ -5,6 +5,7 @@ pub(crate) use desktop_host::cache_host_hit_regions;
 pub(crate) use desktop_host::drag_payload_limit;
 pub(crate) use desktop_host::install_host_events;
 mod desktop_sources;
+pub(crate) mod drop_content;
 pub mod drop_target;
 pub(crate) mod environment_watch;
 pub(crate) mod file_proof;

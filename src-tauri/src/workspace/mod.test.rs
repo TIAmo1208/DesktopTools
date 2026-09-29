@@ -478,6 +478,49 @@ fn create_fence_command_persists_and_restores_the_snapshot()
     std::fs::remove_file(path).expect("测试快照应可清理");
 }
 
+/// 验证混合来源收纳作为一次事务恢复，非法集合或保存失败不留空围栏。
+#[test]
+fn create_fence_with_items_is_atomic_and_undoable()
+{
+    let path = snapshot_path("create-fence-with-items"); // 独立持久化文件。
+    let mut state = workspace_state(path.clone()); // 可注入保存失败的工作区。
+    let bounds = WorkspaceRect { left: 100.0, top: 80.0, width: 320.0, height: 240.0 }; // 两次创建共用合法边界。
+    state.reconcile_items(1280.0, 720.0, &["a".into(), "b".into(), "c".into()]).unwrap();
+    let old = state.apply(WorkspaceCommand::CreateFence { title: "原围栏".into(), bounds }).unwrap().fences[0].id.clone(); // 混合来源中的原围栏。
+    state.apply(WorkspaceCommand::MoveItemToFence { item_id: "b".into(), fence_id: old.clone(), before_item_id: None }).unwrap();
+    state.apply_interaction(WorkspaceInteractionCommand::FocusItem { item_id: "b".into(), selection_mode: WorkspaceSelectionMode::Replace }).unwrap();
+    let before = state.snapshot().unwrap(); // 事务前完整归属、顺序和位置。
+    let history = state.latest_layout_history_time(false).unwrap(); // 失败不产生历史。
+    for ids in [vec![], vec!["a".into(), "a".into()], vec!["a".into(), "missing".into()]]
+    {
+        assert!(state.apply(WorkspaceCommand::CreateFenceWithItems { title: "新围栏".into(), bounds, item_ids: ids }).is_err());
+        assert_eq!(state.snapshot().unwrap(), before);
+        assert_eq!(state.latest_layout_history_time(false).unwrap(), history);
+    }
+    let command = WorkspaceCommand::CreateFenceWithItems { title: "新围栏".into(), bounds, item_ids: vec!["a".into(), "b".into()] }; // 同时收纳未归类和围栏成员。
+    state.persistence_path = path.join("blocked.json");
+    assert!(state.apply(command.clone()).is_err());
+    assert_eq!(state.snapshot().unwrap(), before);
+    assert_eq!(state.latest_layout_history_time(false).unwrap(), history);
+    state.persistence_path = path.clone();
+    let created = state.apply(command).unwrap(); // 同一事务只增加一个修订。
+    assert_eq!(created.revision, before.revision + 1);
+    assert_eq!(created.fences.len(), 2);
+    assert!(created.fences[0].members.is_empty());
+    assert_eq!(created.fences[1].members, ["a", "b"]);
+    assert_eq!(created.unclassified_items.iter().map(|item| item.stable_reference.as_str()).collect::<Vec<_>>(), ["c"]);
+    assert_eq!(created.interaction.selected_item_ids, ["a", "b"]);
+    assert_eq!(created.interaction.keyboard_focus, WorkspaceFocusTarget::Item { item_id: "b".into() });
+    let undone = state.apply(WorkspaceCommand::UndoLayout).unwrap(); // 单次撤销恢复原围栏和项目位置。
+    assert_eq!(undone.fences, before.fences);
+    assert_eq!(undone.unclassified_items, before.unclassified_items);
+    let redone = state.apply(WorkspaceCommand::RedoLayout).unwrap(); // 单次重做恢复新围栏及成员。
+    assert_eq!(redone.fences, created.fences);
+    assert_eq!(redone.unclassified_items, created.unclassified_items);
+    assert_eq!(WorkspaceState::load(path.clone()).unwrap().snapshot().unwrap().fences, created.fences);
+    std::fs::remove_file(path).unwrap();
+}
+
 /// 验证单项选择通过公开快照发布且应用重启后回到空运行期状态。
 #[test]
 fn item_selection_is_runtime_state()

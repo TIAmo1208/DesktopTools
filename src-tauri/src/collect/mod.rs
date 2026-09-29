@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+mod drop;
 mod references;
+pub(crate) use drop::{IncomingContent, receive};
 
 /// 收集项在磁盘上的最小事实服务；Markdown 文件是唯一内容来源。
 #[derive(Clone, Debug, Serialize)]
@@ -74,7 +76,21 @@ pub fn create(config: &Path, content: &str) -> io::Result<CollectItem>
 }
 
 /// 覆盖保存指定 Markdown 文件。
-pub fn save(config: &Path, name: &str, content: &str) -> io::Result<()> { fs::write(safe_file(&directory(config), name)?, content) }
+pub fn save(config: &Path, name: &str, content: &str) -> io::Result<()>
+{
+    use std::io::Write;
+    let target = safe_file(&directory(config), name)?; // 复用路径边界。
+    let temporary = target.with_extension(format!("md.{}.tmp", crate::tools::time::next_timeline_timestamp())); // 同卷独占临时文件。
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?; // 失败不截断正文。
+    let result = file.write_all(content.as_bytes()).and_then(|()| file.sync_all()); // 完整写入后才替换。
+    drop(file);
+    let result = result.and_then(|()| crate::platform::windows::replace_file_atomic(temporary.as_os_str(), target.as_os_str())); // 沿用既有原子替换。
+    if result.is_err()
+    {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
 
 /// 按当前收入方式处理一份外部图片，并返回可写入 Markdown 的引用路径。
 pub fn import_resource(config: &Path, name: &str, source: &Path, mode: &str) -> io::Result<String>

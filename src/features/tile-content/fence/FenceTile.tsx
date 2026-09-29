@@ -36,6 +36,7 @@ interface FenceTileProps {
     onItemContextMenu: (event: MouseEvent<HTMLLIElement>, itemId: string) => void;
     onOpenItems: (itemIds: string[]) => Promise<void>;
     onItemPointerDown: (event: PointerEvent<HTMLLIElement>, item: DesktopItemViewModel) => void;
+    onMarqueePointerDown: (event: PointerEvent<HTMLElement>) => void; // 空白内容区共用工作区框选入口。
     onItemInput?: (itemId: string) => void;
     onBeginInputDrag: () => Promise<void>;
     onEndInputDrag: () => Promise<void>;
@@ -66,6 +67,7 @@ export const FenceTile = ({
     onItemContextMenu,
     onOpenItems,
     onItemPointerDown,
+    onMarqueePointerDown,
     onItemInput,
     onBeginInputDrag,
     onEndInputDrag,
@@ -276,9 +278,7 @@ export const FenceTile = ({
                 className="fence__items"
                 data-fence-content-id={fence.id}
                 onScroll={handleScroll}
-                onPointerDown={(event) => {
-                    if (event.target === event.currentTarget || (event.target instanceof Element && event.target.closest(".fence__empty"))) focusFence();
-                }}
+                onPointerDown={onMarqueePointerDown}
             >
                 {items.map((item) => (
                     <DesktopItemTile

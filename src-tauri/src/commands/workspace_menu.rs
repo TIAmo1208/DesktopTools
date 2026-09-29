@@ -28,8 +28,8 @@ pub(super) fn choose_workspace_menu(snapshot: &WorkspaceSnapshot, monitor: &Desk
     /// 在菜单锚点创建围栏命令编号。
     const CREATE_FENCE: u32 = 0x7804;
     const CREATE_FOLDER_PORTAL: u32 = 0x7808;
-    /// 当前工作区已经持续启用的编辑布局命令编号。
-    const EDIT_LAYOUT: u32 = 0x7805;
+    /// 新建围栏并收纳完整选择集合的命令编号。
+    const CREATE_FENCE_WITH_ITEMS: u32 = 0x780B;
     /// 重新枚举 Shell 项目并协调工作区命令编号。
     const REFRESH_ITEMS: u32 = 0x7806;
     /// 等待正式设置表面交付后启用的设置命令编号。
@@ -59,7 +59,7 @@ pub(super) fn choose_workspace_menu(snapshot: &WorkspaceSnapshot, monitor: &Desk
             // 当前完整选择集合是否都具有移出围栏能力。
             let can_remove = item_ids.iter().all(|item_id| snapshot.fences.iter().any(|fence| fence.members.contains(item_id)));
             commands.push(NativeMenuCommand { id: REMOVE_FROM_FENCE, label: "移出围栏".to_string(), enabled: can_remove });
-            commands.push(NativeMenuCommand { id: EDIT_LAYOUT, label: "编辑布局".to_string(), enabled: true });
+            commands.push(NativeMenuCommand { id: CREATE_FENCE_WITH_ITEMS, label: "新建围栏并移入".to_string(), enabled: true });
             (NativeMenuTarget::Items(references), commands, item_ids, None)
         }
         WorkspaceContextMenuTarget::Fence { fence_id } =>
@@ -89,7 +89,7 @@ pub(super) fn choose_workspace_menu(snapshot: &WorkspaceSnapshot, monitor: &Desk
                 Some(fence_id),
             )
         }
-        WorkspaceContextMenuTarget::Background => (NativeMenuTarget::Background, vec![NativeMenuCommand { id: CREATE_FENCE, label: "新建围栏".to_string(), enabled: true }, NativeMenuCommand { id: CREATE_FOLDER_PORTAL, label: "新建文件夹门户".to_string(), enabled: true }, NativeMenuCommand { id: EDIT_LAYOUT, label: "编辑布局".to_string(), enabled: true }, NativeMenuCommand { id: REFRESH_ITEMS, label: "刷新桌面项目".to_string(), enabled: true }, NativeMenuCommand { id: OPEN_SETTINGS, label: "打开设置".to_string(), enabled: false }], Vec::new(), None),
+        WorkspaceContextMenuTarget::Background => (NativeMenuTarget::Background, vec![NativeMenuCommand { id: CREATE_FENCE, label: "新建围栏".to_string(), enabled: true }, NativeMenuCommand { id: CREATE_FOLDER_PORTAL, label: "新建文件夹门户".to_string(), enabled: true }, NativeMenuCommand { id: REFRESH_ITEMS, label: "刷新桌面项目".to_string(), enabled: true }, NativeMenuCommand { id: OPEN_SETTINGS, label: "打开设置".to_string(), enabled: false }], Vec::new(), None),
     };
     // 原生菜单关闭后返回的可选产品命令编号。
     let enabled = product_commands.iter().filter(|command| command.enabled).map(|command| command.id).collect::<Vec<_>>(); // 本次菜单允许的动作。
@@ -102,11 +102,6 @@ pub(super) fn choose_workspace_menu(snapshot: &WorkspaceSnapshot, monitor: &Desk
     if !enabled.contains(&selected)
     {
         return Err(DesktopItemError::invalid_selection("菜单返回了不可用的产品动作"));
-    }
-    if selected == EDIT_LAYOUT
-    {
-        crate::log_info!("工作区：编辑布局命令已激活");
-        return Ok(WorkspaceMenuAction::None);
     }
     if selected == REFRESH_ITEMS
     {
@@ -148,7 +143,7 @@ pub(super) fn choose_workspace_menu(snapshot: &WorkspaceSnapshot, monitor: &Desk
                 }
             }
             DISSOLVE_FENCE => WorkspaceCommand::DissolveFence { fence_id: fence_id.expect("围栏菜单命令包含目标围栏") },
-            CREATE_FENCE =>
+            CREATE_FENCE | CREATE_FENCE_WITH_ITEMS =>
             {
                 // 当前 CSS 工作区可容纳的新围栏初始边界。
                 let viewport_width = monitor.work_width as f64 / monitor.scale_factor;
@@ -156,7 +151,16 @@ pub(super) fn choose_workspace_menu(snapshot: &WorkspaceSnapshot, monitor: &Desk
                 let viewport_height = monitor.work_height as f64 / monitor.scale_factor;
                 let width = TILE_MIN_WIDTH.max(320.0_f64.min(viewport_width));
                 let height = TILE_MIN_HEIGHT.max(240.0_f64.min(viewport_height));
-                WorkspaceCommand::CreateFence { title: format!("新围栏 {}", snapshot.fences.len() + 1), bounds: WorkspaceRect { left: client_x.clamp(0.0, (viewport_width - width).max(0.0)), top: client_y.clamp(0.0, (viewport_height - height).max(0.0)), width, height } }
+                let title = format!("新围栏 {}", snapshot.fences.len() + 1); // 与空围栏入口共用默认标题。
+                let bounds = WorkspaceRect { left: client_x.clamp(0.0, (viewport_width - width).max(0.0)), top: client_y.clamp(0.0, (viewport_height - height).max(0.0)), width, height }; // 沿用当前显示器的创建边界。
+                if selected == CREATE_FENCE_WITH_ITEMS
+                {
+                    WorkspaceCommand::CreateFenceWithItems { title, bounds, item_ids }
+                }
+                else
+                {
+                    WorkspaceCommand::CreateFence { title, bounds }
+                }
             }
             _ => return Ok(WorkspaceMenuAction::None),
         }

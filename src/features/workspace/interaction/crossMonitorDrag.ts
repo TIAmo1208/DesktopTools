@@ -43,6 +43,8 @@ export interface CrossMonitorPreviewEvent extends CrossMonitorDrag {
     revision?: number; // 工作区版本。
     modifiers?: number; // 原生修饰键。
     external?: boolean; // 外部来源决定复制占位规则。
+    contentTargets?: string[]; // 原生业务白名单允许的组件类型，不包含正文或图像。
+    fileContent?: boolean; // 非文件内容不得进入桌面或围栏的布局与传输流程。
 }
 
 let activeDrag: CrossMonitorDrag | undefined; // 当前页面拥有的最新拖动，静止时仍需保持目标预览。

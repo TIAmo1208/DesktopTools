@@ -252,6 +252,7 @@ export const DesktopWorkspace = ({
                     onItemContextMenu={handleItemContextMenu}
                     onOpenItems={onOpenItems}
                     onItemPointerDown={(event, item) => void handleItemPointerDown(event, item.key)}
+                    onMarqueePointerDown={handleWorkspacePointerDown}
                     onItemInput={onItemInput}
                     onBeginInputDrag={onBeginInputDrag}
                     onEndInputDrag={onEndInputDrag}

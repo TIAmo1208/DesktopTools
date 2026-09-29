@@ -158,6 +158,7 @@ export type WorkspaceCommand =
     | { type: "remove-folder-portal"; portalId: string }
     | { type: "set-tile-appearance"; target: Extract<WorkspaceFocusTarget, { type: "fence" | "component" }>; change: TileAppearanceChange }
     | { type: "create-fence"; title: string; bounds: WorkspaceRect }
+    | { type: "create-fence-with-items"; title: string; bounds: WorkspaceRect; itemIds: string[] }
     | { type: "update-fence-bounds"; fenceId: string; bounds: WorkspaceRect }
     | { type: "set-fence-collapsed"; fenceId: string; collapsed: boolean }
     | { type: "set-fence-layout"; fenceId: string; layoutMode: FenceLayoutMode }

@@ -15,6 +15,7 @@ export const CollectBoxTile = (props: ComponentTileProps) => {
         <ComponentTile
             {...props}
             title="收集箱"
+            expandOnDrop
             collapsedTitle={peek.title}
             subtitle={peek.summary}
             collapsedSize={{ height: 56 }}
@@ -34,15 +35,13 @@ export const CollectBoxTile = (props: ComponentTileProps) => {
                     label: "移除",
                     description: "仅移除当前格子，保留收集内容，可通过撤销恢复",
                     onSelect: () =>
-                        void props
-                            .onCommand({ type: "remove-component", instanceId: props.instance.instanceId })
-                            .catch((error: unknown) =>
-                                publishMessage({
-                                    type: "error",
-                                    content: error instanceof Error ? error.message : "移除收集箱格子失败",
-                                    source: "desktop-tile",
-                                }),
-                            ),
+                        void props.onCommand({ type: "remove-component", instanceId: props.instance.instanceId }).catch((error: unknown) =>
+                            publishMessage({
+                                type: "error",
+                                content: error instanceof Error ? error.message : "移除收集箱格子失败",
+                                source: "desktop-tile",
+                            }),
+                        ),
                 },
             ]}
             commands={(sortMenuOpen) =>

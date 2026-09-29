@@ -532,6 +532,14 @@ pub enum WorkspaceCommand
         /// 初始围栏边界。
         bounds: WorkspaceRect,
     },
+    /// 创建围栏并将完整选择集合移入同一布局事务。
+    #[serde(rename = "create-fence-with-items")]
+    CreateFenceWithItems
+    {
+        title: String,         // 新围栏标题。
+        bounds: WorkspaceRect, // 当前显示器内的初始边界。
+        item_ids: Vec<String>, // 按稳定视觉顺序收纳的完整选择。
+    },
     /// 提交围栏移动或缩放后的边界。
     #[serde(rename = "update-fence-bounds")]
     UpdateFenceBounds
