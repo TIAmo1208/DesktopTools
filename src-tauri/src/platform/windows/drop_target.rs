@@ -20,6 +20,8 @@ thread_local! {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DropPreview
 {
+    #[serde(default)]
+    pub collect_items: Vec<CollectDropRegion>, // 已裁剪收集项，只有命中所属组件才参与分流。
     pub geometry_revision: u64,                                     // 同一指针下滚动与悬停展开的渲染帧版本。
     pub session: String,                                            // 原生登记的目标会话。
     pub sequence: u64,                                              // 指针或布局改变时递增的原生序号。
@@ -28,6 +30,17 @@ pub(crate) struct DropPreview
     pub pointer: crate::contracts::WorkspacePoint,                  // 已渲染的工作区 DIP 指针。
     pub regions: Vec<crate::contracts::HitRegion>,                  // 裁剪后的完整可见语义图。
     pub fence_scrolls: Vec<crate::contracts::WorkspaceFenceScroll>, // 自动滚动的最终位置。
+}
+
+/// 当前实际可见收集项的目标身份和有界几何。
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CollectDropRegion
+{
+    pub instance_id: String, // 归属组件实例。
+    pub name: String,        // 收集项相对文件名。
+    #[serde(flatten)]
+    pub bounds: crate::contracts::WorkspaceRect, // 内容视口内的可见区域。
 }
 
 /// 注册或清除一个原生目标的预览确认槽位。
@@ -58,6 +71,10 @@ pub(crate) fn set_preview_session(session: &str, active: bool)
 /// 接受页面异步确认；未知会话和过期帧不能覆盖正在使用的落点。
 pub(crate) fn publish_preview(preview: DropPreview) -> Result<(), String>
 {
+    if preview.collect_items.len() > 4096 || preview.collect_items.iter().any(|item| item.name.len() > 1024 || item.instance_id.is_empty() || ![item.bounds.left, item.bounds.top, item.bounds.width, item.bounds.height].iter().all(|value| value.is_finite() && *value >= 0.0))
+    {
+        return Err("收集项投放几何无效".into());
+    }
     if !preview.pointer.left.is_finite() || !preview.pointer.top.is_finite() || preview.regions.len() > 4096 || preview.fence_scrolls.iter().any(|scroll| !scroll.scroll_top.is_finite() || scroll.scroll_top < 0.0)
     {
         return Err("拖放预览数据无效".into());
@@ -183,7 +200,7 @@ pub(crate) fn source_drag_session(data: &IDataObject) -> Option<std::sync::Arc<S
 }
 
 /// 在宿主 OLE 线程等待 Shell STA 结果，同时持续处理窗口和 COM 消息。
-pub(crate) fn wait_transfer(result: std::sync::mpsc::Receiver<Result<crate::contracts::ShellOperationResult, String>>) -> Result<crate::contracts::ShellOperationResult, String>
+pub(crate) fn wait_transfer<T>(result: std::sync::mpsc::Receiver<Result<T, String>>) -> Result<T, String>
 {
     use std::sync::mpsc::TryRecvError;
     use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MSG, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, PostQuitMessage, QS_ALLINPUT, TranslateMessage, WM_QUIT};
@@ -231,9 +248,6 @@ pub enum DropPhase<'a>
 /// 仅在注册窗口所属 OLE 线程调用的投放处理函数。
 pub type DropHandler = Rc<dyn for<'a> Fn(DropPhase<'a>) -> windows::core::Result<DROPEFFECT>>;
 
-/// 只接受 Shell 能解析为现有文件系统项目的完整集合，虚拟文件不降级猜测路径。
-pub(crate) fn filesystem_drop(data: &IDataObject) -> bool { filesystem_drop_items(data).is_some() }
-
 /// 显式修饰键不能静默降级；内部布局的 Alt 不参与文件链接协商。
 pub(crate) fn negotiated_effect(allowed: DROPEFFECT, keys: MODIFIERKEYS_FLAGS, preferred: DROPEFFECT, internal: bool) -> DROPEFFECT
 {
@@ -275,7 +289,7 @@ pub(crate) fn filesystem_drop_items(data: &IDataObject) -> Option<Vec<String>>
     use windows::Win32::UI::Shell::{IShellItemArray, SHCreateShellItemArrayFromDataObject, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH};
     let items: IShellItemArray = unsafe { SHCreateShellItemArrayFromDataObject(data) }.ok()?; // Shell 统一解析真实数据格式。
     let count = unsafe { items.GetCount() }.ok()?; // 顶层传输项目总数。
-    if count == 0
+    if count == 0 || count > 512
     {
         return None;
     }

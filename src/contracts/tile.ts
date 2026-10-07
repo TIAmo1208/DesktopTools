@@ -1,3 +1,9 @@
+/** 所有格子持久展开边界的最小宽度，单位为 DIP。 */
+export const TILE_MIN_WIDTH = 80;
+
+/** 所有格子持久展开边界的最小高度，单位为 DIP。 */
+export const TILE_MIN_HEIGHT = 48;
+
 /** 所有格子共用的外观，独立于空间布局与内容私有状态。 */
 export interface TileAppearance {
     title: string | null; // 未设置时使用内容默认名称。

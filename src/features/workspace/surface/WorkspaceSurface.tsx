@@ -13,12 +13,12 @@ import {
 import type { DesktopItemSnapshot } from "../../../contracts/desktopItem";
 import { parseShellOperationResult } from "../../../contracts/desktopItem";
 import type { WorkspacePoint } from "../../../contracts/workspace";
-import { FenceWorkspace } from "../../fences/FenceWorkspace";
+import { DesktopWorkspace } from "./DesktopWorkspace";
 import { useWorkspace } from "../state/useWorkspace";
 import { useDesktopHostSurface } from "./useDesktopHostSurface";
 import { useCrossMonitorPreview } from "./useCrossMonitorPreview";
 import { projectWorkspaceSurface } from "./workspaceSurfaceProjection";
-import { FolderPortalSurface } from "../../folder-portals/FolderPortalSurface";
+import { FolderPortalSurface } from "../../tile-content/folder-portal/FolderPortalSurface";
 import { usePreferences } from "../../settings/PreferencesProvider";
 
 /** 将未知错误转换为桌面项目操作说明。 */
@@ -148,7 +148,7 @@ export const WorkspaceSurface = () => {
 
     return (
         <main className="application-shell application-shell--desktop-host">
-            <FenceWorkspace
+            <DesktopWorkspace
                 desktopItems={projectedDesktopItems}
                 workspace={projectedWorkspace}
                 completeWorkspace={workspace.snapshot}
@@ -185,7 +185,7 @@ export const WorkspaceSurface = () => {
                                 onFailure={(error) => setDesktopItemFailure(errorMessage(error))}
                             />
                         ))}
-            </FenceWorkspace>
+            </DesktopWorkspace>
         </main>
     );
 };

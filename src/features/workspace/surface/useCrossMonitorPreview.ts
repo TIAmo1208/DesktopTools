@@ -15,6 +15,8 @@ export const useCrossMonitorPreview = (monitorId: string | undefined, items: Des
         const preview = createCrossMonitorDragPreview(); // 当前会话复用的目标预览。
         let timeout = 0; // 源 Renderer 失效后清理预览。
         let session: string | undefined; // 当前接收会话。
+        let sessionSource: string | undefined; // 当前会话来源。
+        const endedSessions = new Map<string, string>(); // 每个来源保留最近结束会话，拒绝迟到恢复。
         let renderFrame = 0; // 等待悬停展开提交后的单一渲染帧。
         let pendingSession: string | undefined; // 首次呈现前收到结束时也能取消预览。
         let geometryRevision = 0; // 当前 Renderer 发布的几何帧版本。
@@ -36,7 +38,9 @@ export const useCrossMonitorPreview = (monitorId: string | undefined, items: Des
         };
         const handleMessage = (event: Event, deferDrop = true) => {
             const drag = (event as CustomEvent).detail as CrossMonitorPreviewEvent; // 本应用原生转发数据。
-            if (!drag || typeof drag.session !== "string" || drag.phase === "result") return;
+            if (!drag || typeof drag.session !== "string" || typeof drag.source !== "string" || drag.phase === "result") return;
+            if (drag.phase === "end") endedSessions.set(drag.source, drag.session);
+            else if (endedSessions.get(drag.source) === drag.session) return;
             if (drag.source === "ole" && drag.phase === "pending") {
                 pendingOperation = drag.session;
                 if (session === drag.session || pendingSession === drag.session) clear(false);
@@ -61,16 +65,26 @@ export const useCrossMonitorPreview = (monitorId: string | undefined, items: Des
             if (drag.source === monitorId) return;
             if (drag.phase === "end" || drag.target !== monitorId) {
                 if (pendingOperation === drag.session) pendingOperation = undefined;
-                if (session === drag.session || pendingSession === drag.session) clear(drag.target !== monitorId || !drag.committed, drag.phase === "end");
+                if (session === drag.session || pendingSession === drag.session) {
+                    window.clearTimeout(timeout);
+                    clear(drag.target !== monitorId || !drag.committed, drag.phase === "end");
+                }
                 return;
             }
             if (!["move", "drop"].includes(drag.phase) || !Array.isArray(drag.visuals) || drag.visuals.length > 512 || !Array.isArray(drag.itemIds)) return;
             if (![drag.pointer?.left, drag.pointer?.top, drag.origin?.left, drag.origin?.top].every(Number.isFinite)) return;
-            if (session && session !== drag.session) clear(true, true);
+            if (session && session !== drag.session) {
+                if (sessionSource) endedSessions.set(sessionSource, session);
+                clear(true, true);
+            }
             session = drag.session;
+            sessionSource = drag.source;
             if (!replaying) {
                 window.clearTimeout(timeout);
-                timeout = window.setTimeout(() => clear(true, true), 2500);
+                timeout = window.setTimeout(() => {
+                    endedSessions.set(drag.source, drag.session);
+                    clear(true, true);
+                }, 2500);
             }
             const geometry = target.update(drag, state.current.workspace); // 只消费目标适配器的投放和几何结果。
             preview.update(drag, state.current.items, state.current.workspace, geometry.drop.snapTargets);
@@ -86,6 +100,39 @@ export const useCrossMonitorPreview = (monitorId: string | undefined, items: Des
                         monitorId,
                         pointer: drag.pointer,
                         regions: geometry.regions,
+                        collectItems: (drag.contentTargets?.includes("official.collect-box")
+                            ? [...document.querySelectorAll<HTMLElement>("[data-collect-name]")]
+                            : []
+                        ).flatMap((element) => {
+                            const tile = element.closest<HTMLElement>("[data-component-id]"); // 收集项必须归属当前可见实例。
+                            const viewport = element.closest<HTMLElement>(".desktop-tile-viewport__content"); // 内容裁剪范围。
+                            if (
+                                !tile ||
+                                !viewport ||
+                                element.closest("[inert]") ||
+                                element.getClientRects().length === 0 ||
+                                getComputedStyle(element).visibility === "hidden"
+                            )
+                                return [];
+                            const bounds = element.getBoundingClientRect(); // 收集项真实位置。
+                            const clip = viewport.getBoundingClientRect(); // 避免滚出视口的条目接收投放。
+                            const left = Math.max(0, bounds.left, clip.left); // 裁剪左边界。
+                            const top = Math.max(0, bounds.top, clip.top); // 裁剪上边界。
+                            const right = Math.min(window.innerWidth, bounds.right, clip.right); // 裁剪右边界。
+                            const bottom = Math.min(window.innerHeight, bounds.bottom, clip.bottom); // 裁剪下边界。
+                            return right > left && bottom > top
+                                ? [
+                                      {
+                                          instanceId: tile.dataset.componentId,
+                                          name: element.dataset.collectName,
+                                          left,
+                                          top,
+                                          width: right - left,
+                                          height: bottom - top,
+                                      },
+                                  ]
+                                : [];
+                        }),
                         fenceScrolls: geometry.fenceScrolls,
                     },
                 }).catch(() => undefined);

@@ -85,7 +85,7 @@ fn portal_drag_uses_filesystem_items_without_cross_apartment_data_object()
     std::fs::write(&file, "portal drag").unwrap();
     let references = vec![file.to_string_lossy().into_owned()];
     {
-        let data = super::drag_data_object(windows::Win32::Foundation::HWND::default(), &references, true).unwrap();
+        let data = super::drag_data_object(windows::Win32::Foundation::HWND::default(), &references, true, None).unwrap();
         assert_eq!(crate::platform::windows::drop_target::filesystem_drop_items(&data).unwrap(), references);
         let owner = super::ShellMenuOwner::create().unwrap();
         let extended_destination = format!(r"\\?\{}", destination.to_string_lossy()); // 覆盖门户 canonicalize 产生的目标格式。

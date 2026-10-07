@@ -1510,7 +1510,7 @@ pub(crate) fn desktop_data_object(hwnd: HWND, references: &[String]) -> Result<I
 }
 
 /// 按来源身份创建完整拖放数据对象；门户路径不经过桌面命名空间解析。
-pub(crate) fn drag_data_object(hwnd: HWND, references: &[String], portal_source: bool) -> Result<IDataObject, String>
+pub(crate) fn drag_data_object(hwnd: HWND, references: &[String], portal_source: bool, cached_image: Option<&super::shell_image::ShellImage>) -> Result<IDataObject, String>
 {
     validate_reference_selection(references)?;
     let data_object = if portal_source
@@ -1524,15 +1524,21 @@ pub(crate) fn drag_data_object(hwnd: HWND, references: &[String], portal_source:
     // 系统持有拖动图像，目标页面只呈现落位与插入提示。
     let drag_image_result = (|| -> Result<(), String> {
         use windows::Win32::UI::Shell::{CLSID_DragDropHelper, IDragSourceHelper, IShellItemImageFactory, SHDRAGIMAGE, SIIGBF_ICONONLY};
-        let image_factory: IShellItemImageFactory = resolve_shell_item(&references[0])?.cast().map_err(|error| format!("读取系统图像接口失败：{error}"))?; // 锚点项目的系统图像。
         let size = windows::Win32::Foundation::SIZE { cx: 48, cy: 48 }; // 现有桌面系统图像尺寸。
-        let bitmap = unsafe { image_factory.GetImage(size, SIIGBF_ICONONLY) }.map_err(|error| format!("读取拖动图像失败：{error}"))?; // 调用方拥有的系统位图。
+        let bitmap = if let Some(image) = cached_image
+        {
+            image.drag_bitmap()?
+        }
+        else
+        {
+            let image_factory: IShellItemImageFactory = resolve_shell_item(&references[0])?.cast().map_err(|error| format!("读取系统图像接口失败：{error}"))?; // 未就绪时仅请求图标，不提取缩略图。
+            super::shell_image::OwnedBitmap(unsafe { image_factory.GetImage(size, SIIGBF_ICONONLY) }.map_err(|error| format!("读取拖动图像失败：{error}"))?)
+        }; // 位图所有权覆盖 helper 初始化并自动释放。
         let initialized = (|| -> windows::core::Result<()> {
             let helper: IDragSourceHelper = unsafe { CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_ALL)? }; // Windows 拖动图像服务。
-            let image = SHDRAGIMAGE { sizeDragImage: size, ptOffset: windows::Win32::Foundation::POINT { x: 24, y: 24 }, hbmpDragImage: bitmap, crColorKey: windows::Win32::Foundation::COLORREF(0xffffffff) }; // 使用位图 Alpha 而不是色键。
+            let image = SHDRAGIMAGE { sizeDragImage: size, ptOffset: windows::Win32::Foundation::POINT { x: 24, y: 24 }, hbmpDragImage: bitmap.0, crColorKey: windows::Win32::Foundation::COLORREF(0xffffffff) }; // 使用位图 Alpha 而不是色键。
             unsafe { helper.InitializeFromBitmap(&image, &data_object) }
         })(); // helper 将图像复制到数据对象，不借用源位图。
-        let _ = unsafe { windows::Win32::Graphics::Gdi::DeleteObject(bitmap.into()) };
         initialized.map_err(|error| format!("初始化系统拖动图像失败：{error}"))
     })();
     if let Err(error) = drag_image_result

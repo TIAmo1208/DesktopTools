@@ -25,9 +25,10 @@ dist-ssr
 !src/contracts/settings.test.ts
 !src/bridge/folderPortal.test.ts
 !src/bridge/nativeHostEvents.test.ts
-!src/features/components/collectEditorLinks.test.ts
+!src/features/tile-content/collect-box/collectEditorLinks.test.ts
 !src/bridge/collect.test.ts
-!src/features/components/collectItemState.test.ts
+!src/features/tile-content/collect-box/collectItemState.test.ts
+!src/features/tile-content/collect-box/collectMarkdown.test.ts
 !src/features/workspace/surface/workspaceDropTarget.test.ts
 *.spec.*
 temp/
@@ -43,3 +44,9 @@ temp/
 *.sw?
 dist-electron/
 package-lock.json
+
+# 公共格子与迁移后的回归检查保留在版本控制中。
+!src/features/tiles/*.test.ts
+!src/features/tile-content/music/musicLayout.test.ts
+!src/features/workspace/interaction/crossMonitorDrag.test.ts
+!src/features/workspace/surface/crossMonitorDragPreview.test.ts

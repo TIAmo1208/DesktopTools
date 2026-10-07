@@ -36,11 +36,6 @@
     pointer-events: none;
 }
 
-/* 跨屏拖入目标复用现有焦点强调色。 */
-.fence--remote-drop-target {
-    outline: 2px solid var(--color-focus);
-}
-
 /* 未归类桌面项目定位表面。 */
 .fence-workspace__unclassified {
     position: absolute;
@@ -48,38 +43,6 @@
     margin: 0;
     padding: 0;
     list-style: none;
-}
-
-/* 围栏接收项目时的投放状态。 */
-.fence--drop-target {
-    border-color: var(--color-accent);
-    box-shadow:
-        0 0 0 2px color-mix(in srgb, var(--color-accent) 28%, transparent),
-        0 10px 28px rgb(0 0 0 / 24%);
-}
-
-/* 无排序时只弱化图标，不改变按钮命中尺寸。 */
-.fence__sort[data-sort-active="false"] span {
-    opacity: 0.48;
-}
-
-/* 围栏滚动成员区。 */
-.fence__items {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, var(--fence-grid-width, 68px));
-    grid-auto-rows: var(--fence-grid-height, 90px);
-    align-content: start;
-    gap: var(--fence-grid-row-gap, 8px) var(--fence-grid-column-gap, 6px);
-    margin: 0;
-    padding: 8px;
-    list-style: none;
-}
-
-/* 列表布局围栏成员区。 */
-.fence[data-layout-mode="list"] .fence__items {
-    grid-template-columns: 1fr;
-    grid-auto-rows: min-content;
-    gap: 4px;
 }
 
 /* 桌面独立浅色主题围栏变量。 */

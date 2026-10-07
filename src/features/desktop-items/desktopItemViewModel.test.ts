@@ -29,6 +29,7 @@ test("projects desktop items for rendering", () => {
         label: "Project",
         imageSource: "data:image/png;base64,AA==",
         isAvailable: true,
+        imageRevision: 2,
     });
     assert.equal(items[1].isAvailable, false);
 });

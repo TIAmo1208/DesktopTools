@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::settings::SettingsState;
 use crate::contracts::settings::{ApplicationPreferences, GridPreferences};
-use crate::contracts::{ComponentInstanceSnapshot, DesktopHostMonitor, FENCE_MIN_HEIGHT, FENCE_MIN_WIDTH, FenceLayoutMode, FenceSnapshot, FenceSortMode, UnclassifiedItemSnapshot, WORKSPACE_BACKUP_SCHEMA_VERSION, WORKSPACE_GRID_BOTTOM_MARGIN, WORKSPACE_GRID_LEFT, WORKSPACE_GRID_TOP, WORKSPACE_SCHEMA_VERSION, WorkspaceBackupSummary, WorkspaceCommand, WorkspaceError, WorkspaceFenceScroll, WorkspaceFocusTarget, WorkspaceGrid, WorkspaceInteractionCommand, WorkspaceInteractionSnapshot, WorkspaceItemPlacement, WorkspaceMonitorGrid, WorkspacePoint, WorkspaceRect, WorkspaceRestoreResult, WorkspaceSelectionMode, WorkspaceSnapshot};
+use crate::contracts::{ComponentInstanceSnapshot, DesktopHostMonitor, FenceLayoutMode, FenceSnapshot, FenceSortMode, TILE_MIN_HEIGHT, TILE_MIN_WIDTH, UnclassifiedItemSnapshot, WORKSPACE_BACKUP_SCHEMA_VERSION, WORKSPACE_GRID_BOTTOM_MARGIN, WORKSPACE_GRID_LEFT, WORKSPACE_GRID_TOP, WORKSPACE_SCHEMA_VERSION, WorkspaceBackupSummary, WorkspaceCommand, WorkspaceError, WorkspaceFenceScroll, WorkspaceFocusTarget, WorkspaceGrid, WorkspaceInteractionCommand, WorkspaceInteractionSnapshot, WorkspaceItemPlacement, WorkspaceMonitorGrid, WorkspacePoint, WorkspaceRect, WorkspaceRestoreResult, WorkspaceSelectionMode, WorkspaceSnapshot};
 use crate::persistence::{load_json, save_json_atomic};
 
 /// 统一工作区持久化格式版本。
@@ -1300,6 +1300,12 @@ impl WorkspaceSnapshot
     {
         let active_monitor_ids = monitors.iter().map(|monitor| monitor.id.as_str()).collect::<std::collections::HashSet<_>>(); // 当前仍连接的显示器身份。
         let primary_monitor = monitors.iter().find(|monitor| monitor.id == primary_monitor_id).ok_or_else(|| WorkspaceError::invalid_command("主显示器不存在"))?; // 临时投射目标显示器。
+        let viewport_width = f64::from(primary_monitor.work_width) / primary_monitor.scale_factor; // 主屏逻辑工作区宽度。
+        let viewport_height = f64::from(primary_monitor.work_height) / primary_monitor.scale_factor; // 主屏逻辑工作区高度。
+        if !primary_monitor.scale_factor.is_finite() || primary_monitor.scale_factor <= 0.0 || !viewport_width.is_finite() || !viewport_height.is_finite() || viewport_width <= 0.0 || viewport_height <= 0.0
+        {
+            return Err(WorkspaceError::invalid_command("主显示器工作区尺寸无效"));
+        }
         let primary_grid = self.monitor_grids.iter().find(|entry| entry.monitor_id == primary_monitor_id).expect("主显示器网格已创建").grid; // 临时投射项目使用的主屏网格。
         let capacity = grid_capacity(primary_grid)?; // 主屏临时投射可使用的网格容量。
         let mut occupied = self
@@ -1333,8 +1339,6 @@ impl WorkspaceSnapshot
             item.projection_position = Some(position);
             occupied.push(position);
         }
-        let viewport_width = f64::from(primary_monitor.work_width) / primary_monitor.scale_factor; // 主屏 CSS 工作区宽度。
-        let viewport_height = f64::from(primary_monitor.work_height) / primary_monitor.scale_factor; // 主屏 CSS 工作区高度。
         for fence in &mut self.fences
         {
             if active_monitor_ids.contains(fence.monitor_id.as_str())
@@ -1369,7 +1373,7 @@ impl WorkspaceSnapshot
                 continue;
             }
             component.projection_monitor_id = Some(primary_monitor_id.to_string());
-            component.projection_bounds = Some(project_component_rect(component.bounds, viewport_width, viewport_height));
+            component.projection_bounds = Some(project_rect(component.bounds, viewport_width, viewport_height));
         }
         Ok(())
     }
@@ -1402,7 +1406,7 @@ impl WorkspaceSnapshot
             }
             WorkspaceCommand::CreateFolderPortal { root_path, bounds } =>
             {
-                validate_component_rect(bounds)?;
+                validate_rect(bounds, false)?;
                 if !Path::new(&root_path).is_absolute() || !Path::new(&root_path).is_dir()
                 {
                     return Err(WorkspaceError::invalid_command("绑定路径必须是可访问的绝对目录"));
@@ -1427,7 +1431,7 @@ impl WorkspaceSnapshot
             }
             WorkspaceCommand::UpdateFolderPortalBounds { portal_id, bounds } =>
             {
-                validate_component_rect(bounds)?;
+                validate_rect(bounds, false)?;
                 let portal = self.folder_portals.iter_mut().find(|portal| portal.id == portal_id).ok_or_else(|| WorkspaceError::invalid_command("门户不存在"))?; // 按实例身份提交。
                 portal.bounds = bounds;
                 if let Some(monitor_id) = monitor_id
@@ -1449,7 +1453,7 @@ impl WorkspaceSnapshot
             WorkspaceCommand::CreateFence { title, bounds } =>
             {
                 validate_title(&title)?;
-                validate_rect(bounds)?;
+                validate_rect(bounds, false)?;
                 // 当前事务分配的稳定围栏标识。
                 let mut sequence = self.revision.saturating_add(1); // 全局投影中查找未占用身份，避免桌面修订号重名。
                 let id = loop
@@ -1467,9 +1471,21 @@ impl WorkspaceSnapshot
                 self.fences.push(FenceSnapshot { id, title, monitor_id, projection_monitor_id: None, projection_bounds: None, bounds, members: Vec::new(), layout_mode: FenceLayoutMode::Tile, sort_mode: FenceSortMode::None, auto_expand: false, scroll_top: 0.0, collapsed: false, last_expanded_height: bounds.height, z_index });
                 Ok("创建围栏")
             }
+            WorkspaceCommand::CreateFenceWithItems { title, bounds, item_ids } =>
+            {
+                let anchor_item_id = match &self.interaction.keyboard_focus
+                {
+                    WorkspaceFocusTarget::Item { item_id } if item_ids.contains(item_id) => item_id.clone(),
+                    _ => item_ids.first().cloned().ok_or_else(|| WorkspaceError::invalid_command("新建围栏的项目选择为空"))?,
+                }; // 保留仍在完整选择中的项目焦点。
+                self.apply(WorkspaceCommand::CreateFence { title, bounds }, monitor_id)?;
+                let fence_id = self.fences.last().expect("创建命令已追加新围栏").id.clone(); // 同一事务副本中的新身份。
+                self.apply(WorkspaceCommand::CommitItemDrag { anchor_item_id, item_ids, placements: Vec::new(), target_fence_id: Some(fence_id), before_item_id: None, fence_scrolls: Vec::new() }, monitor_id)?;
+                Ok("新建围栏并移入")
+            }
             WorkspaceCommand::UpdateFenceBounds { fence_id, bounds } =>
             {
-                validate_rect(bounds)?;
+                validate_rect(bounds, false)?;
                 let target_monitor_id = self.command_monitor_id(monitor_id)?; // 围栏中心最终所在的显示器身份。
                 // 等待移动或缩放提交的围栏。
                 let fence = self.fence_mut(&fence_id)?;
@@ -1741,7 +1757,7 @@ impl WorkspaceSnapshot
             }
             WorkspaceCommand::CreateComponent { component_id, bounds } =>
             {
-                validate_component_rect(bounds)?;
+                validate_rect(bounds, false)?;
                 if component_id != "official.collect-box"
                 {
                     return Err(WorkspaceError::invalid_command("不支持创建该组件"));
@@ -1751,7 +1767,7 @@ impl WorkspaceSnapshot
                 let instance_id = loop
                 {
                     let candidate = format!("{component_id}.{suffix}");
-                    if !self.components.iter().any(|component| component.instance_id == candidate)
+                    if !self.components.iter().any(|component| component.instance_id == candidate) && !self.tile_appearances.contains_key(&format!("component:{candidate}"))
                     {
                         break candidate;
                     }
@@ -1760,9 +1776,21 @@ impl WorkspaceSnapshot
                 self.components.push(ComponentInstanceSnapshot { instance_id, component_id, monitor_id, projection_monitor_id: None, projection_bounds: None, bounds, state_version: 1, state: serde_json::json!({}) });
                 Ok("创建组件")
             }
+            WorkspaceCommand::RemoveComponent { instance_id } =>
+            {
+                if self.component_mut(&instance_id)?.component_id != "official.collect-box"
+                {
+                    return Err(WorkspaceError::invalid_command("仅支持移除收集箱格子"));
+                }
+                // 外观独立于布局历史保留，并占用旧身份，避免新格子继承旧偏好。
+                self.tile_appearances.entry(format!("component:{instance_id}")).or_default();
+                self.components.retain(|component| component.instance_id != instance_id);
+                self.normalize_interaction();
+                Ok("移除收集箱格子")
+            }
             WorkspaceCommand::UpdateComponentBounds { instance_id, bounds } =>
             {
-                validate_component_rect(bounds)?;
+                validate_rect(bounds, false)?;
                 let monitor_id = self.command_monitor_id(monitor_id)?; // 组件移动提交后的持久显示器身份。
                 let component = self.component_mut(&instance_id)?; // 等待提交位置和尺寸的组件实例。
                 component.monitor_id = monitor_id;
@@ -1866,8 +1894,17 @@ impl WorkspaceSnapshot
         {
             validate_id(&fence.id, "围栏标识无效")?;
             validate_title(&fence.title)?;
-            validate_rect(fence.bounds)?;
-            if !fence.scroll_top.is_finite() || fence.scroll_top < 0.0 || !fence.last_expanded_height.is_finite() || fence.last_expanded_height < FENCE_MIN_HEIGHT || !fence_ids.insert(&fence.id)
+            validate_rect(fence.bounds, false)?;
+            if let Some(projection_monitor_id) = &fence.projection_monitor_id
+            {
+                validate_id(projection_monitor_id, "围栏投射显示器标识无效")?;
+                validate_rect(fence.projection_bounds.ok_or_else(|| WorkspaceError::invalid_command("围栏投射边界缺失"))?, true)?;
+            }
+            else if fence.projection_bounds.is_some()
+            {
+                return Err(WorkspaceError::invalid_command("围栏投射状态无效"));
+            }
+            if !fence.scroll_top.is_finite() || fence.scroll_top < 0.0 || !fence.last_expanded_height.is_finite() || fence.last_expanded_height < TILE_MIN_HEIGHT || !fence_ids.insert(&fence.id)
             {
                 return Err(WorkspaceError::invalid_command("围栏持久化状态无效"));
             }
@@ -1897,7 +1934,7 @@ impl WorkspaceSnapshot
         for portal in &self.folder_portals
         {
             validate_id(&portal.id, "门户身份无效")?;
-            validate_component_rect(portal.bounds)?;
+            validate_rect(portal.bounds, false)?;
             if !portal_ids.insert(&portal.id) || !Path::new(&portal.root_path).is_absolute()
             {
                 return Err(WorkspaceError::invalid_command("门户绑定或身份无效"));
@@ -1908,7 +1945,7 @@ impl WorkspaceSnapshot
         {
             validate_id(&component.instance_id, "组件实例标识无效")?;
             validate_id(&component.component_id, "组件清单标识无效")?;
-            validate_component_rect(component.bounds)?;
+            validate_rect(component.bounds, false)?;
             if !component_ids.insert(component.instance_id.as_str()) || component.state_version == 0 || serde_json::to_vec(&component.state).map_err(|error| WorkspaceError::invalid_command(format!("组件状态无效: {error}")))?.len() > 64 * 1024
             {
                 return Err(WorkspaceError::invalid_command("组件持久化状态无效"));
@@ -1916,7 +1953,7 @@ impl WorkspaceSnapshot
             if let Some(projection_monitor_id) = &component.projection_monitor_id
             {
                 validate_id(projection_monitor_id, "组件投射显示器标识无效")?;
-                validate_component_rect(component.projection_bounds.ok_or_else(|| WorkspaceError::invalid_command("组件投射边界缺失"))?)?;
+                validate_rect(component.projection_bounds.ok_or_else(|| WorkspaceError::invalid_command("组件投射边界缺失"))?, true)?;
             }
             else if component.projection_bounds.is_some()
             {
@@ -2042,39 +2079,21 @@ fn grid_capacity(grid: WorkspaceGrid) -> Result<u32, WorkspaceError>
 /// 将列优先线性索引转换为未归类网格位置。
 fn grid_position(grid: WorkspaceGrid, index: u32) -> WorkspacePoint { WorkspacePoint { left: grid.left + f64::from(index / grid.rows) * grid.column_width, top: grid.top + f64::from(index % grid.rows) * grid.row_height } }
 
-/// 校验围栏边界与当前视觉规范定义的最小尺寸。
-fn validate_rect(bounds: WorkspaceRect) -> Result<(), WorkspaceError>
+/// 持久展开边界遵守公共底线，临时投射仅要求有限正尺寸。
+fn validate_rect(bounds: WorkspaceRect, projection: bool) -> Result<(), WorkspaceError>
 {
-    if !bounds.left.is_finite() || !bounds.top.is_finite() || !bounds.width.is_finite() || !bounds.height.is_finite() || bounds.width < FENCE_MIN_WIDTH || bounds.height < FENCE_MIN_HEIGHT
+    if !bounds.left.is_finite() || !bounds.top.is_finite() || !bounds.width.is_finite() || !bounds.height.is_finite() || bounds.width <= 0.0 || bounds.height <= 0.0 || (!projection && (bounds.width < TILE_MIN_WIDTH || bounds.height < TILE_MIN_HEIGHT))
     {
-        return Err(WorkspaceError::invalid_command("围栏边界无效"));
+        return Err(WorkspaceError::invalid_command("格子边界无效"));
     }
     Ok(())
 }
 
-/// 校验组件表面的自由位置和最小可交互尺寸。
-fn validate_component_rect(bounds: WorkspaceRect) -> Result<(), WorkspaceError>
-{
-    if !bounds.left.is_finite() || !bounds.top.is_finite() || !bounds.width.is_finite() || !bounds.height.is_finite() || bounds.width < 80.0 || bounds.height < 48.0
-    {
-        return Err(WorkspaceError::invalid_command("组件边界无效"));
-    }
-    Ok(())
-}
-
-/// 将断开显示器上的围栏临时投射到目标工作区可见范围内。
+/// 所有格子共用临时投射，较小的可用视口优先于持久尺寸底线。
 fn project_rect(bounds: WorkspaceRect, viewport_width: f64, viewport_height: f64) -> WorkspaceRect
 {
-    let width = bounds.width.min(viewport_width).max(FENCE_MIN_WIDTH.min(viewport_width)); // 临时投射后的可见宽度。
-    let height = bounds.height.min(viewport_height).max(FENCE_MIN_HEIGHT.min(viewport_height)); // 临时投射后的可见高度。
-    WorkspaceRect { left: bounds.left.clamp(0.0, (viewport_width - width).max(0.0)), top: bounds.top.clamp(0.0, (viewport_height - height).max(0.0)), width, height }
-}
-
-/// 将断开显示器上的组件投射到主屏可见范围内。
-fn project_component_rect(bounds: WorkspaceRect, viewport_width: f64, viewport_height: f64) -> WorkspaceRect
-{
-    let width = bounds.width.min(viewport_width).max(80.0_f64.min(viewport_width)); // 临时投射后的组件可见宽度。
-    let height = bounds.height.min(viewport_height).max(48.0_f64.min(viewport_height)); // 临时投射后的组件可见高度。
+    let width = bounds.width.min(viewport_width).max(TILE_MIN_WIDTH.min(viewport_width)); // 临时投射后的可见宽度。
+    let height = bounds.height.min(viewport_height).max(TILE_MIN_HEIGHT.min(viewport_height)); // 临时投射后的可见高度。
     WorkspaceRect { left: bounds.left.clamp(0.0, (viewport_width - width).max(0.0)), top: bounds.top.clamp(0.0, (viewport_height - height).max(0.0)), width, height }
 }
 

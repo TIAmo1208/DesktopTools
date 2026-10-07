@@ -1,7 +1,8 @@
-import { FENCE_MIN_HEIGHT, FENCE_MIN_WIDTH, type WorkspaceRect } from "../../contracts/workspace.ts";
+import { TILE_MIN_HEIGHT, TILE_MIN_WIDTH } from "../../contracts/tile.ts";
+import type { WorkspaceRect } from "../../contracts/workspace.ts";
 
 /** 围栏八方向缩放边框。 */
-export type FenceResizeDirection = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
+export type TileResizeDirection = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
 
 /** 指针相对交互起点的位移。 */
 interface PointerDelta {
@@ -15,18 +16,25 @@ interface WorkspaceSize {
     height: number;
 }
 
+/** 内容可以提高外框下限，但不能突破公共数据底线或提供无效尺寸。 */
+export const resolveTileMinimum = (minimum: WorkspaceSize = { width: TILE_MIN_WIDTH, height: TILE_MIN_HEIGHT }): WorkspaceSize => {
+    if (![minimum.width, minimum.height].every((size) => Number.isFinite(size) && size > 0)) throw new Error("格子最小尺寸无效");
+    return { width: Math.max(TILE_MIN_WIDTH, minimum.width), height: Math.max(TILE_MIN_HEIGHT, minimum.height) };
+};
+
 /** 当前围栏边缘参与吸附的方向。 */
-type FenceSnapEdges = Partial<Record<"left" | "right" | "top" | "bottom", boolean>>;
+type TileSnapEdges = Partial<Record<"left" | "right" | "top" | "bottom", boolean>>;
 
 /** 将围栏边缘吸附到工作区或其他围栏边缘。 */
-export const snapFenceEdges = (
+export const snapTileEdges = (
     rect: WorkspaceRect,
     targets: WorkspaceRect[],
     workspace: WorkspaceSize,
     threshold = 8,
-    edges?: FenceSnapEdges,
-    minimum: WorkspaceSize = { width: FENCE_MIN_WIDTH, height: FENCE_MIN_HEIGHT },
+    edges?: TileSnapEdges,
+    minimum: WorkspaceSize = { width: TILE_MIN_WIDTH, height: TILE_MIN_HEIGHT },
 ): WorkspaceRect => {
+    minimum = resolveTileMinimum(minimum); // 直接算法调用与公共交互使用相同下限。
     const result = { ...rect };
     const xTargets = [0, workspace.width, ...targets.flatMap((target) => [target.left, target.left + target.width])];
     const yTargets = [0, workspace.height, ...targets.flatMap((target) => [target.top, target.top + target.height])];
@@ -86,20 +94,21 @@ export const snapFenceEdges = (
 };
 
 /** 将移动后的围栏完整约束在当前工作区。 */
-export const moveFence = (start: WorkspaceRect, delta: PointerDelta, workspace: WorkspaceSize): WorkspaceRect => ({
+export const moveTile = (start: WorkspaceRect, delta: PointerDelta, workspace: WorkspaceSize): WorkspaceRect => ({
     ...start,
     left: Math.max(0, Math.min(workspace.width - start.width, start.left + delta.x)),
     top: Math.max(0, Math.min(workspace.height - start.height, start.top + delta.y)),
 });
 
 /** 按八方向规则缩放围栏并保持最小尺寸与工作区边界。 */
-export const resizeFence = (
-    direction: FenceResizeDirection,
+export const resizeTile = (
+    direction: TileResizeDirection,
     start: WorkspaceRect,
     delta: PointerDelta,
     workspace: WorkspaceSize,
-    minimum: WorkspaceSize = { width: FENCE_MIN_WIDTH, height: FENCE_MIN_HEIGHT },
+    minimum: WorkspaceSize = { width: TILE_MIN_WIDTH, height: TILE_MIN_HEIGHT },
 ): WorkspaceRect => {
+    minimum = resolveTileMinimum(minimum); // 不允许覆盖参数绕过数据底线。
     // 等待当前缩放方向修改的围栏边界。
     const result = { ...start };
     // 缩放开始时的固定右边界。

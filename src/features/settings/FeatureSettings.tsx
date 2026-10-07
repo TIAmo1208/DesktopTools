@@ -133,18 +133,6 @@ export const FeatureSettings = ({
                             onChange={(checked) => onPreferences({ clockShowSeconds: checked })}
                         />
                     </div>
-                    <label className="feature-settings__row">
-                        <span>图片收入方式</span>
-                        <select
-                            disabled={unavailable}
-                            value={preferences?.collectImageImportMode ?? "copy"}
-                            onChange={(event) => onPreferences({ collectImageImportMode: event.currentTarget.value as "copy" | "move" | "link" })}
-                        >
-                            <option value="copy">复制到资源目录</option>
-                            <option value="move">移动到资源目录</option>
-                            <option value="link">只保存原路径链接</option>
-                        </select>
-                    </label>
                 </>
             ) : detail === "music" ? (
                 <>
@@ -161,6 +149,18 @@ export const FeatureSettings = ({
             ) : detail === "collect" ? (
                 <>
                     <p className="feature-settings__hint">收集项保存在配置目录的 collect 文件夹中，多个收集箱格子共享同一批条目。</p>
+                    <label className="feature-settings__row">
+                        <span>图片文件收入方式</span>
+                        <select
+                            disabled={unavailable}
+                            value={preferences?.collectImageImportMode ?? "copy"}
+                            onChange={(event) => onPreferences({ collectImageImportMode: event.currentTarget.value as "copy" | "move" | "link" })}
+                        >
+                            <option value="copy">复制到资源目录</option>
+                            <option value="move">移动到资源目录</option>
+                            <option value="link">只保存原路径链接</option>
+                        </select>
+                    </label>
                     <div className="feature-settings__row">
                         <span>编辑窗退出时自动保存</span>
                         <SettingsSwitch

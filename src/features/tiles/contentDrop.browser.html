@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" /><title>内容拖放与设置归属回归检查</title>
+    <body>
+        <main id="fixture"></main>
+        <pre id="result" style="position: absolute; top: 500px">RUNNING</pre>
+        <script type="module">
+            import React from "react";
+            import { createRoot } from "react-dom/client";
+            import { flushSync } from "react-dom";
+            import { FeatureSettings } from "../settings/FeatureSettings.tsx";
+            import { ComponentTile } from "../components/ComponentTile.tsx";
+            import { createWorkspaceDropTarget } from "../workspace/surface/workspaceDropTarget.ts";
+            import { useCrossMonitorPreview } from "../workspace/surface/useCrossMonitorPreview.ts";
+            import "../../styles/global.css";
+            import "../workspace/surface/DesktopWorkspace.css";
+            const h = React.createElement; // 使用生产组件，不复制业务实现。
+            const root = createRoot(document.getElementById("fixture")); // 每个场景共用挂载根。
+            const assert = (condition, message) => {
+                if (!condition) throw Error(message);
+            }; // 最小可重复浏览器断言。
+            const patches = []; // 真实设置回调输出。
+            const commands = []; // 已确认的宿主几何消息。
+            window.__DESKTOP_TOOLS_NATIVE__ = {
+                invoke: async (command, payload) => {
+                    commands.push({ command, payload });
+                },
+                listen: async () => () => {},
+            };
+            try {
+                flushSync(() =>
+                    root.render(
+                        h(FeatureSettings, {
+                            preferences: {
+                                clockEnabled: true,
+                                clockHour12: false,
+                                clockShowSeconds: true,
+                                collectEnabled: true,
+                                collectImageImportMode: "move",
+                            },
+                            disabled: false,
+                            debugBuild: true,
+                            onPreferences: (patch) => patches.push(patch),
+                            onWorkspaceCommand: async () => {},
+                            onChooseFolder: async () => null,
+                            onCreateCollectBox: async () => {},
+                        }),
+                    ),
+                );
+                flushSync(() => document.querySelector('[aria-label="本地时间设置"]').click());
+                assert(!document.querySelector(".feature-settings").textContent.includes("图片"), "时钟仍包含收集箱设置");
+                assert(document.querySelectorAll("select").length === 1, "时间格式设置丢失");
+                flushSync(() => document.querySelector('[aria-label="返回功能格子"]').click());
+                flushSync(() => document.querySelector('[aria-label="收集箱设置"]').click());
+                const select = document.querySelector("select"); // 收集箱实际收入方式控件。
+                assert(select && select.value === "move" && select.options.length === 3, "图片收入方式或已保存值未移到收集箱");
+                select.value = "link";
+                flushSync(() => select.dispatchEvent(new Event("change", { bubbles: true })));
+                assert(patches.at(-1)?.collectImageImportMode === "link", "控件未沿用偏好保存回调");
+                const workspace = { revision: 11, components: [], fences: [], folderPortals: [], unclassifiedItems: [] }; // 本测试只消费实例表面与版本。
+                const monitor = {
+                    id: "screen",
+                    name: "screen",
+                    primary: true,
+                    x: 0,
+                    y: 0,
+                    width: 1000,
+                    height: 800,
+                    workX: 0,
+                    workY: 0,
+                    workWidth: 1000,
+                    workHeight: 800,
+                    scaleFactor: 1,
+                    dpi: 96,
+                }; // 同一 DPI 的真实 CSS 命中。
+                const Probe = ({ type }) => {
+                    useCrossMonitorPreview("screen", undefined, workspace);
+                    return h(
+                        ComponentTile,
+                        {
+                            title: "内容格子",
+                            instance: { instanceId: "target", componentId: type, monitorId: "screen", bounds: { left: 40, top: 30, width: 360, height: 260 } },
+                            registration: { status: "ready" },
+                            appearance: { title: null, titleMode: "fixed", buttonMode: "hover", collapsed: true, autoExpand: false },
+                            collapsedSize: { height: 56 },
+                            expandOnDrop: true,
+                            currentMonitor: monitor,
+                            monitors: [monitor],
+                            onCommand: async () => workspace,
+                            onInteraction: async () => workspace,
+                            onBeginInputDrag: async () => {},
+                            onEndInputDrag: async () => {},
+                        },
+                        h("div", { "data-collect-name": "目标.md", style: { height: 38 } }, "目标条目"),
+                    );
+                }; // 真实公共外框、展开 hook 和几何确认链路。
+                flushSync(() => root.render(h(Probe, { type: "official.collect-box" })));
+                const tile = document.querySelector(".desktop-tile"); // 顶层实际命中表面。
+                const viewport = tile.querySelector(".desktop-tile-viewport"); // 折叠内容必须不可命中。
+                assert(viewport.inert, "默认关闭悬停时收集箱没有折叠");
+                const drag = {
+                    session: "content-test",
+                    source: "ole",
+                    target: "screen",
+                    phase: "move",
+                    sequence: 1,
+                    revision: 11,
+                    kind: "items",
+                    fileContent: false,
+                    contentTargets: ["official.collect-box"],
+                    itemIds: [],
+                    visuals: [],
+                    origin: { left: 0, top: 0 },
+                    pointer: { left: 60, top: 45 },
+                }; // 原生只交付类型摘要。
+                const send = (patch = {}) => flushSync(() => window.dispatchEvent(new CustomEvent("desktop-tools-drag", { detail: { ...drag, ...patch } })));
+                send();
+                assert(!viewport.inert, "白名单匹配时没有强制临时展开");
+                await new Promise(requestAnimationFrame);
+                await new Promise(requestAnimationFrame);
+                const confirmation = commands.findLast((entry) => entry.payload?.payload?.phase === "ole-preview")?.payload.payload; // 真实异步几何确认。
+                assert(confirmation?.collectItems?.[0]?.name === "目标.md" && confirmation.collectItems[0].instanceId === "target", "条目目标未进入已确认几何");
+                const target = createWorkspaceDropTarget("screen", () => {}); // 原生和跨屏共用的目标适配器。
+                assert(!target.update(drag, workspace).drop.rejected, "收集箱被误判为拒绝目标");
+                send({ phase: "end" });
+                assert(viewport.inert, "结束没有恢复保存的折叠状态");
+                send({ session: "unsupported", contentTargets: [], fileContent: true });
+                assert(viewport.inert, "不支持的来源触发了强制展开");
+                assert(target.update({ ...drag, contentTargets: [], fileContent: true }, workspace).drop.rejected, "拒绝目标穿透到桌面");
+                send({ session: "second" });
+                assert(!viewport.inert, "第二次拖入没有重新展开");
+                send({ session: "second", phase: "pending" });
+                assert(viewport.inert, "已释放后仍保持临时展开");
+                flushSync(() => root.render(h(Probe, { type: "official.local-clock" })));
+                assert(target.update(drag, workspace).drop.rejected, "时钟没有使用空白名单");
+                flushSync(() => root.render(h(Probe, { type: "official.music-control" })));
+                assert(
+                    !target.update({ ...drag, fileContent: true, contentTargets: ["official.music-control"] }, workspace).drop.rejected,
+                    "合法媒体没有命中音乐策略",
+                );
+                target.clear(true, true);
+                root.unmount();
+                document.getElementById("result").textContent = "PASS：设置归属与保存、收集箱临时展开与恢复、条目几何确认、拒绝不穿透、音乐白名单";
+            } catch (error) {
+                document.getElementById("result").textContent = "FAIL：" + (error.stack || error);
+                console.error(error);
+            }
+        </script>
+    </body>
+</html>

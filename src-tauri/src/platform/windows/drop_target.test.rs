@@ -7,7 +7,7 @@ fn preview_requires_live_session_and_matching_view()
 {
     let monitor = crate::contracts::DesktopHostMonitor { id: "preview-screen".into(), name: "preview-screen".into(), primary: false, x: -1000, y: 0, width: 1000, height: 800, work_x: -1000, work_y: 0, work_width: 1000, work_height: 800, scale_factor: 2.0, dpi: 192 }; // 负坐标与混合 DPI。
     let point = POINTL { x: -970, y: 60 }; // 对应 DIP (15, 30)。
-    let preview = DropPreview { session: "preview-test".into(), sequence: 2, geometry_revision: 1, revision: 7, monitor_id: monitor.id.clone(), pointer: crate::contracts::WorkspacePoint { left: 15.0, top: 30.0 }, regions: vec![crate::contracts::HitRegion { id: "background".into(), kind: "workspace-background".into(), left: 0.0, top: 0.0, width: 500.0, height: 400.0, priority: 1, target_path: None }], fence_scrolls: Vec::new() }; // 已呈现的合法几何。
+    let preview = DropPreview { collect_items: Vec::new(), session: "preview-test".into(), sequence: 2, geometry_revision: 1, revision: 7, monitor_id: monitor.id.clone(), pointer: crate::contracts::WorkspacePoint { left: 15.0, top: 30.0 }, regions: vec![crate::contracts::HitRegion { id: "background".into(), kind: "workspace-background".into(), left: 0.0, top: 0.0, width: 500.0, height: 400.0, priority: 1, target_path: None }], fence_scrolls: Vec::new() }; // 已呈现的合法几何。
     publish_preview(preview.clone()).unwrap();
     assert!(confirmed_preview(&preview.session, 2, 7, &monitor, &point).is_none());
     set_preview_session(&preview.session, true);
@@ -66,7 +66,7 @@ fn failed_drop_cleans_active_session_once()
     {
         let item: IShellItem = unsafe { SHCreateItemFromParsingName(&windows::core::HSTRING::from(std::env::temp_dir().to_string_lossy().as_ref()), None) }.unwrap(); // 只读外部目录的数据提供方。
         let data: IDataObject = unsafe { item.BindToHandler(None, &BHID_DataObject) }.unwrap(); // 真实 Shell 数据对象。
-        assert!(filesystem_drop(&data));
+        assert!(filesystem_drop_items(&data).is_some());
         let pointer_offset = crate::contracts::WorkspacePoint { left: 12.0, top: 24.0 }; // 指针偏移同样跟随可信源会话。
         let session = SourceDragGuard::register(&data, &["source".to_string()], pointer_offset, false).unwrap(); // 真实源登记同时验证跨 STA 身份和内部反馈。
         assert!(SourceDragGuard::register(&data, &["second".to_string()], pointer_offset, false).is_err());
@@ -78,7 +78,7 @@ fn failed_drop_cleans_active_session_once()
             unsafe { OleInitialize(None) }.unwrap();
             {
                 let proxy = agile.resolve().unwrap(); // 只在目标 STA 使用解析出的接口。
-                assert!(filesystem_drop(&proxy));
+                assert!(filesystem_drop_items(&proxy).is_some());
                 let session = source_drag_session(&proxy).expect("合法跨 STA 代理应匹配源身份"); // 必须在当前 apartment 比较 IUnknown。
                 assert_eq!(session.item_ids, ["source"]);
                 assert_eq!(session.pointer_offset, pointer_offset);
@@ -88,7 +88,7 @@ fn failed_drop_cleans_active_session_once()
             unsafe { OleUninitialize() };
             sender.send(Err("封送已验证".to_string())).unwrap();
         }); // 不执行任何文件传输。
-        assert_eq!(wait_transfer(receiver).unwrap_err(), "封送已验证");
+        assert_eq!(wait_transfer::<crate::contracts::ShellOperationResult>(receiver).unwrap_err(), "封送已验证");
         worker.join().unwrap();
         assert!(session.layout_committed());
         assert!(source_drag_session(&data).is_some());

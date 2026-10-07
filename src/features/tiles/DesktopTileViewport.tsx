@@ -1,8 +1,9 @@
-import { useEffect, useId, useRef, useState, type HTMLAttributes, type RefObject } from "react";
+import { useContext, useEffect, useId, useRef, useState, type HTMLAttributes, type RefObject } from "react";
 
 import collapseIcon from "../../../resources/fence-toggle-collapse.svg?raw";
 import expandIcon from "../../../resources/fence-toggle-expand.svg?raw";
 import "./DesktopTileViewport.css";
+import { DesktopTileContext } from "./DesktopTileBase";
 
 /** 公共滚动视口保留列表或普通内容的语义标签。 */
 interface DesktopTileViewportProps extends HTMLAttributes<HTMLElement> {
@@ -16,13 +17,15 @@ interface DesktopTileViewportProps extends HTMLAttributes<HTMLElement> {
 export const DesktopTileViewport = ({
     as: Content = "div",
     contentRef,
-    collapsed,
+    collapsed: savedCollapsed,
     scrollable = true,
     children,
     className = "",
     onScroll,
     ...props
 }: DesktopTileViewportProps) => {
+    const shell = useContext(DesktopTileContext); // 展开状态由公共外框统一提供。
+    const collapsed = savedCollapsed ?? shell.collapsed; // 独立视口允许明确传入状态。
     const viewportId = useId(); // 辅助技术通过稳定标识关联滚动条与内容。
     const localRef = useRef<HTMLElement | null>(null); // 未提供外部引用时使用的滚动节点。
     const scrollRef = contentRef ?? localRef; // 拖放、持久化与滚动条共同拥有的滚动位置。

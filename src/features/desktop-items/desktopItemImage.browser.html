@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>系统缩略图生命周期回归</title>
+    <body>
+        <main id="fixture"></main>
+        <pre id="result">RUNNING</pre>
+        <script type="module">
+            import React from "react";
+            import { createRoot } from "react-dom/client";
+            import { flushSync } from "react-dom";
+            import { useDesktopItemImage } from "./useDesktopItemImage.ts";
+            import "./DesktopItemGrid.css";
+            const h = React.createElement; // 使用生产 Hook 和样式。
+            const root = createRoot(document.getElementById("fixture")); // 共用真实 React 生命周期。
+            const requests = []; // 可控制完成顺序的桥接请求。
+            let paused = false; // 宿主暂停状态。
+            window.__DESKTOP_TOOLS_NATIVE__ = {
+                isRefreshPaused: () => paused,
+                invoke: (command, args) => new Promise((resolve) => requests.push({ command, args, resolve })),
+            };
+            const canvas = document.createElement("canvas"); // 隔离样本，不依赖桌面文件。
+            canvas.width = 48;
+            canvas.height = 20;
+            canvas.getContext("2d").fillRect(0, 0, 48, 20);
+            const thumbnail = canvas.toDataURL(); // 有真实宽高比的 PNG。
+            const icon = "data:image/png;base64,"; // 状态断言只比较源字符串。
+            const assert = (value, message) => {
+                if (!value) throw new Error(message);
+            }; // 失败直接显示。
+            const wait = async (condition) => {
+                for (let i = 0; i < 100; i++) {
+                    if (condition()) return;
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+                throw new Error("浏览器状态等待超时");
+            }; // 仅测试使用有界等待。
+            const Probe = ({ name, revision, hidden = false, list = false }) => {
+                const image = useDesktopItemImage({ key: name, imageRevision: revision, imageSource: icon, isAvailable: true }); // 正式投影字段。
+                return h(
+                    "div",
+                    { className: list ? "desktop-item--list" : "", style: { display: hidden ? "none" : "block" } },
+                    h("div", { ref: image.container, className: "desktop-item__image" }, h("img", { src: image.source, alt: name })),
+                );
+            };
+            const render = (props) => flushSync(() => root.render(h(Probe, props))); // 强制提交以观察首帧回退。
+            const source = () => document.querySelector("img").getAttribute("src"); // 真实 DOM 的显示来源。
+            try {
+                render({ name: "a", revision: 1 });
+                assert(source() === icon, "首帧必须使用系统图标");
+                await wait(() => requests.length === 1);
+                render({ name: "b", revision: 2 });
+                await wait(() => requests.length === 2);
+                requests[0].resolve(thumbnail);
+                await new Promise((resolve) => setTimeout(resolve, 40));
+                assert(source() === icon, "旧身份不能覆盖新项目");
+                requests[1].resolve(thumbnail);
+                await wait(() => source() === thumbnail);
+                assert(getComputedStyle(document.querySelector("img")).objectFit === "contain", "图像必须保持比例");
+                render({ name: "b", revision: 2, list: true });
+                await wait(() => requests.length === 3);
+                assert(requests[2].args.pixels === Math.ceil(36 * devicePixelRatio), "列表按 36px 与 DPI 请求");
+                paused = true;
+                window.dispatchEvent(new Event("desktop-refresh-changed"));
+                requests[2].resolve(null);
+                await new Promise((resolve) => setTimeout(resolve, 40));
+                assert(source() === thumbnail, "暂停不能补绘旧结果");
+                paused = false;
+                window.dispatchEvent(new Event("desktop-refresh-changed"));
+                await wait(() => requests.length === 4);
+                requests[3].resolve(null);
+                await wait(() => source() === icon);
+                render({ name: "hidden", revision: 3, hidden: true });
+                await new Promise((resolve) => setTimeout(resolve, 100));
+                assert(requests.length === 4, "隐藏项目不请求");
+                root.unmount();
+                document.getElementById("result").textContent = "PASS：首帧回退、迟到结果、比例、列表尺寸、暂停恢复、无缩略图与隐藏项目";
+            } catch (error) {
+                document.getElementById("result").textContent = `FAIL：${error.stack}`;
+            }
+        </script>
+    </body>
+</html>

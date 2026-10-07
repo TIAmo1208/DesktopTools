@@ -4,6 +4,7 @@ mod component;
 mod desktop_host;
 mod desktop_item;
 pub mod folder_portal;
+pub use desktop_item::get_desktop_item_image;
 pub use desktop_item::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
 pub mod music;
 mod notifications;
@@ -167,6 +168,11 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
             let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::list(&path).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(serialize_result)
+        }
+        "open_collect_link" =>
+        {
+            let url = command_argument(&arguments, "url", "链接地址无效").map_err(serialize_error)?; // 桌面宿主与编辑窗共用打开规则。
+            collect::open_collect_link(url).map_err(serialize_error).and_then(serialize_result)
         }
         "create_collect_item" =>
         {
@@ -369,6 +375,12 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             folder_portal::execute_rename_folder_portal_item(&app.state::<DesktopItemState>(), request).map_err(serialize_error).and_then(serialize_result)
         }
         "get_desktop_item_snapshot" => desktop_item::execute_get_desktop_item_snapshot(app, &app.state::<DesktopItemState>(), &app.state::<WorkspaceState>(), runtime).map_err(serialize_error).and_then(serialize_result),
+        "get_desktop_item_image" =>
+        {
+            let item_id = command_argument(&arguments, "itemId", "系统图像项目参数无效").map_err(serialize_error)?; // 当前快照身份。
+            let pixels = command_argument(&arguments, "pixels", "系统图像尺寸参数无效").map_err(serialize_error)?; // 后端继续检查范围。
+            app.state::<DesktopItemState>().image(item_id, pixels).map_err(serialize_error).and_then(serialize_result)
+        }
         "get_folder_portal_snapshot" =>
         {
             let root_path: String = command_argument(&arguments, "rootPath", "门户绑定目录参数无效").map_err(serialize_error)?;

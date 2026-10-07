@@ -1,3 +1,5 @@
+mod images;
+
 use crate::contracts::{ShellDragPreparation, WorkspacePoint};
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -18,7 +20,7 @@ enum ShellRequest
     /// 在原指针拖动仍有效时准备完整数据对象，失败向调用方传播。
     PrepareDrag
     {
-        references: Vec<String>, portal_source: bool, reply: SyncSender<Result<Option<ShellDragPreparation>, String>>
+        references: Vec<String>, portal_source: bool, image: Option<std::sync::Arc<crate::platform::windows::shell_image::ShellImage>>, reply: SyncSender<Result<Option<ShellDragPreparation>, String>>
     },
     /// 释放未启动的单次准备，不影响其他窗口更新的准备。
     CancelPreparedDrag(u64),
@@ -225,10 +227,10 @@ impl ShellStaRuntime
                     }; // 已排队请求不等待；空队列才进入请求与消息的联合无限等待。
                     match request
                     {
-                        ShellRequest::PrepareDrag { references, portal_source, reply } =>
+                        ShellRequest::PrepareDrag { references, portal_source, image, reply } =>
                         {
                             prepared_drag = None;
-                            let result = match crate::platform::windows::drag_data_object(windows::Win32::Foundation::HWND::default(), &references, portal_source)
+                            let result = match crate::platform::windows::drag_data_object(windows::Win32::Foundation::HWND::default(), &references, portal_source, image.as_deref())
                             {
                                 Ok(data) =>
                                 {
@@ -533,6 +535,7 @@ impl Drop for ShellStaRuntime
 /// 持有桌面项目最近有效快照与专用 Shell STA 运行时。
 pub struct DesktopItemState
 {
+    pub(crate) images: images::ImageRuntime, // 独立图像 STA，不占用 Shell 操作线程。
     /// 当前不可变桌面项目快照。
     snapshot: Mutex<DesktopItemSnapshot>,
     /// 专用 Shell STA 运行时。
@@ -607,7 +610,7 @@ impl DesktopItemState
     {
         // 已注册桌面命名空间通知的变化监听线程与事件接收端。
         let (change_watcher, change_receiver) = start_shell_change_watcher().map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
-        Ok(Self { snapshot: Mutex::new(DesktopItemSnapshot::default()), runtime: ShellStaRuntime::start()?, _change_watcher: change_watcher, change_receiver: Mutex::new(Some(change_receiver)), operation_history: Mutex::new(Vec::new()), next_operation_id: AtomicU64::new(1) })
+        Ok(Self { images: images::ImageRuntime::start().map_err(|error| DesktopItemError::shell_operation_failed(&error))?, snapshot: Mutex::new(DesktopItemSnapshot::default()), runtime: ShellStaRuntime::start()?, _change_watcher: change_watcher, change_receiver: Mutex::new(Some(change_receiver)), operation_history: Mutex::new(Vec::new()), next_operation_id: AtomicU64::new(1) })
     }
 
     /// 将 Shell 变化事件接收端交给唯一应用协调线程。
@@ -636,6 +639,19 @@ impl DesktopItemState
     /// 返回最近一次有效桌面项目快照。
     pub fn snapshot(&self) -> Result<DesktopItemSnapshot, DesktopItemError> { Ok(lock_snapshot(&self.snapshot)?.clone()) }
 
+    /// 只允许为当前项目请求有界物理尺寸，路径不能由页面任意指定。
+    pub(crate) fn image(&self, item_id: String, pixels: u32) -> Result<Option<String>, DesktopItemError>
+    {
+        if !(16..=384).contains(&pixels)
+        {
+            return Err(DesktopItemError::invalid_selection("系统图像尺寸超出范围"));
+        }
+        let references = self.selection_references(&[item_id])?; // 复用当前快照的身份与可用性校验。
+        let response = self.images.request(references[0].clone(), pixels).map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 入队不占用 Shell STA。
+        let image = response.recv().map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 仅 transport 后台等待。
+        Ok(image.map(|image| image.data_url.clone()))
+    }
+
     /// 使用 Shell 默认动词打开当前快照中的完整选择集合。
     pub fn open(&self, item_ids: &[String]) -> Result<(), DesktopItemError>
     {
@@ -647,6 +663,16 @@ impl DesktopItemState
         })?;
         crate::log_debug!("Shell：桌面项目已打开，项目数量：{}", item_ids.len());
         Ok(())
+    }
+
+    /// 原生投放已完成白名单验证的媒体交给现有 Shell STA 默认打开。
+    pub(crate) fn open_media_drop(&self, path: String) -> Result<(), String>
+    {
+        if !crate::platform::windows::drop_content::file_targets(std::slice::from_ref(&path)).contains(&crate::platform::windows::drop_content::MEDIA)
+        {
+            return Err("媒体文件已失效或不受支持".into());
+        }
+        self.runtime.open(vec![path])
     }
 
     /// 重命名单个当前可用项目并记录 Shell 确认结果。
@@ -742,7 +768,8 @@ impl DesktopItemState
     {
         let references = self.selection_references(item_ids)?; // 不从选择中丢弃失效项目。
         let (reply, response) = mpsc::sync_channel(0); // 指针会话不等待，前端异步接收准备结果。
-        self.runtime.send(ShellRequest::PrepareDrag { references, portal_source: false, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
+        let image = self.images.cached(&references[0]); // 拖动只消费已经显示或提取完成的内容。
+        self.runtime.send(ShellRequest::PrepareDrag { references, portal_source: false, image, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
         response.recv().map_err(|error| DesktopItemError::shell_operation_failed(&error))?.map_err(|error| DesktopItemError::shell_operation_failed(&error))
     }
 
@@ -750,7 +777,7 @@ impl DesktopItemState
     pub(crate) fn prepare_portal_drag(&self, references: Vec<String>) -> Result<ShellDragPreparation, DesktopItemError>
     {
         let (reply, response) = mpsc::sync_channel(0);
-        self.runtime.send(ShellRequest::PrepareDrag { references, portal_source: true, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
+        self.runtime.send(ShellRequest::PrepareDrag { references, portal_source: true, image: None, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
         response.recv().map_err(|error| DesktopItemError::shell_operation_failed(&error))?.map_err(|error| DesktopItemError::shell_operation_failed(&error))?.ok_or_else(|| DesktopItemError::shell_operation_failed(&"无法准备门户文件拖放"))
     }
 

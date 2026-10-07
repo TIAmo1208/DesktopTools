@@ -2,6 +2,8 @@ import { useEffect, useRef, type KeyboardEvent, type PointerEvent, type RefObjec
 
 import type { WorkspaceCommand, WorkspaceContextMenuTarget, WorkspaceInteractionCommand, WorkspaceSnapshot } from "../../../contracts/workspace";
 import {
+    intersectInteractionRects,
+    uncoveredInteractionRects,
     itemIdsIntersectingRect,
     nextDirectionalItemId,
     nextWorkspaceFocus,
@@ -62,9 +64,12 @@ export const useWorkspaceInteraction = ({
     isContextMenuOpen,
 }: WorkspaceInteractionOptions) => {
     const lastPointer = useRef({ x: 20, y: 20 }); // 当前显示器内最近一次可用菜单锚点。
+    const cancelMarquee = useRef<(() => void) | undefined>(undefined); // 当前会话及尚未提交结果的取消入口。
+    useEffect(() => () => cancelMarquee.current?.(), []);
     useEffect(() => {
         /** 窗口失焦时清空当前项目选择。 */
         const handleWindowBlur = () => {
+            cancelMarquee.current?.();
             if (isContextMenuOpen()) return;
             void onInteraction({ type: "focus-surface", focus: { type: "background" } }).catch(() => undefined);
         };
@@ -72,24 +77,38 @@ export const useWorkspaceInteraction = ({
         return () => window.removeEventListener("blur", handleWindowBlur);
     }, [isContextMenuOpen, onInteraction]);
 
-    /** 在桌面空白区域开始框选，并在释放时提交一次视觉顺序结果。 */
+    /** 从空白内容启动框选，范围始终限定为按下时的容器。 */
     const handleWorkspacePointerDown = (event: PointerEvent<HTMLElement>) => {
         if (event.button !== 0 || event.target !== event.currentTarget) return;
+        cancelMarquee.current?.();
         event.preventDefault();
         event.stopPropagation();
-        workspaceRef.current?.focus({ preventScroll: true });
-        void onInteraction({ type: "focus-surface", focus: { type: "background" } }).catch(() => undefined);
+        const handle = event.currentTarget; // 捕获指针的起点内容容器。
+        const fenceId = handle.dataset.fenceContentId; // 未归类容器没有围栏身份。
+        const surface = handle.closest<HTMLElement>("[data-fence-id]"); // 保留当前围栏语义焦点。
+        const focus = fenceId ? { type: "fence" as const, fenceId } : { type: "background" as const }; // 空选择的焦点归属。
+        (surface ?? workspaceRef.current)?.focus({ preventScroll: true });
+        const focused = onInteraction({ type: "focus-surface", focus }).then(
+            () => true,
+            () => false,
+        ); // 初始清空完成后才能提交最终选择。
 
         // 当前框选开始时的客户区位置。
         const start = { x: event.clientX, y: event.clientY };
-        // 捕获当前连续框选指针的工作区节点。
-        const handle = event.currentTarget;
         // 当前框选矩形预览。
         const marquee = document.createElement("div");
         marquee.className = "fence-workspace__marquee";
-        document.body.append(marquee);
+        workspaceRef.current?.append(marquee);
         let selection = { left: start.x, top: start.y, width: 0, height: 0 }; // 当前客户区框选矩形。
         let finished = false; // 当前连续框选结束标记。
+        let cancelled = false; // 取消后拒绝迟到的异步提交。
+        const pointerId = event.pointerId; // 当前唯一捕获指针。
+
+        /** 在滚动或尺寸变化后读取真实可见的内容视口。 */
+        const viewport = () => {
+            const rect = (fenceId ? handle : (workspaceRef.current ?? handle)).getBoundingClientRect(); // 当前容器几何。
+            return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+        };
 
         try {
             handle.setPointerCapture(event.pointerId);
@@ -100,11 +119,15 @@ export const useWorkspaceInteraction = ({
 
         /** 更新当前框选矩形预览。 */
         const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
+            if (moveEvent.pointerId !== pointerId) return;
+            const clip = viewport(); // 框选预览不得越过起点视口。
+            const x = Math.max(clip.left, Math.min(moveEvent.clientX, clip.left + clip.width)); // 当前裁剪后横坐标。
+            const y = Math.max(clip.top, Math.min(moveEvent.clientY, clip.top + clip.height)); // 当前裁剪后纵坐标。
             selection = {
-                left: Math.min(start.x, moveEvent.clientX),
-                top: Math.min(start.y, moveEvent.clientY),
-                width: Math.abs(moveEvent.clientX - start.x),
-                height: Math.abs(moveEvent.clientY - start.y),
+                left: Math.min(start.x, x),
+                top: Math.min(start.y, y),
+                width: Math.abs(x - start.x),
+                height: Math.abs(y - start.y),
             };
             marquee.style.left = `${selection.left}px`;
             marquee.style.top = `${selection.top}px`;
@@ -112,25 +135,72 @@ export const useWorkspaceInteraction = ({
             marquee.style.height = `${selection.height}px`;
         };
 
-        /** 结束连续框选并提交可见项目集合。 */
-        const finishMarquee = (finishEvent: globalThis.PointerEvent) => {
+        /** 清理捕获、预览与本次会话的全部监听。 */
+        const cleanup = () => {
             if (finished) return;
             finished = true;
             handle.removeEventListener("pointermove", handlePointerMove);
             handle.removeEventListener("pointerup", finishMarquee);
-            handle.removeEventListener("pointercancel", finishMarquee);
-            handle.removeEventListener("lostpointercapture", finishMarquee);
+            handle.removeEventListener("pointercancel", cancel);
+            handle.removeEventListener("lostpointercapture", cancel);
+            window.removeEventListener("keydown", handleCancelKey, true);
+            if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
             marquee.remove();
-            if (finishEvent.type !== "pointerup") return;
-
-            const interactionItems = collectInteractionItems(workspaceRef.current); // 当前 DOM 视觉顺序中的可见桌面项目。
-            void onInteraction({ type: "select-items", itemIds: itemIdsIntersectingRect(selection, interactionItems) }).catch(() => undefined);
         };
 
+        /** 取消既中止当前捕获，也阻止等待初始焦点的迟到结果。 */
+        const cancel = () => {
+            cancelled = true;
+            cleanup();
+            if (cancelMarquee.current === cancel) cancelMarquee.current = undefined;
+        };
+        /** Escape 只取消正在进行的选框。 */
+        const handleCancelKey = (keyEvent: globalThis.KeyboardEvent) => {
+            if (keyEvent.key !== "Escape") return;
+            keyEvent.preventDefault();
+            keyEvent.stopPropagation();
+            cancel();
+        };
+
+        /** 释放时只提交起点容器内实际可见的成员。 */
+        const finishMarquee = (finishEvent: globalThis.PointerEvent) => {
+            if (finished || finishEvent.pointerId !== pointerId) return;
+            handlePointerMove(finishEvent);
+            cleanup();
+            const clip = intersectInteractionRects(selection, viewport()); // 释放时按最新视口再次裁剪。
+            const tiles = Array.from(workspaceRef.current?.querySelectorAll<HTMLElement>(".desktop-tile") ?? []); // 实际呈现的所有语义表面。
+            const layer = surface ? Number.parseInt(window.getComputedStyle(surface).zIndex, 10) || 0 : -Infinity; // 起点围栏的实际层级。
+            const covers = tiles
+                .filter((tile) => {
+                    const z = Number.parseInt(window.getComputedStyle(tile).zIndex, 10) || 0; // 含临时展开层级的真实样式。
+                    return tile !== surface && (z > layer || (z === layer && tiles.indexOf(tile) > tiles.indexOf(surface!)));
+                })
+                .map((tile) => tile.getBoundingClientRect()); // 更高表面的语义矩形。
+            const header = surface?.querySelector<HTMLElement>(".desktop-tile-header[data-visible='true']"); // 悬浮标题覆盖部分也不参与内容选择。
+            if (header) covers.push(header.getBoundingClientRect());
+            const regions = clip ? uncoveredInteractionRects(clip, covers) : []; // 选框实际可命中的可见片段。
+            const container = fenceId ? handle : workspaceRef.current?.querySelector<HTMLElement>(".fence-workspace__unclassified"); // 限定候选 DOM 来源。
+            const interactionItems = collectInteractionItems(container ?? null).filter(({ rect }) =>
+                regions.some((region) => intersectInteractionRects(rect, region)),
+            ); // 排除裁剪或遮挡部分的项目。
+            const itemIds = itemIdsIntersectingRect(selection, interactionItems); // 沿用现有视觉顺序和锚点规则。
+            void focused
+                .then(async (ready) => {
+                    if (!ready || cancelled || !handle.isConnected) return;
+                    if (itemIds.length > 0) await onInteraction({ type: "select-items", itemIds });
+                })
+                .catch(() => undefined)
+                .finally(() => {
+                    if (cancelMarquee.current === cancel) cancelMarquee.current = undefined;
+                });
+        };
+
+        cancelMarquee.current = cancel;
         handle.addEventListener("pointermove", handlePointerMove);
         handle.addEventListener("pointerup", finishMarquee);
-        handle.addEventListener("pointercancel", finishMarquee);
-        handle.addEventListener("lostpointercapture", finishMarquee);
+        handle.addEventListener("pointercancel", cancel);
+        handle.addEventListener("lostpointercapture", cancel);
+        window.addEventListener("keydown", handleCancelKey, true);
     };
 
     /** 记录菜单键打开桌面背景菜单时使用的最近指针位置。 */

@@ -1,43 +1,30 @@
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
-import { DesktopTileMenu } from "../tiles/DesktopTileMenu";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { DragDropEvent } from "@tauri-apps/api/webview";
-import Markdown from "markdown-to-jsx";
+import { DesktopTileMenu } from "../../tiles/DesktopTileMenu";
+import Vditor from "vditor";
+import "vditor/dist/index.css";
 import {
     createCollectItem,
     deleteCollectItem,
-    importCollectResource,
     getCollectItems,
     listenCollectChanges,
     openCollectEditor,
+    openCollectLink,
     restoreCollectItem,
-    saveCollectItem,
     setCollectItemPinned,
     type CollectItem,
-} from "../../bridge/collect";
-import { usePreferences } from "../settings/PreferencesProvider";
-import { settingsErrorMessage } from "../../bridge/settings";
-import { publishMessage } from "../notifications/messageNotification";
+} from "../../../bridge/collect";
+import { settingsErrorMessage } from "../../../bridge/settings";
+import { publishMessage } from "../../notifications/messageNotification";
 import { mergeCollectItems } from "./collectItemState";
-import type { DesktopTileMenuItem } from "../tiles/DesktopTileMenu";
-import editIcon from "../../../resources/collect-edit.svg?raw";
-import pinIcon from "../../../resources/collect-pin.svg?raw";
-import expandIcon from "../../../resources/fence-toggle-expand.svg?raw";
-import collapseIcon from "../../../resources/fence-toggle-collapse.svg?raw";
+import type { DesktopTileMenuItem } from "../../tiles/DesktopTileMenu";
+import { collectExcerpt } from "./collectMarkdown";
+import pinIcon from "../../../../resources/collect-pin.svg?raw";
 import "./CollectBox.css";
 
 /** 收集箱操作失败保留当前数据，并通过已有消息管道说明原因。 */
 const handleFailure = (error: unknown) => publishMessage({ type: "error", content: settingsErrorMessage(error), source: "collect-box" });
 
-const excerpt = (content: string) =>
-    content
-        .replace(/^#{1,6}\s+[^\r\n]*(?:\r?\n|$)/m, "")
-        .replace(/```[\s\S]*?```/g, "")
-        .replace(/<[^>]*>/g, "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 240);
 const title = (item: CollectItem) => item.content.match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim() || item.name.replace(/\.md$/i, "");
 
 /** 折叠标题轨道可调用的收集箱命令。 */
@@ -56,11 +43,21 @@ export const CollectBox = ({
     onToolbarReady?: (actions: CollectBoxToolbarActions) => void;
 }) => {
     const [items, setItems] = useState<CollectItem[]>([]);
-    const [expanded, setExpanded] = useState<string>();
     const [itemMenu, setItemMenu] = useState<{ x: number; y: number; name: string }>(); // 当前条目的局部右键菜单。
+    const [preview, setPreview] = useState<{ x: number; y: number; item: CollectItem }>(); // 当前悬浮预览。
     const [sort, setSort] = useState<"time" | "name">("time");
     const rootRef = useRef<HTMLDivElement>(null);
-    const { preferences } = usePreferences();
+    const previewContentRef = useRef<HTMLDivElement>(null);
+    const previewRenderVersion = useRef(0);
+    const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const handleLinkClick = (event: MouseEvent) => {
+        if (event.button !== 0 && event.button !== 1) return;
+        const link = (event.target as Element).closest<HTMLAnchorElement>("a[href]"); // 包含键盘激活和鼠标中键。
+        if (!link) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void openCollectLink(link.getAttribute("href") ?? "").catch(handleFailure);
+    }; // 链接打开不替换桌面宿主。
     const createRef = useRef<() => void>(() => undefined); // 折叠标题轨道调用的新建动作。
     const readRevision = useRef(0); // 拒绝删除前或较早事件触发的读取。
     const reload = (deletedName?: string) => {
@@ -72,6 +69,17 @@ export const CollectBox = ({
                 if (revision === readRevision.current) setItems((current) => mergeCollectItems(current, next, deletedName));
             })
             .catch(handleFailure);
+    };
+    const closePreview = () => {
+        clearTimeout(hoverTimer.current);
+        setPreview(undefined);
+    };
+    const handlePreviewEnter = (event: PointerEvent<HTMLElement>, item: CollectItem) => {
+        clearTimeout(hoverTimer.current);
+        const bounds = event.currentTarget.getBoundingClientRect();
+        const x = bounds.right + 8 + 520 <= window.innerWidth ? bounds.right + 8 : Math.max(8, bounds.left - 528);
+        const y = Math.max(8, Math.min(bounds.top, window.innerHeight - 428));
+        hoverTimer.current = setTimeout(() => setPreview({ item, x, y }), 500);
     };
     const handleDelete = (name: string) => {
         void deleteCollectItem(name)
@@ -91,43 +99,9 @@ export const CollectBox = ({
             readRevision.current++;
             window.removeEventListener("desktop-refresh-changed", handleResume);
             void subscription.then((stop) => stop()).catch(() => undefined);
+            clearTimeout(hoverTimer.current);
         };
     }, []);
-    useEffect(() => {
-        if (window.__DESKTOP_TOOLS_NATIVE__) return; // 独立桌面 WebView2 没有 Tauri 窗口元数据。
-        const subscription = getCurrentWindow().onDragDropEvent((event) => {
-            const payload = event.payload as DragDropEvent;
-            if (payload.type !== "drop" || payload.paths.length === 0) return;
-            const hit = document.elementFromPoint(payload.position.x, payload.position.y)?.closest<HTMLElement>("[data-collect-box]");
-            if (hit !== rootRef.current) return;
-            const target = document.elementFromPoint(payload.position.x, payload.position.y)?.closest<HTMLElement>("[data-collect-name]")?.dataset.collectName;
-            const targetItem = target ? items.find((item) => item.name === target) : undefined;
-            void (targetItem ? Promise.resolve(targetItem) : createCollectItem())
-                .then(async (created) => {
-                    const entries = await Promise.all(
-                        payload.paths.map(async (source) => ({
-                            source,
-                            resource: await importCollectResource(created.name, source, preferences?.collectImageImportMode ?? "copy"),
-                        })),
-                    );
-                    if (targetItem)
-                        await saveCollectItem(
-                            targetItem.name,
-                            `${targetItem.content}${targetItem.content.endsWith("\n") || !targetItem.content ? "" : "\n\n"}${entries.map(({ source, resource }) => `![${source.split(/[\\/]/).pop() ?? "图片"}](${resource})`).join("\n")}`,
-                        );
-                    else
-                        await saveCollectItem(
-                            created.name,
-                            entries.map(({ source, resource }) => `![${source.split(/[\\/]/).pop() ?? "图片"}](${resource})`).join("\n"),
-                        );
-                    reload();
-                })
-                .catch(handleFailure);
-        });
-        return () => {
-            void subscription.then((stop) => stop()).catch(() => undefined);
-        };
-    }, [items, preferences?.collectImageImportMode]);
     createRef.current = () => {
         void createCollectItem()
             .then((item) => {
@@ -153,32 +127,68 @@ export const CollectBox = ({
         b.pinned === a.pinned ? (sort === "time" ? b.createdUnixMs - a.createdUnixMs : a.name.localeCompare(b.name)) : b.pinned ? 1 : -1,
     );
     useEffect(() => {
+        const element = previewContentRef.current;
+        if (!element || !preview) return;
+        let active = true;
+        const version = ++previewRenderVersion.current;
+        const render = (
+            Vditor as unknown as {
+                preview: (
+                    target: HTMLElement,
+                    markdown: string,
+                    options: { mode: "dark" | "light"; cdn: string; lang: "zh_CN"; transform: (html: string) => string },
+                ) => Promise<void>;
+            }
+        ).preview;
+        const rendered = document.createElement("div");
+        element.replaceChildren();
+        void render(rendered, preview.item.content || "（空白收集项）", {
+            mode: document.documentElement.dataset.theme === "light" ? "light" : "dark",
+            cdn: "/vditor",
+            lang: "zh_CN",
+            transform: (html) => {
+                const document = new DOMParser().parseFromString(html, "text/html");
+                document.querySelectorAll("img").forEach((image) => {
+                    const placeholder = document.createElement("span");
+                    const alt = image.getAttribute("alt")?.trim();
+                    placeholder.textContent = alt ? `[图片：${alt}]` : "[图片]";
+                    image.replaceWith(placeholder);
+                });
+                return document.body.innerHTML;
+            },
+        }).then(() => {
+            if (active && version === previewRenderVersion.current) {
+                element.classList.add("vditor-reset");
+                element.replaceChildren(...rendered.childNodes);
+            }
+        });
+        return () => {
+            active = false;
+            previewRenderVersion.current++;
+            element.replaceChildren();
+        };
+    }, [preview]);
+    useEffect(() => {
         const latest = items.reduce<CollectItem | undefined>(
             (current, item) => (!current || item.createdUnixMs > current.createdUnixMs ? item : current),
             undefined,
         );
-        onLatestChange?.(latest ? { title: title(latest), summary: excerpt(latest.content) } : { title: "收集箱", summary: "" });
+        onLatestChange?.(latest ? { title: title(latest), summary: collectExcerpt(latest.content) } : { title: "收集箱", summary: "" });
     }, [items, onLatestChange]);
-    const handleDrop = (event: DragEvent<HTMLDivElement>) => {
-        event.preventDefault();
-        const text = event.dataTransfer.getData("text/plain");
-        if (!text.trim()) return;
-        const target = (event.target as HTMLElement).closest<HTMLElement>("[data-collect-name]")?.dataset.collectName;
-        const item = target ? items.find((candidate) => candidate.name === target) : undefined;
-        const content = item ? `${item.content}${item.content.endsWith("\n") || !item.content ? "" : "\n\n"}${text}` : text;
-        void (item ? saveCollectItem(item.name, content) : createCollectItem(content)).then(() => reload()).catch(handleFailure);
-    };
     return (
         <div
             ref={rootRef}
             className="official-component__collect"
             data-collect-box="true"
+            onClickCapture={handleLinkClick}
+            onAuxClickCapture={handleLinkClick}
             onKeyDown={(event) => {
                 if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
                 const target = (event.target as HTMLElement).closest<HTMLElement>("[data-collect-name]"); // 条目菜单快捷键不交给格子外壳。
                 if (!target?.dataset.collectName) return;
                 event.preventDefault();
                 event.stopPropagation();
+                closePreview();
                 window.dispatchEvent(new Event("desktop-tile-menu-opening"));
                 const bounds = target.getBoundingClientRect(); // 键盘打开时以当前条目为锚点。
                 setItemMenu({ x: bounds.left, y: bounds.bottom, name: target.dataset.collectName });
@@ -188,52 +198,39 @@ export const CollectBox = ({
                 if (!target || target.dataset.collectName === undefined) return;
                 event.preventDefault();
                 event.stopPropagation();
+                closePreview();
                 window.dispatchEvent(new Event("desktop-tile-menu-opening"));
                 setItemMenu({ x: event.clientX, y: event.clientY, name: target.dataset.collectName });
             }}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={handleDrop}
         >
             {items.length === 0 ? (
                 <p>暂无收集项</p>
             ) : (
                 <ul>
                     {ordered.map((item) => (
-                        <li key={item.name} data-collect-name={item.name}>
-                            <button
-                                type="button"
-                                className="official-component__collect-title"
-                                aria-expanded={expanded === item.name}
-                                onClick={() => {
-                                    setExpanded(expanded === item.name ? undefined : item.name);
-                                }}
-                            >
+                        <li
+                            key={item.name}
+                            data-collect-name={item.name}
+                            role="button"
+                            tabIndex={item.available ? 0 : -1}
+                            aria-disabled={!item.available}
+                            onPointerEnter={(event) => handlePreviewEnter(event, item)}
+                            onPointerLeave={closePreview}
+                            onClick={() => {
+                                if (item.available) void openCollectEditor(item.name).catch(handleFailure);
+                            }}
+                            onKeyDown={(event) => {
+                                if ((event.key === "Enter" || event.key === " ") && item.available) {
+                                    event.preventDefault();
+                                    void openCollectEditor(item.name).catch(handleFailure);
+                                }
+                            }}
+                        >
+                            <div className="official-component__collect-title">
                                 {item.pinned && <span className="collect-box__icon" aria-label="已置顶" dangerouslySetInnerHTML={{ __html: pinIcon }} />}
                                 <span className="collect-box__title-text">{item.available === false ? `${title(item)}（不可用）` : title(item)}</span>
-                                <span
-                                    className="collect-box__icon"
-                                    aria-hidden="true"
-                                    dangerouslySetInnerHTML={{ __html: expanded === item.name ? collapseIcon : expandIcon }}
-                                />
-                            </button>
-                            {expanded === item.name && (
-                                <div className="official-component__collect-summary">
-                                    <div className="official-component__collect-summary-text">
-                                        <Markdown options={{ disableParsingRawHTML: true, overrides: { img: { component: () => <span>[图片]</span> } } }}>
-                                            {excerpt(item.content) || "（空白收集项）"}
-                                        </Markdown>
-                                    </div>
-                                    <button
-                                        type="button"
-                                        title="打开编辑窗"
-                                        aria-label="打开编辑窗"
-                                        disabled={!item.available}
-                                        onClick={() => void openCollectEditor(item.name).catch(handleFailure)}
-                                    >
-                                        <span className="collect-box__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: editIcon }} />
-                                    </button>
-                                </div>
-                            )}
+                            </div>
+                            <div className="official-component__collect-summary-text">{collectExcerpt(item.content) || "（空白收集项）"}</div>
                         </li>
                     ))}
                 </ul>
@@ -252,6 +249,11 @@ export const CollectBox = ({
                         }}
                         items={[
                             {
+                                label: "打开",
+                                disabled: !items.some((item) => item.name === itemMenu.name && item.available),
+                                onSelect: () => void openCollectEditor(itemMenu.name).catch(handleFailure),
+                            },
+                            {
                                 label: items.find((item) => item.name === itemMenu.name)?.pinned ? "取消置顶" : "置顶",
                                 disabled: !items.some((item) => item.name === itemMenu.name && item.available),
                                 onSelect: () => {
@@ -269,6 +271,18 @@ export const CollectBox = ({
                             },
                         ]}
                     />,
+                    document.body,
+                )}
+            {preview &&
+                createPortal(
+                    <div
+                        className="collect-box__preview"
+                        style={{ left: preview.x, top: preview.y }}
+                        onClickCapture={handleLinkClick}
+                        onAuxClickCapture={handleLinkClick}
+                    >
+                        <div ref={previewContentRef} className="collect-box__preview-content" />
+                    </div>,
                     document.body,
                 )}
         </div>

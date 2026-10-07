@@ -1,7 +1,9 @@
-import { exitDesktopTools } from "../../bridge/desktopHost";
-import type { DesktopHostMonitor, DesktopHostSnapshot } from "../../contracts/desktopHost";
-import { usePreferences } from "../settings/PreferencesProvider";
-import { MessageNotificationTest } from "../notifications/MessageNotificationTest";
+import type { ReactNode } from "react";
+import { ComponentTile, type ComponentTileProps } from "../../components/ComponentTile";
+import { exitDesktopTools } from "../../../bridge/desktopHost";
+import type { DesktopHostMonitor, DesktopHostSnapshot } from "../../../contracts/desktopHost";
+import { usePreferences } from "../../settings/PreferencesProvider";
+import { MessageNotificationTest } from "../../notifications/MessageNotificationTest";
 import "./DebugTest.css";
 
 /** 只由已注册的 Debug 格子呈现宿主状态及测试命令。 */
@@ -73,3 +75,10 @@ export const DebugTest = ({
         </div>
     );
 };
+
+/** Debug 内容仍受运行时注册与功能开关约束。 */
+export const DebugTile = ({ children, ...props }: ComponentTileProps & { children?: ReactNode }) => (
+    <ComponentTile {...props} title="Debug 测试" minimum={{ width: 280, height: 154 }}>
+        {props.registration?.entry === "official:debug-test" ? children : <p className="official-component__error">组件前端入口不存在</p>}
+    </ComponentTile>
+);

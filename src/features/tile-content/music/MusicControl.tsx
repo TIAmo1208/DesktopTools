@@ -1,10 +1,10 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { usePreferences } from "../settings/PreferencesProvider";
+import { usePreferences } from "../../settings/PreferencesProvider";
 import { isCompactMusicLayout } from "./musicLayout";
-import previousIcon from "../../../resources/music-skip-back.svg?raw";
-import nextIcon from "../../../resources/music-skip-forward.svg?raw";
-import playIcon from "../../../resources/music-play.svg?raw";
-import pauseIcon from "../../../resources/music-pause.svg?raw";
+import previousIcon from "../../../../resources/music-skip-back.svg?raw";
+import nextIcon from "../../../../resources/music-skip-forward.svg?raw";
+import playIcon from "../../../../resources/music-play.svg?raw";
+import pauseIcon from "../../../../resources/music-pause.svg?raw";
 import "./MusicControl.css";
 
 /** 音乐控制组件可呈现的媒体快照。 */

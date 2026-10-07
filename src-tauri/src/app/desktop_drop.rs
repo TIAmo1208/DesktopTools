@@ -203,6 +203,64 @@ pub(crate) fn complete_external(app: &AppHandle, plan: ExternalDrop, mut complet
     (succeeded, committed, result)
 }
 
+/// 业务策略只接受当前显示器上仍存在且功能开启的组件实例。
+pub(crate) fn content_target(app: &AppHandle, snapshot: &WorkspaceSnapshot, region: &HitRegion, monitor_id: &str) -> Result<Option<String>, String>
+{
+    if region.kind != "component"
+    {
+        return Ok(None);
+    }
+    let Some(component) = snapshot.components.iter().find(|component| component.instance_id == region.id && component.projection_monitor_id.as_ref().unwrap_or(&component.monitor_id) == monitor_id)
+    else
+    {
+        return Ok(None);
+    }; // Renderer 不能伪造目标类型。
+    let preferences = app.state::<crate::app::settings::SettingsState>().preferences()?; // 原生复核功能开关。
+    if app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&snapshot.components).map_err(|error| error.message)?.instances.iter().find(|entry| entry.instance_id == component.instance_id).is_none_or(|entry| entry.status != crate::contracts::ComponentLoadStatus::Ready)
+    {
+        return Ok(None);
+    } // 加载或权限校验失败的实例不能接收。
+    let enabled = match component.component_id.as_str()
+    {
+        "official.collect-box" => preferences.collect_enabled,
+        "official.music-control" => preferences.music_enabled,
+        _ => false,
+    }; // 空白名单组件不开放业务入口。
+    Ok(enabled.then(|| component.component_id.clone()))
+}
+
+/// 在后台执行已拥有内容，目标身份再校验后交给既有业务模块。
+pub(crate) fn receive_content(app: &AppHandle, region: HitRegion, monitor_id: String, target_name: Option<String>, content: crate::collect::IncomingContent, mode: String) -> Result<(), String>
+{
+    let current = snapshot(app)?; // 异步执行开始时目标仍须存在。
+    let target = content_target(app, &current, &region, &monitor_id)?.ok_or("投放目标已失效或关闭")?; // 不回退到桌面。
+    if target == "official.music-control"
+    {
+        let crate::collect::IncomingContent::Files(mut paths) = content
+        else
+        {
+            return Err("音乐控制仅接收单个媒体文件".into());
+        };
+        if paths.len() != 1
+        {
+            return Err("音乐控制仅接收单个媒体文件".into());
+        }
+        return app.state::<crate::shell::DesktopItemState>().open_media_drop(paths.remove(0));
+    }
+    let preferences = app.state::<crate::app::settings::SettingsState>().preferences()?; // 当前配置目录。
+    let config = crate::app::settings::resolve_config_directory(&preferences.config_directory)?; // 与编辑窗共用收集目录。
+    let result = crate::collect::receive(&config, target_name.as_deref(), content, &mode); // 收集业务拥有资源与正文写入。
+    let _ = app.emit("collect-items-changed", ()); // 部分收入或失败后同样重新读取磁盘事实。
+    result
+}
+
+/// 复用原生消息管道报告执行失败，消息循环中不弹同步错误框。
+pub(crate) fn report_content_error(app: &AppHandle, error: String)
+{
+    crate::log_error!("拖放：内容收入失败，错误：{error}");
+    let _ = app.state::<std::sync::Arc<crate::notifications::ToastManager>>().publish(app, crate::notifications::ToastRequest { r#type: "error".into(), content: error, source: "content-drop".into(), dedupe_key: None, loading: None, duration_ms: 6000 });
+}
+
 /// 将已确认的工作区 DIP 指针映射到实际存在的共享围栏。
 fn drop_fence_at(point: &WorkspacePoint, regions: &[HitRegion], snapshot: &crate::contracts::WorkspaceSnapshot) -> Option<String>
 {

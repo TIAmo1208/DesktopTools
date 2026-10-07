@@ -9,6 +9,13 @@ import type { WorkspacePoint } from "../contracts/workspace";
 // Rust 发布的桌面项目快照事件名称。
 export const DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT = "desktop-item-snapshot-changed";
 
+/** 请求当前桌面项目的缩略图，无内容时保留系统图标。 */
+export const getDesktopItemImage = async (itemId: string, pixels: number): Promise<string | null> => {
+    const result = await invokeRuntime<unknown>("get_desktop_item_image", { itemId, pixels }); // 后端校验身份和尺寸。
+    if (result === null || (typeof result === "string" && result.startsWith("data:image/png;base64,"))) return result;
+    throw new Error("系统图像响应格式无效");
+};
+
 /** 枚举 Shell 桌面项目并获取新的不可变快照。 */
 export const getDesktopItemSnapshot = async (): Promise<DesktopItemSnapshot> => {
     // 等待契约校验的 command 返回值。

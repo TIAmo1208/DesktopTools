@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+mod drop;
 mod references;
+pub(crate) use drop::{IncomingContent, receive};
 
 /// 收集项在磁盘上的最小事实服务；Markdown 文件是唯一内容来源。
 #[derive(Clone, Debug, Serialize)]
@@ -28,6 +30,61 @@ struct DeletedCollectInfo
 
 /// 返回配置目录下共享的 collect 目录。
 pub fn directory(config: &Path) -> PathBuf { config.join("collect") }
+
+/// 读取本地图片原始字节，保留 GIF 动画并限制不可信文件的读取体积。
+pub fn read_image(config: &Path, name: &str, reference: &str) -> io::Result<String>
+{
+    use base64::Engine;
+    use std::io::Read;
+    let root = directory(config); // 相对引用以 Markdown 所在目录为基准。
+    if !safe_file(&root, name)?.is_file()
+    {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "收集项不存在"));
+    }
+    let path = if reference.starts_with("file:")
+    {
+        tauri::Url::parse(reference).ok().and_then(|url| url.to_file_path().ok()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "图片文件 URL 无效"))?
+    }
+    else
+    {
+        root.join(reference)
+    }; // 绝对路径由 Path::join 保留，支持仅链接模式。
+    let mut bytes = Vec::new(); // 有界读取避免文件在检查后增长突破限制。
+    fs::File::open(path)?.take(32 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > 32 * 1024 * 1024
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "图片超过 32 MiB"));
+    }
+    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+    {
+        "image/png"
+    }
+    else if bytes.starts_with(b"\xff\xd8\xff")
+    {
+        "image/jpeg"
+    }
+    else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")
+    {
+        "image/gif"
+    }
+    else if bytes.starts_with(b"BM")
+    {
+        "image/bmp"
+    }
+    else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP")
+    {
+        "image/webp"
+    }
+    else if bytes.starts_with(b"\0\0\x01\0")
+    {
+        "image/x-icon"
+    }
+    else
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "不支持的图片格式"));
+    }; // 不将任意文件作为可执行页面返回。
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
 
 /// 读取当前收集项和置顶表。
 pub fn list(config: &Path) -> io::Result<Vec<CollectItem>>
@@ -74,7 +131,21 @@ pub fn create(config: &Path, content: &str) -> io::Result<CollectItem>
 }
 
 /// 覆盖保存指定 Markdown 文件。
-pub fn save(config: &Path, name: &str, content: &str) -> io::Result<()> { fs::write(safe_file(&directory(config), name)?, content) }
+pub fn save(config: &Path, name: &str, content: &str) -> io::Result<()>
+{
+    use std::io::Write;
+    let target = safe_file(&directory(config), name)?; // 复用路径边界。
+    let temporary = target.with_extension(format!("md.{}.tmp", crate::tools::time::next_timeline_timestamp())); // 同卷独占临时文件。
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?; // 失败不截断正文。
+    let result = file.write_all(content.as_bytes()).and_then(|()| file.sync_all()); // 完整写入后才替换。
+    drop(file);
+    let result = result.and_then(|()| crate::platform::windows::replace_file_atomic(temporary.as_os_str(), target.as_os_str())); // 沿用既有原子替换。
+    if result.is_err()
+    {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
 
 /// 按当前收入方式处理一份外部图片，并返回可写入 Markdown 的引用路径。
 pub fn import_resource(config: &Path, name: &str, source: &Path, mode: &str) -> io::Result<String>
@@ -381,6 +452,24 @@ fn read_pinned(root: &Path) -> io::Result<Vec<String>>
 #[cfg(test)]
 mod tests
 {
+    /// 真实本地引用保留中文与空格，拒绝缺失项目和非图片文件。
+    #[test]
+    fn local_images_preserve_references()
+    {
+        use super::*;
+        let config = std::env::temp_dir().join(format!("collect-images-{}", std::process::id())); // 独立测试目录。
+        fs::create_dir_all(directory(&config).join("资源")).unwrap();
+        fs::write(directory(&config).join("note.md"), "").unwrap();
+        let image = directory(&config).join("资源/[deadman] a.png"); // 包含需 URL 编码的文件名。
+        fs::write(&image, b"\x89PNG\r\n\x1a\n").unwrap();
+        assert!(read_image(&config, "note.md", "资源/[deadman] a.png").unwrap().starts_with("data:image/png;base64,"));
+        assert!(read_image(&config, "note.md", image.to_str().unwrap()).is_ok());
+        assert!(read_image(&config, "note.md", tauri::Url::from_file_path(&image).unwrap().as_str()).is_ok());
+        assert!(read_image(&config, "missing.md", image.to_str().unwrap()).is_err());
+        assert!(read_image(&config, "../note.md", image.to_str().unwrap()).is_err());
+        assert!(read_image(&config, "note.md", "note.md").is_err());
+        fs::remove_dir_all(config).unwrap();
+    }
     use super::*;
     /// 两条资源入口都拒绝非法归属，失败不得移动源文件或在 collect 外创建目录。
     #[test]

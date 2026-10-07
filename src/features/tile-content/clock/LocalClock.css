@@ -1,0 +1,15 @@
+/* 数字采用固定字号和等宽数字，不跟随普通正文字号缩放。 */
+.local-clock {
+    align-self: center;
+    justify-self: center;
+    font-size: 20px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+/* 实例内部错误说明。 */
+.local-clock__error {
+    margin: 0;
+    color: var(--color-error);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}

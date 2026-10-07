@@ -1,4 +1,4 @@
-import type { CollectItem } from "../../bridge/collect";
+import type { CollectItem } from "../../../bridge/collect";
 
 /** 外部缺失保留当前会话线索；主动删除的文件必须先从缓存剔除。 */
 export const mergeCollectItems = (current: CollectItem[], next: CollectItem[], deletedName?: string): CollectItem[] => [

@@ -5,6 +5,7 @@ import { usePreferences } from "../settings/PreferencesProvider";
 import { projectDesktopItems, type DesktopItemViewModel } from "./desktopItemViewModel";
 import "./DesktopItemGrid.css";
 import { registerDesktopItemImage } from "./desktopItemReadiness";
+import { useDesktopItemImage } from "./useDesktopItemImage";
 
 /** 定义桌面项目网格接收的快照与错误状态。 */
 interface DesktopItemGridProps {
@@ -54,6 +55,7 @@ export const DesktopItemTile = ({
     onRenameCancel,
 }: DesktopItemTileProps) => {
     const { preferences } = usePreferences(); // 当前窗口共享的项目打开方式。
+    const image = useDesktopItemImage(item); // 首帧图标与后台缩略图共用节点。
     return (
         <li
             className={`desktop-item${className ? ` ${className}` : ""}`}
@@ -76,8 +78,8 @@ export const DesktopItemTile = ({
             }}
             onContextMenu={onItemContextMenu}
         >
-            <div className="desktop-item__image" aria-hidden="true">
-                {item.imageSource && <img ref={registerDesktopItemImage} src={item.imageSource} alt="" draggable={false} />}
+            <div ref={image.container} className="desktop-item__image" aria-hidden="true">
+                {image.source && <img ref={registerDesktopItemImage} src={image.source} alt="" draggable={false} />}
             </div>
             {renaming ? (
                 <input
