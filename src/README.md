@@ -36,6 +36,8 @@ src/
 
 `main.tsx` 装配应用并按需加载收集项编辑窗口。`WorkspaceSurface` 组合逐屏权威投影与原生命令；`DesktopWorkspace` 负责未归类项目、围栏、官方组件及附加门户的共同工作区，持有全局选择和 OLE 协调。
 
+`collect-box/collectEditorImages.ts` 为 Vditor 图片补充本地显示数据，并修正图片说明转义与目标地址编码，保持 Markdown 图片语义；`CollectBox` 与 `CollectEditor` 通过 `bridge/collect.ts` 把链接交给系统打开。
+
 `DesktopTileBase` 内部统一调用几何与展开 Hook，组合标题显隐、菜单、八向缩放及输入生命周期。调用方只提供几何参数和类型化业务回调；标题从公共 context 读取拖动入口，视口与活动内容读取同一实际折叠状态。`tileGeometry` 保存共享算法和可选 `minimum` 的默认值解析，使用 `contracts/tile` 的公共数据底线；内容层将内容需求与外壳、标题占位换算为外框下限。`tileDragPreview` 保存有界静态视觉；跨屏消息和 OLE 投放仍归工作区。
 
 `OfficialComponentHost` 只同步运行时、过滤实例并分发内容；`ComponentTile` 组合组件身份、外观命令和失败隔离，不识别具体功能。`CollectBoxTile` 持有摘要与工具，其格子菜单通过 `create_collect_box` 复用统一创建流程，不计算初始位置或展开尺寸；折叠尺寸仍由 `collapsedSize` 提供。`MusicTile` 叠加内容和外框最小尺寸，`LocalClock` 持有活动时间订阅。
@@ -44,6 +46,8 @@ src/
 
 ## 依赖方向
 
+`desktop-items/useDesktopItemImage.ts` 观察现有图像槽的可见性、尺寸和宿主暂停状态，经 `bridge/desktopItems.ts` 请求系统缩略图；实例身份与快照修订拒绝迟到结果，`DesktopItemGrid.css` 负责固定外框内的等比居中。`desktopItemImage.browser.html` 覆盖真实 Hook 的加载回退、迟到结果与暂停恢复。
+
 原生内容拖放沿 `useCrossMonitorPreview` 和 `workspaceDropTarget` 交付类型白名单、可见格子与收集项几何。`ComponentTile` 声明实例类型，内容层通过 `expandOnDrop` 请求匹配后临时展开；公共外框不处理收集或媒体业务。`CollectBox` 只呈现条目与监听更新，不另建 Tauri 或 HTML 拖放执行路径。`tiles/contentDrop.browser.html` 验证设置归属、临时展开、条目命中确认与拒绝不穿透。
 
 ```text
@@ -51,4 +55,4 @@ src/
 React feature -> bridge -> Tauri command/event -> src-tauri/src
 ```
 
-`features/` 使用 `contracts/`、`bridge/` 和 `shared/`；`bridge/` 使用 `contracts/`。公共格子不导入业务内容目录。职责决策见 [ADR-0018](../docs/adr/0018-共享格子外观并隔离布局撤销.md)，验证范围见[公共格子分层验收](../docs/validation/公共格子分层验收.md)。
+`features/` 使用 `contracts/`、`bridge/` 和 `shared/`；`bridge/` 使用 `contracts/`。公共格子不导入业务内容目录。

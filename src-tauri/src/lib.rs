@@ -14,6 +14,7 @@ pub mod tools;
 mod workspace;
 
 use app::ApplicationState;
+use commands::get_desktop_item_image;
 use commands::sync_message_appearance;
 use commands::{apply_workspace_command, apply_workspace_interaction, begin_desktop_host_input_drag, delete_desktop_items, end_desktop_host_input_drag, execute_music_action, exit_desktop_tools, get_application_snapshot, get_component_runtime_snapshot, get_current_music_session, get_desktop_host_snapshot, get_desktop_item_snapshot, get_workspace_snapshot, inspect_workspace_backup, invoke_component_capability, list_workspace_auto_snapshots, open_desktop_items, paste_desktop_items, publish_desktop_host_readiness, publish_message_notification, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, redo_workspace, rename_desktop_item, restore_workspace_backup, set_application_status, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag, undo_workspace, update_desktop_host_hit_map, write_workspace_backup};
 use commands::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
@@ -78,6 +79,7 @@ pub fn run()
             get_application_snapshot,
             get_desktop_host_snapshot,
             get_desktop_item_snapshot,
+            get_desktop_item_image,
             commands::folder_portal::get_folder_portal_snapshot,
             commands::folder_portal::open_folder_portal_path,
             commands::folder_portal::delete_folder_portal_items,
@@ -87,6 +89,8 @@ pub fn run()
             commands::folder_portal::rename_folder_portal_item,
             commands::folder_portal::prepare_folder_portal_drag,
             commands::collect::get_collect_items,
+            commands::collect::read_collect_image,
+            commands::collect::open_collect_link,
             commands::collect::open_collect_editor,
             commands::collect::create_collect_item,
             commands::collect::save_collect_item,
@@ -211,6 +215,7 @@ pub fn run()
         }
         RunEvent::Exit =>
         {
+            app.state::<DesktopItemState>().images.shutdown(); // 退出时停止队列并回收独立图像 STA。
             app::desktop_menu::shutdown();
             if let Some(monitor) = app.try_state::<crate::platform::windows::settings::WindowsAccentMonitor>()
             {

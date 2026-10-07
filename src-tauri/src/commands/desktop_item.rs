@@ -14,6 +14,10 @@ use crate::workspace::WorkspaceState;
 
 use super::workspace::{reconcile_workspace_environment, reconcile_workspace_items};
 
+/// 异步读取可见项目图像，等待只发生在 transport 工作池。
+#[tauri::command]
+pub async fn get_desktop_item_image(app: AppHandle, item_id: String, pixels: u32) -> Result<Option<String>, DesktopItemError> { tauri::async_runtime::spawn_blocking(move || app.state::<DesktopItemState>().image(item_id, pixels)).await.map_err(|error| DesktopItemError::shell_operation_failed(&error))? }
+
 /// 枚举真实 Shell 桌面项目并发布新的不可变快照。
 #[tauri::command]
 pub async fn get_desktop_item_snapshot(app: AppHandle, state: State<'_, DesktopItemState>, workspace: State<'_, WorkspaceState>, runtime: State<'_, Arc<DesktopHostRuntime>>) -> Result<DesktopItemSnapshot, DesktopItemError> { execute_get_desktop_item_snapshot(&app, &state, &workspace, &runtime) }
@@ -167,6 +171,7 @@ pub fn start_desktop_item_change_monitor(app: AppHandle, changes: Receiver<Shell
     thread::spawn(move || {
         while let Ok(first_change) = changes.recv()
         {
+            app.state::<DesktopItemState>().images.invalidate(); // 立即拒绝旧图像结果，不等待通知合并完成。
             // 当前合并窗口内收集的精确重命名事实。
             let mut renames = Vec::new();
             collect_shell_change(first_change, &mut renames);
@@ -190,6 +195,7 @@ pub fn start_desktop_item_change_monitor(app: AppHandle, changes: Receiver<Shell
             }
 
             // Shell 最终事实重新枚举后的桌面项目快照。
+            app.state::<DesktopItemState>().images.invalidate(); // 合并窗口内的新变化也必须使缓存失效。
             let item_snapshot = match app.state::<DesktopItemState>().refresh()
             {
                 Ok(snapshot) => snapshot,

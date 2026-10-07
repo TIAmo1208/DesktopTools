@@ -49,6 +49,26 @@ fn editor_path(root: &Path, name: &str) -> Result<std::path::PathBuf, String>
 
 fn config(state: &State<'_, SettingsState>) -> Result<std::path::PathBuf, String> { crate::app::settings::resolve_config_directory(&state.preferences()?.config_directory) }
 fn changed(app: &AppHandle) { let _ = app.emit("collect-items-changed", ()); }
+
+/// 读取当前收集项引用的本地图片，显示数据不写回 Markdown。
+#[tauri::command]
+pub async fn read_collect_image(settings: State<'_, SettingsState>, name: String, reference: String) -> Result<String, String>
+{
+    let config = config(&settings)?; // 后台读取前固定当前配置目录。
+    tauri::async_runtime::spawn_blocking(move || collect::read_image(&config, &name, &reference).map_err(|error| format!("读取收集项图片失败：{error}"))).await.map_err(|error| error.to_string())?
+}
+
+/// 只把明确的网页和邮件链接交给系统默认程序，拒绝脚本和应用内部协议。
+#[tauri::command]
+pub fn open_collect_link(url: String) -> Result<(), String>
+{
+    let parsed = tauri::Url::parse(&url).map_err(|_| "链接地址无效")?; // 使用 URL 解析器校验协议。
+    if !matches!(parsed.scheme(), "http" | "https" | "mailto") || url.chars().any(char::is_control)
+    {
+        return Err("不支持此链接协议".into());
+    }
+    crate::platform::windows::settings::open_path(Path::new(parsed.as_str()))
+}
 #[tauri::command]
 pub async fn open_collect_editor(app: AppHandle, name: String) -> Result<(), String> { tauri::async_runtime::spawn_blocking(move || execute_open_collect_editor(app, name)).await.map_err(|error| format!("编辑窗任务失败：{error}"))? }
 
@@ -160,6 +180,16 @@ pub fn restore_collect_item(app: AppHandle, settings: State<'_, SettingsState>) 
 mod tests
 {
     use super::*;
+
+    /// 不允许 Markdown 链接执行脚本、本地程序或访问应用内部协议。
+    #[test]
+    fn collect_links_reject_unsafe_protocols()
+    {
+        for url in ["javascript:alert(1)", "data:text/html,test", "file:///C:/test.exe", "desktop-tools://test", "https://example.com/\n"]
+        {
+            assert!(open_collect_link(url.to_string()).is_err());
+        }
+    }
 
     /// 同文件去重、不同文件并行以及改名后旧名称复用均保持窗口隔离。
     #[test]

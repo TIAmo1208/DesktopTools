@@ -1,13 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import Vditor from "vditor";
 import "vditor/dist/index.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getCollectItems, importCollectRenderedResource, renameCollectItem, saveCollectItem, writeCollectResource } from "../../../bridge/collect";
+import {
+    getCollectItems,
+    importCollectRenderedResource,
+    openCollectLink,
+    readCollectImage,
+    renameCollectItem,
+    saveCollectItem,
+    writeCollectResource,
+} from "../../../bridge/collect";
 import { usePreferences } from "../../settings/PreferencesProvider";
 import { settingsErrorMessage } from "../../../bridge/settings";
 import { publishMessage } from "../../notifications/messageNotification";
 import { pastedLink } from "./collectEditorLinks";
+import { configureCollectImageMarkdown, observeCollectImages } from "./collectEditorImages";
 import pencilIcon from "../../../../resources/editor-pencil.svg?raw";
 import checkIcon from "../../../../resources/editor-check.svg?raw";
 import closeIcon from "../../../../resources/editor-x.svg?raw";
@@ -59,6 +68,16 @@ export const CollectEditor = () => {
         const message = settingsErrorMessage(error); // 兼容后端字符串和结构化错误。
         setFailure({ message, operation });
         publishMessage({ type: "error", content: message, source: "collect-editor" });
+    };
+
+    /** 编辑器正文和链接弹出栏共用系统打开，不导航当前窗口。 */
+    const handleLinkClick = (event: MouseEvent) => {
+        if (event.button !== 0 && event.button !== 1) return;
+        const link = (event.target as Element).closest<HTMLAnchorElement>("a[href]"); // 包含中键打开和键盘激活。
+        if (!link) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void openCollectLink(link.getAttribute("href") ?? "").catch(handleFailure);
     };
 
     /** 串行保存；保存成功才销毁窗口，失败恢复编辑能力。 */
@@ -197,7 +216,7 @@ export const CollectEditor = () => {
                 const item = items.find((item) => item.name === currentName.current); // 读取失败不能当作空文件覆盖保存。
                 if (!item?.available) throw new Error("收集项不可用，文件可能已被删除或重命名");
                 editor.current = new Vditor(host.current, {
-                    value: item.content,
+                    value: "", // 先安装图片转义修正，再解析原始正文。
                     mode: "wysiwyg",
                     lang: "zh_CN",
                     cdn: "/vditor",
@@ -225,6 +244,12 @@ export const CollectEditor = () => {
                     },
                     after: () => {
                         if (!active || !host.current) return;
+                        const current = editor.current; // Lute 初始化完成后才可安装实例级渲染器。
+                        if (!current) return;
+                        configureCollectImageMarkdown(current.vditor.lute);
+                        current.setValue(item.content, true);
+                        dirty.current = false;
+                        setSaved(true);
                         const slot = document.createElement("div"); // 由本组件拥有的错误插槽，不参与正文序列化。
                         slot.className = "collect-editor__error-slot";
                         host.current.insertBefore(slot, host.current.querySelector(".vditor-content"));
@@ -270,6 +295,10 @@ export const CollectEditor = () => {
             editor.current = undefined;
         };
     }, [name]);
+    useEffect(() => {
+        if (!ready || !host.current) return;
+        return observeCollectImages(host.current, fileName, readCollectImage, handleFailure);
+    }, [ready, fileName]);
     useEffect(() => {
         if (!ready || !editor.current) return;
         const current = editor.current; // 仅同步本窗口当前编辑器的内容主题。
@@ -408,6 +437,8 @@ export const CollectEditor = () => {
                 ref={host}
                 className="collect-editor__content"
                 aria-label="Markdown 内容"
+                onClickCapture={handleLinkClick}
+                onAuxClickCapture={handleLinkClick}
                 onContextMenu={(event) => {
                     const target = event.target;
                     if (!(target instanceof HTMLImageElement)) return;

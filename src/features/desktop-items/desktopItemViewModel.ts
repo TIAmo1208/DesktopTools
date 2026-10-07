@@ -5,6 +5,7 @@ export interface DesktopItemViewModel {
     key: string;
     label: string;
     imageSource: string | null;
+    imageRevision?: number; // 事实变化后隔离迟到图像。
     isAvailable: boolean;
 }
 
@@ -14,5 +15,6 @@ export const projectDesktopItems = (snapshot: DesktopItemSnapshot): DesktopItemV
         key: item.stableReference,
         label: item.displayName,
         imageSource: item.systemImage,
+        imageRevision: snapshot.revision,
         isAvailable: item.availability === "available",
     }));

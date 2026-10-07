@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { DesktopTileMenu } from "../../tiles/DesktopTileMenu";
 import Markdown from "markdown-to-jsx";
@@ -8,6 +8,7 @@ import {
     getCollectItems,
     listenCollectChanges,
     openCollectEditor,
+    openCollectLink,
     restoreCollectItem,
     setCollectItemPinned,
     type CollectItem,
@@ -57,6 +58,14 @@ export const CollectBox = ({
     const [sort, setSort] = useState<"time" | "name">("time");
     const rootRef = useRef<HTMLDivElement>(null);
     const { preferences } = usePreferences();
+    const handleLinkClick = (event: MouseEvent) => {
+        if (event.button !== 0 && event.button !== 1) return;
+        const link = (event.target as Element).closest<HTMLAnchorElement>("a[href]"); // 包含键盘激活和鼠标中键。
+        if (!link) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void openCollectLink(link.getAttribute("href") ?? "").catch(handleFailure);
+    }; // 链接打开不替换桌面宿主。
     const createRef = useRef<() => void>(() => undefined); // 折叠标题轨道调用的新建动作。
     const readRevision = useRef(0); // 拒绝删除前或较早事件触发的读取。
     const reload = (deletedName?: string) => {
@@ -125,6 +134,8 @@ export const CollectBox = ({
             ref={rootRef}
             className="official-component__collect"
             data-collect-box="true"
+            onClickCapture={handleLinkClick}
+            onAuxClickCapture={handleLinkClick}
             onKeyDown={(event) => {
                 if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
                 const target = (event.target as HTMLElement).closest<HTMLElement>("[data-collect-name]"); // 条目菜单快捷键不交给格子外壳。

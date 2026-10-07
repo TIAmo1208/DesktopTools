@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>收集项图片回归</title>
+    <body>
+        <div id="editor"></div>
+        <div id="collect"></div>
+        <pre id="result">RUNNING</pre>
+        <button id="save-check" hidden>验证回车后保存与重载</button>
+        <pre id="saved"></pre>
+        <script type="module">
+            import Vditor from "vditor";
+            import "vditor/dist/index.css";
+            import { configureCollectImageMarkdown, observeCollectImages } from "./collectEditorImages.ts";
+            import React from "react";
+            import { createRoot } from "react-dom/client";
+            import { CollectBox } from "./CollectBox.tsx";
+            const opened = []; // 记录真实组件通过桥接提交的系统打开请求。
+            window.__DESKTOP_TOOLS_NATIVE__ = {
+                invoke: async (command, args) => {
+                    if (command === "get_collect_items")
+                        return [{ name: "links.md", content: "[链接](https://example.com/test)", available: true, pinned: false, createdUnixMs: 1 }];
+                    if (command === "open_collect_link") opened.push(args.url);
+                },
+                listen: async () => () => {},
+            };
+            createRoot(document.getElementById("collect")).render(React.createElement(CollectBox));
+            const host = document.getElementById("editor"); // 真实 Vditor 与生产图片适配器。
+            const canvas = document.createElement("canvas"); // 隔离图像样本。
+            canvas.width = 96;
+            canvas.height = 40;
+            canvas.getContext("2d").fillRect(0, 0, 96, 40);
+            const imageUrl = canvas.toDataURL(); // 可解码的 PNG。
+            const pending = []; // 控制迟到请求，不访问用户文件。
+            const failures = []; // 捕获读取失败。
+            const assert = (value, message) => {
+                if (!value) throw new Error(message);
+            };
+            const wait = async (check) => {
+                for (let i = 0; i < 100; i++) {
+                    if (check()) return;
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+                throw new Error("等待超时");
+            };
+            const editor = new Vditor(host, {
+                value: "",
+                mode: "wysiwyg",
+                cdn: "/vditor",
+                _lutePath: "/vditor/dist/js/lute/lute.min.js",
+                cache: { enable: false },
+                after: async () => {
+                    try {
+                        configureCollectImageMarkdown(editor.vditor.lute);
+                        const source = String.raw`![\[deadman\] 116147787.png](<目录/[deadman] 116147787.png>)`;
+                        editor.setValue(source, true);
+                        const first = host.querySelector(".vditor-wysiwyg img");
+                        assert(first.getAttribute("alt") === "[deadman] 116147787.png", "图片说明被渲染成 HTML");
+                        assert(!host.querySelector(".vditor-wysiwyg").textContent.trim(), "图片后出现多余正文");
+                        for (const label of ["a]b", "[x", "a*b", 'a"b', "a\\b"]) {
+                            const element = document.createElement("img"); // 单独验证不成对标记和引号。
+                            element.src = "image.png";
+                            element.alt = label;
+                            const saved = editor.vditor.lute.VditorDOM2Md(`<p data-block="0">${element.outerHTML}</p>`);
+                            const restored = new DOMParser().parseFromString(editor.vditor.lute.Md2VditorDOM(saved), "text/html");
+                            assert(restored.querySelector("img")?.alt === label, `保存破坏图片说明：${label}`);
+                            const spun = new DOMParser().parseFromString(
+                                editor.vditor.lute.SpinVditorDOM(`<p data-block="0">${element.outerHTML}</p>`),
+                                "text/html",
+                            );
+                            assert(spun.querySelector("img")?.alt === label, `编辑重排破坏图片说明：${label}`);
+                            const pasted = new DOMParser().parseFromString(editor.vditor.lute.HTML2VditorDOM(element.outerHTML), "text/html");
+                            assert(pasted.querySelector("img")?.alt === label, `HTML 转换破坏图片说明：${label}`);
+                        }
+                        const original = editor.getValue(); // 显示层不能改变保存内容。
+                        const stop = observeCollectImages(
+                            host,
+                            "note.md",
+                            (name, reference) => new Promise((resolve) => pending.push({ name, reference, resolve })),
+                            (error) => failures.push(error),
+                        );
+                        await wait(() => pending.length === 1);
+                        assert(pending[0].reference === "目录/[deadman] 116147787.png", "相对路径解码错误");
+                        pending[0].resolve(imageUrl);
+                        await wait(() => host.querySelector(".vditor-wysiwyg img")?.naturalWidth === 96);
+                        assert(editor.getValue() === original, "显示图片改写了 Markdown");
+                        editor.setValue("![新图](<other/image.png>)");
+                        await wait(() => pending.length === 2);
+                        const image = host.querySelector(".vditor-wysiwyg img");
+                        stop();
+                        pending[1].resolve(imageUrl);
+                        await new Promise((resolve) => setTimeout(resolve, 30));
+                        assert(!image.hasAttribute("srcset"), "卸载后仍写入迟到结果");
+                        assert(failures.length === 0, "图片读取错误");
+                        await wait(() => document.querySelector(".official-component__collect-title"));
+                        document.querySelector(".official-component__collect-title").click();
+                        await wait(() => document.querySelector("#collect a"));
+                        const anchor = document.querySelector("#collect a"); // 真实 Markdown 链接。
+                        const click = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+                        const middle = new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 });
+                        anchor.dispatchEvent(click);
+                        anchor.dispatchEvent(middle);
+                        assert(click.defaultPrevented && middle.defaultPrevented, "未阻止宿主导航");
+                        assert(opened.length === 2 && opened.every((url) => url === "https://example.com/test"), "链接没有交给系统打开命令");
+                        document.getElementById("result").textContent =
+                            "PASS：图片说明转义、编辑重排、图片解码、保存引用、迟到结果、链接打开。可继续按回车验证。";
+                        const sample = String.raw`![\[deadman\] 116147787.png](<2026-09-29-17-52-28/[deadman] 116147787-4.png>)
+
+![doro表情包GIF动图_爱给网_aigei_com.gif](<2026-09-29-17-52-28/doro表情包GIF动图_爱给网_aigei_com-3.gif>)`;
+                        editor.setValue(sample, true);
+                        observeCollectImages(
+                            host,
+                            "sample.md",
+                            async () => imageUrl,
+                            (error) => failures.push(error),
+                        );
+                        const snapshot = () =>
+                            [...host.querySelectorAll(".vditor-wysiwyg img")].map((image) => ({
+                                alt: image.alt,
+                                path: decodeURIComponent(image.getAttribute("src")),
+                            }));
+                        const expected = JSON.stringify(snapshot()); // 图片名称与目标都必须保持不变。
+                        document.getElementById("save-check").hidden = false;
+                        document.getElementById("save-check").onclick = () => {
+                            try {
+                                assert(JSON.stringify(snapshot()) === expected, "回车已改变图片");
+                                const saved = editor.getValue();
+                                document.getElementById("saved").textContent = saved;
+                                assert(!saved.includes("<span") && !saved.includes("collect-image-label-") && !saved.includes("base64"), "临时标记泄漏到文件");
+                                editor.setValue(saved, true);
+                                assert(JSON.stringify(snapshot()) === expected, "保存重载改变图片");
+                                assert(!host.querySelector(".vditor-wysiwyg").textContent.trim(), "产生了多余正文");
+                                document.getElementById("result").textContent = "PASS：回车后保存并重新加载，两张图片的说明和目标均保持不变，无多余正文";
+                            } catch (error) {
+                                document.getElementById("result").textContent = `FAIL: ${error.stack}`;
+                            }
+                        };
+                    } catch (error) {
+                        document.getElementById("result").textContent = `FAIL: ${error.stack}`;
+                    }
+                },
+            });
+        </script>
+    </body>
+</html>
