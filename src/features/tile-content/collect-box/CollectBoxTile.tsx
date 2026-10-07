@@ -1,5 +1,4 @@
 import { useCallback, useState } from "react";
-import { invokeRuntime } from "../../../bridge/runtime";
 import { ComponentTile, type ComponentTileProps } from "../../components/ComponentTile";
 import { CollectBox, type CollectBoxToolbarActions } from "./CollectBox";
 import { publishMessage } from "../../notifications/messageNotification";
@@ -24,12 +23,10 @@ export const CollectBoxTile = (props: ComponentTileProps) => {
             menuItems={[
                 { label: "恢复最近删除", separatorBefore: true, disabled: !toolbar, onSelect: () => toolbar?.restore() },
                 {
-                    label: "新建收集箱格子",
+                    label: "新建收集项",
                     separatorBefore: true,
-                    onSelect: () =>
-                        void invokeRuntime<void>("create_collect_box").catch((error: unknown) =>
-                            publishMessage({ type: "error", content: error instanceof Error ? error.message : "格子操作失败", source: "desktop-tile" }),
-                        ),
+                    disabled: !toolbar,
+                    onSelect: () => toolbar?.create(),
                 },
                 {
                     label: "移除",

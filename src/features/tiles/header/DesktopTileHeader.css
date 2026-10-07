@@ -71,8 +71,12 @@
     white-space: nowrap;
 }
 
-/* 收集箱折叠态的最新摘要，不挤占工具按钮轨道。 */
+/* 收集箱折叠摘要只显示首行，后续内容省略且不溢出标题轨道。 */
 .desktop-tile-header__subtitle {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    max-height: 1.2em;
     min-width: 0;
     margin: 0;
     overflow: hidden;
@@ -81,7 +85,7 @@
     font-size: 12px;
     line-height: 1.2;
     text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: pre-line;
 }
 
 /* 围栏标题栏命令集合。 */

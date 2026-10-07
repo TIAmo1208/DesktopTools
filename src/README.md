@@ -34,7 +34,7 @@ src/
 
 ## 入口与职责
 
-`main.tsx` 装配应用并按需加载收集项编辑窗口。`WorkspaceSurface` 组合逐屏权威投影与原生命令；`DesktopWorkspace` 负责未归类项目、围栏、官方组件及附加门户的共同工作区，持有全局选择和 OLE 协调。
+`main.tsx` 装配应用并按需加载收集项编辑窗口。`WorkspaceSurface` 组合逐屏权威投影与原生命令；`DesktopWorkspace` 负责未归类项目、围栏、官方组件及附加门户的共同工作区，持有全局选择和 OLE 协调。`CollectBox` 直接呈现三行纯文本摘要、500ms 悬停预览和条目打开菜单，`collectMarkdown.ts` 负责从 Markdown 语法树提取摘要。
 
 `collect-box/collectEditorImages.ts` 为 Vditor 图片补充本地显示数据，并修正图片说明转义与目标地址编码，保持 Markdown 图片语义；`CollectBox` 与 `CollectEditor` 通过 `bridge/collect.ts` 把链接交给系统打开。
 

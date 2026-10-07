@@ -28,6 +28,7 @@ dist-ssr
 !src/features/tile-content/collect-box/collectEditorLinks.test.ts
 !src/bridge/collect.test.ts
 !src/features/tile-content/collect-box/collectItemState.test.ts
+!src/features/tile-content/collect-box/collectMarkdown.test.ts
 !src/features/workspace/surface/workspaceDropTarget.test.ts
 *.spec.*
 temp/

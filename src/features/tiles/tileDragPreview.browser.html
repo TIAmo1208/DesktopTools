@@ -243,12 +243,12 @@
                     const collect = document.querySelector(".desktop-tile"); // 正式收集箱公共外框与菜单。
                     assert(collect.style.width === "640px" && collect.style.height === "56px", "收集箱折叠覆盖未保留展开宽度");
                     flushSync(() => collect.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 110 })));
-                    const create = [...document.querySelectorAll("[role=menuitem]")].find((item) => item.textContent === "新建收集箱格子"); // 用户实际的新建入口。
-                    assert(create, "收集箱创建菜单缺失");
+                    const create = [...document.querySelectorAll("[role=menuitem]")].find((item) => item.textContent === "新建收集项"); // 未注册内容时工具未就绪。
+                    assert(create?.disabled, "收集项创建菜单缺失或未就绪时未禁用");
                     flushSync(() => create.click());
                     await Promise.resolve();
                     const requests = commands.filter((entry) => entry.command === "create_collect_box"); // 不依赖其他公共菜单命令的数量。
-                    assert(requests.length === 1 && requests[0].payload === undefined, "创建入口传入了自算位置或展开尺寸");
+                    assert(requests.length === 0, "新建收集项错误调用格子创建接口");
                     assert(bounds.width === 640 && bounds.height === 480, "折叠尺寸污染权威展开边界");
 
                     // 正式围栏验证内容视口下限、标题占位和几何提交使用同一边界。

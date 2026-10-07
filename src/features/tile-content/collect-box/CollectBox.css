@@ -1,4 +1,4 @@
-/* 收集箱仅拥有手风琴内容，外层视口负责滚动与留白。 */
+/* 收集箱内容沿用公共格子主题与 10px 内容留白。 */
 .official-component__collect {
     min-width: 0;
     color: inherit;
@@ -6,7 +6,7 @@
     align-self: start;
 }
 
-/* 默认仅展示标题的条目列表。 */
+/* 条目列表使用稳定间距。 */
 .official-component__collect ul {
     display: grid;
     gap: 6px;
@@ -15,21 +15,29 @@
     list-style: none;
 }
 
-/* 手风琴标题表面与整行命中。 */
+/* 单击打开编辑器的条目表面。 */
+.official-component__collect li {
+    min-width: 0;
+    padding-bottom: 8px;
+    border: 1px solid var(--fence-border);
+    border-radius: 2px;
+    background: var(--fence-surface);
+}
+
+/* 条目标题与摘要共用整行命中区域。 */
 .official-component__collect-title {
     display: flex;
     align-items: center;
     gap: 6px;
     width: 100%;
     min-height: 38px;
-    padding: 6px 10px;
-    border: 1px solid var(--fence-border);
-    border-radius: 2px;
+    padding: 6px 10px 2px;
+    border: 0;
     color: inherit;
-    background: var(--fence-surface);
+    background: transparent;
     font: inherit;
     text-align: left;
-    cursor: pointer;
+    cursor: inherit;
 }
 
 /* 长标题省略，图标保持固定尺寸。 */
@@ -41,7 +49,7 @@
     text-overflow: ellipsis;
 }
 
-/* 所有条目图标复用当前文本主题色。 */
+/* 置顶图标复用现有 16px 图标基线。 */
 .collect-box__icon,
 .collect-box__icon svg {
     display: block;
@@ -50,57 +58,89 @@
     flex: none;
 }
 
-/* 展开的摘要区域使用公共焦点色与边框，不改变文字大小。 */
-.official-component__collect-summary {
-    padding: 8px 10px;
-    border: 1px solid var(--fence-focus-border);
-    border-radius: 2px;
-    background: color-mix(in srgb, var(--color-accent) 22%, transparent);
-}
-
-/* 摘要最多三行，独立保留编辑命令。 */
+/* 摘要最多三行；底部留白由条目承担，避免截断后文字露入内边距。 */
 .official-component__collect-summary-text {
     display: -webkit-box;
     overflow: hidden;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 3;
-    line-height: 1.5;
-    overflow-wrap: anywhere;
-    opacity: 0.8;
-}
-
-/* Markdown 摘要不引入段落边距。 */
-.official-component__collect-summary-text :is(p, h1, h2, h3, h4, h5, h6) {
     margin: 0;
-    font: inherit;
+    padding: 0 10px;
+    color: var(--fence-text);
+    line-height: 1.5;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+    opacity: 0.78;
 }
 
-/* 编辑入口与标题工具保持同一命中尺寸。 */
-.official-component__collect-summary button {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    margin-top: 8px;
-    border: 1px solid var(--fence-border);
-    border-radius: 2px;
-    color: inherit;
-    background: transparent;
-}
-
-/* 鼠标悬停与键盘焦点保持可辨识。 */
-.official-component__collect button:hover {
-    background: color-mix(in srgb, var(--fence-text) 14%, transparent);
+/* 条目悬停与焦点沿用格子强调色。 */
+.official-component__collect li:hover,
+.official-component__collect li:focus-within {
+    border-color: var(--fence-focus-border);
+    background: color-mix(in srgb, var(--color-accent) 18%, var(--fence-surface));
 }
 
 /* 键盘焦点不依赖壁纸颜色。 */
-.official-component__collect button:focus-visible {
+.official-component__collect li:focus-visible {
     outline: 1px solid var(--fence-focus-border);
-    outline-offset: 1px;
+    outline-offset: -2px;
 }
 
-/* 不可用条目不能打开编辑窗。 */
-.official-component__collect button:disabled {
+/* 不可用条目不能打开编辑器。 */
+.official-component__collect li[aria-disabled="true"] {
+    cursor: default;
     opacity: 0.5;
+}
+
+/* 悬浮预览使用独立主题表面，不改变条目布局。 */
+.collect-box__preview {
+    position: fixed;
+    z-index: 22000;
+    display: grid;
+    gap: 8px;
+    box-sizing: border-box;
+    width: min(520px, calc(100vw - 16px));
+    max-height: min(420px, calc(100vh - 16px));
+    padding: 12px;
+    overflow: hidden;
+    border: 1px solid rgb(100, 100, 100);
+    border-radius: 6px;
+    color: var(--fence-text);
+    background: rgb(32 38 40 / 60%);
+    box-shadow: 2px 3px 8px rgb(0 0 0 / 42%);
+}
+
+/* 浅色界面使用不透明浅色预览表面，避免壁纸穿透正文。 */
+:root[data-theme="light"] .collect-box__preview {
+    color: #202526;
+    background: rgb(245 248 249 / 60%);
+    box-shadow: 2px 3px 8px rgb(0 0 0 / 14%);
+}
+
+/* 预览正文允许纵向阅读和文本选择。 */
+.collect-box__preview-content {
+    min-height: 0;
+    overflow: auto;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+/* 预览正文复用 Vditor 的排版容器，但不提供编辑能力。 */
+.collect-box__preview-content.vditor-reset {
+    padding: 0;
+    color: inherit;
+    background: transparent;
+    font-family: var(--interface-font);
+    font-size: var(--interface-font-size);
+}
+
+/* 预览 Markdown 元素不引入浏览器默认大间距。 */
+.collect-box__preview-content :is(p, h1, h2, h3, h4, h5, h6, pre, blockquote, ul, ol, table) {
+    margin: 0 0 8px;
+}
+
+/* 预览代码块和表格保持局部横向滚动。 */
+.collect-box__preview-content :is(pre, table) {
+    max-width: 100%;
+    overflow: auto;
 }
