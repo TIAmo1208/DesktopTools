@@ -92,7 +92,7 @@ pub(crate) fn execute_start_desktop_item_drag(app: &AppHandle, state: &DesktopIt
     let prepared = state.take_prepared_drag(token)?; // 准备凭据已消费，Shell STA 不等待 UI 拖放。
     let (reply, response) = std::sync::mpsc::channel(); // transport 工作线程等待原生结果，不阻塞 UI 消息循环。
     app.run_on_main_thread(move || {
-        let result = prepared.data.resolve().map_err(|error| format!("解析源拖放数据失败：{error}")).and_then(|data| crate::platform::windows::start_desktop_item_drag(data, &prepared.references, pointer_offset, prepared.portal_source)); // 仅在当前 UI apartment 使用代理。
+        let result = prepared.data.resolve().map_err(|error| format!("解析源拖放数据失败：{error}")).and_then(|data| crate::platform::windows::start_desktop_item_drag(data, &prepared.references, pointer_offset, prepared.portal_source, prepared.collect_names)); // 仅在当前 UI apartment 使用代理。
         let _ = reply.send(result);
     })
     .map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
@@ -105,6 +105,26 @@ pub(crate) fn execute_start_desktop_item_drag(app: &AppHandle, state: &DesktopIt
 /// 准备完整选择集合；失败直接拒绝桌面项目拖动。
 #[tauri::command]
 pub async fn prepare_desktop_item_drag(state: State<'_, DesktopItemState>, item_ids: Vec<String>) -> Result<Option<crate::contracts::ShellDragPreparation>, DesktopItemError> { state.prepare_drag(&item_ids) }
+
+/// 为两个 transport 准备收集箱复制拖出，失败项只报告本地准备事实。
+#[tauri::command]
+pub async fn prepare_collect_drag(app: AppHandle, names: Vec<String>) -> Result<crate::contracts::ShellDragPreparation, DesktopItemError>
+{
+    tauri::async_runtime::spawn_blocking(move || execute_prepare_collect_drag(&app, names)).await.map_err(|error| DesktopItemError::shell_operation_failed(&error))?
+}
+
+/// 从磁盘读取权威收集项并把双表示交给现有 Shell STA。
+pub(crate) fn execute_prepare_collect_drag(app: &AppHandle, names: Vec<String>) -> Result<crate::contracts::ShellDragPreparation, DesktopItemError>
+{
+    let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 当前共享配置目录。
+    let config = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 和收入使用同一事实来源。
+    let export = crate::collect::prepare_export(&config, &names).map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 无效单项不拖垮后续可用条目。
+    if export.result.skipped > 0 || !export.result.failures.is_empty()
+    {
+        crate::app::desktop_drop::report_content_error(app, format!("拖出准备：可用 {} 项，跳过 {} 项，失败 {} 项。{}", export.result.processed, export.result.skipped, export.result.failures.len(), export.result.failures.iter().map(|failure| format!("{}：{}", failure.name, failure.error)).collect::<Vec<_>>().join("；")));
+    }
+    app.state::<DesktopItemState>().prepare_collect_drag(export.paths, export.text, export.names)
+}
 
 /// 释放点击或取消留下的准备数据。
 #[tauri::command]

@@ -11,7 +11,9 @@ export interface DesktopTileMenuItem {
     description?: string; // 禁用原因和辅助技术说明。
     children?: DesktopTileMenuItem[]; // 同时显示的二级菜单。
     onSelect?: () => void; // 选择最终命令。
+    closeOnSelect?: boolean; // 复选筛选显式保持菜单打开。
     separatorBefore?: boolean; // 与前一功能组分离。
+    heading?: boolean; // 非交互分组说明，不进入键盘导航。
 }
 
 /** 呈现同组两级菜单，统一焦点、边缘定位与透明宿主命中。 */
@@ -120,48 +122,52 @@ export const DesktopTileMenu = ({
                         if (!nested) timer.current = setTimeout(() => setActive(item.children && !item.disabled ? index : undefined), 200);
                     }}
                 >
-                    <button
-                        type="button"
-                        role={item.checked === undefined ? "menuitem" : item.radio ? "menuitemradio" : "menuitemcheckbox"}
-                        aria-checked={item.checked}
-                        disabled={item.disabled}
-                        aria-disabled={item.disabled}
-                        title={item.description}
-                        aria-description={item.description}
-                        aria-haspopup={item.children ? "menu" : undefined}
-                        aria-expanded={item.children ? active === index : undefined}
-                        data-expanded={!nested && active === index ? "true" : undefined}
-                        onKeyDown={(event) => {
-                            if (event.key !== "ArrowRight" || !item.children || item.disabled) return;
-                            event.preventDefault();
-                            event.stopPropagation();
-                            clearTimeout(timer.current);
-                            focusChild.current = true;
-                            setActive(index);
-                            if (active === index) child.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-                        }}
-                        onClick={() => {
-                            if (item.disabled) return;
-                            clearTimeout(timer.current);
-                            if (item.children) {
+                    {item.heading ? (
+                        <span className="desktop-tile-menu__heading">{item.label}</span>
+                    ) : (
+                        <button
+                            type="button"
+                            role={item.checked === undefined ? "menuitem" : item.radio ? "menuitemradio" : "menuitemcheckbox"}
+                            aria-checked={item.checked}
+                            disabled={item.disabled && item.closeOnSelect !== false}
+                            aria-disabled={item.disabled}
+                            title={item.description}
+                            aria-description={item.description}
+                            aria-haspopup={item.children ? "menu" : undefined}
+                            aria-expanded={item.children ? active === index : undefined}
+                            data-expanded={!nested && active === index ? "true" : undefined}
+                            onKeyDown={(event) => {
+                                if (event.key !== "ArrowRight" || !item.children || item.disabled) return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                clearTimeout(timer.current);
                                 focusChild.current = true;
                                 setActive(index);
-                                return;
-                            }
-                            onClose();
-                            item.onSelect?.();
-                        }}
-                    >
-                        <span className="desktop-tile-menu__check" aria-hidden="true">
-                            {item.checked ? "✓" : ""}
-                        </span>
-                        {item.label}
-                        {item.children && (
-                            <svg className="desktop-tile-menu__arrow" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-                                <path d="m6 4 4 4-4 4" fill="none" stroke="currentColor" />
-                            </svg>
-                        )}
-                    </button>
+                                if (active === index) child.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+                            }}
+                            onClick={() => {
+                                if (item.disabled) return;
+                                clearTimeout(timer.current);
+                                if (item.children) {
+                                    focusChild.current = true;
+                                    setActive(index);
+                                    return;
+                                }
+                                if (item.closeOnSelect !== false) onClose();
+                                item.onSelect?.();
+                            }}
+                        >
+                            <span className="desktop-tile-menu__check" aria-hidden="true">
+                                {item.checked ? (item.radio ? "●" : "✓") : ""}
+                            </span>
+                            {item.label}
+                            {item.children && (
+                                <svg className="desktop-tile-menu__arrow" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                                    <path d="m6 4 4 4-4 4" fill="none" stroke="currentColor" />
+                                </svg>
+                            )}
+                        </button>
+                    )}
                 </li>
             </Fragment>
         ));

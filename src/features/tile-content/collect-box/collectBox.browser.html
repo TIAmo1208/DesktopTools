@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark" data-desktop-theme="dark">
+    <meta charset="utf-8" />
+    <title>收集箱交互回归检查</title>
+    <body>
+        <main class="fence-workspace" id="fixture"></main>
+        <pre id="result" style="position: fixed; top: 360px; color: black; background: white">RUNNING</pre>
+        <script type="module">
+            import React, { useState } from "react";
+            import { createRoot } from "react-dom/client";
+            import { flushSync } from "react-dom";
+            import { CollectBoxTile } from "./CollectBoxTile.tsx";
+            import { createWorkspaceDropTarget } from "../../workspace/surface/workspaceDropTarget.ts";
+            import { collectHitRegions } from "../../workspace/surface/workspaceSurfaceProjection.ts";
+            import "../../../styles/global.css";
+            import "../../workspace/surface/DesktopWorkspace.css";
+
+            const params = new URLSearchParams(location.search); // 同一回归页覆盖设计窄版与独立主题。
+            if (params.has("light")) document.documentElement.dataset.theme = document.documentElement.dataset.desktopTheme = "light";
+            const h = React.createElement; // 直接运行生产组件。
+            const root = createRoot(document.getElementById("fixture")); // 共享挂载点。
+            const assert = (value, message) => {
+                if (!value) throw Error(message);
+            }; // 最小回归断言。
+            const settle = async () => {
+                for (let i = 0; i < 4; i++) await new Promise(requestAnimationFrame);
+            }; // 等待 React 和布局提交。
+            const calls = []; // 记录业务入口与生命周期结果。
+            const listeners = new Map(); // 原生事件替身。
+            let failRead = true; // 验证首次失败和重试。
+            let resolveDrag; // 控制准备请求迟到。
+            let resolveDelete; // 控制删除请求重入。
+            const canvas = document.createElement("canvas"); // 本地生成可辨识的非等比图片。
+            canvas.width = 120;
+            canvas.height = 60;
+            const context = canvas.getContext("2d");
+            context.fillStyle = "#157c79";
+            context.fillRect(0, 0, 120, 60);
+            context.fillStyle = "#f2cf59";
+            context.fillRect(30, 10, 60, 40);
+            let items = [
+                {
+                    name: "note.md",
+                    kind: "text",
+                    displayName: "note",
+                    content: "# 项目资料\n第一段\n\n第二段",
+                    path: null,
+                    available: true,
+                    pinned: false,
+                    createdUnixMs: 3,
+                },
+                {
+                    name: "sample.png",
+                    kind: "image",
+                    displayName: "sample.png",
+                    content: "",
+                    path: "sample.png",
+                    available: true,
+                    pinned: false,
+                    createdUnixMs: 2,
+                },
+                {
+                    name: "item-missing",
+                    kind: "file",
+                    displayName: "很长的文件映射名称不会覆盖旁边的内容.pdf",
+                    content: "",
+                    path: "C:/missing/document.pdf",
+                    available: false,
+                    pinned: false,
+                    createdUnixMs: 1,
+                },
+            ]; // 文本、图片和不可用映射。
+            window.__DESKTOP_TOOLS_NATIVE__ = {
+                invoke: async (command, args) => {
+                    calls.push({ command, args });
+                    if (command === "get_collect_items") {
+                        if (failRead) throw Error("测试读取失败");
+                        return items;
+                    }
+                    if (command === "read_collect_image") return canvas.toDataURL();
+                    if (command === "prepare_collect_drag")
+                        return new Promise((resolve) => {
+                            resolveDrag = resolve;
+                        });
+                    if (command === "delete_collect_item") {
+                        await new Promise((resolve) => {
+                            resolveDelete = resolve;
+                        });
+                        if (args.name === "item-missing") throw Error("测试删除失败");
+                        items = items.filter((item) => item.name !== args.name);
+                    }
+                },
+                listen: async (name, callback) => {
+                    listeners.set(name, callback);
+                    return () => listeners.delete(name);
+                },
+            };
+            const instance = {
+                instanceId: "collect-test",
+                componentId: "official.collect-box",
+                monitorId: "screen",
+                bounds: { left: 20, top: 20, width: params.has("narrow") ? 240 : 360, height: 310 },
+                stateVersion: 1,
+                state: {},
+            }; // 与设计相同量级的格子。
+            const Fixture = () => {
+                const [current, setCurrent] = useState(instance); // 真实实例设置更新。
+                return h(CollectBoxTile, {
+                    instance: current,
+                    registration: { entry: "official:collect-box", status: "ready" },
+                    monitors: [],
+                    appearance: { title: null, titleMode: "fixed", buttonMode: "always", collapsed: false, autoExpand: false },
+                    onCommand: async (command) => {
+                        if (command.type === "update-component-state") setCurrent((old) => ({ ...old, state: command.state }));
+                    },
+                    onInteraction: async () => {},
+                    onBeginInputDrag: async () => {
+                        calls.push({ command: "begin" });
+                    },
+                    onEndInputDrag: async () => {
+                        calls.push({ command: "end" });
+                    },
+                });
+            };
+            const options = () => [...document.querySelectorAll('[role="option"]')]; // 当前可见顺序。
+            const selected = () => options().filter((item) => item.getAttribute("aria-selected") === "true");
+            const key = (node, value, extra = {}) => flushSync(() => node.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, ...extra })));
+            const click = (node, extra = {}) => flushSync(() => node.dispatchEvent(new MouseEvent("click", { bubbles: true, ...extra })));
+            try {
+                flushSync(() => root.render(h(Fixture)));
+                await settle();
+                assert(document.querySelector('[role="alert"]')?.textContent.includes("无法读取"), "首次错误没有重试状态");
+                assert(
+                    collectHitRegions().some((region) => region.id === "collect-test" && region.kind === "component-unready"),
+                    "未就绪仍发布原生接收区域",
+                );
+                assert(document.querySelector('[aria-label="新建收集项"]').disabled, "未就绪允许新建");
+                failRead = false;
+                click([...document.querySelectorAll("button")].find((button) => button.textContent === "重试"));
+                await settle();
+                assert(options().length === 3, "重试未呈现三类条目");
+                assert(
+                    collectHitRegions().some((region) => region.id === "collect-test" && region.kind === "component"),
+                    "就绪后接收区域未恢复",
+                );
+                const image = document.querySelector("img.collect-box__image");
+                assert(image.naturalWidth === 120 && image.width === 78 && image.height === 52, "图片未使用稳定的 78×52 区域");
+                assert(getComputedStyle(image).objectFit === "contain", "图片被裁切");
+                click(options()[0]);
+                click(options()[2], { shiftKey: true });
+                assert(selected().length === 3, "Shift 范围选择失败");
+                key(options()[0], "Escape");
+                assert(selected().length === 0, "Esc 未清空选择");
+                options()[0].focus();
+                key(options()[0], "ArrowDown");
+                assert(document.activeElement === options()[1], "方向键未移动焦点");
+                key(options()[2], " ");
+                assert(selected().length === 1 && selected()[0] === options()[2], "不可用项不能选择");
+                key(options()[2], "Enter");
+                assert(!calls.some((call) => call.command === "open_collect_item"), "不可用项允许打开");
+                key(options()[2], "Delete");
+                await settle();
+                assert(document.querySelector("dialog")?.open && document.activeElement?.textContent === "取消", "删除确认默认焦点错误");
+                const remove = [...document.querySelectorAll("dialog button")].find((button) => button.textContent === "删除");
+                click(remove);
+                click(remove);
+                assert(calls.filter((call) => call.command === "delete_collect_item").length === 1, "删除重复提交");
+                resolveDelete();
+                await settle();
+                assert(!document.querySelector("dialog") && selected().length === 1, "删除失败没有保留选择");
+                key(options()[0], "a", { ctrlKey: true });
+                assert(selected().length === 3, "列表 Ctrl+A 失败");
+                click(document.querySelector('[aria-label="排序方式"]'));
+                await settle();
+                assert(document.querySelectorAll('[role="menuitemcheckbox"]').length === 3, "筛选不在同一个菜单");
+                const checkbox = [...document.querySelectorAll('[role="menuitemcheckbox"]')].find((entry) => entry.textContent.includes("图片"));
+                checkbox.focus();
+                click(checkbox);
+                await settle();
+                assert(document.querySelector('[role="menu"]') && document.activeElement === checkbox, "筛选后菜单或焦点丢失");
+                assert(options().length === 2 && selected().length === 2, "筛选未移除隐藏选择");
+                click(checkbox);
+                await settle();
+                key(checkbox, "Escape");
+                await settle();
+                const first = options()[0];
+                flushSync(() => first.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerId: 7, clientX: 40, clientY: 80 })));
+                window.dispatchEvent(new PointerEvent("pointermove", { pointerId: 7, clientX: 80, clientY: 80 }));
+                window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 7 }));
+                resolveDrag({ token: 123, threshold: { left: 4, top: 4 } });
+                await settle();
+                assert(
+                    calls.some((call) => call.command === "cancel_desktop_item_drag_preparation"),
+                    "迟到准备没有取消",
+                );
+                assert(!calls.some((call) => call.command === "begin" || call.command === "start_desktop_item_drag"), "松键后错误启动拖动");
+                const target = createWorkspaceDropTarget("screen", () => {}); // 运行真实拖放命中适配器。
+                const drag = {
+                    kind: "items",
+                    source: "ole",
+                    phase: "move",
+                    itemIds: [],
+                    contentTargets: ["official.collect-box"],
+                    pointer: { left: 0, top: 0 },
+                };
+                for (const [node, expected] of [
+                    [first, first],
+                    [document.querySelector(".collect-box__drop-band"), document.querySelector(".collect-box__drop-band")],
+                    [options()[1], undefined],
+                ]) {
+                    const bounds = node.getBoundingClientRect();
+                    target.update({ ...drag, pointer: { left: bounds.left + 2, top: bounds.top + 2 } }, undefined);
+                    assert(document.querySelector('[data-collect-drop-target="true"]') === (expected ?? null), "投放高亮目标错误");
+                }
+                target.clear();
+                assert(!document.querySelector("[data-collect-drop-target]"), "投放结束残留高亮");
+                document.getElementById("result").textContent = "PASS：加载/重试、原生命中、图片尺寸、多选/键盘、删除互斥/失败、筛选焦点、迟到拖动、投放高亮";
+            } catch (error) {
+                document.getElementById("result").textContent = `FAIL: ${error.stack}`;
+                console.error(error);
+            }
+        </script>
+    </body>
+</html>

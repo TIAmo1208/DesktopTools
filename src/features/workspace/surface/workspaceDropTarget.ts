@@ -21,6 +21,7 @@ export const createWorkspaceDropTarget = (monitorId: string, onScroll: (drag: Cr
             node.style.opacity = opacity;
         });
         faded.clear();
+        document.querySelectorAll<HTMLElement>("[data-collect-drop-target]").forEach((node) => delete node.dataset.collectDropTarget);
         document.querySelectorAll(".fence--remote-drop-target").forEach((node) => node.classList.remove("fence--remote-drop-target"));
         if (finish) {
             scrolls.forEach((position, content) => {
@@ -53,7 +54,18 @@ export const createWorkspaceDropTarget = (monitorId: string, onScroll: (drag: Cr
             const portal = tile?.dataset.portalId;
             const contentTarget = tile?.dataset.dropComponentType && drag.contentTargets?.includes(tile.dataset.dropComponentType); // 白名单来自原生摘要。
             drop.rejected = Boolean(tile && !tile.dataset.fenceId && !portal && !contentTarget) || (drag.fileContent === false && !contentTarget);
-            if (contentTarget) return { drop, regions: collectHitRegions(), fenceScrolls: [] }; // 内容业务不预览桌面落位。
+            if (contentTarget) {
+                const collect = tile?.querySelector<HTMLElement>('[data-collect-ready="true"]'); // 就绪内容才发布投放反馈。
+                if (collect) {
+                    const item = document
+                        .elementsFromPoint(drag.pointer.left, drag.pointer.top)
+                        .map((node) => node.closest<HTMLElement>("[data-collect-name]"))
+                        .find((node) => node && collect.contains(node)); // 与原生条目命中使用同一可见 DOM。
+                    const target = item ? (item.dataset.kind === "text" ? item : undefined) : collect.querySelector<HTMLElement>(".collect-box__drop-band");
+                    if (target) target.dataset.collectDropTarget = "true";
+                }
+                return { drop, regions: collectHitRegions(), fenceScrolls: [] };
+            } // 内容业务不预览桌面落位。
             if (portal) drop.portalId = portal;
             const element = drop.rejected
                 ? undefined

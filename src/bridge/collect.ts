@@ -1,14 +1,22 @@
 import { invokeRuntime, listenRuntime } from "./runtime";
+import { parseShellDragPreparation, type ShellDragPreparation } from "../contracts/desktopItem";
+import { startDesktopItemDrag, cancelDesktopItemDragPreparation } from "./desktopItems";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export interface CollectItem {
     name: string;
+    kind: "text" | "image" | "file";
+    displayName: string;
+    path: string | null;
     content: string;
     createdUnixMs: number;
     pinned: boolean;
     available: boolean;
 }
 export const getCollectItems = () => invokeRuntime<CollectItem[]>("get_collect_items");
+/** 为收集项准备一次系统 OLE 拖动。 */
+export const prepareCollectDrag = async (names: string[]): Promise<ShellDragPreparation | null> =>
+    parseShellDragPreparation(await invokeRuntime<unknown>("prepare_collect_drag", { names }));
 /** 读取本地图片供编辑器显示，原始 Markdown 引用保持不变。 */
 export const readCollectImage = (name: string, reference: string) => invokeRuntime<string>("read_collect_image", { name, reference });
 /** 交给系统默认程序打开，禁止在桌面宿主中导航。 */
@@ -22,6 +30,7 @@ export const importCollectRenderedResource = (name: string, reference: string, m
 export const writeCollectResource = (name: string, fileName: string, bytes: number[]) =>
     invokeRuntime<string>("write_collect_resource", { name, fileName, bytes });
 export const openCollectEditor = (name: string) => invokeRuntime<void>("open_collect_editor", { name });
+export const openCollectItem = (name: string) => invokeRuntime<void>("open_collect_item", { name });
 export const renameCollectItem = (oldName: string, newName: string, draft: string) => invokeRuntime<string>("rename_collect_item", { oldName, newName, draft });
 export const setCollectItemPinned = (name: string, pinned: boolean) => invokeRuntime<void>("set_collect_item_pinned", { name, pinned });
 export const deleteCollectItem = (name: string) => invokeRuntime<void>("delete_collect_item", { name });

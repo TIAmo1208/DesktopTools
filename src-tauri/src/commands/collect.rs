@@ -70,9 +70,36 @@ pub fn open_collect_link(url: String) -> Result<(), String>
     crate::platform::windows::settings::open_path(Path::new(parsed.as_str()))
 }
 #[tauri::command]
+pub async fn open_collect_item(app: AppHandle, settings: State<'_, SettingsState>, name: String) -> Result<(), String>
+{
+    let config = config(&settings)?;
+    let item = collect::get_item(&config, &name).map_err(|error| format!("打开收集项失败：{error}"))?;
+    if !item.available
+    {
+        return Err("收集项不可用".into());
+    }
+    if item.kind == collect::CollectKind::Text
+    {
+        return open_collect_editor(app, name).await;
+    }
+    let path = item.path.ok_or("收集项路径不可用")?;
+    crate::platform::windows::settings::open_path(Path::new(&path))
+}
+
+#[tauri::command]
 pub async fn open_collect_editor(app: AppHandle, name: String) -> Result<(), String> { tauri::async_runtime::spawn_blocking(move || execute_open_collect_editor(app, name)).await.map_err(|error| format!("编辑窗任务失败：{error}"))? }
 
-/// 在后台线程创建或聚焦文件编辑窗，避免同步 IPC 阻塞 Windows 消息循环。
+/// 检查和追加共用窗口注册锁，避免检查后打开编辑窗覆盖草稿。
+pub(crate) fn with_collect_editor_state<T>(app: &AppHandle, root: &Path, name: Option<&str>, receive: impl FnOnce(bool) -> Result<T, String>) -> Result<T, String>
+{
+    let mut editors = EDITORS.lock().map_err(|_| "编辑窗状态不可用")?; // 与窗口创建、重命名串行。
+    editors.labels.retain(|_, label| app.get_webview_window(label).is_some());
+    let editing = name.filter(|name| name.ends_with(".md")).map(|name| editor_path(root, name).map(|path| editors.labels.contains_key(&path))).transpose()?.unwrap_or(false); // 非文本目标不查询文本窗口。
+    let result = receive(editing); // 写入完成前保持注册锁。
+    drop(editors);
+    result
+}
+
 pub(crate) fn execute_open_collect_editor(app: AppHandle, name: String) -> Result<(), String>
 {
     let settings = app.state::<SettingsState>(); // 当前配置目录。
@@ -113,6 +140,16 @@ fn percent_encode_query(value: &str) -> String
 }
 #[tauri::command]
 pub fn get_collect_items(settings: State<'_, SettingsState>) -> Result<Vec<CollectItem>, String> { collect::list(Path::new(&config(&settings)?)).map_err(|e| format!("读取收集箱失败：{e}")) }
+#[tauri::command]
+pub fn prepare_collect_export(settings: State<'_, SettingsState>, names: Vec<String>) -> Result<collect::PreparedExport, String> { collect::prepare_export(Path::new(&config(&settings)?), &names) }
+#[tauri::command]
+pub fn receive_collect_items(app: AppHandle, settings: State<'_, SettingsState>, target_name: Option<String>, names: Vec<String>) -> Result<collect::ReceiveResult, String>
+{
+    let config = config(&settings)?; // 查询与写入使用同一配置快照。
+    let result = with_collect_editor_state(&app, &collect::directory(&config), target_name.as_deref(), |editing| collect::receive_items(&config, target_name.as_deref(), &names, editing))?; // 编辑窗存在即逐项拒绝追加。
+    changed(&app);
+    Ok(result)
+}
 #[tauri::command]
 pub fn create_collect_item(app: AppHandle, settings: State<'_, SettingsState>, content: String) -> Result<CollectItem, String>
 {

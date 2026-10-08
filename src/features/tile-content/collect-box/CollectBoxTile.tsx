@@ -15,17 +15,19 @@ export const CollectBoxTile = (props: ComponentTileProps) => {
             {...props}
             title="收集箱"
             expandOnDrop
+            acceptsDrop={toolbar?.ready === true}
+            scrollable={false}
             collapsedTitle={peek.title}
             subtitle={peek.summary}
             collapsedSize={{ height: 56 }}
-            minimum={{ width: 240, height: 120 }}
             sortItems={toolbar?.sortItems}
             menuItems={[
-                { label: "恢复最近删除", separatorBefore: true, disabled: !toolbar, onSelect: () => toolbar?.restore() },
+                ...(toolbar?.layoutItems ?? []).map((item, index) => ({ ...item, separatorBefore: index === 0 })),
+                { label: "恢复最近删除", separatorBefore: true, disabled: !toolbar?.ready, onSelect: () => toolbar?.restore() },
                 {
                     label: "新建收集项",
                     separatorBefore: true,
-                    disabled: !toolbar,
+                    disabled: !toolbar?.ready,
                     onSelect: () => toolbar?.create(),
                 },
                 {
@@ -61,18 +63,35 @@ export const CollectBoxTile = (props: ComponentTileProps) => {
                         >
                             <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: fenceSortIcon }} />
                         </button>
-                        <button type="button" title="新建收集项" aria-label="新建收集项" onClick={toolbar.create}>
+                        <button type="button" title="新建收集项" aria-label="新建收集项" disabled={!toolbar.ready} onClick={toolbar.create}>
                             <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: collectNewIcon }} />
                         </button>
                     </>
                 )
             }
         >
-            {props.registration?.entry === "official:collect-box" ? (
-                <CollectBox onLatestChange={setPeek} onToolbarReady={handleToolbarReady} />
-            ) : (
-                <p className="official-component__error">组件前端入口不存在</p>
-            )}
+            {(collapsed) =>
+                props.registration?.entry === "official:collect-box" ? (
+                    <CollectBox
+                        collapsed={collapsed}
+                        instanceState={props.instance.state}
+                        onStateChange={async (state) => {
+                            await props.onCommand({
+                                type: "update-component-state",
+                                instanceId: props.instance.instanceId,
+                                stateVersion: props.instance.stateVersion,
+                                state,
+                            });
+                        }}
+                        onLatestChange={setPeek}
+                        onBeginInputDrag={props.onBeginInputDrag}
+                        onEndInputDrag={props.onEndInputDrag}
+                        onToolbarReady={handleToolbarReady}
+                    />
+                ) : (
+                    <p className="official-component__error">组件前端入口不存在</p>
+                )
+            }
         </ComponentTile>
     );
 };

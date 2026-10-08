@@ -1,3 +1,36 @@
+/// 收集对象同时暴露跨目录文件和完整文本，路径失效不影响同组其他项提取。
+#[test]
+fn collect_drag_exposes_files_and_full_text()
+{
+    use super::*;
+    initialize_shell_apartment().unwrap();
+    let root = std::env::temp_dir().join(format!("collect-ole-{}", crate::tools::time::next_timeline_timestamp())); // 独立测试目录。
+    std::fs::create_dir_all(root.join("assets")).unwrap();
+    let first = root.join("note.md"); // 文本事实文件。
+    let second = root.join("assets").join("image.png"); // 不同父目录的实际图片。
+    std::fs::write(&first, "# 正文").unwrap();
+    std::fs::write(&second, b"image").unwrap();
+    let paths = vec![first.to_string_lossy().into_owned(), second.to_string_lossy().into_owned()]; // 来源稳定顺序。
+    {
+        let text = "完整正文与链接 https://example.com/\n".repeat(100); // 超过列表摘要限制。
+        let data = collect_data_object(&paths, &text).unwrap();
+        assert_eq!(super::super::drop_content::collect_file_paths(&data).unwrap(), paths);
+        let format = FORMATETC { cfFormat: 13, dwAspect: DVASPECT_CONTENT.0, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32, ..Default::default() }; // 目标按文本格式提取。
+        let mut medium = unsafe { data.GetData(&format) }.unwrap();
+        let pointer = unsafe { GlobalLock(medium.u.hGlobal) }.cast::<u16>();
+        assert!(!pointer.is_null());
+        let words = unsafe { std::slice::from_raw_parts(pointer, text.encode_utf16().count()) };
+        assert_eq!(String::from_utf16(words).unwrap(), text);
+        let _ = unsafe { GlobalUnlock(medium.u.hGlobal) };
+        unsafe { ReleaseStgMedium(&mut medium) };
+        std::fs::remove_file(&first).unwrap();
+        assert_eq!(super::super::drop_content::collect_file_paths(&data).unwrap(), paths);
+        assert!(super::super::drop_target::filesystem_drop_items(&data).is_none());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+    uninitialize_shell_apartment();
+}
+
 /// 真实 OLE 循环遗漏松键时能自行退出，已经开始 Drop 的期间不被检查线程取消。
 #[test]
 #[ignore = "需要交互式 Windows 桌面，短暂建立真实 OLE 会话但不执行文件投放"]

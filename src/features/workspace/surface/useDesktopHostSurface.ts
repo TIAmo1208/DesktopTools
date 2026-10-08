@@ -114,7 +114,7 @@ export const useDesktopHostSurface = (enabled: boolean, monitorIndex: number, it
             childList: true,
             subtree: true,
             attributes: true,
-            attributeFilter: ["style", "hidden", "data-keyboard-focus", "data-visible"],
+            attributeFilter: ["style", "hidden", "data-keyboard-focus", "data-visible", "data-hit-kind"],
         });
         observer.observe(document.documentElement);
         document.addEventListener("scroll", publishHitMap, true);

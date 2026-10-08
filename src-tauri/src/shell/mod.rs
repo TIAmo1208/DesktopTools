@@ -20,7 +20,7 @@ enum ShellRequest
     /// 在原指针拖动仍有效时准备完整数据对象，失败向调用方传播。
     PrepareDrag
     {
-        references: Vec<String>, portal_source: bool, image: Option<std::sync::Arc<crate::platform::windows::shell_image::ShellImage>>, reply: SyncSender<Result<Option<ShellDragPreparation>, String>>
+        references: Vec<String>, portal_source: bool, collect: Option<(Vec<String>, String)>, image: Option<std::sync::Arc<crate::platform::windows::shell_image::ShellImage>>, reply: SyncSender<Result<Option<ShellDragPreparation>, String>>
     },
     /// 释放未启动的单次准备，不影响其他窗口更新的准备。
     CancelPreparedDrag(u64),
@@ -129,6 +129,7 @@ pub(crate) struct PreparedShellDrag
 {
     pub data: AgileReference<IDataObject>, // 原始完整数据对象的合法封送引用。
     pub references: Vec<String>,           // 与原数据对象一致的完整来源身份。
+    pub collect_names: Option<Vec<String>>, // 本进程收集来源的条目身份。
     pub portal_source: bool,               // 门户来源必须执行文件传输，不走内部布局提交。
 }
 
@@ -191,7 +192,7 @@ impl ShellStaRuntime
                     }
                 };
                 let _ = ready.send(Ok(()));
-                let mut prepared_drag: Option<(u64, Vec<String>, IDataObject, bool)> = None; // 当前唯一未消费准备，COM 对象始终留在所属 STA。
+                let mut prepared_drag: Option<(u64, Vec<String>, IDataObject, bool, Option<Vec<String>>)> = None; // 当前唯一未消费准备，COM 对象始终留在所属 STA。
                 let mut next_drag_token = 0_u64; // 当前进程内递增的准备凭据。
                 let mut transfers = Vec::<JoinHandle<()>>::new(); // 长文件操作使用独立 STA，菜单、打开和源拖动继续响应。
 
@@ -227,15 +228,17 @@ impl ShellStaRuntime
                     }; // 已排队请求不等待；空队列才进入请求与消息的联合无限等待。
                     match request
                     {
-                        ShellRequest::PrepareDrag { references, portal_source, image, reply } =>
+                        ShellRequest::PrepareDrag { references, portal_source, collect, image, reply } =>
                         {
                             prepared_drag = None;
-                            let result = match crate::platform::windows::drag_data_object(windows::Win32::Foundation::HWND::default(), &references, portal_source, image.as_deref())
+                            let collect_names = collect.as_ref().map(|(names, _)| names.clone()); // 固定已经校验的来源条目。
+                            let data = if let Some((_, text)) = collect.as_ref() { crate::platform::windows::collect_data_object(&references, text) } else { crate::platform::windows::drag_data_object(windows::Win32::Foundation::HWND::default(), &references, portal_source, image.as_deref()) }; // 只改变内容表示，不另建拖放运行时。
+                            let result = match data
                             {
                                 Ok(data) =>
                                 {
                                     next_drag_token += 1;
-                                    prepared_drag = Some((next_drag_token, references, data, portal_source));
+                                    prepared_drag = Some((next_drag_token, references, data, portal_source, collect_names));
                                     use windows::Win32::UI::HiDpi::GetSystemMetricsForDpi;
                                     use windows::Win32::UI::WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG};
                                     Ok(Some(ShellDragPreparation { token: next_drag_token, threshold: WorkspacePoint { left: unsafe { GetSystemMetricsForDpi(SM_CXDRAG, 96) }.max(1) as f64, top: unsafe { GetSystemMetricsForDpi(SM_CYDRAG, 96) }.max(1) as f64 } }))
@@ -343,8 +346,8 @@ impl ShellStaRuntime
                         {
                             let result = if prepared_drag.as_ref().is_some_and(|prepared| prepared.0 == token)
                             {
-                                let (_, references, data, portal_source) = prepared_drag.take().expect("准备凭据已核实"); // 启动之前消费，不能重放。
-                                AgileReference::new(&data).map(|data| PreparedShellDrag { data, references, portal_source }).map_err(|error| format!("封送源拖放数据失败：{error}"))
+                                let (_, references, data, portal_source, collect_names) = prepared_drag.take().expect("准备凭据已核实"); // 启动之前消费，不能重放。
+                                AgileReference::new(&data).map(|data| PreparedShellDrag { data, references, portal_source, collect_names }).map_err(|error| format!("封送源拖放数据失败：{error}"))
                             }
                             else
                             {
@@ -769,7 +772,7 @@ impl DesktopItemState
         let references = self.selection_references(item_ids)?; // 不从选择中丢弃失效项目。
         let (reply, response) = mpsc::sync_channel(0); // 指针会话不等待，前端异步接收准备结果。
         let image = self.images.cached(&references[0]); // 拖动只消费已经显示或提取完成的内容。
-        self.runtime.send(ShellRequest::PrepareDrag { references, portal_source: false, image, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
+        self.runtime.send(ShellRequest::PrepareDrag { references, portal_source: false, collect: None, image, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
         response.recv().map_err(|error| DesktopItemError::shell_operation_failed(&error))?.map_err(|error| DesktopItemError::shell_operation_failed(&error))
     }
 
@@ -777,8 +780,20 @@ impl DesktopItemState
     pub(crate) fn prepare_portal_drag(&self, references: Vec<String>) -> Result<ShellDragPreparation, DesktopItemError>
     {
         let (reply, response) = mpsc::sync_channel(0);
-        self.runtime.send(ShellRequest::PrepareDrag { references, portal_source: true, image: None, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
+        self.runtime.send(ShellRequest::PrepareDrag { references, portal_source: true, collect: None, image: None, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
         response.recv().map_err(|error| DesktopItemError::shell_operation_failed(&error))?.map_err(|error| DesktopItemError::shell_operation_failed(&error))?.ok_or_else(|| DesktopItemError::shell_operation_failed(&"无法准备门户文件拖放"))
+    }
+
+    /// 收集业务已校验路径与正文；只创建复制表示并保留条目身份。
+    pub(crate) fn prepare_collect_drag(&self, references: Vec<String>, text: String, names: Vec<String>) -> Result<ShellDragPreparation, DesktopItemError>
+    {
+        if names.is_empty() || names.len() > 512 || names.iter().any(|name| name.is_empty())
+        {
+            return Err(DesktopItemError::shell_operation_failed(&"收集拖出选择无效"));
+        }
+        let (reply, response) = mpsc::sync_channel(0); // 与桌面来源共用 STA 及一次性凭据。
+        self.runtime.send(ShellRequest::PrepareDrag { references, portal_source: false, collect: Some((names, text)), image: None, reply }).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;
+        response.recv().map_err(|error| DesktopItemError::shell_operation_failed(&error))?.map_err(|error| DesktopItemError::shell_operation_failed(&error))?.ok_or_else(|| DesktopItemError::shell_operation_failed(&"无法准备收集拖放"))
     }
 
     /// 单击、取消或失去捕获时释放尚未消费的 Shell 数据对象。
