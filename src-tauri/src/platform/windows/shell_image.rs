@@ -136,6 +136,9 @@ mod tests
             encoder.write_header().unwrap().write_image_data(&[200, 40, 10, 128].repeat(96 * 40)).unwrap();
         }
         let image = extract_thumbnail(path.to_str().unwrap(), 48).unwrap().expect("PNG 应有系统缩略图"); // 正式提取和编码路径。
+        let preview = extract_thumbnail(path.to_str().unwrap(), 24).unwrap().expect("小尺寸预览应可读取"); // 读取端按预览大小控制传输及像素副本。
+        assert_eq!((preview.width, preview.height), (24, 10));
+        assert_eq!(preview.bgra.len(), 24 * 10 * 4);
         std::fs::remove_file(&path).unwrap();
         assert_eq!((image.width, image.height), (48, 20));
         let encoded = STANDARD.decode(image.data_url.strip_prefix("data:image/png;base64,").unwrap()).unwrap(); // 解码正式 PNG 结果。

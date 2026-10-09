@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+test("图片预览宽度使用默认值并验证整数边界", () => {
+    const base = { theme: "light", doubleClickToOpen: true };
+    assert.equal(parsePreferences(base).collectImagePreviewWidth, 78);
+    for (const width of [48, 78, 156]) assert.equal(parsePreferences({ ...base, collectImagePreviewWidth: width }).collectImagePreviewWidth, width);
+    for (const width of [47, 157, 78.5, null, "78", NaN]) assert.throws(() => parsePreferences({ ...base, collectImagePreviewWidth: width }));
+});
+
 import { parsePreferences, parseSettingsSnapshot, resolveAnimationsEnabled } from "./settings.ts";
 
 test("刷新策略默认关闭，保存往返保留开关并拒绝错误类型", () => {

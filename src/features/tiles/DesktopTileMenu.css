@@ -77,8 +77,16 @@
 }
 
 /* 禁用项目保留已保存选中标记。 */
-.desktop-tile-menu button:disabled {
+.desktop-tile-menu button:disabled,
+.desktop-tile-menu button[aria-disabled="true"] {
     opacity: 0.48;
+}
+
+/* 复选菜单分组标题不可交互，也不占用命令焦点。 */
+.desktop-tile-menu__heading {
+    display: block;
+    padding: 4px 9px;
+    opacity: 0.7;
 }
 
 /* 单选和复选标记共用图标轨道。 */

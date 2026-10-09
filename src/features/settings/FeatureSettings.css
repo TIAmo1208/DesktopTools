@@ -23,8 +23,20 @@
     background: var(--color-surface);
 }
 /* 二级设置中的控件靠右。 */
-.feature-settings__row > :is(.settings-switch, select) {
+.feature-settings__row > :is(.settings-switch, select, input) {
     margin-left: auto;
+}
+
+/* 数值控件保持紧凑宽度并沿用设置主题。 */
+.feature-settings input[type="number"] {
+    width: 88px;
+    min-height: 38px;
+    padding: 6px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text);
+    background: var(--color-subtle);
+    font: inherit;
 }
 
 /* 功能说明在操作按钮左侧保持可收缩布局。 */

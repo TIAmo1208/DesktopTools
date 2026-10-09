@@ -1190,14 +1190,15 @@ pub(crate) fn transfer_paths_to_directory(owner: &ShellMenuOwner, effect: DROPEF
 }
 
 /// 使用 Shell IDataObject 启动跨 Desktop Tools、Explorer 和其他程序的 OLE 拖放。
-pub fn start_desktop_item_drag(data_object: IDataObject, references: &[String], pointer_offset: crate::contracts::WorkspacePoint, portal_source: bool) -> Result<ShellOperationResult, String>
+pub fn start_desktop_item_drag(data_object: IDataObject, references: &[String], pointer_offset: crate::contracts::WorkspacePoint, portal_source: bool, collect_names: Option<Vec<String>>) -> Result<ShellOperationResult, String>
 {
     validate_reference_selection(references)?;
+    let collect_source = collect_names.is_some(); // 收集条目始终保留，不能协商移动或链接。
     let drop_started = Arc::new(AtomicBool::new(false)); // 目标已经开始 Drop 后不得取消真实文件操作。
     let drop_source: IDropSource = ShellDragSource { drop_started: Arc::clone(&drop_started) }.into(); // 使用系统默认光标的 OLE 拖动源。
-    let allowed = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK; // 外部目标可以协商的完整系统效果集合。
+    let allowed = if collect_source { DROPEFFECT_COPY } else { DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK }; // 原桌面和门户契约保持不变。
     let mut effect = DROPEFFECT_NONE; // DoDragDrop 返回的最终系统效果。
-    let session = super::drop_target::SourceDragGuard::register(&data_object, references, pointer_offset, portal_source).map_err(|error| format!("登记系统拖动会话失败：{error}"))?; // 原生目标只认可本次完整数据对象。
+    let session = super::drop_target::SourceDragGuard::register(&data_object, references, pointer_offset, portal_source, collect_names).map_err(|error| format!("登记系统拖动会话失败：{error}"))?; // 原生目标只认可本次完整数据对象。
     let source_thread = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }; // COM 与 OLE 所属 STA。
     let (stop_release_watch, release_watch) = watch_source_drag_release(source_thread, Arc::clone(&drop_started))?; // 松键检查不依赖可能失去消息的源循环。
     SHELL_DRAG_ACTIVE.store(true, Ordering::Release);
@@ -1245,6 +1246,10 @@ pub fn start_desktop_item_drag(data_object: IDataObject, references: &[String], 
         else if effect == DROPEFFECT_NONE
         {
             "目标未接受投放".to_string()
+        }
+        else if collect_source
+        {
+            "目标已接受投放，未提供逐项保存结果；收集项已保留".to_string()
         }
         else
         {
@@ -1521,6 +1526,13 @@ pub(crate) fn drag_data_object(hwnd: HWND, references: &[String], portal_source:
     {
         desktop_data_object(hwnd, references)
     }?; // 数据对象及系统图像在异步准备阶段完成，不延迟 OLE 交接。
+    initialize_drag_image(&data_object, references, cached_image);
+    Ok(data_object)
+}
+
+/// 所有原生来源共用系统持有的拖动图像，页面不绘制跟随图像。
+fn initialize_drag_image(data_object: &IDataObject, references: &[String], cached_image: Option<&super::shell_image::ShellImage>)
+{
     // 系统持有拖动图像，目标页面只呈现落位与插入提示。
     let drag_image_result = (|| -> Result<(), String> {
         use windows::Win32::UI::Shell::{CLSID_DragDropHelper, IDragSourceHelper, IShellItemImageFactory, SHDRAGIMAGE, SIIGBF_ICONONLY};
@@ -1537,7 +1549,7 @@ pub(crate) fn drag_data_object(hwnd: HWND, references: &[String], portal_source:
         let initialized = (|| -> windows::core::Result<()> {
             let helper: IDragSourceHelper = unsafe { CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_ALL)? }; // Windows 拖动图像服务。
             let image = SHDRAGIMAGE { sizeDragImage: size, ptOffset: windows::Win32::Foundation::POINT { x: 24, y: 24 }, hbmpDragImage: bitmap.0, crColorKey: windows::Win32::Foundation::COLORREF(0xffffffff) }; // 使用位图 Alpha 而不是色键。
-            unsafe { helper.InitializeFromBitmap(&image, &data_object) }
+            unsafe { helper.InitializeFromBitmap(&image, data_object) }
         })(); // helper 将图像复制到数据对象，不借用源位图。
         initialized.map_err(|error| format!("初始化系统拖动图像失败：{error}"))
     })();
@@ -1545,7 +1557,53 @@ pub(crate) fn drag_data_object(hwnd: HWND, references: &[String], portal_source:
     {
         crate::log_warn!("拖放：{error}");
     }
-    Ok(data_object)
+}
+
+/// 收集拖出只提供实际文件和完整纯文本；目标自行选择表示。
+pub(crate) fn collect_data_object(references: &[String], text: &str) -> Result<IDataObject, String>
+{
+    validate_reference_selection(references)?;
+    if references.len() > 1024 || references.iter().any(|path| path.contains('\0') || !std::path::Path::new(path).is_absolute() || !std::path::Path::new(path).exists()) || text.contains('\0')
+    {
+        return Err("收集拖出路径失效或数据无效".into());
+    }
+    let data: IDataObject = unsafe { windows::Win32::UI::Shell::SHCreateDataObject(None, None, None) }.map_err(|error| format!("创建收集拖出数据失败：{error}"))?; // 系统容器持有多种格式，避免自建 COM 实现。
+    let put = |id: u16, bytes: &[u8]| -> Result<(), String> {
+        let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }.map_err(|error| error.to_string())?; // SetData 成功后交给系统释放。
+        let mut medium = STGMEDIUM { tymed: TYMED_HGLOBAL.0 as u32, u: STGMEDIUM_0 { hGlobal: memory }, ..Default::default() }; // 失败路径也配对释放。
+        let pointer = unsafe { GlobalLock(memory) }.cast::<u8>(); // 写入时唯一有效的内存视图。
+        if pointer.is_null()
+        {
+            unsafe { ReleaseStgMedium(&mut medium) };
+            return Err("收集拖出数据内存不可用".into());
+        }
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
+        let _ = unsafe { GlobalUnlock(memory) };
+        let format = FORMATETC { cfFormat: id, dwAspect: DVASPECT_CONTENT.0, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32, ..Default::default() }; // Windows HGLOBAL 格式。
+        if let Err(error) = unsafe { data.SetData(&format, &medium, true) }
+        {
+            unsafe { ReleaseStgMedium(&mut medium) };
+            return Err(format!("写入收集拖出表示失败：{error}"));
+        }
+        Ok(())
+    };
+    let mut files = vec![0u8; 20]; // DROPFILES 固定头：pFiles、POINT、fNC、fWide。
+    files[0..4].copy_from_slice(&20u32.to_le_bytes());
+    files[16..20].copy_from_slice(&1u32.to_le_bytes());
+    for path in references
+    {
+        files.extend(path.encode_utf16().chain(std::iter::once(0)).flat_map(u16::to_le_bytes));
+    }
+    files.extend([0, 0]); // 文件集合以双 NUL 结束。
+    put(15, &files)?; // CF_HDROP 允许不同父目录的实际文件。
+    if !text.is_empty()
+    {
+        let words = text.encode_utf16().chain(std::iter::once(0)).flat_map(u16::to_le_bytes).collect::<Vec<_>>(); // 完整正文不做摘要截断。
+        put(13, &words)?; // CF_UNICODETEXT，与文件表示并存。
+    }
+    set_drop_effect(&data, CFSTR_PREFERREDDROPEFFECT, DROPEFFECT_COPY)?;
+    initialize_drag_image(&data, references, None);
+    Ok(data)
 }
 
 /// 从绝对文件系统路径创建可复制/剪切的 Shell 数据对象。
@@ -1683,7 +1741,7 @@ fn completed_file_operation(kind: ShellOperationKind, reversible: bool, permanen
 fn shell_item_reference(item: &IShellItem) -> Result<String, String> { shell_item_name(item, SIGDN_DESKTOPABSOLUTEPARSING) }
 
 /// 将文件系统安全边界使用的 extended-length 路径转换为 Shell 解析路径。
-fn shell_parsing_path(path: &str) -> String { path.strip_prefix(r"\\?\UNC\").map_or_else(|| path.strip_prefix(r"\\?\").unwrap_or(path).to_string(), |unc| format!(r"\\{unc}")) }
+pub(crate) fn shell_parsing_path(path: &str) -> String { path.strip_prefix(r"\\?\UNC\").map_or_else(|| path.strip_prefix(r"\\?\").unwrap_or(path).to_string(), |unc| format!(r"\\{unc}")) }
 
 /// 读取补偿日志需要的项目稳定引用、父级引用和编辑名称。
 fn shell_item_metadata(item: &IShellItem) -> ShellItemMetadata

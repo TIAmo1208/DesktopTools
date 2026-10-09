@@ -7,8 +7,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 #[derive(Default)]
 struct EditorWindows
 {
-    labels: std::collections::BTreeMap<std::path::PathBuf, String>, // 规范文件路径到窗口标识。
-    next_id: u64,                                                   // 单调分配，重命名后旧路径再次创建也不会复用活跃窗口标识。
+    labels: std::collections::BTreeMap<std::path::PathBuf, String>,                            // 规范文件路径到窗口标识。
+    next_id: u64,                                                                              // 单调分配，重命名后旧路径再次创建也不会复用活跃窗口标识。
+    baselines: std::collections::BTreeMap<String, Option<std::collections::BTreeSet<String>>>, // 窗口打开时的附件集合；读取失败禁止清理。
 }
 
 impl EditorWindows
@@ -52,10 +53,28 @@ fn changed(app: &AppHandle) { let _ = app.emit("collect-items-changed", ()); }
 
 /// 读取当前收集项引用的本地图片，显示数据不写回 Markdown。
 #[tauri::command]
-pub async fn read_collect_image(settings: State<'_, SettingsState>, name: String, reference: String) -> Result<String, String>
+pub async fn read_collect_image(app: AppHandle, name: String, reference: String, pixels: Option<u32>) -> Result<String, String> { tauri::async_runtime::spawn_blocking(move || execute_read_collect_image(&app, &name, &reference, pixels)).await.map_err(|error| error.to_string())? }
+
+/// 两个命令通道共用身份校验；列表缩略图复用已有 STA 和有界缓存。
+pub(crate) fn execute_read_collect_image(app: &AppHandle, name: &str, reference: &str, pixels: Option<u32>) -> Result<String, String>
 {
-    let config = config(&settings)?; // 后台读取前固定当前配置目录。
-    tauri::async_runtime::spawn_blocking(move || collect::read_image(&config, &name, &reference).map_err(|error| format!("读取收集项图片失败：{error}"))).await.map_err(|error| error.to_string())?
+    let config = config(&app.state::<SettingsState>())?; // 使用当前配置，不接受前端指定任意缩略图路径。
+    if let Some(pixels) = pixels
+    {
+        if !(1..=768).contains(&pixels)
+        {
+            return Err("图片预览尺寸必须在 1 到 768 像素之间".into());
+        }
+        let item = collect::get_item(&config, name).map_err(|error| error.to_string())?; // 独立图片身份仍由收集业务验证。
+        if item.kind != collect::CollectKind::Image
+        {
+            return Err("缩略图只用于独立图片收集项".into());
+        }
+        let path = item.path.ok_or("图片路径不可用")?; // 不使用调用方的 reference 绕过归属验证。
+        let response = app.state::<crate::shell::DesktopItemState>().images.request(path, pixels)?; // 合并相同尺寸读取，不增加常驻线程。
+        return response.recv().map_err(|error| error.to_string())?.map(|image| image.data_url.clone()).ok_or_else(|| "系统无法生成此图片的缩略图".into());
+    }
+    collect::read_image(&config, name, reference).map_err(|error| format!("读取收集项图片失败：{error}"))
 }
 
 /// 只把明确的网页和邮件链接交给系统默认程序，拒绝脚本和应用内部协议。
@@ -70,9 +89,43 @@ pub fn open_collect_link(url: String) -> Result<(), String>
     crate::platform::windows::settings::open_path(Path::new(parsed.as_str()))
 }
 #[tauri::command]
+pub async fn open_collect_item(app: AppHandle, name: String) -> Result<(), String> { tauri::async_runtime::spawn_blocking(move || execute_open_collect_item(&app, name)).await.map_err(|error| format!("打开收集项任务失败：{error}"))? }
+
+/// 两个宿主共用打开入口，失败后重新发布文件事实，保留失效映射。
+pub(crate) fn execute_open_collect_item(app: &AppHandle, name: String) -> Result<(), String>
+{
+    let result = (|| {
+        let config = config(&app.state::<SettingsState>())?; // 当前配置目录。
+        let item = collect::get_item(&config, &name).map_err(|error| format!("读取收集项失败，条目={name}，原因={error}"))?; // 每次打开重新检查文件事实。
+        if item.kind == collect::CollectKind::Text
+        {
+            return execute_open_collect_editor(app.clone(), name.clone());
+        }
+        let path = item.path.ok_or_else(|| format!("收集项路径未配置，条目={name}"))?; // 映射目标不能由前端替换。
+        crate::platform::windows::settings::open_path(Path::new(&path))
+    })(); // 包括读取失败和检查后删除的竞态。
+    if let Err(error) = &result
+    {
+        changed(app);
+        crate::log_error!("收集箱：打开失败，条目={name}，原因={error}");
+    }
+    result
+}
+
+#[tauri::command]
 pub async fn open_collect_editor(app: AppHandle, name: String) -> Result<(), String> { tauri::async_runtime::spawn_blocking(move || execute_open_collect_editor(app, name)).await.map_err(|error| format!("编辑窗任务失败：{error}"))? }
 
-/// 在后台线程创建或聚焦文件编辑窗，避免同步 IPC 阻塞 Windows 消息循环。
+/// 检查和追加共用窗口注册锁，避免检查后打开编辑窗覆盖草稿。
+pub(crate) fn with_collect_editor_state<T>(app: &AppHandle, root: &Path, name: Option<&str>, receive: impl FnOnce(bool) -> Result<T, String>) -> Result<T, String>
+{
+    let mut editors = EDITORS.lock().map_err(|_| "编辑窗状态不可用")?; // 与窗口创建、重命名串行。
+    editors.labels.retain(|_, label| app.get_webview_window(label).is_some());
+    let editing = name.filter(|name| name.ends_with(".md")).map(|name| editor_path(root, name).map(|path| editors.labels.contains_key(&path))).transpose()?.unwrap_or(false); // 非文本目标不查询文本窗口。
+    let result = receive(editing); // 写入完成前保持注册锁。
+    drop(editors);
+    result
+}
+
 pub(crate) fn execute_open_collect_editor(app: AppHandle, name: String) -> Result<(), String>
 {
     let settings = app.state::<SettingsState>(); // 当前配置目录。
@@ -81,17 +134,63 @@ pub(crate) fn execute_open_collect_editor(app: AppHandle, name: String) -> Resul
     let path = editor_path(&root, &name)?; // 当前文件身份。
     editors.labels.retain(|_, label| app.get_webview_window(label).is_some());
     let label = editors.label(path.clone()); // 文件独立的窗口标识。
+    editors.baselines.retain(|label, _| app.get_webview_window(label).is_some());
     if let Some(window) = app.get_webview_window(&label)
     {
         window.unminimize().and_then(|_| window.show()).and_then(|_| window.set_focus()).map_err(|e| e.to_string())?;
         return Ok(());
     }
     let result = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(format!("index.html?collect-editor=1&name={}", percent_encode_query(&name)).into())).title(format!("编辑收集项 — {name}")).inner_size(720.0, 520.0).min_inner_size(420.0, 320.0).build(); // 按需创建，不限制其他文件的窗口。
+    if result.is_ok()
+    {
+        let baseline = collect::cleanup::baseline(&config(&settings)?, &name).map_err(|error| crate::log_warn!("收集箱：无法记录编辑附件基线，路径={}，原因={error}", path.display())).ok();
+        editors.baselines.insert(label, baseline);
+    }
     if result.is_err()
     {
         editors.labels.remove(&path);
     }
     result.map(|_| ()).map_err(|e| format!("打开收集项编辑窗失败：{e}"))
+}
+
+/// 关闭编辑窗时保守清理受管附件，后台失败不撤销成功保存的正文。
+#[tauri::command]
+pub async fn cleanup_collect_resources(app: AppHandle, window: tauri::WebviewWindow, name: String, discard: bool) -> Result<(), String>
+{
+    let label = window.label().to_string(); // 调用窗口身份由 Tauri 注入，不接受前端指定。
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut document = name.clone(); // 配置解析成功后记录完整路径。
+        let result = (|| {
+            let config = config(&app.state::<SettingsState>())?; // 关闭时使用当前配置。
+            document = collect::directory(&config).join(&name).to_string_lossy().into_owned();
+            let path = editor_path(&collect::directory(&config), &name)?;
+            let mut editors = EDITORS.lock().map_err(|_| "编辑窗状态不可用")?; // 串行保护改名、打开和清理。
+            editors.labels.retain(|_, label| app.get_webview_window(label).is_some());
+            if editors.labels.get(&path) != Some(&label)
+            {
+                return Err("清理请求不属于当前编辑窗".to_string());
+            }
+            if editors.labels.len() != 1
+            {
+                return Err("存在其他编辑窗，无法确认未保存的跨文档引用，保留附件".to_string());
+            }
+            let baseline = editors.baselines.get(&label).and_then(Option::as_ref).ok_or("编辑附件基线不完整，保留附件")?;
+            collect::cleanup::cleanup(&config, &name, discard.then_some(baseline), |proof| {
+                let result = app.state::<crate::shell::DesktopItemState>().recycle_collect_resource(proof.clone()).map_err(|error| error.message)?; // 复用现有 Shell STA 回收及 Pre 回调身份校验。
+                if result.aborted || result.operation_error.is_some() || result.permanent || result.items.len() != 1 || !result.items[0].succeeded
+                {
+                    return Err(format!("系统回收未完成：{}，错误码={:?}", result.message, result.operation_error.or_else(|| result.items.first().map(|item| item.result_code))));
+                }
+                Ok(())
+            })
+        })();
+        if let Err(error) = result
+        {
+            crate::log_warn!("收集箱：附件清理跳过或失败，正文保存不受影响，文档路径={document}，原因={error}");
+        }
+    })
+    .await
+    .map_err(|error| format!("附件清理任务失败：{error}"))
 }
 
 /// 将文件名安全编码为编辑窗查询参数，避免 `&` 等字符改变条目身份。
@@ -113,6 +212,16 @@ fn percent_encode_query(value: &str) -> String
 }
 #[tauri::command]
 pub fn get_collect_items(settings: State<'_, SettingsState>) -> Result<Vec<CollectItem>, String> { collect::list(Path::new(&config(&settings)?)).map_err(|e| format!("读取收集箱失败：{e}")) }
+#[tauri::command]
+pub fn prepare_collect_export(settings: State<'_, SettingsState>, names: Vec<String>) -> Result<collect::PreparedExport, String> { collect::prepare_export(Path::new(&config(&settings)?), &names) }
+#[tauri::command]
+pub fn receive_collect_items(app: AppHandle, settings: State<'_, SettingsState>, target_name: Option<String>, names: Vec<String>) -> Result<collect::ReceiveResult, String>
+{
+    let config = config(&settings)?; // 查询与写入使用同一配置快照。
+    let result = with_collect_editor_state(&app, &collect::directory(&config), target_name.as_deref(), |editing| collect::receive_items(&config, target_name.as_deref(), &names, editing))?; // 编辑窗存在即逐项拒绝追加。
+    changed(&app);
+    Ok(result)
+}
 #[tauri::command]
 pub fn create_collect_item(app: AppHandle, settings: State<'_, SettingsState>, content: String) -> Result<CollectItem, String>
 {

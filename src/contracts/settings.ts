@@ -56,6 +56,7 @@ export interface ApplicationPreferences {
     collectEnabled: boolean; // 收集箱格子显隐。
     collectAutoSaveOnExit: boolean; // 编辑窗退出时自动保存。
     collectImageImportMode: "copy" | "move" | "link"; // 图片收入方式。
+    collectImagePreviewWidth: number; // 列表图片宽度，单位 DIP。
     musicShowSource: boolean; // 音乐格子显示媒体来源。
     clockHour12: boolean; // 十二小时制。
     clockShowSeconds: boolean; // 显示秒数。
@@ -133,6 +134,14 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     )
         throw new Error("图片收入方式无效");
     const collectImageImportMode = (candidate.collectImageImportMode as "copy" | "move" | "link" | undefined) ?? "copy";
+    const collectImagePreviewWidth = candidate.collectImagePreviewWidth === undefined ? 78 : candidate.collectImagePreviewWidth; // 缺失配置使用当前默认值。
+    if (
+        typeof collectImagePreviewWidth !== "number" ||
+        !Number.isInteger(collectImagePreviewWidth) ||
+        collectImagePreviewWidth < 48 ||
+        collectImagePreviewWidth > 156
+    )
+        throw new Error("图片预览宽度必须为 48 到 156 DIP 的整数");
     return {
         theme: candidate.theme,
         desktopAppearance: {
@@ -151,6 +160,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         fenceGrid: parseGridPreferences(candidate.fenceGrid === undefined ? DEFAULT_FENCE_GRID : candidate.fenceGrid),
         ...features,
         collectImageImportMode,
+        collectImagePreviewWidth,
     };
 };
 

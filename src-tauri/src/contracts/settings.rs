@@ -81,6 +81,7 @@ pub struct ApplicationPreferences
     pub collect_enabled: bool,                 // 收集箱格子显隐。
     pub collect_auto_save_on_exit: bool,       // 编辑窗退出时自动保存。
     pub collect_image_import_mode: String,     // 图片收入方式：copy、move 或 link。
+    pub collect_image_preview_width: u16,      // 列表图片宽度，单位 DIP。
     pub music_show_source: bool,               // 音乐控制显示媒体来源。
     pub clock_hour12: bool,                    // 本地时间使用十二小时制。
     pub clock_show_seconds: bool,              // 本地时间显示秒数。
@@ -98,7 +99,7 @@ pub struct ApplicationPreferences
 impl Default for ApplicationPreferences
 {
     /// 创建首次启动的应用偏好，音乐默认关闭。
-    fn default() -> Self { Self { theme: ApplicationTheme::System, desktop_appearance: DesktopAppearance::default(), config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(), double_click_to_open: true, accent_color: "#2563eb".to_string(), use_windows_accent_color: false, corner_radius: 6, font_family: "Segoe UI Variable".to_string(), font_size: 13, desktop_grid: GridPreferences::default(), fence_grid: GridPreferences { column_gap: 6, ..Default::default() }, clock_enabled: true, music_enabled: false, collect_enabled: true, collect_auto_save_on_exit: false, collect_image_import_mode: "copy".to_string(), music_show_source: true, clock_hour12: false, clock_show_seconds: true, debug_enabled: true, debug_show_details: true, component_snap: true, follow_system_reduced_motion: true, interface_animations: true, folder_portal_enabled: true, pause_on_fullscreen: false, pause_on_focus: false } }
+    fn default() -> Self { Self { theme: ApplicationTheme::System, desktop_appearance: DesktopAppearance::default(), config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(), double_click_to_open: true, accent_color: "#2563eb".to_string(), use_windows_accent_color: false, corner_radius: 6, font_family: "Segoe UI Variable".to_string(), font_size: 13, desktop_grid: GridPreferences::default(), fence_grid: GridPreferences { column_gap: 6, ..Default::default() }, clock_enabled: true, music_enabled: false, collect_enabled: true, collect_auto_save_on_exit: false, collect_image_import_mode: "copy".to_string(), collect_image_preview_width: 78, music_show_source: true, clock_hour12: false, clock_show_seconds: true, debug_enabled: true, debug_show_details: true, component_snap: true, follow_system_reduced_motion: true, interface_animations: true, folder_portal_enabled: true, pause_on_fullscreen: false, pause_on_focus: false } }
 }
 
 /// 校验配置文件和命令输入共用的外观边界。
@@ -125,6 +126,10 @@ impl ApplicationPreferences
             return Err("图片收入方式无效".to_string());
         }
         self.desktop_grid.validate()?;
+        if !(48..=156).contains(&self.collect_image_preview_width)
+        {
+            return Err("图片预览宽度必须为 48 到 156 DIP 的整数".into());
+        }
         self.fence_grid.validate()?;
         for color in [&self.accent_color, &self.desktop_appearance.accent_color]
         {
@@ -164,6 +169,25 @@ pub struct SettingsSnapshot
 mod music_tests
 {
     use super::ApplicationPreferences;
+
+    /// 默认尺寸和保存边界与前端一致，缺失字段不需要迁移。
+    #[test]
+    fn collect_image_preview_width_roundtrip()
+    {
+        let defaults: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 当前默认偏好。
+        assert_eq!(defaults.collect_image_preview_width, 78);
+        for width in [48, 78, 156]
+        {
+            let preferences = ApplicationPreferences { collect_image_preview_width: width, ..defaults.clone() }; // 合法边界。
+            assert!(preferences.validate().is_ok());
+            let saved = serde_json::to_string(&preferences).unwrap(); // 实际存储表示。
+            assert_eq!(serde_json::from_str::<ApplicationPreferences>(&saved).unwrap().collect_image_preview_width, width);
+        }
+        for width in [0, 47, 157]
+        {
+            assert!(ApplicationPreferences { collect_image_preview_width: width, ..defaults.clone() }.validate().is_err());
+        }
+    }
 
     /// 老配置默认关闭音乐，开关值必须完整通过实际序列化边界。
     #[test]

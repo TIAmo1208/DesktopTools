@@ -141,6 +141,7 @@ pub(crate) struct SourceDragSession
     pub pointer_offset: crate::contracts::WorkspacePoint, // 指针相对锚点表面的 DIP 偏移，跨屏保持。
     data: windows::core::AgileReference<IDataObject>,     // 在目标 apartment 重新解析真实 COM 身份。
     pub item_ids: Vec<String>,                            // 源端已经校验的完整选择，顺序以锚点开头。
+    pub collect_names: Option<Vec<String>>, // 收集条目身份只从本进程登记读取。
     pub portal_source: bool,                              // 门户来源跨本程序目标也必须执行真实文件传输。
     pub layout_committed: std::sync::atomic::AtomicBool,  // 内部完成不通过文件移动效果反馈。
 }
@@ -151,7 +152,7 @@ pub(crate) struct SourceDragGuard(std::sync::Arc<SourceDragSession>);
 impl SourceDragGuard
 {
     /// 开始唯一源会话；登记失败时不能启动无法识别的内部回落。
-    pub(crate) fn register(data: &IDataObject, item_ids: &[String], pointer_offset: crate::contracts::WorkspacePoint, portal_source: bool) -> windows::core::Result<Self>
+    pub(crate) fn register(data: &IDataObject, item_ids: &[String], pointer_offset: crate::contracts::WorkspacePoint, portal_source: bool, collect_names: Option<Vec<String>>) -> windows::core::Result<Self>
     {
         if !pointer_offset.left.is_finite() || !pointer_offset.top.is_finite() || pointer_offset.left < 0.0 || pointer_offset.top < 0.0
         {
@@ -167,7 +168,7 @@ impl SourceDragGuard
         {
             return Err(windows::Win32::Foundation::E_UNEXPECTED.into());
         }
-        let session = std::sync::Arc::new(SourceDragSession { data, pointer_offset, item_ids: item_ids.to_vec(), portal_source, layout_committed: std::sync::atomic::AtomicBool::new(false) }); // 完整数据对象在本次 OLE 会话内有效。
+        let session = std::sync::Arc::new(SourceDragSession { data, pointer_offset, item_ids: item_ids.to_vec(), portal_source, collect_names, layout_committed: std::sync::atomic::AtomicBool::new(false) }); // 完整数据对象在本次 OLE 会话内有效。
         *current = Some(session.clone());
         Ok(Self(session))
     }
@@ -283,7 +284,13 @@ pub(crate) fn negotiated_effect(allowed: DROPEFFECT, keys: MODIFIERKEYS_FLAGS, p
 }
 
 /// 提取完整顶层来源身份，结果关联不使用目录变化通知或文件名猜测。
-pub(crate) fn filesystem_drop_items(data: &IDataObject) -> Option<Vec<String>>
+pub(crate) fn filesystem_drop_items(data: &IDataObject) -> Option<Vec<String>> { shell_drop_items(data, true) }
+
+/// 收集箱把失效路径交给逐项业务反馈，不提前丢弃整个 Shell 集合。
+pub(crate) fn collect_shell_paths(data: &IDataObject) -> Option<Vec<String>> { shell_drop_items(data, false) }
+
+/// 提取 Shell 文件系统路径，桌面目标保留完整选择校验。
+fn shell_drop_items(data: &IDataObject, strict: bool) -> Option<Vec<String>>
 {
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::UI::Shell::{IShellItemArray, SHCreateShellItemArrayFromDataObject, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH};
@@ -299,7 +306,7 @@ pub(crate) fn filesystem_drop_items(data: &IDataObject) -> Option<Vec<String>>
             let path = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH) }.ok()?; // 排除虚拟文件。
             let value = unsafe { path.to_string() }; // 验证现有文件路径。
             unsafe { CoTaskMemFree(Some(path.0.cast())) };
-            if std::fs::metadata(value.ok()?).is_err()
+            if strict && std::fs::metadata(value.ok()?).is_err()
             {
                 return None;
             }
@@ -310,7 +317,7 @@ pub(crate) fn filesystem_drop_items(data: &IDataObject) -> Option<Vec<String>>
         })
         .collect::<Option<Vec<_>>>()?;
     let paths = references.iter().map(|reference| reference.trim_end_matches(['\\', '/']).to_lowercase()).collect::<Vec<_>>(); // 拒绝重复根或父子重叠，避免同一内容执行两次。
-    if paths.iter().enumerate().any(|(index, path)| paths.iter().enumerate().any(|(other, parent)| index != other && (path == parent || path.starts_with(&format!("{parent}\\")))))
+    if strict && paths.iter().enumerate().any(|(index, path)| paths.iter().enumerate().any(|(other, parent)| index != other && (path == parent || path.starts_with(&format!("{parent}\\")))))
     {
         return None;
     }

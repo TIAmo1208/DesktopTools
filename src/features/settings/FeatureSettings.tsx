@@ -30,6 +30,8 @@ export const FeatureSettings = ({
     const [portalMenu, setPortalMenu] = useState<{ portalId: string; left: number; top: number }>(); // 当前跟随鼠标的映射菜单。
     const portalMenuRef = useRef<HTMLMenuElement>(null); // 右键菜单外部点击边界。
     const unavailable = disabled || !preferences; // 加载前不允许修改。
+    const [imageWidth, setImageWidth] = useState(String(preferences?.collectImagePreviewWidth ?? 78)); // 输入草稿提交前允许暂时为空。
+    useEffect(() => setImageWidth(String(preferences?.collectImagePreviewWidth ?? 78)), [preferences?.collectImagePreviewWidth, disabled]);
     const portals = workspace?.folderPortals ?? []; // 当前已创建的文件夹映射。
     const portalTitle = (portal: FolderPortalInstance) => portal.rootPath.split(/[\\/]/).filter(Boolean).pop() ?? portal.rootPath; // 路径末级作为用户可见标题。
     const remap = async (portalId: string) => {
@@ -170,6 +172,27 @@ export const FeatureSettings = ({
                             onChange={(checked) => onPreferences({ collectAutoSaveOnExit: checked })}
                         />
                     </div>
+                    <label className="feature-settings__row">
+                        <span>图片预览宽度（DIP）</span>
+                        <input
+                            type="number"
+                            min={48}
+                            max={156}
+                            step={1}
+                            disabled={unavailable}
+                            value={imageWidth}
+                            onChange={(event) => setImageWidth(event.currentTarget.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter") event.currentTarget.blur();
+                            }}
+                            onBlur={() => {
+                                const value = Number(imageWidth); // 失焦或 Enter 提交整数，非法输入恢复已保存值。
+                                if (Number.isInteger(value) && value >= 48 && value <= 156) {
+                                    if (value !== preferences?.collectImagePreviewWidth) onPreferences({ collectImagePreviewWidth: value });
+                                } else setImageWidth(String(preferences?.collectImagePreviewWidth ?? 78));
+                            }}
+                        />
+                    </label>
                     <div className="feature-settings__row feature-settings__folder-action">
                         <span className="feature-settings__row-title">
                             添加收集箱

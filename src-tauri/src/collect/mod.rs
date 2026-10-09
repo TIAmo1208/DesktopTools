@@ -3,16 +3,24 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+pub(crate) mod cleanup;
 mod drop;
+mod items;
 mod references;
+mod transfer;
 pub(crate) use drop::{IncomingContent, receive};
+pub(crate) use items::{CollectKind, get_item};
+pub(crate) use transfer::{CollectFailure, PreparedExport, ReceiveResult, prepare_export, receive_items};
 
-/// 收集项在磁盘上的最小事实服务；Markdown 文件是唯一内容来源。
+/// 三类收集项共享的显示快照；name 是操作身份，不是外部源路径。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CollectItem
 {
-    pub name: String,
+    pub name: String,         // 文本文件名或新类型稳定 ID。
+    pub kind: CollectKind,    // 业务类型。
+    pub display_name: String, // 用户可读名称，与操作身份分离。
+    pub path: Option<String>, // 当前实际文件路径，失效映射仍保留源路径。
     pub content: String,
     pub created_unix_ms: i64,
     pub pinned: bool,
@@ -37,11 +45,16 @@ pub fn read_image(config: &Path, name: &str, reference: &str) -> io::Result<Stri
     use base64::Engine;
     use std::io::Read;
     let root = directory(config); // 相对引用以 Markdown 所在目录为基准。
-    if !safe_file(&root, name)?.is_file()
+    let item = get_item(config, name)?; // 文件名或映射身份统一校验。
+    let path = if !name.ends_with(".md")
     {
-        return Err(io::Error::new(io::ErrorKind::NotFound, "收集项不存在"));
+        if item.kind != CollectKind::Image
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "收集项不是图片"));
+        }
+        PathBuf::from(item.path.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "图片路径不可用"))?)
     }
-    let path = if reference.starts_with("file:")
+    else if reference.starts_with("file:")
     {
         tauri::Url::parse(reference).ok().and_then(|url| url.to_file_path().ok()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "图片文件 URL 无效"))?
     }
@@ -101,9 +114,26 @@ pub fn list(config: &Path) -> io::Result<Vec<CollectItem>>
             let metadata = entry.metadata().ok()?;
             let created_unix_ms = metadata.created().or_else(|_| metadata.modified()).ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
             let name = path.file_name()?.to_string_lossy().into_owned();
-            Some(CollectItem { pinned: pinned.iter().any(|item| item == &name), name, content, created_unix_ms, available: true })
+            Some(CollectItem { kind: CollectKind::Text, display_name: name.trim_end_matches(".md").to_string(), path: Some(path.to_string_lossy().into_owned()), pinned: pinned.iter().any(|item| item == &name), name, content, created_unix_ms, available: true })
         })
         .collect::<Vec<_>>();
+    for entry in fs::read_dir(items::items_directory(config)).into_iter().flatten().filter_map(Result::ok)
+    {
+        if entry.path().is_dir()
+            && let Some(name) = entry.file_name().to_str()
+            && let Ok(item) = items::get_item(config, name)
+        {
+            items.push(item);
+        }
+    }
+    for entry in fs::read_dir(&root)?.filter_map(Result::ok)
+    {
+        if items::is_image_path(&entry.path())
+            && let Some(name) = entry.file_name().to_str()
+        {
+            items.push(get_item(config, name)?); // 只扫描根目录，不重复列出文档资源。
+        }
+    }
     items.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.created_unix_ms.cmp(&a.created_unix_ms)).then(a.name.cmp(&b.name)));
     Ok(items)
 }
@@ -127,7 +157,7 @@ pub fn create(config: &Path, content: &str) -> io::Result<CollectItem>
     };
     fs::write(&path, content)?;
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
-    Ok(CollectItem { name, content: content.to_string(), created_unix_ms: now_ms(), pinned: false, available: true })
+    Ok(CollectItem { name, kind: CollectKind::Text, display_name: path.file_stem().unwrap_or_default().to_string_lossy().into_owned(), path: Some(path.to_string_lossy().into_owned()), content: content.to_string(), created_unix_ms: now_ms(), pinned: false, available: true })
 }
 
 /// 覆盖保存指定 Markdown 文件。
@@ -181,6 +211,7 @@ pub fn import_resource(config: &Path, name: &str, source: &Path, mode: &str) -> 
     {
         crate::platform::windows::move_resource_file(&source, &target)?;
     }
+    cleanup::record(&resource_dir, &target);
     Ok(format!("{}/{}", resource_dir.file_name().unwrap().to_string_lossy(), target.file_name().unwrap().to_string_lossy()))
 }
 
@@ -211,6 +242,7 @@ pub fn write_resource_bytes(config: &Path, name: &str, file_name: &str, bytes: &
     fs::create_dir_all(&resource_dir)?;
     let target = unique_resource_path(&resource_dir, safe_name);
     fs::write(&target, bytes)?;
+    cleanup::record(&resource_dir, &target);
     Ok(format!("{}/{}", resource_dir.file_name().unwrap().to_string_lossy(), target.file_name().unwrap().to_string_lossy()))
 }
 
@@ -329,7 +361,18 @@ pub fn rename(config: &Path, old: &str, new: &str, draft: Option<&str>) -> io::R
 pub fn set_pinned(config: &Path, name: &str, pinned: bool) -> io::Result<()>
 {
     let root = directory(config);
-    let _ = safe_file(&root, name)?;
+    if items::is_image_path(Path::new(name))
+    {
+        let _ = items::image_file(config, name)?;
+    }
+    else if name.ends_with(".md")
+    {
+        let _ = safe_file(&root, name)?;
+    }
+    else
+    {
+        let _ = items::item_directory(config, name)?;
+    }
     let mut values = read_pinned(&root)?;
     values.retain(|item| item != name);
     if pinned
@@ -343,7 +386,22 @@ pub fn set_pinned(config: &Path, name: &str, pinned: bool) -> io::Result<()>
 pub fn delete(config: &Path, name: &str) -> io::Result<()>
 {
     let root = directory(config);
-    let source = safe_file(&root, name)?;
+    let source = if items::is_image_path(Path::new(name))
+    {
+        items::image_file(config, name)?
+    }
+    else if name.ends_with(".md")
+    {
+        safe_file(&root, name)?
+    }
+    else
+    {
+        items::item_directory(config, name)?
+    };
+    if !source.exists()
+    {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "收集项不存在"));
+    }
     let backup = root.join("backup");
     fs::create_dir_all(&backup)?;
     let stamp = Local::now().format("%Y-%m-%d-%H-%M-%S").to_string();
@@ -352,13 +410,22 @@ pub fn delete(config: &Path, name: &str) -> io::Result<()>
     let pinned = read_pinned(&root)?.iter().any(|item| item == name);
     fs::rename(&source, package.join(name))?;
     let resource = root.join(name.trim_end_matches(".md"));
-    if resource.is_dir()
+    if name.ends_with(".md") && resource.is_dir()
     {
         fs::rename(resource, package.join(name.trim_end_matches(".md")))?;
     }
     let info = DeletedCollectInfo { original_name: name.to_string(), pinned, deleted_at_unix_ms: now_ms() };
     fs::write(package.join("info.json"), serde_json::to_vec_pretty(&info).map_err(io::Error::other)?)?;
-    set_pinned(config, name, false)?;
+    if name.ends_with(".md")
+    {
+        set_pinned(config, name, false)?;
+    }
+    else
+    {
+        let mut values = read_pinned(&root)?;
+        values.retain(|item| item != name);
+        fs::write(root.join("pinned.txt"), values.join("\n"))?;
+    }
     let mut entries = fs::read_dir(&backup)?.filter_map(Result::ok).filter(|entry| entry.path().is_dir() && entry.path().join("info.json").is_file()).collect::<Vec<_>>();
     entries.sort_by_key(|entry| entry.metadata().and_then(|m| m.modified()).ok());
     while entries.len() > 10
@@ -383,25 +450,55 @@ pub fn restore_latest(config: &Path) -> io::Result<Option<CollectItem>>
     };
     let package = entry.path();
     let info: DeletedCollectInfo = serde_json::from_slice(&fs::read(package.join("info.json"))?).map_err(io::Error::other)?;
-    let target = root.join(&info.original_name);
-    if target.exists() || root.join(info.original_name.trim_end_matches(".md")).exists()
+    if items::is_image_path(Path::new(&info.original_name))
+    {
+        let target = items::image_file(config, &info.original_name)?; // 恢复根目录图片，冲突拒绝覆盖。
+        if target.exists()
+        {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "恢复目标已存在"));
+        }
+        fs::rename(package.join(&info.original_name), target)?;
+        if info.pinned
+        {
+            set_pinned(config, &info.original_name, true)?;
+        }
+        fs::remove_dir_all(package)?;
+        return get_item(config, &info.original_name).map(Some);
+    }
+    if info.original_name.ends_with(".md")
+    {
+        let target = root.join(&info.original_name);
+        if target.exists() || root.join(info.original_name.trim_end_matches(".md")).exists()
+        {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "恢复目标已存在"));
+        }
+        fs::rename(package.join(&info.original_name), &target)?;
+        let resource_name = info.original_name.trim_end_matches(".md");
+        if package.join(resource_name).is_dir()
+        {
+            fs::rename(package.join(resource_name), root.join(resource_name))?;
+        }
+        fs::remove_dir_all(package)?;
+        if info.pinned
+        {
+            set_pinned(config, &info.original_name, true)?;
+        }
+        let content = fs::read_to_string(&target)?;
+        let metadata = fs::metadata(&target)?;
+        return Ok(Some(CollectItem { name: info.original_name.clone(), kind: CollectKind::Text, display_name: info.original_name.trim_end_matches(".md").into(), path: Some(target.to_string_lossy().into()), content, created_unix_ms: metadata.created().or_else(|_| metadata.modified())?.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64, pinned: info.pinned, available: true }));
+    }
+    let target = items::item_directory(config, &info.original_name)?;
+    if target.exists()
     {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "恢复目标已存在"));
     }
     fs::rename(package.join(&info.original_name), &target)?;
-    let resource_name = info.original_name.trim_end_matches(".md");
-    if package.join(resource_name).is_dir()
-    {
-        fs::rename(package.join(resource_name), root.join(resource_name))?;
-    }
     fs::remove_dir_all(package)?;
     if info.pinned
     {
         set_pinned(config, &info.original_name, true)?;
     }
-    let content = fs::read_to_string(&target)?;
-    let metadata = fs::metadata(&target)?;
-    Ok(Some(CollectItem { name: info.original_name, content, created_unix_ms: metadata.created().or_else(|_| metadata.modified())?.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64, pinned: info.pinned, available: true }))
+    Ok(Some(items::get_item(config, &info.original_name)?))
 }
 
 fn unique_backup_package(root: &Path, stamp: &str) -> PathBuf

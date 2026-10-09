@@ -68,8 +68,8 @@ fn failed_drop_cleans_active_session_once()
         let data: IDataObject = unsafe { item.BindToHandler(None, &BHID_DataObject) }.unwrap(); // 真实 Shell 数据对象。
         assert!(filesystem_drop_items(&data).is_some());
         let pointer_offset = crate::contracts::WorkspacePoint { left: 12.0, top: 24.0 }; // 指针偏移同样跟随可信源会话。
-        let session = SourceDragGuard::register(&data, &["source".to_string()], pointer_offset, false).unwrap(); // 真实源登记同时验证跨 STA 身份和内部反馈。
-        assert!(SourceDragGuard::register(&data, &["second".to_string()], pointer_offset, false).is_err());
+        let session = SourceDragGuard::register(&data, &["source".to_string()], pointer_offset, false, None).unwrap(); // 真实源登记同时验证跨 STA 身份和内部反馈。
+        assert!(SourceDragGuard::register(&data, &["second".to_string()], pointer_offset, false, None).is_err());
         let other_data: IDataObject = unsafe { item.BindToHandler(None, &BHID_DataObject) }.unwrap(); // 相同来源内容不能代替已登记 COM 身份。
         assert!(source_drag_session(&other_data).is_none());
         let agile = windows::core::AgileReference::new(&data).unwrap(); // 真实跨 apartment 代理。
@@ -94,6 +94,10 @@ fn failed_drop_cleans_active_session_once()
         assert!(source_drag_session(&data).is_some());
         drop(session);
         assert!(source_drag_session(&data).is_none());
+        let collect = SourceDragGuard::register(&data, &["source".to_string()], pointer_offset, false, Some(vec!["note.md".into()])).unwrap(); // 同一 COM 登记携带收集业务身份。
+        assert_eq!(source_drag_session(&data).unwrap().collect_names.as_deref(), Some(["note.md".to_string()].as_slice()));
+        assert!(!source_drag_session(&data).unwrap().portal_source);
+        drop(collect);
         let phases = Rc::new(RefCell::new(Vec::new())); // 验证每阶段只通知一次。
         let recorded = Rc::clone(&phases); // 回调共享的检查记录。
         let target = create_drop_target(

@@ -2,7 +2,47 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
 import { pastedLink } from "./collectEditorLinks.ts";
-import { configureCollectImageMarkdown } from "./collectEditorImages.ts";
+import { configureCollectImageMarkdown, previewCollectImage } from "./collectEditorImages.ts";
+
+test("放大复用 PNG 与 GIF 显示地址及原节点几何，不改写正文引用", () => {
+    for (const currentSrc of ["data:image/png;base64,AAAA", "data:image/gif;base64,AAAA", 'https://example.com/a?x=1&y="2"']) {
+        const image = {
+            complete: true,
+            naturalWidth: 96,
+            naturalHeight: 40,
+            width: 48,
+            height: 20,
+            currentSrc,
+            getAttribute(name: string) {
+                assert.equal(this, image);
+                return name === "src" ? "目录/image.gif" : null;
+            },
+            getBoundingClientRect() {
+                assert.equal(this, image);
+                return { left: 12, top: 24 };
+            },
+        } as unknown as HTMLImageElement;
+        let calls = 0;
+        previewCollectImage(
+            image,
+            (displayed, lang, theme) => {
+                calls++;
+                assert.equal(displayed.getAttribute("src"), currentSrc.replace(/&/g, "&amp;").replace(/"/g, "&quot;"));
+                assert.equal(displayed.naturalWidth, 96);
+                assert.equal(displayed.width, 48);
+                assert.deepEqual(displayed.getBoundingClientRect(), { left: 12, top: 24 });
+                assert.equal(lang, "zh_CN");
+                assert.equal(theme, "dark");
+            },
+            "dark",
+        );
+        assert.equal(calls, 1);
+        assert.equal(image.getAttribute("src"), "目录/image.gif");
+        for (const state of [{ complete: false }, { naturalWidth: 0 }, { currentSrc: "" }]) {
+            previewCollectImage({ ...image, ...state }, () => assert.fail("未加载成功不得打开预览"), "classic");
+        }
+    }
+});
 
 test("图片说明的转义方括号不生成属性内 HTML，正文转义标记保持原样", () => {
     createRequire(import.meta.url)("vditor/dist/js/lute/lute.min.js"); // 复用产品 Lute。

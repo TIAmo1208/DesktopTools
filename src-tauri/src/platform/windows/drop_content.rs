@@ -15,6 +15,8 @@ const TEXT_LIMIT: usize = 1024 * 1024; // UTF-16 原始正文上限。
 #[derive(Clone, Default)]
 pub(crate) struct ContentOffer
 {
+    pub collect_source: bool, // 可信内部收集来源只复制条目内容。
+    pub has_images: bool, // 只有真实图片文件受图片移动偏好影响。
     pub files: bool,                // 完整集合包含文件表示，不能降级到文字绕过白名单。
     pub targets: Vec<&'static str>, // 可接收内容的业务类型。
     image: Option<u16>,             // PNG 优先，其次 DIB。
@@ -25,17 +27,17 @@ pub(crate) struct ContentOffer
 /// 按已确认的业务白名单整体判断文件集合，不逐项静默筛选。
 pub(crate) fn file_targets(paths: &[String]) -> Vec<&'static str>
 {
-    if paths.is_empty() || paths.len() > 512 || paths.iter().any(|path| !Path::new(path).is_file())
+    if paths.is_empty() || paths.len() > 512
     {
         return Vec::new();
     }
     let extensions = paths.iter().map(|path| Path::new(path).extension().and_then(|extension| extension.to_str()).unwrap_or("").to_ascii_lowercase()).collect::<Vec<_>>(); // 所有路径的当前类型。
     let mut targets = Vec::new(); // 相同文件可以符合多个业务白名单。
-    if extensions.iter().all(|extension| ["png", "jpg", "jpeg", "gif", "bmp", "webp", "ico"].contains(&extension.as_str()))
+    if paths.iter().any(|path| Path::new(path).is_file())
     {
         targets.push(COLLECT);
     }
-    if extensions.len() == 1 && ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "wma", "mp4", "mkv", "avi", "mov", "wmv", "webm", "m4v"].contains(&extensions[0].as_str())
+    if paths.len() == 1 && Path::new(&paths[0]).is_file() && ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "wma", "mp4", "mkv", "avi", "mov", "wmv", "webm", "m4v"].contains(&extensions[0].as_str())
     {
         targets.push(MEDIA);
     }
@@ -50,7 +52,7 @@ pub(crate) fn content_effect(offer: &ContentOffer, target: &str, mode: &str, all
     {
         return DROPEFFECT_NONE;
     }
-    let expected = if target == COLLECT && offer.files && mode == "move" { DROPEFFECT_MOVE } else { DROPEFFECT_COPY }; // 路径链接不等于 OLE LINK。
+    let expected = if target == COLLECT && offer.has_images && !offer.collect_source && mode == "move" { DROPEFFECT_MOVE } else { DROPEFFECT_COPY }; // 路径链接不等于 OLE LINK。
     if super::drop_target::negotiated_effect(allowed, keys, expected, false) == expected
     {
         expected
@@ -64,6 +66,39 @@ pub(crate) fn content_effect(offer: &ContentOffer, target: &str, mode: &str, all
 /// 构造只读取 HGLOBAL 内容表示的 COM 格式描述。
 fn format(id: u16) -> FORMATETC { FORMATETC { cfFormat: id, dwAspect: DVASPECT_CONTENT.0, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32, ..Default::default() } }
 
+/// 收集箱保留 CF_HDROP 中失效路径，不能因一个失效项丢弃整个选择。
+pub(crate) fn collect_file_paths(data: &IDataObject) -> Result<Vec<String>, String>
+{
+    if unsafe { data.QueryGetData(&format(15)) } != windows::Win32::Foundation::S_OK
+    {
+        return Ok(super::drop_target::collect_shell_paths(data).unwrap_or_default());
+    }
+    let mut medium = unsafe { data.GetData(&format(15)) }.map_err(|error| format!("读取拖入文件失败：{error}"))?; // 所有退出路径释放介质。
+    let result = (|| {
+        if medium.tymed != TYMED_HGLOBAL.0 as u32 { return Err("拖入文件介质无效".into()); }
+        let memory = unsafe { medium.u.hGlobal }; // 验证类型后访问联合体。
+        let size = unsafe { GlobalSize(memory) }; // 系统解析前限制外部内存规模。
+        if size < 20 || size > 2 * 1024 * 1024 { return Err("拖入文件路径超过限制或无效".into()); }
+        let drop = windows::Win32::UI::Shell::HDROP(memory.0); // Shell 原生支持 ANSI 和 Unicode DROPFILES。
+        let count = unsafe { windows::Win32::UI::Shell::DragQueryFileW(drop, u32::MAX, None) }; // 顶层路径数量。
+        if count == 0 || count > 512 { return Err("拖入文件数量无效或超过 512 项".into()); }
+        let mut paths = Vec::new(); // 保留顺序和当前已失效路径，由业务逐项校验。
+        for index in 0..count
+        {
+            let length = unsafe { windows::Win32::UI::Shell::DragQueryFileW(drop, index, None) }; // 系统解析后的 UTF-16 长度。
+            if length == 0 || length > 32767 { return Err("拖入文件路径长度无效".into()); }
+            let mut words = vec![0u16; length as usize + 1]; // 有界路径缓冲区。
+            if unsafe { windows::Win32::UI::Shell::DragQueryFileW(drop, index, Some(&mut words)) } != length { return Err("拖入文件路径读取失败".into()); }
+            let path = String::from_utf16(&words[..length as usize]).map_err(|_| "拖入文件路径编码无效")?; // 不接受损坏代理项。
+            if !Path::new(&path).is_absolute() { return Err("拖入文件路径必须是绝对路径".into()); }
+            paths.push(path);
+        }
+        Ok(paths)
+    })();
+    unsafe { ReleaseStgMedium(&mut medium) };
+    result
+}
+
 /// 探测能力不提取正文，释放时仍须处理 GetData 失败。
 pub(crate) fn offer(data: &IDataObject, paths: &[String]) -> ContentOffer
 {
@@ -73,14 +108,18 @@ pub(crate) fn offer(data: &IDataObject, paths: &[String]) -> ContentOffer
     let files = !paths.is_empty() || supports(15) || supports(file_group) || supports(shell_items); // CF_HDROP 或完整解析的 Shell 文件集合。
     if files
     {
-        return ContentOffer { files, targets: file_targets(paths), ..Default::default() };
+        let collect_source = super::drop_target::source_drag_session(data).is_some_and(|session| session.collect_names.is_some()); // 只信任本进程真实 COM 身份。
+        let has_images = paths.iter().any(|path| Path::new(path).is_file() && Path::new(path).extension().and_then(|value| value.to_str()).is_some_and(|value| ["png", "jpg", "jpeg", "gif", "bmp", "webp", "ico"].contains(&value.to_ascii_lowercase().as_str()))); // 普通文件映射不请求源端移动。
+        let mut targets = file_targets(paths); // 媒体保持整体白名单。
+        if collect_source && !targets.contains(&COLLECT) { targets.push(COLLECT); }
+        return ContentOffer { files, targets, collect_source, has_images, ..Default::default() };
     }
     let png = unsafe { RegisterClipboardFormatW(w!("PNG")) } as u16; // 常见浏览器与图像编辑器的 PNG 格式。
     let url = unsafe { RegisterClipboardFormatW(w!("UniformResourceLocatorW")) } as u16; // 明确的 URL 表示。
     let image = [png, 17, 8].into_iter().find(|id| supports(*id)); // PNG、CF_DIBV5、CF_DIB，保持固定选择优先级。
     let link = supports(url).then_some(url); // 不将任意 HTML 当作链接。
     let text = supports(13); // CF_UNICODETEXT。
-    ContentOffer { files, targets: if image.is_some() || link.is_some() || text { vec![COLLECT] } else { Vec::new() }, image, link, text }
+    ContentOffer { files, targets: if image.is_some() || link.is_some() || text { vec![COLLECT] } else { Vec::new() }, image, link, text, ..Default::default() }
 }
 
 /// 在 OLE 有效生命周期内复制外部内存，所有路径配对释放存储介质。
@@ -233,11 +272,11 @@ mod tests
         let image = image.to_string_lossy().into_owned(); // 真实现有路径。
         let media = media.to_string_lossy().into_owned(); // 真实现有路径。
         assert_eq!(file_targets(std::slice::from_ref(&image)), [COLLECT]);
-        assert_eq!(file_targets(std::slice::from_ref(&media)), [MEDIA]);
-        assert!(file_targets(&[image.clone(), media.clone()]).is_empty());
-        assert!(file_targets(&[media.clone(), media]).is_empty());
+        assert_eq!(file_targets(std::slice::from_ref(&media)), [COLLECT, MEDIA]);
+        assert_eq!(file_targets(&[image.clone(), media.clone()]), [COLLECT]);
+        assert_eq!(file_targets(&[media.clone(), media]), [COLLECT]);
         assert!(file_targets(&[root.to_string_lossy().into_owned()]).is_empty());
-        let files = ContentOffer { files: true, targets: vec![COLLECT], ..Default::default() }; // 文件收入策略。
+        let files = ContentOffer { files: true, has_images: true, targets: vec![COLLECT], ..Default::default() }; // 文件收入策略。
         let text = ContentOffer { text: true, targets: vec![COLLECT], ..Default::default() }; // 文字不能让来源删除。
         let allowed = DROPEFFECT_COPY | DROPEFFECT_MOVE; // 来源提供的可用效果。
         assert_eq!(content_effect(&files, COLLECT, "move", allowed, MODIFIERKEYS_FLAGS(0)), DROPEFFECT_MOVE);
@@ -247,6 +286,9 @@ mod tests
         assert_eq!(content_effect(&text, COLLECT, "copy", allowed, MK_SHIFT), DROPEFFECT_NONE);
         assert_eq!(content_effect(&text, COLLECT, "copy", DROPEFFECT_MOVE, MODIFIERKEYS_FLAGS(0)), DROPEFFECT_NONE);
         assert_eq!(content_effect(&files, "official.local-clock", "copy", allowed, MODIFIERKEYS_FLAGS(0)), DROPEFFECT_NONE);
+        let internal = ContentOffer { collect_source: true, ..files.clone() }; // 收集箱内部拖出始终复制，不受移动设置影响。
+        assert_eq!(content_effect(&internal, COLLECT, "move", allowed, MODIFIERKEYS_FLAGS(0)), DROPEFFECT_COPY);
+        assert_eq!(file_targets(&[root.join("missing.png").to_string_lossy().into_owned(), image]), [COLLECT]); // 单项失效不让后续同类型项目失去资格。
         std::fs::remove_dir_all(root).unwrap();
     }
 

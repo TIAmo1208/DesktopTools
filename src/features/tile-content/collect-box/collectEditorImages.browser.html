@@ -11,7 +11,7 @@
         <script type="module">
             import Vditor from "vditor";
             import "vditor/dist/index.css";
-            import { configureCollectImageMarkdown, observeCollectImages } from "./collectEditorImages.ts";
+            import { configureCollectImageMarkdown, observeCollectImages, previewCollectImage } from "./collectEditorImages.ts";
             import React from "react";
             import { createRoot } from "react-dom/client";
             import { CollectBox } from "./CollectBox.tsx";
@@ -49,6 +49,7 @@
                 cdn: "/vditor",
                 _lutePath: "/vditor/dist/js/lute/lute.min.js",
                 cache: { enable: false },
+                image: { preview: (image) => previewCollectImage(image, Vditor.previewImage, "classic") },
                 after: async () => {
                     try {
                         configureCollectImageMarkdown(editor.vditor.lute);
@@ -84,6 +85,17 @@
                         pending[0].resolve(imageUrl);
                         await wait(() => host.querySelector(".vditor-wysiwyg img")?.naturalWidth === 96);
                         assert(editor.getValue() === original, "显示图片改写了 Markdown");
+                        const loaded = host.querySelector(".vditor-wysiwyg img");
+                        loaded.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+                        await wait(() => document.querySelector(".vditor-img img")?.naturalWidth === 96);
+                        assert(document.querySelector(".vditor-img img").src === imageUrl, "放大没有复用显示地址");
+                        await new Promise((resolve) => setTimeout(resolve, 450));
+                        document.querySelector(".vditor-img__btn").click();
+                        assert(document.querySelector(".vditor-img img").style.transform.includes("rotateZ(90deg)"), "旋转失效");
+                        await new Promise((resolve) => setTimeout(resolve, 450));
+                        document.querySelectorAll(".vditor-img__btn")[1].click();
+                        assert(!document.querySelector(".vditor-img") && document.body.style.overflow === "", "关闭未清理预览");
+                        assert(editor.getValue() === original && pending.length === 1, "放大改写正文或重复读取文件");
                         editor.setValue("![新图](<other/image.png>)");
                         await wait(() => pending.length === 2);
                         const image = host.querySelector(".vditor-wysiwyg img");

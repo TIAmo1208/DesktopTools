@@ -230,7 +230,7 @@ pub(crate) fn content_target(app: &AppHandle, snapshot: &WorkspaceSnapshot, regi
 }
 
 /// 在后台执行已拥有内容，目标身份再校验后交给既有业务模块。
-pub(crate) fn receive_content(app: &AppHandle, region: HitRegion, monitor_id: String, target_name: Option<String>, content: crate::collect::IncomingContent, mode: String) -> Result<(), String>
+pub(crate) fn receive_content(app: &AppHandle, region: HitRegion, monitor_id: String, target_name: Option<String>, content: crate::collect::IncomingContent, mode: String, collect_names: Option<Vec<String>>) -> Result<crate::collect::ReceiveResult, String>
 {
     let current = snapshot(app)?; // 异步执行开始时目标仍须存在。
     let target = content_target(app, &current, &region, &monitor_id)?.ok_or("投放目标已失效或关闭")?; // 不回退到桌面。
@@ -245,12 +245,29 @@ pub(crate) fn receive_content(app: &AppHandle, region: HitRegion, monitor_id: St
         {
             return Err("音乐控制仅接收单个媒体文件".into());
         }
-        return app.state::<crate::shell::DesktopItemState>().open_media_drop(paths.remove(0));
+        app.state::<crate::shell::DesktopItemState>().open_media_drop(paths.remove(0))?;
+        return Ok(crate::collect::ReceiveResult { processed: 1, skipped: 0, failures: Vec::new(), had_move: false });
     }
     let preferences = app.state::<crate::app::settings::SettingsState>().preferences()?; // 当前配置目录。
     let config = crate::app::settings::resolve_config_directory(&preferences.config_directory)?; // 与编辑窗共用收集目录。
-    let result = crate::collect::receive(&config, target_name.as_deref(), content, &mode); // 收集业务拥有资源与正文写入。
+    let result = crate::commands::collect::with_collect_editor_state(app, &crate::collect::directory(&config), target_name.as_deref(), |editing| {
+        if let Some(names) = collect_names
+        {
+            crate::collect::receive_items(&config, target_name.as_deref(), &names, editing)
+        }
+        else
+        {
+            crate::collect::receive(&config, target_name.as_deref(), content, &mode, editing)
+        }
+    }); // 查询与收入共用编辑窗锁，三种正文追加均保护草稿；内部来源使用业务身份。
     let _ = app.emit("collect-items-changed", ()); // 部分收入或失败后同样重新读取磁盘事实。
+    if let Ok(received) = &result
+    {
+        if received.skipped > 0 || !received.failures.is_empty()
+        {
+            report_content_error(app, format!("收集收入：已处理 {} 项，跳过 {} 项，失败 {} 项。{}", received.processed, received.skipped, received.failures.len(), received.failures.iter().map(|failure| format!("{}：{}", failure.name, failure.error)).collect::<Vec<_>>().join("；")));
+        }
+    }
     result
 }
 

@@ -2,7 +2,7 @@ mod application;
 pub mod collect;
 mod component;
 mod desktop_host;
-mod desktop_item;
+pub mod desktop_item;
 pub mod folder_portal;
 pub use desktop_item::get_desktop_item_image;
 pub use desktop_item::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
@@ -169,10 +169,41 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::list(&path).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(serialize_result)
         }
+        "read_collect_image" =>
+        {
+            let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?; // 两个通道使用相同的参数校验。
+            let reference: String = command_argument(&arguments, "reference", "图片引用无效").map_err(serialize_error)?; // 编辑器原图引用。
+            let pixels: Option<u32> = serde_json::from_value(arguments.get("pixels").cloned().unwrap_or(Value::Null)).map_err(|error| serialize_error(error.to_string()))?; // 列表请求有界缩略图。
+            collect::execute_read_collect_image(app, &name, &reference, pixels).map_err(serialize_error).and_then(serialize_result)
+        }
+        "prepare_collect_drag" => command_argument(&arguments, "names", "收集项选择无效").map_err(serialize_error).and_then(|names| desktop_item::execute_prepare_collect_drag(app, names).map_err(serialize_error)).and_then(serialize_result),
+        "prepare_collect_export" =>
+        {
+            let names: Vec<String> = command_argument(&arguments, "names", "收集项选择无效").map_err(serialize_error)?;
+            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            crate::collect::prepare_export(&path, &names).map_err(serialize_error).and_then(serialize_result)
+        }
+        "receive_collect_items" =>
+        {
+            let names: Vec<String> = command_argument(&arguments, "names", "收集项选择无效").map_err(serialize_error)?;
+            let target_name: Option<String> = arguments.get("targetName").cloned().map(serde_json::from_value).transpose().map_err(|error| serialize_error(error.to_string()))?;
+            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            collect::with_collect_editor_state(app, &crate::collect::directory(&path), target_name.as_deref(), |editing| crate::collect::receive_items(&path, target_name.as_deref(), &names, editing)).map_err(serialize_error).and_then(|result| {
+                let _ = app.emit("collect-items-changed", ());
+                serialize_result(result)
+            })
+        }
         "open_collect_link" =>
         {
             let url = command_argument(&arguments, "url", "链接地址无效").map_err(serialize_error)?; // 桌面宿主与编辑窗共用打开规则。
             collect::open_collect_link(url).map_err(serialize_error).and_then(serialize_result)
+        }
+        "open_collect_item" =>
+        {
+            let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
+            collect::execute_open_collect_item(app, name).map_err(serialize_error).and_then(serialize_result)
         }
         "create_collect_item" =>
         {

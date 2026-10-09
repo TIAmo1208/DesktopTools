@@ -45,7 +45,22 @@ pub fn open_path(path: &Path) -> Result<(), String>
     let result = unsafe { ShellExecuteW(Some(HWND::default()), windows::core::PCWSTR::null(), windows::core::PCWSTR(value.as_ptr()), windows::core::PCWSTR::null(), windows::core::PCWSTR::null(), SW_SHOWNORMAL) };
     if (result.0 as isize) <= 32
     {
-        return Err(format!("打开路径失败：{}", result.0 as isize));
+        let code = result.0 as isize; // ShellExecute 返回值不是 GetLastError。
+        let reason = match code
+        {
+            0 | 8 => "系统内存或资源不足",
+            2 => "文件不存在或已被删除",
+            3 => "路径不存在或无法访问",
+            5 => "访问被拒绝",
+            11 => "文件格式无效",
+            26 => "文件被占用",
+            27 | 31 => "未找到可用的默认关联程序",
+            28 => "关联程序响应超时",
+            29 | 30 => "无法与关联程序通信",
+            32 => "关联程序所需的动态库不存在",
+            _ => "系统无法打开此目标",
+        }; // 使用 Shell 文档定义的错误语义，不把返回码误作 Win32 错误码。
+        return Err(format!("打开路径失败：{reason}，路径={}，ShellExecute 返回码={code}", path.display()));
     }
     Ok(())
 }
