@@ -2,6 +2,111 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { registerHooks } from "node:module";
 
+test("所属菜单悬停保持临时展开，关闭或离开后恢复且不覆盖偏好", async () => {
+    const { readFile } = await import("node:fs/promises"); // 执行真实 Hook，隔离 React 调度。
+    const { stripTypeScriptTypes } = await import("node:module");
+    const { runInNewContext } = await import("node:vm");
+    const source = await readFile(new URL("./useDesktopTileExpansion.ts", import.meta.url), "utf8");
+    const values: boolean[] = []; // 多次渲染共享 state 槽。
+    let index = 0;
+    const context = {
+        useState(initial: boolean) {
+            const slot = index++;
+            values[slot] ??= initial;
+            return [
+                values[slot],
+                (value: boolean) => {
+                    values[slot] = value;
+                },
+            ];
+        },
+        useEffect() {},
+        render: undefined as any,
+    };
+    runInNewContext(
+        stripTypeScriptTypes(source.replace(/^import .*;\r?\n/m, "").replace("export const", "const")) + "\nglobalThis.render = useDesktopTileExpansion;",
+        context,
+    );
+    const render = (autoExpand = true) => {
+        index = 0;
+        return context.render({ current: null }, true, autoExpand);
+    };
+    let result = render();
+    result.onPointerEnter();
+    assert.equal(render().collapsed, false);
+    result.onPointerLeave();
+    result.onMenuHoverChange(true);
+    assert.equal(render().collapsed, false);
+    assert.equal(render(false).collapsed, true);
+    result.onMenuHoverChange(false);
+    assert.equal(render().collapsed, true);
+});
+
+test("菜单外点击和焦点转移关闭，父子菜单保留，迟到原生订阅释放", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { stripTypeScriptTypes } = await import("node:module");
+    const { runInNewContext } = await import("node:vm");
+    const source = await readFile(new URL("./DesktopTileMenu.tsx", import.meta.url), "utf8");
+    const effect = source.match(/useEffect\(\(\) => \{\s*let active = true;[\s\S]*?\n    \}, \[\]\);/)?.[0];
+    assert.ok(effect);
+    class Node extends EventTarget {
+        override removeEventListener(type: string, callback: EventListenerOrEventListenerObject | null, options?: EventListenerOptions | boolean) {
+            super.removeEventListener(type, callback, typeof options === "boolean" ? { capture: options } : options);
+        }
+    }
+    const document = new Node();
+    const window = Object.assign(new Node(), { __DESKTOP_TOOLS_NATIVE__: {} });
+    const parent = new Node();
+    const child = new Node();
+    let close = 0;
+    let cleanup = () => {};
+    let receive = (_snapshot: { externalFocus?: boolean; locked?: boolean }) => {};
+    let subscribed: (stop: () => void) => void = () => {};
+    let stopped = 0;
+    runInNewContext(stripTypeScriptTypes(effect), {
+        document,
+        window,
+        Node,
+        clearTimeout,
+        console,
+        timer: { current: undefined },
+        root: { current: { contains: (target: unknown) => target === parent } },
+        child: { current: { contains: (target: unknown) => target === child } },
+        closeRef: { current: () => close++ },
+        useEffect: (callback: () => () => void) => {
+            cleanup = callback();
+        },
+        listenRuntime: (_name: string, callback: typeof receive) => {
+            receive = callback;
+            return new Promise<void>((resolve) => {
+                subscribed = resolve as any;
+            });
+        },
+    });
+    const dispatch = (type: string, target: Node) => {
+        const event = new Event(type);
+        Object.defineProperty(event, "target", { value: target });
+        document.dispatchEvent(event);
+    };
+    dispatch("focusin", parent);
+    dispatch("focusin", child);
+    assert.equal(close, 0);
+    dispatch("focusin", new Node());
+    dispatch("pointerdown", new Node());
+    assert.equal(close, 2);
+    receive({ externalFocus: false });
+    assert.equal(close, 2);
+    receive({ externalFocus: true });
+    assert.equal(close, 3);
+    cleanup();
+    subscribed(() => stopped++);
+    await Promise.resolve();
+    assert.equal(stopped, 1);
+    dispatch("pointerdown", new Node());
+    receive({ locked: true });
+    assert.equal(close, 3);
+});
+
 /** 在真实 Hook 上验证输入与异步生命周期，原生窗口和视觉捕获使用最小替身。 */
 test("公共格子统一锁定、准备取消、拖动回滚、释放等待与卸载", async () => {
     class Surface extends EventTarget {

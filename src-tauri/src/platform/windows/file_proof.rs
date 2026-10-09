@@ -9,7 +9,7 @@ use windows::Win32::Security::Cryptography::{BCRYPT_HASH_HANDLE, BCRYPT_SHA256_A
 use windows::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo, GetFileInformationByHandleEx};
 
 /// 文件树的一次完整身份与内容观察，不保存文件副本。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FileProof
 {
     pub path: PathBuf,       // 当前可再次观察的真实文件系统路径。
@@ -17,7 +17,7 @@ pub(crate) struct FileProof
 }
 
 /// 单个文件系统对象的补偿安全证据。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 struct FileEntry
 {
     relative: PathBuf,                // 根内部的精确相对路径。

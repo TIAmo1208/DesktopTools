@@ -1,5 +1,86 @@
 use pulldown_cmark::{Event, LinkType, Parser, Tag};
 
+/// 清理比改名更保守：仅接受常规 HTML 标签和明确属性，复杂嵌入保留全部附件。
+pub(super) fn html_destinations(source: &str) -> Result<Vec<String>, String>
+{
+    let mut result = Vec::new(); // 已确认的图片和链接目标。
+    let mut rest = source.trim(); // 解析器给出的 HTML 片段。
+    while !rest.is_empty()
+    {
+        if !rest.starts_with('<')
+        {
+            return Err("HTML 混合内容无法确认".into());
+        }
+        rest = &rest[1..];
+        rest = rest.strip_prefix('/').unwrap_or(rest);
+        let count = rest.bytes().take_while(u8::is_ascii_alphanumeric).count(); // 标签名仅接受明确的 ASCII 名称。
+        let tag = rest[..count].to_ascii_lowercase();
+        if count == 0 || matches!(tag.as_str(), "script" | "style" | "iframe" | "object" | "embed" | "svg")
+        {
+            return Err("HTML 嵌入内容无法确认".into());
+        }
+        rest = &rest[count..];
+        loop
+        {
+            rest = rest.trim_start();
+            if let Some(next) = rest.strip_prefix("/>").or_else(|| rest.strip_prefix('>'))
+            {
+                rest = next.trim_start();
+                break;
+            }
+            let count = rest.bytes().take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':')).count(); // 普通属性名。
+            if count == 0
+            {
+                return Err("HTML 属性未闭合".into());
+            }
+            let attribute = rest[..count].to_ascii_lowercase();
+            rest = rest[count..].trim_start();
+            if attribute == "style" || attribute == "srcset" || attribute.starts_with("on")
+            {
+                return Err("HTML 动态或多源引用无法确认".into());
+            }
+            if !rest.starts_with('=')
+            {
+                continue;
+            }
+            rest = rest[1..].trim_start();
+            let value;
+            if rest.starts_with(['\'', '"'])
+            {
+                let quote = rest.as_bytes()[0] as char; // 引号内的 > 不结束标签。
+                rest = &rest[1..];
+                let end = rest.find(quote).ok_or("HTML 属性引号未闭合")?;
+                value = &rest[..end];
+                rest = &rest[end + 1..];
+            }
+            else
+            {
+                let end = rest.find(|c: char| c.is_whitespace() || c == '>').ok_or("HTML 标签未闭合")?;
+                value = &rest[..end];
+                rest = &rest[end..];
+            }
+            if matches!(attribute.as_str(), "src" | "href")
+            {
+                let mut decoded = String::new(); // 复用 Markdown 解析器的实体解码；含复杂语法则保留。
+                for event in Parser::new(value)
+                {
+                    match event
+                    {
+                        Event::Text(text) => decoded.push_str(&text),
+                        Event::Start(Tag::Paragraph) | Event::End(pulldown_cmark::TagEnd::Paragraph) => (),
+                        _ => return Err("HTML 地址实体无法可靠解码".into()),
+                    }
+                }
+                if !decoded.is_empty()
+                {
+                    result.push(decoded);
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
 /// 在单个原始 HTML 节点内只定位 `src`/`href` 属性值。
 fn html_resource_edits(source: &str, old: &str, new: &str) -> Vec<(usize, usize, String)>
 {

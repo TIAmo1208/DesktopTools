@@ -5,6 +5,7 @@ import "vditor/dist/index.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
     getCollectItems,
+    cleanupCollectResources,
     importCollectRenderedResource,
     openCollectLink,
     readCollectImage,
@@ -16,7 +17,7 @@ import { usePreferences } from "../../settings/PreferencesProvider";
 import { settingsErrorMessage } from "../../../bridge/settings";
 import { publishMessage } from "../../notifications/messageNotification";
 import { pastedLink } from "./collectEditorLinks";
-import { configureCollectImageMarkdown, observeCollectImages } from "./collectEditorImages";
+import { configureCollectImageMarkdown, observeCollectImages, previewCollectImage } from "./collectEditorImages";
 import pencilIcon from "../../../../resources/editor-pencil.svg?raw";
 import checkIcon from "../../../../resources/editor-check.svg?raw";
 import closeIcon from "../../../../resources/editor-x.svg?raw";
@@ -45,6 +46,7 @@ export const CollectEditor = () => {
     const renameInput = useRef<HTMLInputElement>(null); // 按需命名时聚焦并选中主名。
     const renameTrigger = useRef<HTMLButtonElement>(null); // 退出命名后恢复入口焦点。
     const dirty = useRef(false); // 输入时同步更新，关闭请求不读取过期 React 状态。
+    const savedThisSession = useRef(false); // 未执行成功保存的窗口只可清理本次新增附件。
     const pending = useRef(false); // 保存与关闭共用互斥状态。
     const allowClose = useRef(false); // 保存成功或明确放弃后允许原生关闭继续。
     const readyRef = useRef(false); // 关闭回调读取最新的编辑器就绪状态，避免捕获初始渲染值。
@@ -90,11 +92,13 @@ export const CollectEditor = () => {
         current.disabled();
         try {
             await saveCollectItem(currentName.current, current.getValue());
+            savedThisSession.current = true;
             dirty.current = false;
             setSaved(true);
             setFailure(undefined);
             setCloseFailure(false);
             if (close) {
+                await cleanupCollectResources(currentName.current, false).catch((error) => handleFailure(error));
                 allowClose.current = true;
                 await getCurrentWindow().destroy();
             }
@@ -166,6 +170,8 @@ export const CollectEditor = () => {
         pending.current = true;
         setBusy(true);
         try {
+            if (readyRef.current)
+                await cleanupCollectResources(currentName.current, dirty.current || !savedThisSession.current).catch((error) => handleFailure(error));
             allowClose.current = true;
             await getCurrentWindow().destroy();
         } catch (error) {
@@ -193,6 +199,8 @@ export const CollectEditor = () => {
     const handleImageImport = async (mode: "copy" | "move") => {
         const target = imageMenu;
         if (!target || pending.current) return;
+        pending.current = true;
+        setBusy(true);
         setImageMenu(undefined);
         try {
             const reference = target.reference.startsWith(window.location.origin)
@@ -206,6 +214,9 @@ export const CollectEditor = () => {
             setSaved(false);
         } catch (error) {
             handleFailure(error);
+        } finally {
+            pending.current = false;
+            setBusy(false);
         }
     };
     useEffect(() => {
@@ -222,6 +233,12 @@ export const CollectEditor = () => {
                     cdn: "/vditor",
                     _lutePath: "/vditor/dist/js/lute/lute.min.js",
                     cache: { enable: false },
+                    image: {
+                        preview: (image) => {
+                            if (image instanceof HTMLImageElement)
+                                previewCollectImage(image, Vditor.previewImage, document.documentElement.dataset.theme === "dark" ? "dark" : "classic");
+                        },
+                    },
                     toolbar: [
                         { name: "headings", icon: headingIcon },
                         { name: "bold", icon: boldIcon },
@@ -262,11 +279,18 @@ export const CollectEditor = () => {
                     const image = event.clipboardData?.files[0];
                     if (image?.type.startsWith("image/")) {
                         event.preventDefault();
+                        if (pending.current) return;
+                        pending.current = true;
+                        setBusy(true);
                         void image
                             .arrayBuffer()
                             .then((buffer) => writeCollectResource(currentName.current, image.name || "pasted-image.png", [...new Uint8Array(buffer)]))
                             .then((path) => editor.current?.insertMD(`![${image.name || "图片"}](${path})`))
-                            .catch(handleFailure);
+                            .catch(handleFailure)
+                            .finally(() => {
+                                pending.current = false;
+                                setBusy(false);
+                            });
                         return;
                     }
                     const clipboard = event.clipboardData;
@@ -319,7 +343,6 @@ export const CollectEditor = () => {
             if (!active) return;
             if (pending.current) return;
             if (!dirty.current) {
-                allowClose.current = true;
                 await handleDiscard();
                 return;
             }

@@ -1741,7 +1741,7 @@ fn completed_file_operation(kind: ShellOperationKind, reversible: bool, permanen
 fn shell_item_reference(item: &IShellItem) -> Result<String, String> { shell_item_name(item, SIGDN_DESKTOPABSOLUTEPARSING) }
 
 /// 将文件系统安全边界使用的 extended-length 路径转换为 Shell 解析路径。
-fn shell_parsing_path(path: &str) -> String { path.strip_prefix(r"\\?\UNC\").map_or_else(|| path.strip_prefix(r"\\?\").unwrap_or(path).to_string(), |unc| format!(r"\\{unc}")) }
+pub(crate) fn shell_parsing_path(path: &str) -> String { path.strip_prefix(r"\\?\UNC\").map_or_else(|| path.strip_prefix(r"\\?\").unwrap_or(path).to_string(), |unc| format!(r"\\{unc}")) }
 
 /// 读取补偿日志需要的项目稳定引用、父级引用和编辑名称。
 fn shell_item_metadata(item: &IShellItem) -> ShellItemMetadata

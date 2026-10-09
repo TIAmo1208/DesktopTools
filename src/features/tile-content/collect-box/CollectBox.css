@@ -154,7 +154,22 @@
     object-fit: contain;
 }
 
+/* 悬停图片占用现有浮层内容区，限制高度且始终保持原图比例。 */
+.collect-box__image--enlarged {
+    width: 100%;
+    height: min(394px, calc(100vh - 42px));
+    flex: none;
+}
+
 /* 加载与失败不改变图像轨道高度。 */
+.collect-box__image-content {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+/* 加载与失败在固定槽中居中。 */
 .collect-box__image--placeholder {
     display: grid;
     place-items: center;

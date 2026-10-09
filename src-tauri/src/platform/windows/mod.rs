@@ -9,6 +9,7 @@ pub(crate) mod drop_content;
 pub mod drop_target;
 pub(crate) mod environment_watch;
 pub(crate) mod file_proof;
+pub(crate) use shell::shell_parsing_path;
 mod file_system;
 pub mod music;
 pub mod settings;

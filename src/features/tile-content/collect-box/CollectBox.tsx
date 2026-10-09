@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
+import { usePreferences } from "../../settings/PreferencesProvider";
 import { DesktopTileMenu } from "../../tiles/DesktopTileMenu";
 import { DesktopTileViewport } from "../../tiles/DesktopTileViewport";
 import Vditor from "vditor";
@@ -40,42 +41,87 @@ const handleFailure = (error: unknown) => publishMessage({ type: "error", conten
 const title = (item: CollectItem) => item.content.match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim() || item.name.replace(/\.md$/i, "");
 
 /** 原生读取结果仅用于显示，不把磁盘路径交给浏览器导航。 */
-const CollectImage = ({ item }: { item: CollectItem }) => {
+const CollectImage = ({ item, collapsed, width = 78, enlarged = false }: { item: CollectItem; collapsed: boolean; width?: number; enlarged?: boolean }) => {
+    const container = useRef<HTMLDivElement>(null); // 固定图像槽用于可见性和物理尺寸观测。
     const [source, setSource] = useState<string>();
     const [failed, setFailed] = useState(false); // 失败和加载共用固定图像区域。
     useEffect(() => {
         let active = true;
         setSource(undefined);
         setFailed(!item.available);
-        if (item.available && item.path)
-            void readCollectImage(item.name, item.path)
+        const element = container.current; // 生命周期内保持同一观测节点。
+        if (!element || collapsed || !item.available || !item.path) return;
+        let visible = false; // 首次命中视口后才读取。
+        let requested = -1; // 相同显示尺寸或 GIF 原图不重复请求。
+        let generation = 0; // 丢弃旧尺寸和离屏后的返回。
+        const request = () => {
+            if (!visible || window.__DESKTOP_TOOLS_NATIVE__?.isRefreshPaused?.()) return;
+            const bounds = element.getBoundingClientRect(); // 与桌面图像使用相同的 DPI 换算。
+            const pixels =
+                enlarged && /\.gif$/i.test(item.path!)
+                    ? 0
+                    : Math.max(1, Math.min(enlarged ? 768 : 384, Math.ceil(Math.max(bounds.width, bounds.height) * window.devicePixelRatio))); // GIF 悬停复用原图读取，0 仅作为前端请求标识。
+            if (pixels === requested) return;
+            requested = pixels;
+            const current = ++generation; // 当前读取代次。
+            void readCollectImage(item.name, item.path!, pixels || undefined)
                 .then((value) => {
-                    if (active) setSource(value);
+                    if (active && visible && current === generation) {
+                        setSource(value);
+                        setFailed(false);
+                    }
                 })
                 .catch((error: unknown) => {
-                    if (active) {
+                    if (active && visible && current === generation) {
                         setFailed(true);
                         handleFailure(error);
                     }
                 });
+        };
+        const intersection = new IntersectionObserver(([entry]) => {
+            visible = entry?.isIntersecting ?? false;
+            if (visible) request();
+            else {
+                generation++;
+                requested = -1;
+                setSource(undefined);
+            }
+        }); // 离屏释放前端图片，后端仍使用既有有界缓存。
+        const resize = new ResizeObserver(request); // 不轮询尺寸。
+        intersection.observe(element);
+        resize.observe(element);
+        window.addEventListener("resize", request);
+        window.addEventListener("desktop-refresh-changed", request);
         return () => {
             active = false;
+            intersection.disconnect();
+            resize.disconnect();
+            window.removeEventListener("resize", request);
+            window.removeEventListener("desktop-refresh-changed", request);
         };
-    }, [item.name, item.path, item.available]);
-    return source ? (
-        <img
-            draggable={false}
-            className="collect-box__image"
-            src={source}
-            alt={item.displayName}
-            onError={() => {
-                setSource(undefined);
-                setFailed(true);
-            }}
-        />
-    ) : (
-        <div className="collect-box__image collect-box__image--placeholder" role="img" aria-label={failed ? "图片不可用" : "图片正在加载"}>
-            {failed ? "图片不可用" : "正在加载"}
+    }, [item.name, item.path, item.available, collapsed, enlarged]);
+    return (
+        <div
+            ref={container}
+            className={enlarged ? "collect-box__image collect-box__image--enlarged" : "collect-box__image"}
+            style={enlarged ? undefined : { width, flexBasis: width, height: (width * 2) / 3 }}
+        >
+            {source ? (
+                <img
+                    draggable={false}
+                    className="collect-box__image-content"
+                    src={source}
+                    alt={item.displayName}
+                    onError={() => {
+                        setSource(undefined);
+                        setFailed(true);
+                    }}
+                />
+            ) : (
+                <div className="collect-box__image-content collect-box__image--placeholder" role="img" aria-label={failed ? "图片不可用" : "图片正在加载"}>
+                    {failed ? "图片不可用" : "正在加载"}
+                </div>
+            )}
         </div>
     );
 };
@@ -107,6 +153,7 @@ export const CollectBox = ({
     onLatestChange?: (value: { title: string; summary: string }) => void;
     onToolbarReady?: (actions: CollectBoxToolbarActions) => void;
 }) => {
+    const { preferences } = usePreferences(); // 与设置页共用权威偏好和变更事件。
     const [items, setItems] = useState<CollectItem[]>([]);
     const [ready, setReady] = useState(false); // 刷新不清空已加载内容。
     const readyRef = useRef(false); // 长期事件回调读取最新就绪状态。
@@ -252,7 +299,7 @@ export const CollectBox = ({
         };
     }, []);
     const handlePreviewEnter = (event: PointerEvent<HTMLElement>, item: CollectItem) => {
-        if (collapsed || selected.length || dragCleanup.current || itemMenu || pendingDelete) return;
+        if (collapsed || !item.available || dragCleanup.current || itemMenu || pendingDelete) return;
         clearTimeout(hoverTimer.current);
         const bounds = event.currentTarget.getBoundingClientRect();
         const x = bounds.right + 8 + 520 <= window.innerWidth ? bounds.right + 8 : Math.max(8, bounds.left - 528);
@@ -530,7 +577,7 @@ export const CollectBox = ({
                             className={selected.includes(item.name) ? "collect-box__item collect-box__item--selected" : "collect-box__item"}
                             onPointerDown={(event) => handleDragPointerDown(event, item)}
                             onPointerEnter={(event) => {
-                                if (item.kind === "text") handlePreviewEnter(event, item);
+                                if (item.kind !== "file") handlePreviewEnter(event, item);
                             }}
                             onPointerLeave={closePreview}
                             onClick={(event) => {
@@ -574,7 +621,7 @@ export const CollectBox = ({
                                 }
                             }}
                         >
-                            {item.kind === "image" && <CollectImage item={item} />}
+                            {item.kind === "image" && <CollectImage item={item} collapsed={collapsed} width={preferences?.collectImagePreviewWidth ?? 78} />}
                             <div className="collect-box__item-body">
                                 <div className="official-component__collect-title">
                                     {item.pinned && <span className="collect-box__icon" aria-label="已置顶" dangerouslySetInnerHTML={{ __html: pinIcon }} />}
@@ -693,7 +740,11 @@ export const CollectBox = ({
                         onClickCapture={handleLinkClick}
                         onAuxClickCapture={handleLinkClick}
                     >
-                        <div ref={previewContentRef} className="collect-box__preview-content" />
+                        {preview.item.kind === "image" ? (
+                            <CollectImage key={preview.item.name} item={preview.item} collapsed={collapsed} enlarged />
+                        ) : (
+                            <div ref={previewContentRef} className="collect-box__preview-content" />
+                        )}
                     </div>,
                     document.body,
                 )}

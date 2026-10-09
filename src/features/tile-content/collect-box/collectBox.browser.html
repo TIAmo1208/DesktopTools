@@ -143,10 +143,32 @@
                     collectHitRegions().some((region) => region.id === "collect-test" && region.kind === "component"),
                     "就绪后接收区域未恢复",
                 );
-                const image = document.querySelector("img.collect-box__image");
+                const image = document.querySelector("img.collect-box__image-content");
                 assert(image.naturalWidth === 120 && image.width === 78 && image.height === 52, "图片未使用稳定的 78×52 区域");
                 assert(getComputedStyle(image).objectFit === "contain", "图片被裁切");
+                assert(
+                    calls.some((call) => call.command === "read_collect_image" && call.args.pixels === Math.min(384, Math.ceil(78 * devicePixelRatio))),
+                    "未按显示尺寸读取缩略图",
+                );
                 click(options()[0]);
+                options()[0].dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+                await new Promise((resolve) => setTimeout(resolve, 550));
+                await settle();
+                assert(document.querySelector(".collect-box__preview"), "选中后无法悬停预览文档");
+                options()[0].dispatchEvent(new PointerEvent("pointerout", { bubbles: true }));
+                options()[1].dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+                await new Promise((resolve) => setTimeout(resolve, 550));
+                await settle();
+                const enlarged = document.querySelector(".collect-box__preview .collect-box__image-content");
+                assert(enlarged instanceof HTMLImageElement, "图片未显示悬停大图");
+                assert(getComputedStyle(enlarged).objectFit === "contain", "悬停图片被裁切");
+                assert(
+                    calls.some((call) => call.command === "read_collect_image" && call.args.pixels > 78 && call.args.pixels <= 768),
+                    "悬停未读取有界缩略图",
+                );
+                options()[1].dispatchEvent(new PointerEvent("pointerout", { bubbles: true }));
+                await settle();
+                assert(!document.querySelector(".collect-box__preview"), "离开后未释放悬停预览");
                 click(options()[2], { shiftKey: true });
                 assert(selected().length === 3, "Shift 范围选择失败");
                 key(options()[0], "Escape");

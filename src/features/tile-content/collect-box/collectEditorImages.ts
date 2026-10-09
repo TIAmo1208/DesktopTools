@@ -1,5 +1,19 @@
 import type Vditor from "vditor";
 
+/** Vditor 放大只读取 src；只读视图提供已解码地址，正文节点保持原始引用。 */
+export const previewCollectImage = (image: HTMLImageElement, preview: typeof Vditor.previewImage, theme: string) => {
+    if (!image.complete || !image.naturalWidth || !image.currentSrc) return;
+    const source = image.currentSrc.replace(/&/g, "&amp;").replace(/"/g, "&quot;"); // Vditor 将地址插入 HTML 属性，避免地址字符改变标记。
+    const displayed = new Proxy(image, {
+        get(target, key) {
+            if (key === "getAttribute") return (name: string) => (name === "src" ? source : target.getAttribute(name));
+            const value = Reflect.get(target, key, target); // DOM 原生访问器和方法必须使用真实节点作为接收者。
+            return typeof value === "function" ? value.bind(target) : value;
+        },
+    }); // 保留正文图像的尺寸和位置，不创建额外图片或修改 src。
+    preview(displayed, "zh_CN", theme);
+};
+
 /** 修正 Lute 图片 alt 中的转义节点，防止属性破损及编辑后图片变成正文。 */
 export const configureCollectImageMarkdown = (lute: Vditor["vditor"]["lute"]) => {
     const renderBackslash: ILuteRenderCallback = (node, entering) => {

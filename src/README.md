@@ -36,7 +36,9 @@ src/
 
 `main.tsx` 装配应用并按需加载收集项编辑窗口。`WorkspaceSurface` 组合逐屏权威投影与原生命令；`DesktopWorkspace` 负责未归类项目、围栏、官方组件及附加门户的共同工作区，持有全局选择和 OLE 协调。`CollectBox` 呈现文本、图片和文件映射，维护当前格子的选择、清理确认及复制拖出生命周期；`collectItemState.ts` 处理混排／分离、筛选及实例状态，`collectMarkdown.ts` 提取文本摘要。
 
-`collect-box/collectEditorImages.ts` 为 Vditor 图片补充本地显示数据，并修正图片说明转义与目标地址编码，保持 Markdown 图片语义；`CollectBox` 与 `CollectEditor` 通过 `bridge/collect.ts` 把链接交给系统打开。
+`collect-box/collectEditorImages.ts` 为 Vditor 图片补充本地显示数据、适配放大预览，并修正图片说明转义与目标地址编码，保持 Markdown 图片语义；`CollectBox` 与 `CollectEditor` 通过 `bridge/collect.ts` 把链接交给系统打开。
+
+`CollectBox` 的图片槽使用可见性与尺寸观察器，通过 `readCollectImage` 请求缩略图或 GIF 悬停原图；`CollectEditor` 管理编辑、保存和关闭清理的调用生命周期。两者通过 `bridge/collect.ts` 访问后端，文件校验与回收归后端负责。
 
 `DesktopTileBase` 内部统一调用几何与展开 Hook，组合标题显隐、菜单、八向缩放及输入生命周期。调用方只提供几何参数和类型化业务回调；标题从公共 context 读取拖动入口，视口与活动内容读取同一实际折叠状态。`tileGeometry` 保存共享算法和可选 `minimum` 的默认值解析，使用 `contracts/tile` 的公共数据底线；内容层将内容需求与外壳、标题占位换算为外框下限。`tileDragPreview` 保存有界静态视觉；跨屏消息和 OLE 投放仍归工作区。
 

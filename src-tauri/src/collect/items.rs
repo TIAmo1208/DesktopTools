@@ -166,6 +166,28 @@ mod tests
     }
 
     #[test]
+    fn deleted_mapping_source_remains_unavailable()
+    {
+        let root = std::env::temp_dir().join(format!("collect-mapping-{}", crate::tools::time::next_timeline_timestamp())); // 本测试独占目录。
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.txt"); // 模拟外部删除的映射目标。
+        fs::write(&source, "content").unwrap();
+        let item = create_mapping(&root, "source.txt", source.to_str().unwrap()).unwrap(); // 映射记录保留独立身份。
+        assert!(item.available);
+        fs::remove_file(&source).unwrap();
+        let error = crate::platform::windows::settings::open_path(&source).unwrap_err(); // 真实 Shell 错误必须有原因和路径。
+        assert!(error.contains("文件不存在或已被删除"), "{error}");
+        assert!(error.contains(source.to_str().unwrap()), "{error}");
+        let items = super::super::list(&root).unwrap(); // 失败后的刷新仍保留映射。
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, item.name);
+        assert!(!items[0].available);
+        fs::write(&source, "restored").unwrap();
+        assert!(get_item(&root, &item.name).unwrap().available);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn root_images_keep_identity_and_do_not_scan_document_resources()
     {
         let root = std::env::temp_dir().join(format!("collect-root-images-{}", crate::tools::time::next_timeline_timestamp())); // 本测试独占目录。

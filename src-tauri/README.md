@@ -43,6 +43,7 @@ src-tauri/
 - `collect/drop.rs` 负责一次拖入的格式去重、Markdown 追加及资源收入，正文保存使用既有 Windows 原子替换能力，失败保留已保存正文与可追踪的资源路径。
 - `collect/items.rs` 管理根目录独立图片文件与文件映射记录；`collect/transfer.rs` 管理复制导出及内部逐项复制、追加，复用 `references.rs` 改写复制资源的 Markdown 引用。独立图片复制到 `collect` 根目录并使用文件名身份，扫描不递归文档资源目录，映射不复制源文件。编辑窗状态由 `commands/collect.rs` 在两种命令 transport 和 OLE 业务入口通过同一窗口注册锁查询并保护写入，正文追加逐项拒绝编辑中的目标。
 - `collect/mod.rs` 有界读取收集项引用的本地图片；`commands/collect.rs` 提供图片读取命令，并校验网页、邮件链接后复用 Windows 默认打开能力。
+- `collect/cleanup.rs` 管理附件归属证据与关闭清理，`collect/references.rs` 负责 Markdown 引用解析和改名转换。
 - `contracts/` 与前端 `src/contracts/` 对齐跨边界数据形状。
 
 ## 数据方向

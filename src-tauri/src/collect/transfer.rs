@@ -174,6 +174,10 @@ fn copy_text(config: &Path, item: &CollectItem, target: &str) -> Result<String, 
         for entry in fs::read_dir(&from).map_err(|error| error.to_string())?
         {
             let entry = entry.map_err(|error| error.to_string())?;
+            if entry.file_name() == ".managed-images.json"
+            {
+                continue;
+            } // 复制文件后重新登记身份，不传播源文件的归属证据。
             let kind = entry.file_type().map_err(|error| error.to_string())?;
             if kind.is_symlink() || entry.path().canonicalize().map_err(|error| error.to_string())? != entry.path()
             {
@@ -195,7 +199,8 @@ fn copy_text(config: &Path, item: &CollectItem, target: &str) -> Result<String, 
     }
     for (from, to) in files
     {
-        fs::copy(from, to).map_err(|error| error.to_string())?;
+        fs::copy(from, &to).map_err(|error| error.to_string())?;
+        super::cleanup::record(&target_root, &to);
     }
     let old = source.file_name().unwrap().to_string_lossy(); // 只替换源自有目录的链接。
     let new = copied.strip_prefix(directory(config).canonicalize().map_err(|error| error.to_string())?).map_err(|error| error.to_string())?.to_string_lossy().replace('\\', "/");

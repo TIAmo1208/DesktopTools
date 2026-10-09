@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+pub(crate) mod cleanup;
 mod drop;
 mod items;
 mod references;
@@ -210,6 +211,7 @@ pub fn import_resource(config: &Path, name: &str, source: &Path, mode: &str) -> 
     {
         crate::platform::windows::move_resource_file(&source, &target)?;
     }
+    cleanup::record(&resource_dir, &target);
     Ok(format!("{}/{}", resource_dir.file_name().unwrap().to_string_lossy(), target.file_name().unwrap().to_string_lossy()))
 }
 
@@ -240,6 +242,7 @@ pub fn write_resource_bytes(config: &Path, name: &str, file_name: &str, bytes: &
     fs::create_dir_all(&resource_dir)?;
     let target = unique_resource_path(&resource_dir, safe_name);
     fs::write(&target, bytes)?;
+    cleanup::record(&resource_dir, &target);
     Ok(format!("{}/{}", resource_dir.file_name().unwrap().to_string_lossy(), target.file_name().unwrap().to_string_lossy()))
 }
 

@@ -1,6 +1,10 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { listenRuntime } from "../../bridge/runtime";
 
 import "./DesktopTileMenu.css";
+
+/** Portal 菜单仍归所属格子所有，悬停只影响该格子的临时展开。 */
+export const DesktopTileMenuHoverContext = createContext<((hovered: boolean) => void) | undefined>(undefined);
 
 /** 公共菜单项目，内容只提供真实支持的命令。 */
 export interface DesktopTileMenuItem {
@@ -35,6 +39,11 @@ export const DesktopTileMenu = ({
     const [position, setPosition] = useState({ left, top }); // 按实际菜单尺寸约束的位置。
     const [childPosition, setChildPosition] = useState({ left, top }); // 子菜单边缘翻转后的位置。
     const focusChild = useRef(false); // 键盘或点击立即展开时进入子菜单。
+    const onHoverChange = useContext(DesktopTileMenuHoverContext); // React context 跨 Portal 保留格子归属。
+    const closeRef = useRef(onClose); // 长生命周期监听读取最新关闭回调。
+    closeRef.current = onClose;
+
+    useEffect(() => () => onHoverChange?.(false), [onHoverChange]); // 点击关闭或卸载也释放悬停。
 
     useLayoutEffect(() => {
         const bounds = root.current?.getBoundingClientRect(); // 包含实际字号与长文本的一级菜单尺寸。
@@ -61,21 +70,44 @@ export const DesktopTileMenu = ({
     }, [active, position]);
 
     useEffect(() => {
-        const handleOutside = (event: globalThis.PointerEvent) => {
+        let active = true; // 退订后不接收迟到的原生前台事件。
+        let stop: (() => void) | undefined; // 菜单关闭后释放原生订阅。
+        const handleOutside = (event: Event) => {
             if (event.target instanceof Node && (root.current?.contains(event.target) || child.current?.contains(event.target))) return;
-            onClose();
+            closeRef.current();
         }; // 外部点击覆盖整个父子菜单组。
-        const handleClose = () => onClose(); // 窗口失焦和另一菜单打开时关闭整组。
+        const handleClose = () => closeRef.current(); // 窗口失焦和另一菜单打开时关闭整组。
         document.addEventListener("pointerdown", handleOutside, true);
+        document.addEventListener("focusin", handleOutside, true);
         window.addEventListener("blur", handleClose);
         window.addEventListener("desktop-tile-menu-opening", handleClose);
+        if (window.__DESKTOP_TOOLS_NATIVE__) {
+            void listenRuntime<{ externalFocus?: boolean; locked?: boolean }>("desktop-refresh-policy-changed", (snapshot) => {
+                if (active && (snapshot.externalFocus === true || snapshot.locked === true)) handleClose();
+            })
+                .then((unlisten) => {
+                    if (active) stop = unlisten;
+                    else unlisten();
+                })
+                .catch((error: unknown) => console.warn("格子菜单：前台状态监听失败", error));
+        }
         return () => {
+            active = false;
+            stop?.();
             clearTimeout(timer.current);
             document.removeEventListener("pointerdown", handleOutside, true);
+            document.removeEventListener("focusin", handleOutside, true);
             window.removeEventListener("blur", handleClose);
             window.removeEventListener("desktop-tile-menu-opening", handleClose);
         };
-    }, [onClose]);
+    }, []);
+
+    /** 两级菜单之间转移不结束所属格子的悬停。 */
+    const handlePointerLeave = (event: React.PointerEvent<HTMLElement>) => {
+        const next = event.relatedTarget; // 进入另一级菜单仍属于同一组。
+        if (next instanceof Node && (root.current?.contains(next) || child.current?.contains(next))) return;
+        onHoverChange?.(false);
+    };
 
     /** 返回父项时保留菜单组及其键盘焦点。 */
     const handleReturn = () => {
@@ -183,6 +215,8 @@ export const DesktopTileMenu = ({
                 data-hit-id="tile-menu"
                 data-hit-kind="component"
                 data-hit-priority="100"
+                onPointerEnter={() => onHoverChange?.(true)}
+                onPointerLeave={handlePointerLeave}
                 onPointerDown={(event) => event.stopPropagation()}
                 onKeyDown={(event) => handleKeyDown(event, false)}
             >
@@ -198,7 +232,11 @@ export const DesktopTileMenu = ({
                     data-hit-id="tile-submenu"
                     data-hit-kind="component"
                     data-hit-priority="101"
-                    onPointerEnter={() => clearTimeout(timer.current)}
+                    onPointerEnter={() => {
+                        clearTimeout(timer.current);
+                        onHoverChange?.(true);
+                    }}
+                    onPointerLeave={handlePointerLeave}
                     onPointerDown={(event) => event.stopPropagation()}
                     onKeyDown={(event) => handleKeyDown(event, true)}
                 >

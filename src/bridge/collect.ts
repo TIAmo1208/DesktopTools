@@ -18,11 +18,13 @@ export const getCollectItems = () => invokeRuntime<CollectItem[]>("get_collect_i
 export const prepareCollectDrag = async (names: string[]): Promise<ShellDragPreparation | null> =>
     parseShellDragPreparation(await invokeRuntime<unknown>("prepare_collect_drag", { names }));
 /** 读取本地图片供编辑器显示，原始 Markdown 引用保持不变。 */
-export const readCollectImage = (name: string, reference: string) => invokeRuntime<string>("read_collect_image", { name, reference });
+export const readCollectImage = (name: string, reference: string, pixels?: number) => invokeRuntime<string>("read_collect_image", { name, reference, pixels });
 /** 交给系统默认程序打开，禁止在桌面宿主中导航。 */
 export const openCollectLink = (url: string) => invokeRuntime<void>("open_collect_link", { url });
 export const createCollectItem = (content = "") => invokeRuntime<CollectItem>("create_collect_item", { content });
 export const saveCollectItem = (name: string, content: string) => invokeRuntime<void>("save_collect_item", { name, content });
+/** 仅在编辑窗确认关闭后，以磁盘正文为准回收明确归属的未引用附件。 */
+export const cleanupCollectResources = (name: string, discard: boolean) => invokeRuntime<void>("cleanup_collect_resources", { name, discard });
 export const importCollectResource = (name: string, source: string, mode: "copy" | "move" | "link") =>
     invokeRuntime<string>("import_collect_resource", { name, source, mode });
 export const importCollectRenderedResource = (name: string, reference: string, mode: "copy" | "move") =>

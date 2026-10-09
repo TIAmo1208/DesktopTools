@@ -3,6 +3,7 @@ import { useEffect, useState, type RefObject } from "react";
 /** 鼠标与跨屏拖入共用临时展开状态，不修改保存的折叠值。 */
 export const useDesktopTileExpansion = (surface: RefObject<HTMLElement | null>, collapsed: boolean, autoExpand: boolean, monitorId?: string) => {
     const [hovered, setHovered] = useState(false); // 当前本地或远端指针位于表面。
+    const [menuHovered, setMenuHovered] = useState(false); // 所属 Portal 菜单与格子表面组成同一悬停范围。
     const [dropHovered, setDropHovered] = useState(false); // 业务允许的拖入独立于普通悬停偏好临时展开。
     useEffect(() => {
         if (!collapsed || !monitorId) return;
@@ -46,7 +47,8 @@ export const useDesktopTileExpansion = (surface: RefObject<HTMLElement | null>, 
         };
     }, [collapsed, autoExpand, monitorId, surface]);
     return {
-        collapsed: collapsed && !(autoExpand && hovered) && !dropHovered,
+        collapsed: collapsed && !(autoExpand && (hovered || menuHovered)) && !dropHovered,
+        onMenuHoverChange: setMenuHovered,
         onPointerEnter: () => setHovered(true),
         onPointerLeave: () => setHovered(false),
     };

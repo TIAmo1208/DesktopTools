@@ -169,6 +169,14 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::list(&path).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(serialize_result)
         }
+        "read_collect_image" =>
+        {
+            let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?; // 两个通道使用相同的参数校验。
+            let reference: String = command_argument(&arguments, "reference", "图片引用无效").map_err(serialize_error)?; // 编辑器原图引用。
+            let pixels: Option<u32> = serde_json::from_value(arguments.get("pixels").cloned().unwrap_or(Value::Null)).map_err(|error| serialize_error(error.to_string()))?; // 列表请求有界缩略图。
+            collect::execute_read_collect_image(app, &name, &reference, pixels).map_err(serialize_error).and_then(serialize_result)
+        }
+        "prepare_collect_drag" => command_argument(&arguments, "names", "收集项选择无效").map_err(serialize_error).and_then(|names| desktop_item::execute_prepare_collect_drag(app, names).map_err(serialize_error)).and_then(serialize_result),
         "prepare_collect_export" =>
         {
             let names: Vec<String> = command_argument(&arguments, "names", "收集项选择无效").map_err(serialize_error)?;
@@ -195,18 +203,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         "open_collect_item" =>
         {
             let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
-            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
-            let item = crate::collect::get_item(&path, &name).map_err(|error| serialize_error(error.to_string()))?;
-            if item.kind == crate::collect::CollectKind::Text
-            {
-                collect::execute_open_collect_editor(app.clone(), name).map_err(serialize_error).and_then(serialize_result)
-            }
-            else
-            {
-                let source = item.path.ok_or_else(|| serialize_error("收集项路径不可用"))?;
-                crate::platform::windows::settings::open_path(std::path::Path::new(&source)).map_err(serialize_error).and_then(serialize_result)
-            }
+            collect::execute_open_collect_item(app, name).map_err(serialize_error).and_then(serialize_result)
         }
         "create_collect_item" =>
         {

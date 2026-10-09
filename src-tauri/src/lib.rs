@@ -97,6 +97,7 @@ pub fn run()
             commands::collect::open_collect_editor,
             commands::collect::create_collect_item,
             commands::collect::save_collect_item,
+            commands::collect::cleanup_collect_resources,
             commands::collect::import_collect_resource,
             commands::collect::import_collect_rendered_resource,
             commands::collect::write_collect_resource,

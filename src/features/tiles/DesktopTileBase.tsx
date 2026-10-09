@@ -5,7 +5,7 @@ import type { TileAppearance, TileAppearanceChange } from "../../contracts/tile"
 import { useDesktopTileGeometry, type DesktopTileGeometryOptions } from "./useDesktopTileGeometry";
 import { useDesktopTileExpansion } from "./useDesktopTileExpansion";
 import { usePreferences } from "../settings/PreferencesProvider";
-import { DesktopTileMenu, type DesktopTileMenuItem } from "./DesktopTileMenu";
+import { DesktopTileMenu, DesktopTileMenuHoverContext, type DesktopTileMenuItem } from "./DesktopTileMenu";
 import "./DesktopTileBase.css";
 
 /** 标题只读取外壳的瞬时可见状态与保存的按钮偏好。 */
@@ -236,99 +236,103 @@ export const DesktopTileBase = ({
             : []; // 无标题时不提供会失去恢复入口的命令。
 
     return (
-        <DesktopTileContext.Provider
-            value={{
-                collapsed,
-                titleVisible: visible,
-                titleMode,
-                buttonMode,
-                sortMenuOpen: menu?.sorting === true,
-                onHeaderPointerDown: (event) => void handlePointerDown(event),
-            }}
-        >
-            <section
-                {...props}
-                ref={(element) => {
-                    surface.current = element;
-                    if (typeof ref === "function") ref(element);
-                    else if (ref) ref.current = element;
-                }}
-                className={`desktop-tile${collapsed ? " desktop-tile--collapsed" : ""} ${className}`}
-                data-title-mode={headerPresent ? titleMode : "none"}
-                data-auto-expanded={appearance?.collapsed && !collapsed ? "true" : undefined}
-                style={
-                    {
-                        ...geometry.bounds,
-                        ...style,
-                        ...(collapsed ? { ...collapsedSize, height: collapsedSize?.height ?? 28, minHeight: collapsedSize?.height ?? 28 } : {}),
-                        "--tile-header-height": collapsed && (collapsedSize?.height ?? 28) > 28 ? `${(collapsedSize?.height ?? 28) - 4}px` : "28px",
-                    } as import("react").CSSProperties
-                }
-                onPointerEnter={(event) => {
-                    expansion.onPointerEnter();
-                    onPointerEnter?.(event);
-                }}
-                onPointerLeave={(event) => {
-                    expansion.onPointerLeave();
-                    onPointerLeave?.(event);
-                }}
-                onFocus={(event) => {
-                    if (!frozen.current && !state.current.menu && event.currentTarget.matches(":focus-visible")) setTitleVisible(true);
-                    onFocus?.(event);
-                }}
-                onContextMenu={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    onContextMenu?.(event);
-                    event.currentTarget.dispatchEvent(new CustomEvent("desktop-tile-menu", { detail: { left: event.clientX, top: event.clientY } }));
-                }}
-                onKeyDown={(event) => {
-                    handleKeyDown(event);
-                    if (event.defaultPrevented) return;
-                    if (event.target instanceof Element && event.target.closest("input,textarea,[data-item-id]")) return;
-                    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        const bounds = event.currentTarget.getBoundingClientRect(); // 键盘菜单使用格子位置。
-                        event.currentTarget.dispatchEvent(new CustomEvent("desktop-tile-menu", { detail: { left: bounds.left + 12, top: bounds.top + 28 } }));
-                        return;
-                    }
-                    if (event.key === "F2" && headerPresent) {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        onRenameStart?.();
-                        return;
-                    }
-                    if (!frozen.current) setTitleVisible(true);
-                    onKeyDown?.(event);
+        <DesktopTileMenuHoverContext.Provider value={expansion.onMenuHoverChange}>
+            <DesktopTileContext.Provider
+                value={{
+                    collapsed,
+                    titleVisible: visible,
+                    titleMode,
+                    buttonMode,
+                    sortMenuOpen: menu?.sorting === true,
+                    onHeaderPointerDown: (event) => void handlePointerDown(event),
                 }}
             >
-                {typeof children === "function" ? children(collapsed) : children}
-                {!collapsed &&
-                    !geometry.locked &&
-                    (["n", "ne", "e", "se", "s", "sw", "w", "nw"] as const).map((direction) => (
-                        <span
-                            key={direction}
-                            className={`desktop-tile__resize desktop-tile__resize--${direction}`}
-                            aria-hidden="true"
-                            data-hit-id={`${props["data-hit-id"] ?? "tile"}:resize:${direction}`}
-                            data-hit-kind="component"
-                            data-hit-priority="70"
-                            onPointerDown={(event) => void handlePointerDown(event, direction)}
-                        />
-                    ))}
-            </section>
-            {menu &&
-                surface.current &&
-                createPortal(
-                    <DesktopTileMenu
-                        items={menu.sorting && sortItems ? sortItems : [...commonItems, ...menuItems]}
-                        left={menu.left}
-                        top={menu.top}
-                        onClose={handleClose}
-                    />,
-                    surface.current.closest(".fence-workspace") ?? document.body,
-                )}
-        </DesktopTileContext.Provider>
+                <section
+                    {...props}
+                    ref={(element) => {
+                        surface.current = element;
+                        if (typeof ref === "function") ref(element);
+                        else if (ref) ref.current = element;
+                    }}
+                    className={`desktop-tile${collapsed ? " desktop-tile--collapsed" : ""} ${className}`}
+                    data-title-mode={headerPresent ? titleMode : "none"}
+                    data-auto-expanded={appearance?.collapsed && !collapsed ? "true" : undefined}
+                    style={
+                        {
+                            ...geometry.bounds,
+                            ...style,
+                            ...(collapsed ? { ...collapsedSize, height: collapsedSize?.height ?? 28, minHeight: collapsedSize?.height ?? 28 } : {}),
+                            "--tile-header-height": collapsed && (collapsedSize?.height ?? 28) > 28 ? `${(collapsedSize?.height ?? 28) - 4}px` : "28px",
+                        } as import("react").CSSProperties
+                    }
+                    onPointerEnter={(event) => {
+                        expansion.onPointerEnter();
+                        onPointerEnter?.(event);
+                    }}
+                    onPointerLeave={(event) => {
+                        expansion.onPointerLeave();
+                        onPointerLeave?.(event);
+                    }}
+                    onFocus={(event) => {
+                        if (!frozen.current && !state.current.menu && event.currentTarget.matches(":focus-visible")) setTitleVisible(true);
+                        onFocus?.(event);
+                    }}
+                    onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onContextMenu?.(event);
+                        event.currentTarget.dispatchEvent(new CustomEvent("desktop-tile-menu", { detail: { left: event.clientX, top: event.clientY } }));
+                    }}
+                    onKeyDown={(event) => {
+                        handleKeyDown(event);
+                        if (event.defaultPrevented) return;
+                        if (event.target instanceof Element && event.target.closest("input,textarea,[data-item-id]")) return;
+                        if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            const bounds = event.currentTarget.getBoundingClientRect(); // 键盘菜单使用格子位置。
+                            event.currentTarget.dispatchEvent(
+                                new CustomEvent("desktop-tile-menu", { detail: { left: bounds.left + 12, top: bounds.top + 28 } }),
+                            );
+                            return;
+                        }
+                        if (event.key === "F2" && headerPresent) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onRenameStart?.();
+                            return;
+                        }
+                        if (!frozen.current) setTitleVisible(true);
+                        onKeyDown?.(event);
+                    }}
+                >
+                    {typeof children === "function" ? children(collapsed) : children}
+                    {!collapsed &&
+                        !geometry.locked &&
+                        (["n", "ne", "e", "se", "s", "sw", "w", "nw"] as const).map((direction) => (
+                            <span
+                                key={direction}
+                                className={`desktop-tile__resize desktop-tile__resize--${direction}`}
+                                aria-hidden="true"
+                                data-hit-id={`${props["data-hit-id"] ?? "tile"}:resize:${direction}`}
+                                data-hit-kind="component"
+                                data-hit-priority="70"
+                                onPointerDown={(event) => void handlePointerDown(event, direction)}
+                            />
+                        ))}
+                </section>
+                {menu &&
+                    surface.current &&
+                    createPortal(
+                        <DesktopTileMenu
+                            items={menu.sorting && sortItems ? sortItems : [...commonItems, ...menuItems]}
+                            left={menu.left}
+                            top={menu.top}
+                            onClose={handleClose}
+                        />,
+                        surface.current.closest(".fence-workspace") ?? document.body,
+                    )}
+            </DesktopTileContext.Provider>
+        </DesktopTileMenuHoverContext.Provider>
     );
 };

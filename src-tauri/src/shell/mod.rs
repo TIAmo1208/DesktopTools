@@ -127,10 +127,10 @@ enum ShellRequest
 /// 原子消费后的拖放输入，COM 引用必须在接收方 STA 重新解析。
 pub(crate) struct PreparedShellDrag
 {
-    pub data: AgileReference<IDataObject>, // 原始完整数据对象的合法封送引用。
-    pub references: Vec<String>,           // 与原数据对象一致的完整来源身份。
+    pub data: AgileReference<IDataObject>,  // 原始完整数据对象的合法封送引用。
+    pub references: Vec<String>,            // 与原数据对象一致的完整来源身份。
     pub collect_names: Option<Vec<String>>, // 本进程收集来源的条目身份。
-    pub portal_source: bool,               // 门户来源必须执行文件传输，不走内部布局提交。
+    pub portal_source: bool,                // 门户来源必须执行文件传输，不走内部布局提交。
 }
 
 /// 持有专用 Shell STA 线程及其请求通道。
@@ -232,7 +232,14 @@ impl ShellStaRuntime
                         {
                             prepared_drag = None;
                             let collect_names = collect.as_ref().map(|(names, _)| names.clone()); // 固定已经校验的来源条目。
-                            let data = if let Some((_, text)) = collect.as_ref() { crate::platform::windows::collect_data_object(&references, text) } else { crate::platform::windows::drag_data_object(windows::Win32::Foundation::HWND::default(), &references, portal_source, image.as_deref()) }; // 只改变内容表示，不另建拖放运行时。
+                            let data = if let Some((_, text)) = collect.as_ref()
+                            {
+                                crate::platform::windows::collect_data_object(&references, text)
+                            }
+                            else
+                            {
+                                crate::platform::windows::drag_data_object(windows::Win32::Foundation::HWND::default(), &references, portal_source, image.as_deref())
+                            }; // 只改变内容表示，不另建拖放运行时。
                             let result = match data
                             {
                                 Ok(data) =>
@@ -705,6 +712,13 @@ impl DesktopItemState
     {
         let result = self.runtime.delete(references, false).map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 普通 Delete 必须走系统回收行为。
         self.record_operation(result)
+    }
+
+    /// 收集项附件复用带文件证据的 Shell 回收，不允许身份变化后继续删除。
+    pub(crate) fn recycle_collect_resource(&self, proof: crate::platform::windows::file_proof::FileProof) -> Result<ShellOperationResult, DesktopItemError>
+    {
+        let reference = proof.path.to_string_lossy().into_owned(); // 复用补偿前及 Shell Pre 回调中的身份检查。
+        self.runtime.compensate(ShellOperationKind::Recycle, vec![ShellCompensationAction::Recycle { reference }], vec![proof]).map_err(|error| DesktopItemError::shell_operation_failed(&error)).and_then(|result| self.record_operation(result))
     }
 
     /// 门户已校验单项使用同一 STA 原生重命名与撤销记录。
