@@ -1,11 +1,10 @@
 {
     "name": "desktop-tools",
     "private": true,
-    "version": "0.1.0",
     "type": "module",
     "scripts": {
         "predev": "node scripts/prepare-vditor.mjs",
-        "prebuild": "node scripts/prepare-vditor.mjs",
+        "prebuild": "node scripts/check-version.mjs && node scripts/prepare-vditor.mjs",
         "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
         "build": "npm run typecheck && vite build --outDir build/frontend",
         "typecheck": "tsc --noEmit",

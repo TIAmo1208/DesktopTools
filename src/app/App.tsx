@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { getApplicationSnapshot, listenApplicationSnapshots, setApplicationStatus } from "../bridge/application";
 import { getDesktopItemSnapshot, listenDesktopItemSnapshots } from "../bridge/desktopItems";
+import { getSettings } from "../bridge/settings";
 import type { ApplicationSnapshot, ApplicationStatus } from "../contracts/application";
 import type { DesktopItemSnapshot } from "../contracts/desktopItem";
 import { DesktopItemGrid } from "../features/desktop-items/DesktopItemGrid";
@@ -55,6 +56,8 @@ const ApplicationStatusPage = () => {
     const [failure, setFailure] = useState<string>();
     // 应用状态命令执行标记。
     const [isUpdating, setIsUpdating] = useState(false);
+    // 当前后端构建版本。
+    const [version, setVersion] = useState<string>();
     // 当前已发布的桌面项目快照。
     const [desktopItemSnapshot, setDesktopItemSnapshot] = useState<DesktopItemSnapshot>();
     // 当前 Shell 枚举或桌面项目契约错误说明。
@@ -80,6 +83,9 @@ const ApplicationStatusPage = () => {
         const subscription = listenApplicationSnapshots(handleSnapshot, handleFailure);
         void subscription.catch(handleFailure);
         void getApplicationSnapshot().then(handleSnapshot).catch(handleFailure);
+        void getSettings()
+            .then(({ version: nextVersion }) => isMounted && setVersion(nextVersion))
+            .catch(handleFailure);
 
         // 释放当前页面持有的事件订阅。
         return () => {
@@ -137,7 +143,7 @@ const ApplicationStatusPage = () => {
         <main className="application-shell">
             <header className="application-header">
                 <p className="application-brand">Desktop Tools</p>
-                <span className="application-version">0.1.0</span>
+                <span className="application-version">{version ?? "未获取"}</span>
             </header>
 
             <div className="application-content">
