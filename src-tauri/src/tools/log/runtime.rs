@@ -59,7 +59,7 @@ pub fn init(mut config: LogConfig) -> Result<(), LogError>
     let config = runtime.as_ref().expect("日志运行时刚完成初始化").config.clone();
     drop(runtime);
 
-    info(format!("日志：初始化完成，文件等级：{}，控制台等级：{}，文件目录：\"{}\"，文件输出：{}", config.file_level.name(), config.console_level.name(), config.directory.display(), config.file_output))?;
+    debug(format!("日志：初始化完成，文件等级：{}，控制台等级：{}，文件目录：\"{}\"，文件输出：{}", config.file_level.name(), config.console_level.name(), config.directory.display(), config.file_output), file!(), line!())?;
 
     Ok(())
 }

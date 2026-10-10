@@ -1,5 +1,81 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mergeCollectItems } from "../features/tile-content/collect-box/collectItemState.ts";
+import type { CollectItem } from "./collect.ts";
+
+test("应用内重命名清除所有格子的旧身份，监听先行、迟到读取与暂停不留下不可用副本", async () => {
+    const { readFile } = await import("node:fs/promises"); // 读取真实命令事件和列表刷新入口。
+    const { runInNewContext } = await import("node:vm"); // 沿用现有无浏览器回归执行方式。
+    const { stripTypeScriptTypes } = await import("node:module"); // 执行生产 TypeScript 函数。
+    const commands = await readFile(new URL("../../src-tauri/src/commands/collect.rs", import.meta.url), "utf8"); // 共享后端入口。
+    const rename = commands.slice(commands.indexOf("pub(crate) fn execute_rename_collect_item"), commands.indexOf("pub fn set_collect_item_pinned")); // 改名成功通知。
+    const event = rename.match(/app\.emit\("collect-items-changed", serde_json::json!\((\{[^}]*\})\)\)/); // 提取真实载荷，普通刷新没有旧身份。
+    assert.ok(event || rename.includes("changed(&app)"), "重命名必须发送列表变化事件");
+    const old: CollectItem = {
+        name: "旧名称.md",
+        kind: "text",
+        displayName: "旧名称",
+        path: null,
+        content: "正文",
+        createdUnixMs: 1,
+        pinned: true,
+        available: true,
+    }; // 会话原条目。
+    const next = { ...old, name: "新名称.md", displayName: "新名称" }; // 改名后的磁盘扫描结果。
+    const payload = event ? JSON.parse(event[1].replace(/\bold_name\b/g, JSON.stringify(old.name))) : null; // 重放后端事件内容。
+    const bridge = await readFile(new URL("./collect.ts", import.meta.url), "utf8"); // 真实事件适配器。
+    const listener = bridge.slice(bridge.indexOf("export const listenCollectChanges")).replace("export const", "const"); // 只执行订阅入口。
+    const source = await readFile(new URL("../features/tile-content/collect-box/CollectBox.tsx", import.meta.url), "utf8"); // 真实刷新与版本校验。
+    const reload = source.match(/const reload = \(deletedName\?: string\) => \{[\s\S]*?\n    \};/)?.[0]; // 刷新不含 JSX。
+    assert.ok(reload);
+    for (const watcherFirst of [false, true]) {
+        for (const paused of [false, true]) {
+            let items = watcherFirst ? mergeCollectItems([old], [next]) : [old]; // 模拟多个格子的不同读取进度。
+            let refreshPaused = false; // 先开始旧读取，再模拟暂停。
+            const reads: Array<(items: CollectItem[]) => void> = []; // 控制扫描结果返回顺序。
+            const listeners = new Map<string, (payload: unknown) => void>(); // 真实桥接订阅。
+            const context: Record<string, any> = {
+                readRevision: { current: 0 },
+                readyRef: { current: true },
+                mergeCollectItems,
+                window: { __DESKTOP_TOOLS_NATIVE__: { isRefreshPaused: () => refreshPaused } },
+                setItems: (update: (current: CollectItem[]) => CollectItem[]) => {
+                    items = update(items);
+                },
+                setReadError() {},
+                setReady() {},
+                handleFailure(error: unknown) {
+                    throw error;
+                },
+                getCollectItems: () => new Promise<CollectItem[]>((resolve) => reads.push(resolve)),
+                listenRuntime: async (name: string, callback: (payload: unknown) => void) => {
+                    listeners.set(name, callback);
+                    return () => {};
+                },
+            }; // 使用实际刷新逻辑，仅替代 I/O 和 React 状态写入。
+            runInNewContext(
+                `${stripTypeScriptTypes(listener)}\n${stripTypeScriptTypes(reload)}\nglobalThis.reload = reload; globalThis.listen = listenCollectChanges;`,
+                context,
+            );
+            await context.listen(context.reload, context.handleFailure);
+            context.reload();
+            refreshPaused = paused;
+            listeners.get("collect-items-changed")!(payload);
+            if (!paused) reads[1]([next]);
+            reads[0]([old]);
+            await Promise.resolve();
+            assert.ok(!items.some((item) => item.name === old.name), "应用内改名后旧名称不得残留或被迟到读取恢复");
+            refreshPaused = false;
+            context.reload();
+            reads.at(-1)!([next]);
+            await Promise.resolve();
+            assert.deepEqual(
+                items.map((item) => [item.name, item.available, item.pinned]),
+                [[next.name, true, true]],
+            );
+        }
+    }
+});
 
 test("GIF 仅悬停读取原图，关闭拒绝迟到图像", async () => {
     const { readFile } = await import("node:fs/promises");

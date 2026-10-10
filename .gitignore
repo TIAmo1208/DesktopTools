@@ -19,6 +19,20 @@ node_modules/
 dist
 dist-ssr
 *.local
+
+# 本地环境配置、凭据和签名私钥不进入版本控制；示例只包含占位值。
+.env
+.env.*
+!.env.example
+!.env.*.example
+credentials.json
+*.pem
+*.key
+*.pfx
+*.p12
+id_rsa
+id_ed25519
+
 *.test.*
 !src-tauri/src/tools/log/
 !src-tauri/src/**/*.test.rs

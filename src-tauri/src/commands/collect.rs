@@ -260,7 +260,7 @@ pub(crate) fn execute_rename_collect_item(app: AppHandle, old_name: String, new_
     {
         let _ = window.set_title(&format!("编辑收集项 — {new_name}"));
     }
-    changed(&app);
+    let _ = app.emit("collect-items-changed", serde_json::json!({ "deletedName": old_name })); // 改名使旧身份失效，复用主动删除的缓存清理及暂停透传。
     Ok(renamed_draft)
 }
 #[tauri::command]

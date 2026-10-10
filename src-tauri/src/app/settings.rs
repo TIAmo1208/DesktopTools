@@ -47,7 +47,7 @@ pub fn prepare_config_directory(bootstrap: &std::path::Path) -> std::io::Result<
     {
         Ok(()) =>
         {
-            crate::log_info!("设置：配置目录已迁移，原目录={}，当前目录={}，原文件保留", source.display(), target.display());
+            crate::log_debug!("设置：配置目录已迁移，原目录={}，当前目录={}，原文件保留", source.display(), target.display());
             Ok(target)
         }
         Err(error) =>

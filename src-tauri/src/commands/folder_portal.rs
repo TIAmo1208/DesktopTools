@@ -10,7 +10,7 @@ pub fn create_from_desktop_menu() -> Result<Option<String>, String>
     let selected = crate::platform::windows::settings::choose_directory(0, "选择文件夹门户目录")?; // 无外部窗口作为 owner，避免禁用其他程序。
     if let Some(path) = &selected
     {
-        crate::log_info!("门户：目录已选择，等待宿主读取，目录={path}");
+        crate::log_debug!("门户：目录已选择，等待宿主读取，目录={path}");
     }
     else
     {
