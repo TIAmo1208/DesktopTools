@@ -16,6 +16,7 @@ src-tauri/
 │  ├─ collect/            # 文本、图片、文件映射、资源、收入取出与删除恢复
 │  ├─ host/               # 透明宿主、WebView2、DPI、命中图和接管
 │  ├─ persistence/        # 布局快照和备份
+│  ├─ weather/            # 天气凭据、临时验证会话及和风 HTTP/JWT
 │  ├─ component_runtime/  # 组件清单、能力和运行时状态
 │  ├─ recovery/           # guardian、健康状态和异常恢复
 │  ├─ platform/windows/   # Windows API、COM、OLE 和原生适配
@@ -32,6 +33,8 @@ src-tauri/
 ```
 
 ## 关键边界
+
+- `commands/weather.rs` 仅允许设置窗口提交天气用例，不向原生桌面 transport 注册凭据入口。`weather/credentials.rs` 按应用配置目录隔离 Windows Credential Manager 记录；`weather/mod.rs` 管理草稿、并发互斥、取消及保存门槛；`weather/provider.rs` 校验官方 Host、签发 JWT 并验证城市和天气数据。网络任务只在用户操作时创建，禁止重定向，限制超时与响应大小；城市和天气验证响应不落盘。桌面天气请求调度、缓存与城市持久化尚未实现。
 
 - `commands/` 负责跨边界校验与调度，不持有长期领域状态。
 - `workspace/` 负责自有布局、围栏归属、门户和组件布局事务，不执行文件操作。各类格子的持久展开边界统一使用工作区契约中的公共尺寸底线，临时投射单独校验；内容可读性和标题占位由前端负责。

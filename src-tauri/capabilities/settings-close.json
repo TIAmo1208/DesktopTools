@@ -1,0 +1,7 @@
+{
+    "$schema": "../gen/schemas/desktop-schema.json",
+    "identifier": "settings-close",
+    "description": "设置窗口在保存结束或明确放弃天气草稿后关闭自身",
+    "windows": ["main"],
+    "permissions": ["core:window:allow-destroy"]
+}

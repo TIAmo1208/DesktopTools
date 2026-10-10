@@ -34,6 +34,8 @@ src/
 
 ## 入口与职责
 
+`features/settings/WeatherSettings` 提供和风 JWT 草稿输入、私钥导入与显隐、临时城市搜索、分项验证、保存替换和清除。`bridge/weather.ts` 只调用设置窗口专用天气命令；敏感草稿不进入普通偏好、浏览器存储或事件广播。关闭窗口与分类导航共享最新草稿状态，取消后拒绝迟到结果；`weatherSettings.browser.html` 使用生产组件和替代桥验证相关交互。
+
 `main.tsx` 装配应用并按需加载收集项编辑窗口。`WorkspaceSurface` 组合逐屏权威投影与原生命令；`DesktopWorkspace` 负责未归类项目、围栏、官方组件及附加门户的共同工作区，持有全局选择和 OLE 协调。`CollectBox` 呈现文本、图片和文件映射，维护当前格子的选择、清理确认及复制拖出生命周期；`collectItemState.ts` 处理混排／分离、筛选及实例状态，`collectMarkdown.ts` 提取文本摘要。
 
 `collect-box/collectEditorImages.ts` 为 Vditor 图片补充本地显示数据、适配放大预览，并修正图片说明转义与目标地址编码，保持 Markdown 图片语义；`CollectBox` 与 `CollectEditor` 通过 `bridge/collect.ts` 把链接交给系统打开。

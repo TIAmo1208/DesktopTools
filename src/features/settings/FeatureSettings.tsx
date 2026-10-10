@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { WeatherSettings } from "./WeatherSettings";
 import type { ApplicationPreferences } from "../../contracts/settings";
 import type { FolderPortalInstance, WorkspaceCommand, WorkspaceSnapshot } from "../../contracts/workspace";
 import { SettingsSwitch } from "./SettingsSwitch";
@@ -15,6 +16,7 @@ export const FeatureSettings = ({
     onWorkspaceCommand,
     onChooseFolder,
     onCreateCollectBox,
+    leaveGuard,
 }: {
     preferences?: ApplicationPreferences; // 已保存的格子偏好。
     disabled: boolean; // 提交中的互斥状态。
@@ -24,8 +26,9 @@ export const FeatureSettings = ({
     onWorkspaceCommand: (command: WorkspaceCommand) => Promise<void>; // 提交映射事务。
     onChooseFolder: () => Promise<string | null>; // 打开系统目录选择器。
     onCreateCollectBox: () => Promise<void>; // 调用统一收集箱创建入口。
+    leaveGuard: RefObject<((action: () => void) => void) | undefined>; // 天气草稿离开保护。
 }) => {
-    const [detail, setDetail] = useState<"clock" | "music" | "collect" | "folder" | "debug">(); // 当前二级菜单。
+    const [detail, setDetail] = useState<"clock" | "music" | "collect" | "folder" | "debug" | "weather">(); // 当前二级菜单。
     const [selectedPortalId, setSelectedPortalId] = useState<string>(); // 当前单击选中的映射。
     const [portalMenu, setPortalMenu] = useState<{ portalId: string; left: number; top: number }>(); // 当前跟随鼠标的映射菜单。
     const portalMenuRef = useRef<HTMLMenuElement>(null); // 右键菜单外部点击边界。
@@ -58,6 +61,7 @@ export const FeatureSettings = ({
             window.removeEventListener("blur", closeOnBlur);
         };
     }, [portalMenu]);
+    if (detail === "weather") return <WeatherSettings onBack={() => setDetail(undefined)} leaveGuard={leaveGuard} />;
     return (
         <section className="feature-settings">
             {detail && (
@@ -86,6 +90,7 @@ export const FeatureSettings = ({
                             { id: "music", key: "musicEnabled", label: "音乐控制" },
                             { id: "collect", key: "collectEnabled", label: "收集箱" },
                             { id: "folder", key: "folderPortalEnabled", label: "文件夹映射" },
+                            { id: "weather", key: "weatherEnabled", label: "天气" },
                             ...(debugBuild ? [{ id: "debug", key: "debugEnabled", label: "Debug 测试" }] : []),
                         ] as const
                     ).map((feature) => (
@@ -95,7 +100,7 @@ export const FeatureSettings = ({
                                 type="button"
                                 title={`${feature.label}设置`}
                                 aria-label={`${feature.label}设置`}
-                                onClick={() => setDetail(feature.id as "clock" | "music" | "collect" | "folder" | "debug")}
+                                onClick={() => setDetail(feature.id as "clock" | "music" | "collect" | "folder" | "weather" | "debug")}
                             >
                                 {feature.label}
                             </button>
@@ -103,7 +108,10 @@ export const FeatureSettings = ({
                                 label={feature.label}
                                 disabled={unavailable}
                                 checked={Boolean(
-                                    preferences?.[feature.key as "clockEnabled" | "musicEnabled" | "collectEnabled" | "folderPortalEnabled" | "debugEnabled"],
+                                    preferences?.[
+                                        feature.key as
+                                            "clockEnabled" | "musicEnabled" | "collectEnabled" | "folderPortalEnabled" | "weatherEnabled" | "debugEnabled"
+                                    ],
                                 )}
                                 onChange={(checked) => onPreferences({ [feature.key]: checked } as Partial<ApplicationPreferences>)}
                             />

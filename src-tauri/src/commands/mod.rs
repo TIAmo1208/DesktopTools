@@ -9,6 +9,7 @@ pub use desktop_item::{cancel_desktop_item_drag_preparation, prepare_desktop_ite
 pub mod music;
 mod notifications;
 pub mod settings;
+pub mod weather;
 mod workspace;
 mod workspace_menu;
 pub use music::{execute_music_action, get_current_music_session};

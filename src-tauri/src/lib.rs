@@ -11,6 +11,7 @@ pub mod recovery;
 mod shell;
 /// 提供 Rust 后端共享基础工具。
 pub mod tools;
+mod weather;
 mod workspace;
 
 use app::ApplicationState;
@@ -68,6 +69,7 @@ pub fn run()
         .invoke_handler(tauri::generate_handler![
             commands::get_foreground_snapshot,
             commands::settings::get_settings,
+            commands::weather::weather_settings,
             commands::settings::control_settings_window,
             commands::settings::get_preferences,
             commands::settings::get_windows_accent_color,
@@ -144,6 +146,7 @@ pub fn run()
             let config_directory = crate::app::settings::prepare_config_directory(&app.path().app_data_dir()?)?; // 在后台写入线程启动前完成配置迁移。
             let settings_path = config_directory.join("settings.json"); // 当前用户的正式设置文件。
             app.manage(crate::app::settings::SettingsState::load(settings_path)?);
+            app.manage(crate::weather::WeatherState::new(&config_directory));
             std::fs::create_dir_all(config_directory.join("collect"))?;
             let _ = crate::platform::windows::directory_watch::start(app.handle().clone(), "collect".to_string(), config_directory.join("collect"));
             app.manage(crate::platform::windows::settings::WindowsAccentMonitor::install(app.handle().clone())?);

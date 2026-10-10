@@ -1,6 +1,26 @@
 use super::*;
 use crate::contracts::settings::ApplicationTheme;
 
+/// 天气显示偏好沿用真实保存入口，缺失字段默认关闭且不接受伪布尔值。
+#[test]
+fn weather_visibility_defaults_and_persists()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-weather-preference-{}", std::process::id())); // 本测试独占目录。
+    let path = directory.join("settings.json"); // 普通偏好文件，不含凭据。
+    let state = SettingsState::load(path.clone()).unwrap(); // 真实加载入口。
+    let mut preferences = state.preferences().unwrap(); // 待保存偏好。
+    assert!(!preferences.weather_enabled);
+    for enabled in [true, false]
+    {
+        preferences.weather_enabled = enabled;
+        state.save(preferences.clone()).unwrap();
+        assert_eq!(SettingsState::load(path.clone()).unwrap().preferences().unwrap(), preferences);
+    }
+    assert!(!serde_json::from_str::<ApplicationPreferences>("{}").unwrap().weather_enabled);
+    assert!(serde_json::from_str::<ApplicationPreferences>(r#"{"weatherEnabled":"true"}"#).is_err());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// 格式正确的相对路径在应用层拒绝，文件和权威偏好保持原样。
 #[test]
 fn invalid_resolved_directory_preserves_saved_preferences()

@@ -1,0 +1,273 @@
+/* 天气设置内容沿用功能格子页面的宽度边界。 */
+.weather-settings {
+    min-width: 0;
+    max-width: 900px;
+    padding: 1px;
+}
+/* 页面标题、返回和草稿状态。 */
+.weather-settings__heading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+/* 二级页及确认框标题。 */
+.weather-settings h2,
+.weather-settings__dialog h2 {
+    margin: 0;
+    font-size: 18px;
+}
+/* 次要状态靠右且允许收缩换行。 */
+.weather-settings__heading small {
+    margin-left: auto;
+    color: var(--color-muted);
+}
+/* 来源与辅助字段复用主题次要颜色。 */
+.weather-settings__source,
+.weather-settings small,
+.weather-settings__dialog small {
+    color: var(--color-muted);
+    font-size: 12px;
+}
+/* 来源和字段区域分隔。 */
+.weather-settings__source {
+    margin: 0 0 16px;
+}
+/* 单个设置项使用已确认的 70 DIP 行和主题表面。 */
+.weather-settings__row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 70px;
+    margin-bottom: 4px;
+    padding: 15px 20px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    background: var(--color-surface);
+}
+/* 标签保留稳定列，输入区域占用剩余空间。 */
+.weather-settings__row > :first-child {
+    flex: 0 0 168px;
+}
+/* 输入与私钥组合可以随设置窗口收缩。 */
+.weather-settings__row > input,
+.weather-settings__private,
+.weather-settings__city {
+    flex: 1;
+    min-width: 0;
+}
+/* 设置字段与搜索框统一使用已有输入视觉参数。 */
+.weather-settings input:not([type="file"]),
+.weather-settings__dialog input {
+    box-sizing: border-box;
+    min-width: 0;
+    height: 38px;
+    padding: 6px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text);
+    background: var(--color-subtle);
+    font: inherit;
+}
+/* 文本命令沿用设置页按钮规则。 */
+.weather-settings button:not(.settings-info),
+.weather-settings__dialog button {
+    min-height: 38px;
+    padding: 6px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text);
+    background: var(--color-subtle);
+    font: inherit;
+    cursor: pointer;
+}
+/* 图标使用当前设置页的 Windows Fluent 字体。 */
+.weather-settings button.weather-settings__icon,
+.weather-settings__dialog button.weather-settings__icon {
+    flex: 0 0 32px;
+    width: 32px;
+    min-height: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+    font-size: 16px;
+}
+/* 私钥行包含输入及导入命令。 */
+.weather-settings__row--private {
+    min-height: 108px;
+    padding-top: 11px;
+    padding-bottom: 11px;
+}
+/* 显隐按钮处于输入右侧，命中区域不遮盖文本。 */
+.weather-settings__private-input {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+/* 私钥内容给显隐命令预留空间。 */
+.weather-settings .weather-settings__private-input input {
+    width: 100%;
+    padding-right: 40px;
+}
+/* 私钥显隐命令固定在字段内。 */
+.weather-settings__private-input .weather-settings__icon {
+    position: absolute;
+    right: 3px;
+}
+/* 导入按钮与草稿状态的内部间距。 */
+.weather-settings__private > .weather-settings__actions {
+    margin-top: 8px;
+}
+/* 临时城市的名称及行政区上下排列。 */
+.weather-settings__city {
+    display: grid;
+    gap: 4px;
+    overflow-wrap: anywhere;
+}
+/* 能力分区标题以较小字号保持设置页面层级。 */
+.weather-settings h3 {
+    margin: 20px 0 12px;
+    font-size: 14px;
+    font-weight: 500;
+}
+/* 五项能力列表不添加装饰面板。 */
+.weather-settings__checks {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 24px;
+}
+/* 每项结果保持 27 DIP 最小行高，长错误可换行。 */
+.weather-settings__checks li {
+    display: grid;
+    grid-template-columns: 24px minmax(100px, 1fr) minmax(90px, 1fr);
+    align-items: center;
+    gap: 8px;
+    min-height: 27px;
+}
+/* 结果文字在右侧对齐。 */
+.weather-settings__checks li > :last-child {
+    text-align: right;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+/* 成功图标沿用现有系统图标字体。 */
+.weather-settings__result-icon {
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+}
+/* 已通过的结果文字与勾选复用主题绿色。 */
+.weather-settings__result-icon.is-passed,
+.weather-settings__passed {
+    color: var(--color-active);
+}
+/* 操作组允许在窄窗口换行。 */
+.weather-settings__actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+/* 已配置状态的命令靠右。 */
+.weather-settings__row > .weather-settings__actions {
+    margin-left: auto;
+}
+/* 主提交沿用正文与表面的反差。 */
+.weather-settings button.weather-settings__primary {
+    color: var(--color-action-text);
+    background: var(--color-action);
+}
+/* 状态文字保留稳定空间。 */
+.weather-settings__status,
+.weather-settings > .weather-settings__error {
+    min-height: 18px;
+    margin: 16px 0 0;
+    font-size: 12px;
+}
+/* 错误状态复用深浅主题颜色。 */
+.weather-settings__error {
+    color: var(--color-error);
+}
+/* 确认框沿用原生 dialog 的模态与焦点管理。 */
+.weather-settings__dialog {
+    box-sizing: border-box;
+    width: min(468px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
+    padding: 20px;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    color: var(--color-text);
+    background: var(--color-surface);
+    font: inherit;
+    overflow: auto;
+}
+/* 城市选择使用已确认的紧凑尺寸。 */
+.weather-settings__dialog--city {
+    width: min(400px, calc(100vw - 32px));
+    height: min(352px, calc(100vh - 32px));
+    padding: 16px;
+}
+/* 模态背景保持已有遮罩语义。 */
+.weather-settings__dialog::backdrop {
+    background: rgb(0 0 0 / 35%);
+}
+/* 确认命令放在对话框末尾。 */
+.weather-settings__dialog > .weather-settings__actions {
+    justify-content: flex-end;
+}
+/* 城市提交输入和搜索图标。 */
+.weather-settings__search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 16px 0 8px;
+}
+/* 搜索文本占据可用宽度。 */
+.weather-settings__search input {
+    flex: 1;
+}
+/* 搜索结果在固定窗口内滚动。 */
+.weather-settings__cities {
+    height: 136px;
+    overflow: auto;
+    padding: 1px;
+}
+/* 行内城市和行政区复用 54 DIP 结果轨道。 */
+.weather-settings__cities button {
+    display: grid;
+    gap: 4px;
+    width: 100%;
+    min-height: 54px;
+    text-align: left;
+    border-color: transparent;
+    background: transparent;
+}
+/* 悬停反馈不改变控件尺寸。 */
+.weather-settings button:not(.settings-info):hover:not(:disabled),
+.weather-settings__dialog button:hover:not(:disabled) {
+    filter: brightness(0.96);
+}
+/* 禁用同时影响指针和对比度。 */
+.weather-settings button:disabled,
+.weather-settings input:disabled,
+.weather-settings__dialog button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+/* 所有可操作控件使用当前主题的键盘焦点。 */
+.weather-settings :is(button, input):focus-visible,
+.weather-settings__dialog :is(button, input):focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+/* 小窗口保留字段完整可读，长标签不挤压输入。 */
+@media (max-width: 720px) {
+    /* 设置项改为上下编排。 */
+    .weather-settings__row {
+        flex-wrap: wrap;
+    }
+    /* 标签在窄窗口占据整行。 */
+    .weather-settings__row > :first-child {
+        flex-basis: 100%;
+    }
+}

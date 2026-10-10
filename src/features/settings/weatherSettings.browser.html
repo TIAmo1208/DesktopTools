@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>天气设置交互回归检查</title>
+    <body>
+        <main id="fixture" style="max-width: 900px; margin: 24px auto"></main>
+        <pre id="result">RUNNING</pre>
+        <script type="module">
+            import React from "react";
+            import { createRoot } from "react-dom/client";
+            import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+            import { emit } from "@tauri-apps/api/event";
+            import { WeatherSettings } from "./WeatherSettings.tsx";
+            import "../../styles/global.css";
+
+            const calls = []; // 只记录动作名，不记录草稿内容。
+            let configured = false; // 替代 Windows 凭据状态。
+            let failSave = true; // 验证保存失败后可重试。
+            let pendingValidation; // 用于控制迟到结果。
+            let delayValidation = false; // 取消场景开关。
+            let counter = 0; // 模拟后端会话身份。
+            let back = 0; // 返回动作次数。
+            let destroyed = 0; // 原生关闭动作次数。
+            const leaveGuard = { current: undefined }; // 与生产父页面相同的导航入口。
+            const city = {
+                id: "test",
+                name: "东城",
+                adm1: "北京市",
+                adm2: "北京",
+                country: "中国",
+                lat: "39.92",
+                lon: "116.41",
+                tz: "Asia/Shanghai",
+                fxLink: "https://www.qweather.com/weather/test.html",
+            }; // 纯测试位置。
+            mockWindows("main");
+            mockIPC(
+                (command) => {
+                    if (command === "plugin:window|destroy") destroyed++;
+                },
+                { shouldMockEvents: true },
+            );
+            window.__DESKTOP_TOOLS_NATIVE__ = {
+                invoke: async (_, { command }) => {
+                    calls.push(command.type);
+                    const result = { configured, sessionId: counter, cities: [], checks: [] }; // 不回填账户与私钥。
+                    if (command.type === "begin") result.sessionId = ++counter;
+                    if (command.type === "search") result.cities = [city];
+                    if (command.type === "validate") {
+                        if (delayValidation)
+                            await new Promise((resolve) => {
+                                pendingValidation = resolve;
+                            });
+                        result.checks = [null, null, null, null, null];
+                    }
+                    if (command.type === "save") {
+                        if (failSave) throw "Windows 凭据保存失败，原配置未改变";
+                        configured = result.configured = true;
+                    }
+                    if (command.type === "clear") configured = result.configured = false;
+                    return result;
+                },
+            };
+            const root = createRoot(document.getElementById("fixture")); // 挂载生产组件。
+            root.render(React.createElement(React.StrictMode, null, React.createElement(WeatherSettings, { onBack: () => back++, leaveGuard })));
+            const settle = async () => {
+                for (let i = 0; i < 4; i++) await new Promise(requestAnimationFrame);
+            }; // 等待状态与模态提交。
+            const assert = (condition, message) => {
+                if (!condition) throw new Error(message);
+            }; // 回归断言。
+            const button = (text) => [...document.querySelectorAll("button")].find((element) => element.textContent === text); // 文案定位真实命令。
+            const fill = (element, value) => {
+                Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(element, value);
+                element.dispatchEvent(new Event("input", { bubbles: true }));
+            }; // 触发 React 原生输入路径。
+            const fillDraft = async () => {
+                const fields = document.querySelectorAll(".weather-settings__row > input"); // 已确认的四个账户字段。
+                ["example.qweatherapi.com", "Q12345ABCD", "PROJECT123", "KEY123"].forEach((value, index) => fill(fields[index], value));
+                fill(document.getElementById("weather-private-key"), "public-test-fixture");
+                await settle();
+            };
+            const selectCity = async () => {
+                button("选择城市").click();
+                await settle();
+                fill(document.querySelector("input[aria-label='搜索城市']"), "北京");
+                await settle();
+                document.querySelector("form").requestSubmit();
+                await settle();
+                document.querySelector(".weather-settings__cities button").click();
+                await settle();
+            };
+            try {
+                await settle();
+                await fillDraft();
+                assert(!calls.includes("begin"), "输入不得触发 API 请求");
+                await emit("tauri://close-requested");
+                await settle();
+                assert(document.querySelector("dialog[open]") && destroyed === 0, "关闭回调必须读取最新 dirty");
+                button("继续编辑").click();
+                await settle();
+                await selectCity();
+                button("验证配置").click();
+                button("验证配置").click();
+                await settle();
+                assert(calls.filter((type) => type === "validate").length === 1, "拒绝重复验证");
+                assert(!button("保存并启用").disabled, "完整验证后允许保存");
+                button("保存并启用").click();
+                await settle();
+                assert(document.getElementById("weather-private-key").value === "public-test-fixture", "保存失败必须保留草稿");
+                failSave = false;
+                button("保存并启用").click();
+                await settle();
+                assert(!document.getElementById("weather-private-key"), "保存成功必须清除敏感表单");
+                button("替换凭据").click();
+                await settle();
+                assert(document.getElementById("weather-private-key").value === "", "不回读保存的私钥");
+                await fillDraft();
+                await selectCity();
+                delayValidation = true;
+                button("验证配置").click();
+                await settle();
+                const beforeContinue = calls.length; // 继续编辑不得取消或重启验证。
+                for (const requestLeave of [() => leaveGuard.current(() => back++), () => emit("tauri://close-requested")]) {
+                    await requestLeave();
+                    await settle();
+                    assert(document.querySelector("dialog[open]") && !button("继续编辑").disabled, "验证期间仍可继续编辑");
+                    button("继续编辑").click();
+                    await settle();
+                    assert(!document.querySelector("dialog[open]") && back === 0 && destroyed === 0, "继续编辑只关闭确认，不离开页面");
+                    assert(button("取消验证") && calls.length === beforeContinue, "继续编辑保留在途验证");
+                    assert(document.getElementById("weather-private-key").value === "public-test-fixture", "继续编辑保留私钥草稿");
+                }
+                button("取消验证").click();
+                await settle();
+                pendingValidation();
+                await settle();
+                assert(button("保存并启用").disabled, "取消后的迟到成功不得启用保存");
+                leaveGuard.current(() => back++);
+                await settle();
+                assert(back === 0, "未保存草稿必须确认导航");
+                button("放弃编辑").click();
+                await settle();
+                assert(back === 1, "明确放弃后执行导航");
+                await emit("tauri://close-requested");
+                await settle();
+                assert(destroyed === 1, "清理后原生关闭不重入");
+                root.unmount();
+                await settle();
+                document.getElementById("result").textContent = "PASS: 关闭状态、重复提交、保存失败重试、私钥清理、取消迟到结果、导航确认";
+            } catch (error) {
+                document.getElementById("result").textContent = `FAIL: ${error.stack}`;
+            }
+        </script>
+    </body>
+</html>
