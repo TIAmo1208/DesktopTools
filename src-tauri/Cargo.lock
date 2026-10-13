@@ -640,7 +640,6 @@ dependencies = [
  "resvg",
  "serde",
  "serde_json",
- "sha2",
  "tauri",
  "tauri-build",
  "webview2-com",

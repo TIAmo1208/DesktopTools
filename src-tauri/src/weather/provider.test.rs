@@ -49,6 +49,16 @@ fn jwt_has_required_claims_and_valid_ed25519_signature()
 }
 
 #[test]
+fn retry_after_supports_seconds_and_http_date()
+{
+    let mut headers = reqwest::header::HeaderMap::new(); // 模拟供应商响应头。
+    headers.insert("retry-after", "5".parse().unwrap());
+    assert!(retry_at(&headers).unwrap() >= Utc::now().timestamp() + 4);
+    headers.insert("retry-after", "Wed, 21 Oct 2015 07:28:00 GMT".parse().unwrap());
+    assert_eq!(retry_at(&headers), Some(1445412480));
+}
+
+#[test]
 fn hourly_requires_continuous_current_window_and_celsius()
 {
     let now = Utc.with_ymd_and_hms(2026, 1, 1, 10, 30, 0).unwrap(); // 固定时间边界。
@@ -57,6 +67,18 @@ fn hourly_requires_continuous_current_window_and_celsius()
     value["hours"][2]["forecastTime"] = value["hours"][1]["forecastTime"].clone();
     assert!(validate_weather("hourly", &value, &city(), now).is_err());
     assert!(validate_weather("current", &json!({"temperature":{"value":70,"unit":"°F"},"condition":{"text":"晴","code":"100"}}), &city(), now).is_err());
+}
+
+#[test]
+fn current_weather_rejects_success_responses_without_valid_content()
+{
+    let now = Utc::now(); // 校验只使用内存响应，不访问真实账户。
+    let valid = json!({"temperature":{"value":-5,"unit":"°C"},"condition":{"text":"晴","code":"100"}}); // 负温度仍是有效摄氏数据。
+    assert!(validate_weather("current", &valid, &city(), now).is_ok());
+    for value in [Value::Null, json!({"code":"200"}), json!({"temperature":{"value":"20","unit":"°C"},"condition":{"text":"晴","code":"100"}}), json!({"temperature":{"value":20,"unit":"°C"},"condition":{"text":"","code":"100"}})]
+    {
+        assert!(validate_weather("current", &value, &city(), now).is_err());
+    }
 }
 
 #[test]

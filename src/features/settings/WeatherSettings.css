@@ -203,10 +203,17 @@
 }
 /* 城市选择使用已确认的紧凑尺寸。 */
 .weather-settings__dialog--city {
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+    align-content: stretch;
+    gap: 8px;
     width: min(400px, calc(100vw - 32px));
     height: min(352px, calc(100vh - 32px));
     padding: 16px;
+    overflow: hidden;
 }
+/* 城市弹窗标题不再参与结果列表的滚动高度计算。 */
+.weather-settings__dialog--city h2 { margin: 0; }
 /* 模态背景保持已有遮罩语义。 */
 .weather-settings__dialog::backdrop {
     background: rgb(0 0 0 / 35%);
@@ -220,7 +227,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    margin: 16px 0 8px;
+    margin: 0;
 }
 /* 搜索文本占据可用宽度。 */
 .weather-settings__search input {
@@ -228,9 +235,13 @@
 }
 /* 搜索结果在固定窗口内滚动。 */
 .weather-settings__cities {
-    height: 136px;
+    min-height: 0;
+    height: auto;
     overflow: auto;
-    padding: 1px;
+    padding: 1px 2px 1px 1px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: var(--color-subtle);
 }
 /* 行内城市和行政区复用 54 DIP 结果轨道。 */
 .weather-settings__cities button {
@@ -238,10 +249,19 @@
     gap: 4px;
     width: 100%;
     min-height: 54px;
+    padding: 8px 12px;
+    border-width: 0 0 1px;
+    border-radius: 0;
     text-align: left;
-    border-color: transparent;
+    border-color: var(--color-border);
     background: transparent;
 }
+/* 结果列表最后一项不留下多余分隔线。 */
+.weather-settings__cities button:last-child { border-bottom: 0; }
+/* 城市弹窗状态栏固定高度，避免搜索状态改变按钮位置。 */
+.weather-settings__dialog--city > [role="status"] { min-height: 18px; margin: 0; font-size: 12px; }
+/* 城市弹窗取消操作始终贴近底部右侧。 */
+.weather-settings__dialog--city > .weather-settings__actions { margin: 0; }
 /* 悬停反馈不改变控件尺寸。 */
 .weather-settings button:not(.settings-info):hover:not(:disabled),
 .weather-settings__dialog button:hover:not(:disabled) {

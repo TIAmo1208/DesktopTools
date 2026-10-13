@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use windows::{
     Win32::{
         Foundation::ERROR_NOT_FOUND,
@@ -8,6 +7,19 @@ use windows::{
     core::{PCWSTR, PWSTR},
 };
 use zeroize::Zeroize;
+
+/// 仅用于缓存归属；序列化敏感材料使用后立即清零，指纹不返回页面。
+pub(super) fn cache_identity(credentials: &Credentials) -> Result<String, String>
+{
+    use base64::Engine;
+    use windows::Win32::Security::Cryptography::{BCRYPT_SHA256_ALG_HANDLE, BCryptHash};
+    let mut input = serde_json::to_vec(credentials).map_err(|_| "天气配置指纹编码失败")?; // 包含全部字段，任一凭据变化均隔离缓存。
+    let mut digest = [0_u8; 32]; // 仅存储不可逆摘要，不保存原始凭据。
+    let result = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, &input, &mut digest) };
+    input.zeroize();
+    result.ok().map_err(|_| "天气配置指纹计算失败")?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest))
+}
 
 /// 只在设置命令和 Windows 凭据存储之间传递，不进入快照或日志。
 #[derive(Clone, Deserialize, Serialize)]
@@ -26,12 +38,8 @@ impl Drop for Credentials
     fn drop(&mut self) { self.private_key.zeroize(); }
 }
 
-/// 按配置目录隔离凭据，目标名不包含账户参数。
-pub fn target(directory: &std::path::Path) -> String
-{
-    let identity = directory.to_string_lossy().replace('/', "\\").to_lowercase(); // Windows 配置归属。
-    format!("DesktopTools/Weather/{:x}", Sha256::digest(identity.as_bytes()))
-}
+/// 使用应用级固定目标，配置目录迁移不会遗留无法清除的凭据。
+pub fn target(_directory: &std::path::Path) -> String { "DesktopTools/Weather".into() }
 
 /// 查询是否已保存，清零系统返回的敏感缓冲区后立即释放。
 pub fn configured(target: &str) -> Result<bool, String>
@@ -51,6 +59,36 @@ pub fn configured(target: &str) -> Result<bool, String>
                 Ok(true)
             }
             Err(error) if error.code() == ERROR_NOT_FOUND.to_hresult() => Ok(false),
+            Err(_) => Err("Windows 凭据存储不可用，请稍后重试".into()),
+        }
+    }
+}
+
+/// 从 Windows 凭据存储读取并校验当前天气凭据。
+pub fn load(target: &str) -> Result<Option<Credentials>, String>
+{
+    let name: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
+    let mut credential = std::ptr::null_mut();
+    unsafe {
+        match CredReadW(PCWSTR(name.as_ptr()), CRED_TYPE_GENERIC, None, &mut credential)
+        {
+            Ok(()) =>
+            {
+                if (*credential).CredentialBlob.is_null() || (*credential).CredentialBlobSize == 0
+                {
+                    CredFree(credential.cast());
+                    return Err("天气凭据内容为空".into());
+                }
+                let bytes = std::slice::from_raw_parts((*credential).CredentialBlob, (*credential).CredentialBlobSize as usize);
+                let result = serde_json::from_slice(bytes).map_err(|_| "天气凭据格式无效".to_string());
+                if !(*credential).CredentialBlob.is_null()
+                {
+                    std::slice::from_raw_parts_mut((*credential).CredentialBlob, (*credential).CredentialBlobSize as usize).zeroize();
+                }
+                CredFree(credential.cast());
+                result.map(Some)
+            }
+            Err(error) if error.code() == ERROR_NOT_FOUND.to_hresult() => Ok(None),
             Err(_) => Err("Windows 凭据存储不可用，请稍后重试".into()),
         }
     }

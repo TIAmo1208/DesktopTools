@@ -62,5 +62,6 @@ package-lock.json
 # 公共格子与迁移后的回归检查保留在版本控制中。
 !src/features/tiles/*.test.ts
 !src/features/tile-content/music/musicLayout.test.ts
+!src/features/tile-content/weather/WeatherTile.test.ts
 !src/features/workspace/interaction/crossMonitorDrag.test.ts
 !src/features/workspace/surface/crossMonitorDragPreview.test.ts

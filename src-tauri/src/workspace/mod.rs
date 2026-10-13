@@ -138,6 +138,14 @@ impl WorkspaceState
             }
             None => (default_workspace_snapshot(default_components), false),
         }; // 不查询或分区 Windows 虚拟桌面。
+        // 新增官方天气格子需要进入已有布局；其他默认格子继续保持用户移除后不自动恢复。
+        if !snapshot.components.iter().any(|component| component.component_id == "official.weather")
+        {
+            if let Some(weather) = default_components.iter().find(|component| component.component_id == "official.weather")
+            {
+                snapshot.components.push(weather.clone());
+            }
+        }
         snapshot.interaction = WorkspaceInteractionSnapshot::default();
         let members = snapshot.fences.iter().flat_map(|fence| fence.members.iter()).collect::<std::collections::HashSet<_>>(); // 围栏身份权威与桌面位置互斥。
         snapshot.unclassified_items.retain(|item| !members.contains(&item.stable_reference)); // 启动时不将隐藏来源记录带入活动布局。

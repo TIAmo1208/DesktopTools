@@ -164,6 +164,35 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         }
         "get_windows_accent_color" => app.state::<crate::platform::windows::settings::WindowsAccentMonitor>().color().map_err(serialize_error).and_then(serialize_result),
         "get_preferences" => app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error).and_then(serialize_result),
+        "get_weather_forecast" =>
+        {
+            let city: crate::weather::City = command_argument(&arguments, "city", "天气城市参数无效").map_err(serialize_error)?;
+            app.state::<crate::weather::WeatherState>().forecast(city).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+        }
+        "subscribe_weather" =>
+        {
+            let instance = command_argument(&arguments, "instanceId", "天气实例标识无效").map_err(serialize_error)?;
+            let monitor = command_argument(&arguments, "monitorId", "天气显示器标识无效").map_err(serialize_error)?;
+            let city = command_argument(&arguments, "city", "天气城市参数无效").map_err(serialize_error)?;
+            weather::subscribe_weather(app.clone(), instance, monitor, city).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+        }
+        "unsubscribe_weather" =>
+        {
+            let subscription = command_argument(&arguments, "subscription", "天气订阅标识无效").map_err(serialize_error)?;
+            weather::unsubscribe_weather(subscription);
+            serialize_result(())
+        }
+        "search_weather_cities" =>
+        {
+            let query: String = command_argument(&arguments, "query", "城市搜索参数无效").map_err(serialize_error)?;
+            app.state::<crate::weather::WeatherState>().search_saved(query).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+        }
+        "get_weather_city" => app.state::<crate::weather::WeatherState>().saved_city().map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result),
+        "set_weather_city" =>
+        {
+            let city: crate::weather::City = command_argument(&arguments, "city", "天气城市参数无效").map_err(serialize_error)?;
+            app.state::<crate::weather::WeatherState>().save_city(city).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+        }
         "get_collect_items" =>
         {
             let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;

@@ -70,6 +70,12 @@ pub fn run()
             commands::get_foreground_snapshot,
             commands::settings::get_settings,
             commands::weather::weather_settings,
+            commands::weather::subscribe_weather,
+            commands::weather::unsubscribe_weather,
+            commands::weather::get_weather_forecast,
+            commands::weather::search_weather_cities,
+            commands::weather::get_weather_city,
+            commands::weather::set_weather_city,
             commands::settings::control_settings_window,
             commands::settings::get_preferences,
             commands::settings::get_windows_accent_color,
@@ -177,6 +183,7 @@ pub fn run()
             DesktopHostRuntime::start_environment_watchdog(app.handle().clone(), Arc::clone(&app.state::<Arc<DesktopHostRuntime>>()));
             DesktopHostRuntime::start_renderer_watchdog(app.handle().clone(), Arc::clone(&app.state::<Arc<DesktopHostRuntime>>()));
             ComponentRuntimeState::start_host_events(app.handle().clone());
+            crate::weather::activity::start(app.handle().clone());
             crate::platform::windows::music::start_monitor(app.handle().clone());
             app::desktop_menu::install(app.handle(), initial_menu_action)?;
             Ok(())

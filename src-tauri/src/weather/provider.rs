@@ -1,7 +1,7 @@
 use super::credentials::Credentials;
 use chrono::{DateTime, Utc};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use reqwest::{Url, blocking::Client};
+use reqwest::{Url, blocking::Client, header::HeaderMap};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -30,17 +30,19 @@ pub struct City
 }
 
 /// 只返回经过归类的错误，不携带请求或原始响应。
-#[derive(Clone, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Failure
 {
     pub message: String,       // 用户可见说明。
     pub retry_at: Option<i64>, // 服务端规定的最早重试时间。
+    #[serde(skip)]
+    pub retryable: bool, // 后端请求策略，不依赖用户可见错误文案。
 }
 
 impl From<&str> for Failure
 {
-    fn from(message: &str) -> Self { Self { message: message.into(), retry_at: None } }
+    fn from(message: &str) -> Self { Self { message: message.into(), retry_at: None, retryable: false } }
 }
 
 /// 完整 Host 仅验证 DNS 语法和官方域名边界，不解释标签含义。
@@ -109,7 +111,7 @@ impl Provider
             return Err("验证已取消".into());
         }
         let jwt = token(&self.credentials).map_err(|_| Failure::from("JWT 签名失败，请核对私钥与设备时间"))?; // 请求时签发，不缓存令牌。
-        let mut response = self.client.get(format!("https://{}{path}", self.credentials.host)).query(query).bearer_auth(jwt).send().map_err(|_| Failure::from("网络不可用或请求超时，未完成验证"))?; // 不输出 reqwest 错误中的 URL。
+        let mut response = self.client.get(format!("https://{}{path}", self.credentials.host)).query(query).bearer_auth(jwt).send().map_err(|_| Failure { retryable: true, ..Failure::from("网络不可用或请求超时，未完成验证") })?; // 不输出 reqwest 错误中的 URL。
         let status = response.status().as_u16(); // HTTP 错误分类。
         if status != 200
         {
@@ -121,14 +123,15 @@ impl Provider
                 429 => Failure::from("请求受到限流，请稍后重试"),
                 _ => Failure::from("天气服务请求失败"),
             }; // 不向用户展示上游正文。
-            if status == 429 || status == 503
+            failure.retryable = status == 429 || status >= 500;
+            if status == 402 || status == 429 || status == 503
             {
-                failure.retry_at = response.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<i64>().ok().filter(|seconds| *seconds >= 0).and_then(|seconds| Utc::now().timestamp().checked_add(seconds)).or_else(|| DateTime::parse_from_rfc2822(v).ok().map(|time| time.timestamp())));
+                failure.retry_at = retry_at(response.headers());
             }
             return Err(failure);
         }
         let mut bytes = Vec::new(); // 解压后的响应上限 512 KiB。
-        response.by_ref().take(524_289).read_to_end(&mut bytes).map_err(|_| Failure::from("天气响应读取失败"))?;
+        response.by_ref().take(524_289).read_to_end(&mut bytes).map_err(|_| Failure { retryable: true, ..Failure::from("天气响应读取失败") })?;
         if bytes.len() > 524_288
         {
             return Err("天气响应超过大小限制".into());
@@ -148,7 +151,13 @@ impl Provider
                 "401" => return Err("凭据无效，请核对账户、私钥和设备时间".into()),
                 "402" => return Err("账户额度不足，请检查和风账户".into()),
                 "403" => return Err("接口权限不足".into()),
-                "429" => return Err("请求受到限流，请稍后重试".into()),
+                "429" =>
+                {
+                    let mut failure = Failure::from("请求受到限流，请稍后重试");
+                    failure.retryable = true;
+                    failure.retry_at = retry_at(response.headers());
+                    return Err(failure);
+                }
                 _ => return Err("城市搜索服务请求失败".into()),
             }
         }
@@ -206,13 +215,57 @@ impl Provider
         results.push(if sources { Ok(()) } else { Err("来源或当前城市详情链接未通过核验".into()) });
         results
     }
+
+    /// 只请求指定的天气模块，允许调用方复用仍有效的本地模块缓存。
+    pub fn forecast_modules(&self, city: &City, modules: &[&str], is_active: impl Fn() -> bool) -> (Value, std::collections::BTreeMap<String, Failure>)
+    {
+        let position = format!("{:.2}/{:.2}", city.lat.parse::<f64>().unwrap_or_default(), city.lon.parse::<f64>().unwrap_or_default());
+        let fetched_at = Utc::now().timestamp_millis();
+        let mut errors = serde_json::Map::new();
+        let mut module_fetched_at = serde_json::Map::new();
+        let mut failures = std::collections::BTreeMap::new(); // 部分成功也必须保留每个失败模块的请求策略。
+        // 桌面读取与设置验证共用结构和时间窗校验，坏数据不获得成功时间戳。
+        let mut request_module = |name: &str, path: String, query: &[(&str, &str)]| match (if is_active()
+        {
+            self.request(&path, query)
+        }
+        else
+        {
+            Err(Failure::from("天气实例已停止活动"))
+        })
+        .and_then(|value| {
+            validate_weather(name, &value, city, Utc::now()).map_err(Failure::from)?;
+            Ok(value)
+        })
+        {
+            Ok(value) =>
+            {
+                module_fetched_at.insert(name.to_string(), json!(fetched_at));
+                Some(value)
+            }
+            Err(failure) =>
+            {
+                errors.insert(name.to_string(), json!(failure.message));
+                failures.insert(name.to_string(), failure);
+                None
+            }
+        };
+        let current = modules.contains(&"current").then(|| request_module("current", format!("/weather/v1/current/{position}"), &[("lang", "zh")])).flatten();
+        let hourly = modules.contains(&"hourly").then(|| request_module("hourly", format!("/weather/v1/hourly/{position}"), &[("hours", "24"), ("lang", "zh")])).flatten();
+        let daily = modules.contains(&"daily").then(|| request_module("daily", format!("/weather/v1/daily/{position}"), &[("days", "7"), ("lang", "zh")])).flatten();
+        let attributions = current.as_ref().and_then(|value| value.pointer("/metadata/attributions")).cloned().unwrap_or_else(|| json!([]));
+        (serde_json::json!({ "city": city, "current": current, "hourly": hourly, "daily": daily, "moduleErrors": errors, "moduleFetchedAt": module_fetched_at, "attributions": attributions, "fetchedAt": fetched_at }), failures)
+    }
 }
+
+/// 解析服务端要求的最早重试时间。
+fn retry_at(headers: &HeaderMap) -> Option<i64> { headers.get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<i64>().ok().filter(|seconds| *seconds >= 0).and_then(|seconds| Utc::now().timestamp().checked_add(seconds)).or_else(|| DateTime::parse_from_rfc2822(v).ok().map(|time| time.timestamp()))) }
 
 /// 详情 URL 必须属于和风且包含选定的位置 ID。
 fn valid_detail(city: &City) -> bool { Url::parse(&city.fx_link).ok().is_some_and(|url| url.scheme() == "https" && matches!(url.host_str(), Some("www.qweather.com" | "qweather.com")) && url.username().is_empty() && url.password().is_none() && url.port().is_none() && url.path().starts_with("/weather/") && url.path().ends_with(&format!("-{}.html", city.id))) }
 
 /// 验证连续小时和城市本地日期，跨夏令时按真实 UTC 小时及本地日历分别处理。
-fn validate_weather(module: &str, value: &Value, city: &City, now: DateTime<Utc>) -> Result<(), &'static str>
+pub(super) fn validate_weather(module: &str, value: &Value, city: &City, now: DateTime<Utc>) -> Result<(), &'static str>
 {
     let temperature = |v: &Value| v.get("value").and_then(Value::as_f64).is_some_and(f64::is_finite) && v.get("unit").and_then(Value::as_str) == Some("°C"); // 明确摄氏单位。
     let condition = |v: &Value| ["text", "code"].iter().all(|key| v.get(key).and_then(Value::as_str).is_some_and(|s| !s.is_empty())); // 内容所需字段。

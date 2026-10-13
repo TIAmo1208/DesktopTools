@@ -245,8 +245,8 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
 
   // 权威布局、桌面项目及组件注册事件使用真实投递。
   const listen = async (eventName, handler) => {
-    if (eventName === "folder-portal-changed" || eventName === "collect-items-changed") {
-      const subscription = { receive: (payload) => { if (!refreshPaused || payload?.error || payload?.deletedName) handler(payload); } }; // 主动删除即使暂停也必须移除会话缓存。
+    if (eventName === "folder-portal-changed" || eventName === "collect-items-changed" || eventName === "weather-configuration-changed" || eventName === "weather-forecast-changed") {
+      const subscription = { receive: (payload) => { if (!refreshPaused || eventName === "weather-configuration-changed" || payload?.error || payload?.deletedName) handler(payload); } }; // 主动删除即使暂停也必须移除会话缓存。
       if (!eventSubscriptions.has(eventName)) eventSubscriptions.set(eventName, new Set());
       eventSubscriptions.get(eventName).add(subscription);
       return () => eventSubscriptions.get(eventName)?.delete(subscription);
@@ -296,7 +296,7 @@ fn raw_hwnd(raw: isize) -> HWND { HWND(raw as *mut c_void) }
 pub(crate) fn install_host_events(app: &AppHandle)
 {
     super::refresh_policy::start_events(app);
-    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed"]
+    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed"]
     {
         let handle = app.clone(); // 原生窗口所属的 UI 调度器。
         app.listen(name, move |event| {
@@ -311,7 +311,7 @@ pub(crate) fn install_host_events(app: &AppHandle)
                         {
                             continue;
                         }
-                        if !matches!(name, "desktop-refresh-policy-changed" | "preferences-changed" | "collect-items-changed") && !watcher_failed && super::refresh_policy::is_paused(&host.monitor_id)
+                        if !matches!(name, "desktop-refresh-policy-changed" | "preferences-changed" | "collect-items-changed" | "weather-configuration-changed") && !watcher_failed && super::refresh_policy::is_paused(&host.monitor_id)
                         {
                             continue;
                         }
@@ -1348,6 +1348,7 @@ pub fn reload_desktop_host(monitor_id: &str) -> Result<(), String>
 {
     super::directory_watch::clear_monitor(monitor_id);
     crate::component_runtime::ComponentRuntimeState::clear_time_monitor(monitor_id);
+    crate::weather::activity::clear_monitor(monitor_id);
     super::refresh_policy::set_paused(monitor_id, false);
     NATIVE_HOSTS.with(|hosts| {
         let hosts = hosts.borrow(); // 当前 UI 线程持有的全部正式 WebView2 宿主。
@@ -1564,6 +1565,7 @@ fn destroy_matching_hosts(matches: impl Fn(&str) -> bool)
             let host = hosts.remove(index); // 仅释放本次选中的宿主。
             super::directory_watch::clear_monitor(&host.monitor_id);
             crate::component_runtime::ComponentRuntimeState::clear_time_monitor(&host.monitor_id);
+            crate::weather::activity::clear_monitor(&host.monitor_id);
             for (hwnd, _) in &host.drop_targets
             {
                 let _ = unsafe { RevokeDragDrop(raw_hwnd(*hwnd)) };

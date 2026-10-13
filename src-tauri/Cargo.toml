@@ -32,7 +32,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 chrono-tz = "0.10"
 jsonwebtoken = "9.3"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "native-tls", "gzip", "query"] }
-sha2 = "0.10"
 zeroize = "1"
 png = "0.17"
 pulldown-cmark = { version = "0.13", default-features = false }

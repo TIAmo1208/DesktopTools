@@ -108,10 +108,7 @@ pub async fn prepare_desktop_item_drag(state: State<'_, DesktopItemState>, item_
 
 /// 为两个 transport 准备收集箱复制拖出，失败项只报告本地准备事实。
 #[tauri::command]
-pub async fn prepare_collect_drag(app: AppHandle, names: Vec<String>) -> Result<crate::contracts::ShellDragPreparation, DesktopItemError>
-{
-    tauri::async_runtime::spawn_blocking(move || execute_prepare_collect_drag(&app, names)).await.map_err(|error| DesktopItemError::shell_operation_failed(&error))?
-}
+pub async fn prepare_collect_drag(app: AppHandle, names: Vec<String>) -> Result<crate::contracts::ShellDragPreparation, DesktopItemError> { tauri::async_runtime::spawn_blocking(move || execute_prepare_collect_drag(&app, names)).await.map_err(|error| DesktopItemError::shell_operation_failed(&error))? }
 
 /// 从磁盘读取权威收集项并把双表示交给现有 Shell STA。
 pub(crate) fn execute_prepare_collect_drag(app: &AppHandle, names: Vec<String>) -> Result<crate::contracts::ShellDragPreparation, DesktopItemError>
