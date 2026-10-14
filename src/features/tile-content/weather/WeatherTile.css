@@ -58,7 +58,7 @@
 /* 模块级加载和失败提示不改变其他模块的布局。 */
 .weather-tile__module-notice {
     margin: 8px 0 0;
-    color: var(--color-text-secondary);
+    color: var(--color-surface);
     font-size: calc(var(--interface-font-size) - 1px);
 }
 /* 统一天气图标尺寸与主题颜色。 */
@@ -120,7 +120,7 @@
     min-width: 0;
 }
 .weather-tile__hour small {
-    color: var(--color-text-secondary);
+    color: var(--color-surface);
     font-size: max(11px, calc(var(--interface-font-size) - 2px));
 }
 .weather-tile__hour span {
@@ -141,7 +141,7 @@
 }
 .weather-tile__day small {
     overflow: hidden;
-    color: var(--color-text-secondary);
+    color: var(--color-surface);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -178,7 +178,7 @@
 }
 .weather-tile__footer small {
     overflow: hidden;
-    color: var(--color-text-secondary);
+    color: var(--color-surface);
     font-size: max(11px, calc(var(--interface-font-size) - 2px));
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -273,7 +273,7 @@
 .weather-tile__cities small {
     display: block;
     padding: 12px;
-    color: var(--color-text-secondary);
+    color: var(--color-surface);
 }
 .weather-tile__cities button small {
     padding: 0;
@@ -290,7 +290,7 @@
     place-items: center;
     gap: 12px;
     min-height: 100%;
-    color: var(--color-text-secondary);
+    color: var(--color-surface);
     text-align: center;
 }
 

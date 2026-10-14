@@ -12,9 +12,9 @@ status: accepted
 
 Windowed 宿主通过显式栅格化控制处理跨进程 DPI 影响。正式接管门槛见 [ADR-0016](0016-正式项目架构.md)。
 
-### 验证边界与官方契约
+### 实现边界与官方契约
 
-页面就绪和窗口可见日志不能代替真实像素验收。每个宿主需按目标显示器验证页面 DPR、命中坐标和实际显示效果；实机证据见[架构深化验证记录](../validation/架构深化验证记录.md)。
+每个宿主按目标显示器应用页面 DPR 与命中坐标；实际显示效果尚未经真实环境验证。
 
 - [SetParent](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setparent)：跨进程 DPI 重置与窗口样式责任。
 - [ICoreWebView2Controller3](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2controller3)：显式栅格化、自动缩放检测与 BoundsMode。
@@ -23,4 +23,4 @@ Windowed 宿主通过显式栅格化控制处理跨进程 DPI 影响。正式接
 - [IsWindowVisible](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-iswindowvisible)：可见样式不保证未被遮挡或裁剪。
 - [WM_USER](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-user)：私有窗口消息范围，不承诺 Explorer `0x052C` 语义。
 
-Explorer 私有桌面层能力集中在可替换的兼容适配器中。Tauri 负责控制面、设置和应用生命周期；原生桌面宿主负责 HWND、WebView2 Controller、WndProc、每台宿主的 OLE target 和恢复状态。验证层级依次为公开宿主基线、Tauri 创建期宿主实验、独立原生宿主和组合宿主；当前 Windows 10 22H2 平台验证双屏真实像素、透明壁纸、任务栏工作区、输入、Win+D、正常退出和崩溃恢复。运行期间适配器失效时，guardian 恢复 Explorer 状态，主程序停止桌面接管、保留布局数据并记录错误；其他 Windows 版本不再阻塞当前平台实现。
+Explorer 私有桌面层能力集中在可替换的兼容适配器中。Tauri 负责控制面、设置和应用生命周期；原生桌面宿主负责 HWND、WebView2 Controller、WndProc、每台宿主的 OLE target 和恢复状态。实现路径依次为公开宿主基线、Tauri 创建期宿主实验、独立原生宿主和组合宿主；当前 Windows 10 22H2 平台覆盖双屏、透明壁纸、任务栏工作区、输入、Win+D、正常退出和崩溃恢复。运行期间适配器失效时，guardian 恢复 Explorer 状态，主程序停止桌面接管、保留布局数据并记录错误；其他 Windows 版本不再阻塞当前平台实现。
