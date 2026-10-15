@@ -1,3 +1,4 @@
+use super::credentials::QweatherCredentials;
 use super::*;
 
 #[test]
@@ -27,20 +28,25 @@ fn module_retries_preserve_partial_failures_and_server_waits()
 #[test]
 fn cache_identity_is_stable_and_covers_all_credential_fields()
 {
-    let original = Credentials { host: "test.qweatherapi.com".into(), developer_id: "developer".into(), project_id: "project".into(), credential_id: "credential".into(), private_key: "synthetic-test-key".into() }; // 仅测试指纹，不访问真实凭据或网络。
+    let original = Credentials::Qweather(QweatherCredentials { host: "test.qweatherapi.com".into(), developer_id: "developer".into(), project_id: "project".into(), credential_id: "credential".into(), private_key: "synthetic-test-key".into() }); // 仅测试指纹，不访问真实凭据或网络。
     let identity = credentials::cache_identity(&original).unwrap(); // 同一配置在重启后计算相同身份。
     assert_eq!(identity, credentials::cache_identity(&original.clone()).unwrap());
     assert_eq!(identity.len(), 43);
     for field in 0..5
     {
         let mut changed = original.clone(); // 每个配置字段独立改变都不得命中旧缓存。
+        let Credentials::Qweather(value) = &mut changed
+        else
+        {
+            unreachable!("测试草稿固定为和风凭据")
+        };
         match field
         {
-            0 => changed.host.push('x'),
-            1 => changed.developer_id.push('x'),
-            2 => changed.project_id.push('x'),
-            3 => changed.credential_id.push('x'),
-            _ => changed.private_key.push('x'),
+            0 => value.host.push('x'),
+            1 => value.developer_id.push('x'),
+            2 => value.project_id.push('x'),
+            3 => value.credential_id.push('x'),
+            _ => value.private_key.push('x'),
         }
         assert_ne!(identity, credentials::cache_identity(&changed).unwrap());
     }
@@ -50,11 +56,12 @@ fn cache_identity_is_stable_and_covers_all_credential_fields()
 fn cancellation_releases_session_even_when_credential_status_fails()
 {
     let cancelled = Arc::new(AtomicBool::new(false)); // 模拟在途请求持有的取消标记。
-    let draft = Arc::new(Credentials { host: String::new(), developer_id: String::new(), project_id: String::new(), credential_id: String::new(), private_key: "test-draft".into() }); // 不访问真实账户。
+    let draft = Arc::new(Credentials::Qweather(QweatherCredentials { host: String::new(), developer_id: String::new(), project_id: String::new(), credential_id: String::new(), private_key: "test-draft".into() })); // 不访问真实账户。
     let released = Arc::downgrade(&draft); // 验证会话释放私钥所有权。
     let state = WeatherState {
-        target: String::new(),
-        city_path: std::path::PathBuf::from("weather-test-city.json"), // 空目标使 Windows 凭据读取确定失败，不改变系统服务。
+        active: Mutex::new(Active { source: Source::Qweather, city_path: std::path::PathBuf::from("weather-test-city.json") }), // 只指向测试文件，不读写真实城市缓存。
+        namespace: String::new(),                                                                                               // 空记录名使 Windows 凭据读取确定失败，不改变系统服务。
+        directory: std::path::PathBuf::from("."),
         forecast_cache_path: std::path::PathBuf::from("weather-test-forecast.json"),
         forecast_guard: Mutex::new(()),
         forecast_retry: Mutex::new(ForecastRetry::default()),
@@ -75,21 +82,26 @@ fn cancellation_releases_session_even_when_credential_status_fails()
 fn credential_store_and_authoritative_save_gate()
 {
     let target = format!("DesktopTools/Test/Weather/{}", std::process::id()); // 仅写入本测试专用目标，不读取用户凭据。
-    let state = WeatherState { target: target.clone(), city_path: std::path::PathBuf::from(format!("weather-test-city-{}.json", std::process::id())), forecast_cache_path: std::path::PathBuf::from(format!("weather-test-forecast-{}.json", std::process::id())), forecast_guard: Mutex::new(()), forecast_retry: Mutex::new(ForecastRetry::default()), inner: Mutex::new(Inner::default()) }; // 不使用真实应用配置路径。
+    let state = WeatherState::for_test(std::path::Path::new("."), Source::Qweather, &target); // 记录名指向测试专用目标，不使用真实应用记录。
     let execute = |command| state.execute(command, state.window_epoch().unwrap()); // 默认使用当前窗口代次。
     credentials::clear(&target).unwrap();
-    assert!(!execute(Command::Status).unwrap().configured);
+    assert!(execute(Command::Status).unwrap().sources.is_empty());
     assert!(execute(Command::Save { session_id: 1 }).is_err());
-    let draft = Credentials { host: "test.qweatherapi.com".into(), developer_id: "Q12345ABCD".into(), project_id: "test".into(), credential_id: "test".into(), private_key: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g\n-----END PRIVATE KEY-----".into() }; // 公开测试种子。
+    let draft = Credentials::Qweather(QweatherCredentials { host: "test.qweatherapi.com".into(), developer_id: "Q12345ABCD".into(), project_id: "test".into(), credential_id: "test".into(), private_key: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g\n-----END PRIVATE KEY-----".into() }); // 公开测试种子。
     let first = execute(Command::Begin { credentials: draft.clone() }).unwrap().session_id.unwrap(); // 第一份草稿。
     assert!(execute(Command::Save { session_id: first }).is_err());
     let second = execute(Command::Begin { credentials: draft.clone() }).unwrap().session_id.unwrap(); // 新草稿使旧会话失效。
     execute(Command::Cancel { session_id: first }).unwrap();
     assert_eq!(state.inner.lock().unwrap().session.as_ref().unwrap().id, second);
     credentials::save(&target, &draft).unwrap();
-    assert!(execute(Command::Status).unwrap().configured);
+    assert_eq!(execute(Command::Status).unwrap().sources.len(), 1); // 已保存的测试记录出现在列表中。
     let mut oversized = draft.clone(); // 模拟不能写入的替换，旧记录必须保留。
-    oversized.private_key = "x".repeat(3000);
+    let Credentials::Qweather(value) = &mut oversized
+    else
+    {
+        unreachable!("测试草稿固定为和风凭据")
+    };
+    value.private_key = "x".repeat(3000);
     assert!(credentials::save(&target, &oversized).is_err());
     assert!(credentials::configured(&target).unwrap());
     let previous = Arc::clone(&state.inner.lock().unwrap().configuration_cancelled); // 模拟旧配置在途请求持有的身份。
@@ -110,7 +122,7 @@ fn credential_store_and_authoritative_save_gate()
     state.cancel_all();
     assert!(state.execute(Command::Begin { credentials: draft }, old_epoch).is_err());
     assert!(execute(Command::Save { session_id: second }).is_err());
-    execute(Command::Clear).unwrap();
+    execute(Command::Remove { source: Source::Qweather }).unwrap();
     assert!(saved.load(Ordering::Acquire));
     assert_eq!(state.inner.lock().unwrap().configuration_revision, 2);
     assert!(!credentials::configured(&target).unwrap());
@@ -119,20 +131,23 @@ fn credential_store_and_authoritative_save_gate()
 #[test]
 fn selected_city_round_trip_is_separate_from_credentials()
 {
-    let path = std::env::temp_dir().join(format!("desktop-tools-weather-city-{}.json", std::process::id()));
-    let state = WeatherState { target: String::new(), city_path: path.clone(), forecast_cache_path: path.with_extension("forecast.json"), forecast_guard: Mutex::new(()), forecast_retry: Mutex::new(ForecastRetry::default()), inner: Mutex::new(Inner::default()) };
+    let directory = std::env::temp_dir().join(format!("desktop-tools-weather-city-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let state = WeatherState::for_test(&directory, Source::Qweather, ""); // 空记录名不触碰真实凭据。
     let city = City { id: "101010100".into(), name: "北京".into(), adm1: "北京".into(), adm2: "北京".into(), country: "中国".into(), lat: "39.90".into(), lon: "116.40".into(), tz: "Asia/Shanghai".into(), fx_link: "https://www.qweather.com/weather/beijing-101010100.html".into() };
     assert!(state.saved_city().unwrap().is_none());
     assert_eq!(state.save_city(city.clone()).unwrap().id, city.id);
     assert_eq!(state.saved_city().unwrap().unwrap().name, "北京");
-    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_dir_all(directory);
 }
 
 #[test]
 fn forecast_cache_is_scoped_by_city_and_expiry()
 {
-    let path = std::env::temp_dir().join(format!("desktop-tools-weather-cache-{}.json", std::process::id()));
-    let state = WeatherState { target: String::new(), city_path: path.with_extension("city.json"), forecast_cache_path: path.clone(), forecast_guard: Mutex::new(()), forecast_retry: Mutex::new(ForecastRetry::default()), inner: Mutex::new(Inner::default()) };
+    let directory = std::env::temp_dir().join(format!("desktop-tools-weather-cache-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("weather-forecast.json"); // 与生产缓存文件名一致。
+    let state = WeatherState::for_test(&directory, Source::Qweather, ""); // 空记录名不触碰真实凭据。
     let city = City { id: "101010100".into(), name: "北京".into(), adm1: "北京".into(), adm2: "北京".into(), country: "中国".into(), lat: "39.90".into(), lon: "116.40".into(), tz: "Asia/Shanghai".into(), fx_link: "https://www.qweather.com/weather/beijing-101010100.html".into() };
     let now = chrono::Utc::now().timestamp_millis(); // 构造两个城市、两个配置的独立缓存。
     let value = serde_json::json!({ "city": city, "sourceKey": "configuration-a", "moduleFetchedAt": { "current": now, "hourly": now, "daily": now }, "current": {}, "hourly": {}, "daily": {} });
@@ -164,7 +179,36 @@ fn forecast_cache_is_scoped_by_city_and_expiry()
     assert!(retained.get("current").is_none());
     assert!(retained["hourly"].is_object());
     assert!(retained["daily"].is_object());
-    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn source_listing_reports_availability_and_current_selection()
+{
+    let namespace = format!("DesktopTools/Test/Weather/list-{}", std::process::id()); // 测试专用记录，且与保存门槛测试互不干扰。
+    let state = WeatherState::for_test(std::path::Path::new("."), Source::Qweather, &namespace);
+    let listing = || {
+        let inner = state.inner.lock().unwrap(); // 与命令路径相同的一次短事务。
+        state.sources(&inner.availability)
+    };
+    let foreca = state.record(Source::Foreca); // 该来源的测试记录名。
+    credentials::clear(&state.record(Source::Qweather)).unwrap();
+    credentials::clear(&foreca).unwrap();
+    assert!(listing().is_empty()); // 未配置的来源不出现在列表中。
+    credentials::save(&foreca, &Credentials::Foreca(credentials::ForecaCredentials { api_key: "test-key".into() })).unwrap();
+    let items = listing();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].address, "weatherapi.foreca.net"); // 该来源使用固定服务地址。
+    assert_eq!(items[0].availability, Availability::Unconfirmed); // 已配置但尚未请求过。
+    assert!(!items[0].enabled); // 当前启用来源仍是和风。
+    state.observe(Source::Foreca, None);
+    assert_eq!(listing()[0].availability, Availability::Available);
+    state.observe(Source::Foreca, Some(Failure::from("网络不可用或请求超时，未完成验证")));
+    assert_eq!(listing()[0].availability, Availability::Unavailable);
+    assert!(state.set_source(Source::Foreca)); // 切换来源报告实际变化。
+    assert!(listing()[0].enabled);
+    assert!(!state.set_source(Source::Foreca)); // 相同来源不重复处理。
+    credentials::clear(&foreca).unwrap();
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use super::credentials::Credentials;
+use super::credentials::{Credentials, ForecaCredentials, QweatherCredentials};
 use chrono::{DateTime, Utc};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::{Url, blocking::Client, header::HeaderMap};
@@ -45,8 +45,32 @@ impl From<&str> for Failure
     fn from(message: &str) -> Self { Self { message: message.into(), retry_at: None, retryable: false } }
 }
 
-/// 完整 Host 仅验证 DNS 语法和官方域名边界，不解释标签含义。
+/// 按来源校验凭据格式；格式通过不代表账户或接口可用。
 pub fn check_credentials(credentials: &Credentials) -> Result<(), String>
+{
+    match credentials
+    {
+        Credentials::Qweather(value) => check_qweather(value),
+        Credentials::Foreca(value) => check_foreca(value),
+    }
+}
+
+/// Foreca 的 API key 是较长的签名令牌，只校验非空、长度边界与常见复制错误。
+fn check_foreca(credentials: &ForecaCredentials) -> Result<(), String>
+{
+    if credentials.api_key.is_empty() || credentials.api_key.len() > 1024 || credentials.api_key.trim() != credentials.api_key
+    {
+        return Err("请填写完整的 Foreca API key，不要包含首尾空白".into());
+    }
+    if !credentials.api_key.bytes().all(|byte| byte.is_ascii_graphic()) || credentials.api_key.starts_with("Bearer")
+    {
+        return Err("API key 含空白或不可见字符，请重新从 Foreca 控制台复制完整内容".into());
+    }
+    Ok(())
+}
+
+/// 完整 Host 仅验证 DNS 语法和官方域名边界，不解释标签含义。
+fn check_qweather(credentials: &QweatherCredentials) -> Result<(), String>
 {
     let host = &credentials.host; // 保留控制台复制的完整主机名。
     if host.len() > 253 || host.split('.').any(|label| label.is_empty() || label.len() > 63 || label.starts_with('-') || label.ends_with('-') || !label.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-'))
@@ -76,7 +100,7 @@ pub fn check_credentials(credentials: &Credentials) -> Result<(), String>
 }
 
 /// 按官方要求提前 30 秒签发 15 分钟令牌，仅在 Rust 内使用。
-fn token(credentials: &Credentials) -> Result<String, String>
+fn token(credentials: &QweatherCredentials) -> Result<String, String>
 {
     let key = EncodingKey::from_ed_pem(credentials.private_key.as_bytes()).map_err(|_| "私钥必须为 PKCS#8 Ed25519 PEM")?; // 库负责 ASN.1 和算法校验。
     let mut header = Header::new(Algorithm::EdDSA); // 不加入无关 JWT 字段。
@@ -89,17 +113,17 @@ fn token(credentials: &Credentials) -> Result<String, String>
 /// 单次验证使用一个 HTTP 客户端，不常驻线程或自动轮询。
 pub struct Provider
 {
-    client: Client,                // TLS、超时和重定向策略。
-    credentials: Arc<Credentials>, // 当前会话凭据。
-    cancelled: Arc<AtomicBool>,    // 离开、取消或字段更换时停止后续请求。
+    client: Client,                        // TLS、超时和重定向策略。
+    credentials: Arc<QweatherCredentials>, // 当前会话凭据。
+    cancelled: Arc<AtomicBool>,            // 离开、取消或字段更换时停止后续请求。
 }
 
 impl Provider
 {
-    /// 在阻塞工作线程创建客户端。
-    pub fn new(credentials: Arc<Credentials>, cancelled: Arc<AtomicBool>) -> Result<Self, Failure>
+    /// 在阻塞工作线程创建客户端，禁止凭据随重定向泄露。
+    pub fn new(credentials: Arc<QweatherCredentials>, cancelled: Arc<AtomicBool>) -> Result<Self, Failure>
     {
-        let client = Client::builder().https_only(true).redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(8)).timeout(Duration::from_secs(20)).gzip(true).build().map_err(|_| Failure::from("天气网络客户端初始化失败"))?; // 禁止凭据随重定向泄露。
+        let client = Client::builder().https_only(true).redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(8)).timeout(Duration::from_secs(20)).gzip(true).build().map_err(|_| Failure::from("天气网络客户端初始化失败"))?;
         Ok(Self { client, credentials, cancelled })
     }
 
@@ -185,6 +209,14 @@ impl Provider
         Ok(cities)
     }
 
+    /// 存活探测只请求一次当前天气，不复用完整能力验证的其余接口。
+    pub fn probe(&self, city: &City) -> Result<(), Failure>
+    {
+        let position = format!("{:.2}/{:.2}", city.lat.parse::<f64>().unwrap_or_default(), city.lon.parse::<f64>().unwrap_or_default()); // 官方最多两位坐标。
+        let value = self.request(&format!("/weather/v1/current/{position}"), &[("lang", "zh")])?;
+        validate_weather("current", &value, city, Utc::now()).map_err(Failure::from)
+    }
+
     /// 分别验证三个接口与来源，不将 HTTP 成功当作完整能力。
     pub fn validate(&self, city: &City) -> Vec<Result<(), Failure>>
     {
@@ -259,7 +291,7 @@ impl Provider
 }
 
 /// 解析服务端要求的最早重试时间。
-fn retry_at(headers: &HeaderMap) -> Option<i64> { headers.get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<i64>().ok().filter(|seconds| *seconds >= 0).and_then(|seconds| Utc::now().timestamp().checked_add(seconds)).or_else(|| DateTime::parse_from_rfc2822(v).ok().map(|time| time.timestamp()))) }
+pub(super) fn retry_at(headers: &HeaderMap) -> Option<i64> { headers.get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<i64>().ok().filter(|seconds| *seconds >= 0).and_then(|seconds| Utc::now().timestamp().checked_add(seconds)).or_else(|| DateTime::parse_from_rfc2822(v).ok().map(|time| time.timestamp()))) }
 
 /// 详情 URL 必须属于和风且包含选定的位置 ID。
 fn valid_detail(city: &City) -> bool { Url::parse(&city.fx_link).ok().is_some_and(|url| url.scheme() == "https" && matches!(url.host_str(), Some("www.qweather.com" | "qweather.com")) && url.username().is_empty() && url.password().is_none() && url.port().is_none() && url.path().starts_with("/weather/") && url.path().ends_with(&format!("-{}.html", city.id))) }

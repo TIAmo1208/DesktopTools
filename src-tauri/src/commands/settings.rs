@@ -91,6 +91,12 @@ pub fn save_preferences(app: AppHandle, state: State<'_, SettingsState>, prefere
     let workspace = app.state::<crate::workspace::WorkspaceState>(); // 全部布局共同使用的权威状态。
     let saved = workspace.save_preferences(&state, preferences, &monitors).inspect_err(|error| crate::log_error!("设置：{error}"))?; // 原子保存后的权威偏好。
     app.state::<std::sync::Arc<crate::notifications::ToastManager>>().update_preferences(saved.clone()); // 原生 Toast 读取同一已保存界面主题。
+    // 天气凭据记录与城市缓存跟随已保存来源；切换来源时通知桌面清理旧快照并立即取数。
+    if app.state::<crate::weather::WeatherState>().set_source(saved.weather_source)
+        && let Err(error) = app.emit("weather-configuration-changed", ())
+    {
+        crate::log_warn!("设置：天气来源切换通知失败，错误：{error}");
+    }
     if let Some(window) = app.get_webview_window("main")
     {
         let theme = match saved.theme

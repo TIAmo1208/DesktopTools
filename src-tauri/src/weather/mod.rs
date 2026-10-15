@@ -1,11 +1,74 @@
 pub(crate) mod activity;
 pub mod credentials;
+mod foreca;
 mod provider;
+pub mod source;
+
+/// 按来源分派的天气请求入口；两个来源各自实现，不共用字段表。
+enum Backend
+{
+    Qweather(Provider),
+    Foreca(foreca::Foreca),
+}
+
+impl Backend
+{
+    /// 按凭据结构创建对应来源的实现。
+    fn new(credentials: Arc<Credentials>, cancelled: Arc<AtomicBool>) -> Result<Self, Failure>
+    {
+        Ok(match &*credentials
+        {
+            Credentials::Qweather(value) => Backend::Qweather(Provider::new(Arc::new(value.clone()), cancelled)?),
+            Credentials::Foreca(value) => Backend::Foreca(foreca::Foreca::new(Arc::new(value.clone()), cancelled)?),
+        })
+    }
+
+    /// 手动搜索位置，结果只保留会话内存。
+    fn search(&self, query: &str) -> Result<Vec<City>, Failure>
+    {
+        match self
+        {
+            Backend::Qweather(provider) => provider.search(query),
+            Backend::Foreca(foreca) => foreca.search(query),
+        }
+    }
+
+    /// 按来源声明的能力分别验证，检查项名称由来源决定。
+    fn validate(&self, city: &City) -> Vec<Result<(), Failure>>
+    {
+        match self
+        {
+            Backend::Qweather(provider) => provider.validate(city),
+            Backend::Foreca(foreca) => foreca.validate(city),
+        }
+    }
+
+    /// 存活探测按来源只请求一次当前天气，用于切换前确认可用性。
+    fn probe(&self, city: &City) -> Result<(), Failure>
+    {
+        match self
+        {
+            Backend::Qweather(provider) => provider.probe(city),
+            Backend::Foreca(foreca) => foreca.probe(city),
+        }
+    }
+
+    /// 只请求过期模块，部分成功也返回每个失败模块的请求策略。
+    fn forecast_modules(&self, city: &City, modules: &[&str], is_active: impl Fn() -> bool) -> (serde_json::Value, std::collections::BTreeMap<String, Failure>)
+    {
+        match self
+        {
+            Backend::Qweather(provider) => provider.forecast_modules(city, modules, is_active),
+            Backend::Foreca(foreca) => foreca.forecast_modules(city, modules, is_active),
+        }
+    }
+}
 
 use credentials::Credentials;
 pub use provider::City;
 use provider::{Failure, Provider};
 use serde::{Deserialize, Serialize};
+use source::Source;
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
@@ -40,7 +103,14 @@ pub enum Command
     {
         session_id: u64,
     },
-    Clear,
+    Probe
+    {
+        source: Source,
+    },
+    Remove
+    {
+        source: Source,
+    },
 }
 
 #[cfg(test)]
@@ -52,11 +122,56 @@ mod tests;
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot
 {
-    configured: bool,             // 当前配置存在安全存储记录。
-    session_id: Option<u64>,      // Rust 权威会话标识。
-    cities: Vec<City>,            // 仅搜索命令返回临时结果。
-    checks: Vec<Option<Failure>>, // 每项 None 表示通过，空数组表示未验证。
+    session_id: Option<u64>,    // Rust 权威会话标识。
+    cities: Vec<City>,          // 仅搜索命令返回临时结果。
+    checks: Vec<Check>,         // 每项 failure 为 None 表示通过，空数组表示未验证。
+    sources: Vec<SourceStatus>, // 设置页列表中的已配置来源，未配置来源不出现在列表。
 }
+
+/// 已配置来源的列表状态；只保留非敏感字段。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceStatus
+{
+    source: Source,                                       // 来源标识。
+    address: String,                                      // 列表副标题与编辑回填使用的服务地址。
+    identity: std::collections::BTreeMap<String, String>, // 编辑模式可回填的非敏感字段。
+    availability: Availability,                           // 最近一次请求结果。
+    enabled: bool,                                        // 是否当前启用的来源。
+}
+
+/// 来源可用状态；未确认表示已配置但本次启动尚未请求过。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Availability
+{
+    #[default]
+    Unconfirmed,
+    Available,
+    Unavailable,
+}
+
+/// 一项能力验证结果；名称随草稿来源，失败时保留脱敏说明。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Check
+{
+    label: String,            // 由来源决定的验证项名称。
+    failure: Option<Failure>, // None 表示该项通过。
+}
+
+/// 每个来源的完整验证项；首项城市搜索由搜索结果本身判定，不单独发起请求。
+fn check_labels(source: Source) -> &'static [&'static str]
+{
+    match source
+    {
+        Source::Qweather => &["城市搜索", "当前天气", "24 小时预报", "7 天预报", "来源与详情链接"],
+        Source::Foreca => &["位置搜索", "当前天气", "24 小时预报", "7 天预报"],
+    }
+}
+
+/// 存活探测的固定位置；探测只确认凭据可用于当前天气，不代表其余模块能力。
+fn probe_city() -> City { City { id: "probe".into(), name: "北京".into(), adm1: String::new(), adm2: String::new(), country: String::new(), lat: "39.90".into(), lon: "116.40".into(), tz: "Asia/Shanghai".into(), fx_link: String::new() } }
 
 /// 一份草稿只关联一个搜索结果集合和一份验证结果。
 struct Session
@@ -68,28 +183,52 @@ struct Session
     verified: bool,                // 仅完整验证可以设置。
 }
 
-/// 同一设置窗口的短期草稿状态。
+/// 同一设置窗口的短期草稿状态与来源可用状态。
 #[derive(Default)]
 struct Inner
 {
-    window_epoch: u64,                        // 窗口销毁后拒绝尚未开始的排队命令。
-    revision: u64,                            // 会话递增身份。
-    session: Option<Session>,                 // 关闭页面后清理。
-    busy: bool,                               // 包括取消后仍在收尾的 HTTP 请求。
-    retry_at: i64,                            // 不因换草稿绕过供应商限流。
-    configuration_revision: u64,              // 保存或清除成功后拒绝旧配置的网络结果。
-    configuration_cancelled: Arc<AtomicBool>, // 所有已保存配置请求共用取消身份。
+    window_epoch: u64,                                              // 窗口销毁后拒绝尚未开始的排队命令。
+    revision: u64,                                                  // 会话递增身份。
+    session: Option<Session>,                                       // 关闭页面后清理。
+    busy: bool,                                                     // 包括取消后仍在收尾的 HTTP 请求。
+    retry_at: i64,                                                  // 不因换草稿绕过供应商限流。
+    configuration_revision: u64,                                    // 保存或清除成功后拒绝旧配置的网络结果。
+    configuration_cancelled: Arc<AtomicBool>,                       // 所有已保存配置请求共用取消身份。
+    availability: std::collections::BTreeMap<Source, Availability>, // 每个来源最近一次请求结果。
 }
 
 /// 天气设置权威状态；城市与天气缓存均独立于工作区布局。
 pub struct WeatherState
 {
-    target: String,                       // Windows Credential Manager 的配置归属键。
-    city_path: PathBuf,                   // 当前选中城市的独立缓存路径。
+    active: Mutex<Active>,                // 当前启用的来源与城市缓存路径。
+    namespace: String,                    // 凭据记录名前缀，固定为应用级记录；仅测试使用独立前缀。
+    directory: PathBuf,                   // 天气配置目录，切换来源时重算来源相关路径。
     forecast_cache_path: PathBuf,         // 当前城市整包预报缓存路径。
     forecast_guard: Mutex<()>,            // 防止相同启动内的重复天气请求。
     forecast_retry: Mutex<ForecastRetry>, // 当前天气自动请求的短期退避。
     inner: Mutex<Inner>,                  // 串行提交与会话状态。
+}
+
+/// 一次只启用一家；城市路径由来源派生，不跨来源复用。
+struct Active
+{
+    source: Source,     // 当前启用的天气来源。
+    city_path: PathBuf, // 该来源选中城市的独立缓存路径。
+}
+
+/// 每个来源一条城市记录；和风沿用既有文件名，已保存城市不因新增来源失效。
+impl Active
+{
+    /// 按当前配置目录和来源派生城市路径。
+    fn of(directory: &std::path::Path, source: Source) -> Self
+    {
+        let city_path = match source
+        {
+            Source::Qweather => directory.join("weather-city.json"),
+            Source::Foreca => directory.join(format!("weather-city-{}.json", source.key())),
+        }; // 和风沿用既有文件名。
+        Self { source, city_path }
+    }
 }
 
 impl WeatherState
@@ -97,12 +236,83 @@ impl WeatherState
     /// 在命令进入阻塞队列前记录当前窗口代次。
     pub fn window_epoch(&self) -> Result<u64, String> { Ok(self.inner.lock().map_err(|_| "天气设置状态不可用")?.window_epoch) }
     /// 使用本次启动的配置归属创建空会话。
-    pub fn new(directory: &std::path::Path) -> Self { Self { target: credentials::target(directory), city_path: directory.join("weather-city.json"), forecast_cache_path: directory.join("weather-forecast.json"), forecast_guard: Mutex::new(()), forecast_retry: Mutex::new(ForecastRetry::default()), inner: Mutex::new(Inner::default()) } }
+    pub fn new(directory: &std::path::Path, source: Source) -> Self { Self { active: Mutex::new(Active::of(directory, source)), namespace: credentials::target(Source::Qweather), directory: directory.to_path_buf(), forecast_cache_path: directory.join("weather-forecast.json"), forecast_guard: Mutex::new(()), forecast_retry: Mutex::new(ForecastRetry::default()), inner: Mutex::new(Inner::default()) } }
+
+    /// 该来源在 Windows 凭据存储中的记录名称；和风沿用既有应用级记录。
+    fn record(&self, source: Source) -> String
+    {
+        match source
+        {
+            Source::Qweather => self.namespace.clone(),
+            Source::Foreca => format!("{}/{}", self.namespace, source.key()),
+        }
+    }
+
+    /// 当前启用来源的配置；锁中毒时继续使用已有值。
+    fn active(&self) -> std::sync::MutexGuard<'_, Active> { self.active.lock().unwrap_or_else(|error| error.into_inner()) }
+
+    /// 偏好保存后切换启用来源；来源变化时重算来源相关路径、取消在途请求并清空旧退避。
+    pub fn set_source(&self, source: Source) -> bool
+    {
+        let Ok(mut inner) = self.inner.lock()
+        else
+        {
+            return false;
+        };
+        {
+            let mut active = self.active(); // 在 inner 之后获取，与其他请求路径保持同一加锁顺序。
+            if active.source == source
+            {
+                return false;
+            }
+            *active = Active::of(&self.directory, source);
+        }
+        inner.configuration_cancelled.store(true, Ordering::Release);
+        inner.configuration_cancelled = Arc::new(AtomicBool::new(false));
+        inner.configuration_revision += 1;
+        drop(inner);
+        if let Ok(mut retry) = self.forecast_retry.lock()
+        {
+            *retry = ForecastRetry::default(); // 旧来源的退避不适用于新来源。
+        }
+        crate::log_info!("天气设置：已切换启用来源，来源={}", source.key());
+        true
+    }
+
+    /// 记录一次实际请求结果，供设置页列表显示可用状态。
+    fn observe(&self, source: Source, failure: Option<Failure>)
+    {
+        let availability = if failure.is_some() { Availability::Unavailable } else { Availability::Available };
+        if let Ok(mut inner) = self.inner.lock()
+        {
+            inner.availability.insert(source, availability);
+        }
+    }
+
+    /// 设置页列表：只返回本机已保存凭据的来源，并附带编辑模式可回填的非敏感字段。
+    fn sources(&self, availability: &std::collections::BTreeMap<Source, Availability>) -> Vec<SourceStatus>
+    {
+        let enabled = self.active().source; // 当前启用来源，与偏好保存后的状态一致。
+        Source::ALL
+            .into_iter()
+            .filter(|source| credentials::configured(&self.record(*source)).unwrap_or(false))
+            .map(|source| {
+                let credentials = credentials::load(source, &self.record(source)).ok().flatten(); // 只读取一次以派生地址与回填字段。
+                let qweather = match &credentials
+                {
+                    Some(Credentials::Qweather(value)) => Some(value),
+                    _ => None,
+                };
+                SourceStatus { source, address: qweather.map_or_else(|| foreca::ADDRESS.to_string(), |value| value.host.clone()), identity: qweather.map(|value| [("developerId", &value.developer_id), ("projectId", &value.project_id), ("credentialId", &value.credential_id)].into_iter().map(|(key, field)| (key.to_string(), field.clone())).collect()).unwrap_or_default(), availability: availability.get(&source).copied().unwrap_or_default(), enabled: source == enabled }
+            })
+            .collect()
+    }
 
     /// 读取当前选中的城市；搜索结果不进入该文件。
     pub fn saved_city(&self) -> Result<Option<City>, String>
     {
-        crate::persistence::load_json(&self.city_path).map_err(|error| format!("天气城市读取失败: {error}"))?.map_or(Ok(None), |city| {
+        let path = self.active().city_path.clone(); // 本次读取的城市缓存路径。
+        crate::persistence::load_json(&path).map_err(|error| format!("天气城市读取失败: {error}"))?.map_or(Ok(None), |city| {
             validate_city(&city)?;
             Ok(Some(city))
         })
@@ -111,8 +321,9 @@ impl WeatherState
     /// 保存当前选中的城市，供后续启动恢复天气请求。
     pub fn save_city(&self, city: City) -> Result<City, String>
     {
+        let path = self.active().city_path.clone(); // 本次写入的城市缓存路径。
         validate_city(&city)?;
-        crate::persistence::save_json_atomic(&self.city_path, &city).map_err(|error| format!("天气城市保存失败: {error}"))?;
+        crate::persistence::save_json_atomic(&path, &city).map_err(|error| format!("天气城市保存失败: {error}"))?;
         Ok(city)
     }
 
@@ -148,8 +359,7 @@ impl WeatherState
                 }
             }
         }
-        let configured = matches!(&command, Command::Status | Command::Begin { .. } | Command::Save { .. }).then(|| credentials::configured(&self.target)).transpose()?.unwrap_or(false); // 搜索、验证和清除不因状态读取失败而阻塞。
-        let mut snapshot = Snapshot { configured, ..Default::default() }; // 本次命令结果。
+        let mut snapshot = Snapshot { sources: self.sources(&inner.availability), ..Default::default() }; // 本次命令结果。
         match command
         {
             Command::Status | Command::Cancel { .. } => return Ok(snapshot),
@@ -166,20 +376,26 @@ impl WeatherState
                 snapshot.session_id = Some(id);
                 return Ok(snapshot);
             }
-            Command::Clear =>
+            Command::Remove { source } =>
             {
-                let mut retry = self.forecast_retry.lock().map_err(|_| "天气请求状态不可用")?; // 凭据清除成功后才释放旧配置的退避。
-                credentials::clear(&self.target)?;
-                *retry = ForecastRetry::default();
-                inner.configuration_cancelled.store(true, Ordering::Release);
-                inner.configuration_cancelled = Arc::new(AtomicBool::new(false));
-                inner.configuration_revision += 1;
+                credentials::clear(&self.record(source))?; // 只清除该来源的记录。
+                inner.availability.remove(&source); // 没有凭据时不再报告旧可用状态。
+                if source == self.active().source
+                {
+                    if let Ok(mut retry) = self.forecast_retry.lock()
+                    {
+                        *retry = ForecastRetry::default();
+                    }
+                    inner.configuration_cancelled.store(true, Ordering::Release);
+                    inner.configuration_cancelled = Arc::new(AtomicBool::new(false));
+                    inner.configuration_revision += 1;
+                }
                 if let Some(session) = inner.session.take()
                 {
                     session.cancelled.store(true, Ordering::Release);
                 }
-                snapshot.configured = false;
-                crate::log_info!("天气设置：已清除本机凭据");
+                snapshot.sources = self.sources(&inner.availability);
+                crate::log_info!("天气设置：已删除来源凭据，来源={}", source.key());
                 return Ok(snapshot);
             }
             Command::Save { session_id } =>
@@ -189,9 +405,12 @@ impl WeatherState
                 {
                     return Err("天气验证仍在执行".into());
                 }
+                let source = session.credentials.source(); // 记录名跟随草稿来源，不写入其他来源的记录。
                 let mut retry = self.forecast_retry.lock().map_err(|_| "天气请求状态不可用")?; // 新配置经过完整验证后恢复请求，失败则保留旧退避。
-                credentials::save(&self.target, &session.credentials)?;
+                credentials::save(&self.record(source), &session.credentials)?;
                 *retry = ForecastRetry::default();
+                drop(retry);
+                inner.availability.remove(&source); // 新配置尚未请求过，回到未确认状态。
                 inner.configuration_cancelled.store(true, Ordering::Release);
                 inner.configuration_cancelled = Arc::new(AtomicBool::new(false));
                 inner.configuration_revision += 1;
@@ -199,11 +418,11 @@ impl WeatherState
                 {
                     session.cancelled.store(true, Ordering::Release);
                 }
-                snapshot.configured = true;
+                snapshot.sources = self.sources(&inner.availability);
                 crate::log_info!("天气设置：验证通过的凭据已安全保存");
                 return Ok(snapshot);
             }
-            Command::Search { .. } | Command::Validate { .. } =>
+            Command::Search { .. } | Command::Validate { .. } | Command::Probe { .. } =>
             {}
         }
         if inner.busy
@@ -213,6 +432,26 @@ impl WeatherState
         if inner.retry_at > chrono::Utc::now().timestamp()
         {
             return Err(format!("服务端要求等待至 {} 后重试", inner.retry_at));
+        }
+        if let Command::Probe { source } = &command
+        {
+            let source = *source; // 探测目标与草稿会话无关。
+            let credentials = credentials::load(source, &self.record(source))?.ok_or("该来源尚未配置凭据")?; // 只用已保存配置探测。
+            let cancelled = Arc::clone(&inner.configuration_cancelled); // 配置变化使探测结果失效。
+            let revision = inner.configuration_revision; // 探测期间的配置身份。
+            inner.busy = true;
+            drop(inner);
+            crate::log_debug!("天气设置：开始探测来源可用性，来源={}", source.key());
+            let result = Backend::new(Arc::new(credentials), cancelled).and_then(|backend| backend.probe(&probe_city())); // 一次当前天气请求。
+            let mut inner = self.inner.lock().map_err(|_| "天气设置状态不可用")?;
+            inner.busy = false;
+            if inner.configuration_revision == revision
+            {
+                inner.availability.insert(source, if result.is_ok() { Availability::Available } else { Availability::Unavailable });
+            }
+            snapshot.sources = self.sources(&inner.availability);
+            result.map_err(|failure| failure.message)?;
+            return Ok(snapshot);
         }
         let (session_id, query, city_id) = match command
         {
@@ -231,19 +470,20 @@ impl WeatherState
         {
             session.cities.clear();
         }
+        let source = session.credentials.source(); // 验证标签与本次草稿来源绑定，不取已启用来源。
         let credentials = Arc::clone(&session.credentials); // 仅工作线程持有本次凭据。
         let cancelled = Arc::clone(&session.cancelled); // 会话替换后仍可取消旧任务。
         inner.busy = true;
         drop(inner);
         crate::log_debug!("天气设置：开始{}", if query.is_some() { "城市搜索" } else { "能力验证" });
-        let result = Provider::new(credentials, cancelled).map(|provider| {
+        let result = Backend::new(credentials, cancelled).map(|backend| {
             if let Some(query) = query
             {
-                (provider.search(query.trim()), Vec::new())
+                (backend.search(query.trim()), Vec::new())
             }
             else
             {
-                (Ok(Vec::new()), provider.validate(city.as_ref().expect("验证命令已经检查城市")))
+                (Ok(Vec::new()), backend.validate(city.as_ref().expect("验证命令已经检查城市")))
             }
         }); // 每次动作只有一个后台任务。
         let mut inner = self.inner.lock().map_err(|_| "天气设置状态不可用")?; // 提交时重新核验会话。
@@ -260,8 +500,9 @@ impl WeatherState
         let cities = cities.map_err(|failure| failure.message)?; // 搜索失败不保留旧城市集合。
         if !checks.is_empty()
         {
-            session.verified = checks.len() == 4 && checks.iter().all(Result::is_ok);
-            snapshot.checks = std::iter::once(None).chain(checks.into_iter().map(Result::err)).collect();
+            let labels = check_labels(source); // 网络验证项加首项搜索构成本来源的完整清单。
+            session.verified = checks.len() == labels.len() - 1 && checks.iter().all(Result::is_ok);
+            snapshot.checks = labels.iter().zip(std::iter::once(None).chain(checks.into_iter().map(Result::err))).map(|(label, failure)| Check { label: (*label).to_string(), failure }).collect();
         }
         else
         {
@@ -279,7 +520,8 @@ impl WeatherState
         validate_city(&city)?;
         let _guard = self.forecast_guard.lock().map_err(|_| "天气请求状态不可用")?; // 与调度器磁盘写入串行。
         let _configuration = self.inner.lock().map_err(|_| "天气设置状态不可用")?;
-        let credentials = credentials::load(&self.target)?;
+        let source = self.active().source; // 本次读取使用的来源。
+        let credentials = credentials::load(source, &self.record(source))?;
         let key = credentials.as_ref().map(credentials::cache_identity).transpose()?;
         let cached = self.read_cached_forecast(&city, key.as_deref())?;
         Ok(display_forecast(cached.unwrap_or_else(|| serde_json::json!({"city": city})), chrono::Utc::now().timestamp_millis()))
@@ -290,7 +532,8 @@ impl WeatherState
     {
         let _forecast_guard = self.forecast_guard.lock().map_err(|_| "天气请求状态不可用")?;
         let configuration = self.inner.lock().map_err(|_| "天气设置状态不可用")?; // 配置切换与本次缓存读取、凭据获取使用同一个短事务。
-        let credentials = credentials::load(&self.target)?; // 无凭据时仅允许展示期限内的旧缓存。
+        let source = self.active().source; // 本次刷新使用的来源。
+        let credentials = credentials::load(source, &self.record(source))?; // 无凭据时仅允许展示期限内的旧缓存。
         let source_key = credentials.as_ref().map(credentials::cache_identity).transpose()?; // 当前配置对应的不可逆缓存归属。
         let cached = self.read_cached_forecast(&city, source_key.as_deref())?;
         let Some(credentials) = credentials
@@ -328,7 +571,8 @@ impl WeatherState
         let revision = configuration.configuration_revision; // 网络开始时的配置身份。
         let cancelled = Arc::clone(&configuration.configuration_cancelled); // 配置保存或清除会取消共享请求。
         drop(configuration);
-        let (mut fresh, failures) = Provider::new(Arc::new(credentials), cancelled).map_err(|failure| failure.message)?.forecast_modules(&city, &stale_modules, &is_active); // 网络期间释放配置锁。
+        let (mut fresh, failures) = Backend::new(Arc::new(credentials), cancelled).map_err(|failure| failure.message)?.forecast_modules(&city, &stale_modules, &is_active); // 网络期间释放配置锁。
+        self.observe(source, failures.values().next().cloned()); // 已保存配置的实际请求结果更新列表可用状态。
         let configuration = self.inner.lock().map_err(|_| "天气设置状态不可用")?; // 验证与回写持有同一把锁，消除检查后切换配置的竞态。
         if configuration.configuration_revision != revision || !is_active()
         {
@@ -353,7 +597,7 @@ impl WeatherState
     /// 读取并清理全部位置，既有请求串行锁保护集合读改写。
     fn next_refresh(&self, city: &City, value: &serde_json::Value) -> Result<Option<i64>, String>
     {
-        if !credentials::configured(&self.target)?
+        if !credentials::configured(&self.record(self.active().source))?
         {
             return Ok(None);
         }
@@ -431,17 +675,32 @@ impl WeatherState
             return Err("请输入不超过 200 字节的城市名称".into());
         }
         let configuration = self.inner.lock().map_err(|_| "天气设置状态不可用")?; // 城市结果与发起搜索的已保存配置绑定。
-        let credentials = credentials::load(&self.target)?.ok_or("尚未配置天气凭据")?;
+        let source = self.active().source; // 本次搜索使用的来源。
+        let credentials = credentials::load(source, &self.record(source))?.ok_or("尚未配置天气凭据")?;
         let revision = configuration.configuration_revision;
         let cancelled = Arc::clone(&configuration.configuration_cancelled);
         drop(configuration);
-        let result = Provider::new(Arc::new(credentials), cancelled).map_err(|failure| failure.message)?.search(query);
+        let result = Backend::new(Arc::new(credentials), cancelled).map_err(|failure| failure.message)?.search(query);
         let configuration = self.inner.lock().map_err(|_| "天气设置状态不可用")?; // 清除或替换凭据后不向页面返回旧城市结果。
         if configuration.configuration_revision != revision
         {
             return Err("天气配置已改变，旧城市搜索已取消".into());
         }
+        drop(configuration);
+        self.observe(source, result.as_ref().err().cloned()); // 实际搜索结果更新列表可用状态。
         result.map_err(|failure| failure.message)
+    }
+}
+
+#[cfg(test)]
+impl WeatherState
+{
+    /// 测试专用构造：使用独立记录名前缀，不读写用户真实凭据。
+    pub fn for_test(directory: &std::path::Path, source: Source, namespace: &str) -> Self
+    {
+        let mut state = Self::new(directory, source);
+        state.namespace = namespace.to_string();
+        state
     }
 }
 

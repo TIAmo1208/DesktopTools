@@ -152,7 +152,8 @@ pub fn run()
             let config_directory = crate::app::settings::prepare_config_directory(&app.path().app_data_dir()?)?; // 在后台写入线程启动前完成配置迁移。
             let settings_path = config_directory.join("settings.json"); // 当前用户的正式设置文件。
             app.manage(crate::app::settings::SettingsState::load(settings_path)?);
-            app.manage(crate::weather::WeatherState::new(&config_directory));
+            let weather_source = app.state::<crate::app::settings::SettingsState>().preferences()?.weather_source; // 已保存的启用来源。
+            app.manage(crate::weather::WeatherState::new(&config_directory, weather_source));
             std::fs::create_dir_all(config_directory.join("collect"))?;
             let _ = crate::platform::windows::directory_watch::start(app.handle().clone(), "collect".to_string(), config_directory.join("collect"));
             app.manage(crate::platform::windows::settings::WindowsAccentMonitor::install(app.handle().clone())?);

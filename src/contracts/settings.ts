@@ -1,3 +1,5 @@
+import type { WeatherSource } from "./weather.ts";
+
 /** 两组外观各自选择的深浅模式。 */
 export type ApplicationTheme = "system" | "light" | "dark";
 
@@ -53,6 +55,7 @@ export interface ApplicationPreferences {
     fenceGrid: GridPreferences; // 围栏内网格。
     clockEnabled: boolean; // 时间格子显隐。
     weatherEnabled: boolean; // 天气格子显隐偏好，独立于凭据状态。
+    weatherSource: WeatherSource; // 当前启用的天气来源，一次只有一家。
     musicEnabled: boolean; // 音乐格子显隐。
     collectEnabled: boolean; // 收集箱格子显隐。
     collectAutoSaveOnExit: boolean; // 编辑窗退出时自动保存。
@@ -137,6 +140,8 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         throw new Error("图片收入方式无效");
     const collectImageImportMode = (candidate.collectImageImportMode as "copy" | "move" | "link" | undefined) ?? "copy";
     const collectImagePreviewWidth = candidate.collectImagePreviewWidth === undefined ? 78 : candidate.collectImagePreviewWidth; // 缺失配置使用当前默认值。
+    const weatherSource = candidate.weatherSource === undefined ? "qweather" : candidate.weatherSource; // 缺失配置使用当前默认来源。
+    if (weatherSource !== "qweather" && weatherSource !== "foreca") throw new Error("天气来源无效");
     if (
         typeof collectImagePreviewWidth !== "number" ||
         !Number.isInteger(collectImagePreviewWidth) ||
@@ -163,6 +168,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         ...features,
         collectImageImportMode,
         collectImagePreviewWidth,
+        weatherSource,
     };
 };
 

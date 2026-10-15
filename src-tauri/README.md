@@ -16,7 +16,7 @@ src-tauri/
 │  ├─ collect/            # 文本、图片、文件映射、资源、收入取出与删除恢复
 │  ├─ host/               # 透明宿主、WebView2、DPI、命中图和接管
 │  ├─ persistence/        # 布局快照和备份
-│  ├─ weather/            # 天气凭据、临时验证会话及和风 HTTP/JWT
+│  ├─ weather/            # 天气凭据、按来源分派的请求与临时验证会话
 │  ├─ component_runtime/  # 组件清单、能力和运行时状态
 │  ├─ recovery/           # guardian、健康状态和异常恢复
 │  ├─ platform/windows/   # Windows API、COM、OLE 和原生适配
@@ -34,7 +34,7 @@ src-tauri/
 
 ## 关键边界
 
-- `commands/weather.rs` 仅允许设置窗口提交凭据用例；桌面 transport 另提供已保存凭据下的城市搜索、天气预报读取及当前城市读写。`weather/credentials.rs` 按应用配置目录隔离 Windows Credential Manager 记录；`weather/mod.rs` 管理草稿、并发互斥、取消、保存门槛、独立城市缓存及按城市和模块隔离的天气缓存；`weather/provider.rs` 校验官方 Host、签发 JWT 并验证城市和天气数据。网络任务只在用户操作时创建，禁止重定向，限制超时与响应大小；城市搜索结果和天气验证响应不落盘。天气格子在拖动缩放期间按实时尺寸切换布局，详情入口由前端公共标题栏提供；`weather/activity.rs` 负责展开实例的共享活动调度，并通过 `weather-forecast-changed` 通知预报更新。
+- `commands/weather.rs` 仅允许设置窗口提交凭据用例；桌面 transport 另提供已保存凭据下的城市搜索、天气预报读取及当前城市读写。`weather/source.rs` 定义来源标识与顺序；`weather/credentials.rs` 按来源各保存一条 Windows Credential Manager 记录；`weather/mod.rs` 管理草稿、并发互斥、取消、保存门槛、来源列表与运行期可用状态、存活探测与按来源删除，并按当前启用来源派生记录名和城市缓存路径；`weather/provider.rs` 与 `weather/foreca.rs` 分别校验各自凭据、签发 JWT 或使用 Bearer 令牌、验证城市和天气数据。网络任务只在用户操作时创建，禁止重定向，限制超时与响应大小；城市搜索结果和天气验证响应不落盘。天气格子在拖动缩放期间按实时尺寸切换布局，详情入口由前端公共标题栏提供；`weather/activity.rs` 负责展开实例的共享活动调度，并通过 `weather-forecast-changed` 通知预报更新。
 
 - `commands/` 负责跨边界校验与调度，不持有长期领域状态。
 - `workspace/` 负责自有布局、围栏归属、门户和组件布局事务，不执行文件操作。各类格子的持久展开边界统一使用工作区契约中的公共尺寸底线，临时投射单独校验；内容可读性和标题占位由前端负责。

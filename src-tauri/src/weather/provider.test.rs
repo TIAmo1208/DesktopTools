@@ -2,7 +2,7 @@ use super::*;
 use chrono::TimeZone;
 
 /// RFC 8032 的公开测试种子，不是产品凭据。
-fn credentials() -> Credentials { Credentials { host: "example.qweatherapi.com".into(), developer_id: "Q12345ABCD".into(), project_id: "ABCDE23456".into(), credential_id: "ABCDE12345".into(), private_key: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g\n-----END PRIVATE KEY-----".into() } }
+fn credentials() -> QweatherCredentials { QweatherCredentials { host: "example.qweatherapi.com".into(), developer_id: "Q12345ABCD".into(), project_id: "ABCDE23456".into(), credential_id: "ABCDE12345".into(), private_key: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g\n-----END PRIVATE KEY-----".into() } }
 
 /// 只构造内存城市，测试不调用供应商或持久保存位置。
 fn city() -> City { City { id: "101011600".into(), name: "东城".into(), adm1: "北京".into(), adm2: "北京".into(), country: "中国".into(), lat: "39.91755".into(), lon: "116.41876".into(), tz: "Asia/Shanghai".into(), fx_link: "https://www.qweather.com/weather/dongcheng-101011600.html".into() } }
@@ -14,23 +14,42 @@ fn host_and_private_key_are_checked_before_requests()
     for host in ["example.qweatherapi.com", "example.re.qweatherapi.com", "example.other.qweatherapi.com", "a.b.c.qweatherapi.com", "Example.OTHER.QWEATHERAPI.COM", "a-1.qweatherapi.com"]
     {
         value.host = host.into();
-        assert!(check_credentials(&value).is_ok(), "{host}");
+        assert!(check_qweather(&value).is_ok(), "{host}");
     }
     for host in ["", "https://example.qweatherapi.com", "qweatherapi.com", "fakeqweatherapi.com", "example.qweatherapi.com.evil.test", "evil.test@example.qweatherapi.com", "example.qweatherapi.com:443", "evil.example/path.qweatherapi.com", "evil.example\\path.qweatherapi.com", "evil.example?x.qweatherapi.com", "evil.example#x.qweatherapi.com", "example.qweatherapi.com/", ".qweatherapi.com", "a..qweatherapi.com", "a.qweatherapi.com.", "-a.qweatherapi.com", "a-.qweatherapi.com", "a_b.qweatherapi.com", "例.qweatherapi.com", "a%2eb.qweatherapi.com", " a.qweatherapi.com", "a.qweatherapi.com\n", "a\0.qweatherapi.com"]
     {
         value.host = host.into();
-        assert!(check_credentials(&value).is_err(), "{host}");
+        assert!(check_qweather(&value).is_err(), "{host}");
     }
     value.host = format!("{}.{}.{}.{}.qweatherapi.com", "a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(45));
     assert_eq!(value.host.len(), 253);
-    assert!(check_credentials(&value).is_ok());
+    assert!(check_qweather(&value).is_ok());
     value.host = format!("{}.{}.{}.{}.qweatherapi.com", "a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(46));
-    assert!(check_credentials(&value).is_err());
+    assert!(check_qweather(&value).is_err());
     value.host = format!("{}.qweatherapi.com", "a".repeat(64));
-    assert!(check_credentials(&value).is_err());
+    assert!(check_qweather(&value).is_err());
     value = credentials();
     value.private_key = "not a private key".into();
-    assert!(check_credentials(&value).is_err());
+    assert!(check_qweather(&value).is_err());
+}
+
+#[test]
+fn credentials_are_classified_and_dispatched_by_source()
+{
+    assert!(check_credentials(&Credentials::Qweather(credentials())).is_ok());
+    assert!(check_credentials(&Credentials::Foreca(ForecaCredentials { api_key: "example-api-key".into() })).is_ok());
+    let issued = format!("{}.{}.{}", "a".repeat(36), "b".repeat(320), "c".repeat(43)); // 与 Foreca 实际签发的令牌长度一致。
+    assert!(check_credentials(&Credentials::Foreca(ForecaCredentials { api_key: issued })).is_ok());
+    let invisible = format!("token{}", '\u{200b}'); // 复制时混入的不可见字符。
+    for key in ["", " token ", &"a".repeat(1025), invisible.as_str(), "Bearer token"]
+    {
+        assert!(check_credentials(&Credentials::Foreca(ForecaCredentials { api_key: key.into() })).is_err(), "{key}");
+    }
+    let foreca: Credentials = serde_json::from_str(r#"{"apiKey":"example-api-key"}"#).unwrap(); // 前端草稿按字段集合判定来源。
+    assert!(matches!(foreca, Credentials::Foreca(_)));
+    let qweather: Credentials = serde_json::from_str(r#"{"host":"example.qweatherapi.com","developerId":"Q12345ABCD","projectId":"ABCDE23456","credentialId":"ABCDE12345","privateKey":"draft"}"#).unwrap();
+    assert!(matches!(qweather, Credentials::Qweather(_)));
+    assert!(serde_json::from_str::<Credentials>(r#"{"host":"example.qweatherapi.com","apiKey":"example-api-key"}"#).is_err()); // 混合字段不得落入任一来源。
 }
 
 #[test]

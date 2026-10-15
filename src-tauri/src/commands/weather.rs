@@ -28,7 +28,7 @@ pub async fn weather_settings(window: WebviewWindow, command: Command) -> Result
     }
     let app = window.app_handle().clone(); // 后台任务只持有应用状态句柄。
     let epoch = app.state::<WeatherState>().window_epoch()?; // 排队期间窗口销毁使命令失效。
-    let configuration_changed = matches!(&command, Command::Save { .. } | Command::Clear); // 仅成功提交配置才通知桌面清理旧快照。
+    let configuration_changed = matches!(&command, Command::Save { .. } | Command::Remove { .. }); // 仅成功提交配置才通知桌面清理旧快照。
     let worker = app.clone(); // 后台任务与事件广播共享同一应用实例。
     let snapshot = tauri::async_runtime::spawn_blocking(move || worker.state::<WeatherState>().execute(command, epoch)).await.map_err(|_| "天气设置任务失败".to_string())??;
     if configuration_changed
