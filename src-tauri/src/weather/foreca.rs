@@ -53,6 +53,7 @@ impl Foreca
                 401 => Failure::from("凭据无效，请核对 Foreca API key 是否完整且仍有效"),
                 403 => Failure::from("接口权限不足，请核对该 key 的套餐是否包含位置搜索与预报接口"),
                 404 => Failure::from("没有找到该位置，请更换搜索名称"),
+                402 => Failure::from("账户额度不足，请核对 Foreca 套餐"),
                 429 => Failure::from("请求受到限流，请稍后重试"),
                 _ => Failure::from("天气服务请求失败"),
             }; // 不向用户展示上游正文。

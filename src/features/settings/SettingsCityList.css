@@ -1,0 +1,113 @@
+/* 城市列表在来源展开区与编辑弹窗内共用同一份表面与行结构。 */
+.settings-city {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: var(--color-subtle);
+}
+
+/* 城市项行高 44，尾部预留删除图标命中区。 */
+.settings-city__item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
+    min-height: 44px;
+    padding: 4px 8px 4px 12px;
+}
+
+/* 相邻城市项之间使用一条内部分隔线。 */
+.settings-city__item + .settings-city__item {
+    border-top: 1px solid var(--color-border);
+}
+
+/* 城市名与行政区两行结构，长名称不撑破行高。 */
+.settings-city__main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+/* 行政区副标题使用主题次要颜色与 12px 正文。 */
+.settings-city__main small {
+    color: var(--color-muted);
+    font-size: 12px;
+}
+
+/* 可点击的城市项悬浮与键盘焦点反馈。 */
+.settings-city__item[role="button"] {
+    cursor: pointer;
+}
+
+/* 悬浮与聚焦使用主题焦点表面。 */
+.settings-city__item[role="button"]:hover,
+.settings-city__item[role="button"]:focus-visible {
+    background: var(--color-surface);
+    outline: none;
+}
+
+/* 删除按键使用 24 × 24 命中区，图标颜色由状态决定。 */
+.settings-city__delete {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    color: var(--color-muted);
+    background: transparent;
+    cursor: pointer;
+}
+
+/* 图标资源由 span 承载，颜色继承所在按键。 */
+.settings-city__glyph {
+    display: block;
+}
+
+/* 删除图标固定 16px，不随行高缩放。 */
+.settings-city__glyph svg {
+    flex: none;
+    display: block;
+    width: 16px;
+    height: 16px;
+}
+
+/* 悬浮与键盘聚焦使用错误色提醒不可撤销。 */
+.settings-city__delete:hover:not(:disabled),
+.settings-city__delete:focus-visible {
+    color: var(--color-error);
+    outline: none;
+}
+
+/* 列表为空时保留一行空态文案。 */
+.settings-city__empty {
+    margin: 0;
+    padding: 12px;
+    color: var(--color-muted);
+    font-size: 12px;
+}
+
+/* 末行添加命令与城市项同层排列，使用焦点色。 */
+.settings-city__add {
+    min-height: 44px;
+    padding: 0 12px;
+    border: 0;
+    border-top: 1px solid var(--color-border);
+    border-radius: 0 0 3px 3px;
+    color: var(--color-focus);
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* 添加命令悬浮时保留焦点色并给出表面反馈。 */
+.settings-city__add:hover:not(:disabled) {
+    background: var(--color-surface);
+}

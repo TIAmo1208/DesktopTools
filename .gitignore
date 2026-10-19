@@ -49,3 +49,4 @@ package-lock.json
 .graphflow/
 .graphflow-cache/
 graphflow-out/
+.dsh-switchman/

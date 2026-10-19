@@ -1,11 +1,24 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { Fragment, useEffect, useRef, useState, type RefObject } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { weatherSettings } from "../../bridge/weather";
-import { SettingsInfo } from "./SettingsInfo";
-import { SettingsSwitch } from "./SettingsSwitch";
-import { BackIcon, ChevronRightIcon, CloseIcon, ConcealIcon, PassedIcon, RevealIcon, SearchIcon } from "./WeatherIcons";
-import type { ApplicationPreferences } from "../../contracts/settings";
 import {
+    addWeatherCity,
+    createWeatherTile,
+    getWeatherCities,
+    removeWeatherCity,
+    searchWeatherCities,
+    validateWeatherCity,
+    weatherSettings,
+} from "../../bridge/weather";
+import { WeatherCityDialog } from "../weather/WeatherCityDialog";
+import { SettingsCityList } from "./SettingsCityList";
+import { SettingsInfo } from "./SettingsInfo";
+import backIcon from "../../../resources/weather-back.svg?raw";
+import chevronRightIcon from "../../../resources/weather-chevron-right.svg?raw";
+import closeIcon from "../../../resources/weather-close.svg?raw";
+import eyeIcon from "../../../resources/weather-eye.svg?raw";
+import eyeOffIcon from "../../../resources/weather-eye-off.svg?raw";
+import {
+    SOURCE_CITY_CHECK,
     WEATHER_SOURCES,
     type WeatherAvailability,
     type WeatherCheck,
@@ -17,8 +30,11 @@ import {
 } from "../../contracts/weather";
 import "./WeatherSettings.css";
 
-/** 各来源字段的标签、填写说明与输入上限，随供应商切换展示。 */
-const FIELDS: Record<WeatherField, { label: string; description: string; maxLength: number; secret?: boolean }> = {
+/** 各来源字段的标签、填写说明与输入上限；keepBlankOnEdit 表示编辑时留空代表沿用已保存值。 */
+const FIELDS: Record<
+    WeatherField,
+    { label: string; description: string; maxLength: number; secret?: boolean; multiline?: boolean; keepBlankOnEdit?: boolean }
+> = {
     host: {
         label: "API Host",
         maxLength: 253,
@@ -44,6 +60,8 @@ const FIELDS: Record<WeatherField, { label: string; description: string; maxLeng
         label: "私钥",
         maxLength: 1024,
         secret: true,
+        multiline: true,
+        keepBlankOnEdit: true,
         description:
             "按和风天气开发文档的 JWT 身份认证说明生成 Ed25519 密钥对：公钥上传到项目凭据，私钥保留在本机。导入对应的 PKCS#8 PEM 私钥文件，或粘贴包含 BEGIN PRIVATE KEY 和 END PRIVATE KEY 的完整内容；不要填写公钥或 JWT 令牌。",
     },
@@ -51,6 +69,7 @@ const FIELDS: Record<WeatherField, { label: string; description: string; maxLeng
         label: "API key",
         maxLength: 1024,
         secret: true,
+        keepBlankOnEdit: true,
         description:
             "在 Foreca My API 页面复制当前套餐的 API key，以 Bearer 令牌提交；该密钥是较长的签名令牌，需要完整复制，不要填入账户邮箱、密码或试用链接。",
     },
@@ -59,38 +78,39 @@ const FIELDS: Record<WeatherField, { label: string; description: string; maxLeng
 // 弹窗关闭后恢复的空白草稿。
 const EMPTY_DRAFT: Record<WeatherField, string> = { host: "", developerId: "", projectId: "", credentialId: "", privateKey: "", apiKey: "" };
 
+/** 图标资源以原始 SVG 保存，尺寸与颜色由所在按键的样式决定。 */
+const Glyph = ({ source }: { source: string }) => <span className="weather-settings__glyph" aria-hidden="true" dangerouslySetInnerHTML={{ __html: source }} />;
+
 // 列表可用状态文案；颜色由主题语义色负责。
 const AVAILABILITY: Record<WeatherAvailability, string> = { available: "可用", unavailable: "不可用", unconfirmed: "未确认" };
 
+/** 城市弹窗的调用方：各入口都只携带来源，搜索与验证统一使用该来源已保存的凭据。 */
+interface CityPicker {
+    source: WeatherSource; // 本次弹窗管理的来源。
+}
+
+/** 待确认的删除对象：来源凭据与城市项共用同一个确认框，未保存离开复用同一状态位。 */
+type WeatherPendingRemoval = { kind: "source"; source: WeatherSource } | { kind: "city"; source: WeatherSource; city: WeatherCity } | { kind: "discard" };
+
 /** 天气来源列表、右键菜单与添加/编辑弹窗；凭据不进入普通偏好保存。 */
-export const WeatherSettings = ({
-    onBack,
-    leaveGuard,
-    preferences,
-    onPreferences,
-}: {
-    onBack: () => void; // 返回功能格子列表。
-    leaveGuard: RefObject<((action: () => void) => void) | undefined>; // 未保存草稿离开保护。
-    preferences?: ApplicationPreferences; // 已保存偏好，提供当前启用来源。
-    onPreferences: (patch: Partial<ApplicationPreferences>) => void; // 保存启用来源。
-}) => {
+export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; leaveGuard: RefObject<((action: () => void) => void) | undefined> }) => {
     const [sources, setSources] = useState<WeatherSourceStatus[]>([]); // 已配置来源列表。
     const [busy, setBusy] = useState(""); // 当前动作名称。
+    const [cityBusy, setCityBusy] = useState(false); // 城市弹窗是否正在执行动作。
     const [status, setStatus] = useState(""); // 脱敏的状态反馈。
     const [failure, setFailure] = useState(false); // 错误色只辅助文本。
     const [menu, setMenu] = useState<{ source: WeatherSource; left: number; top: number }>(); // 跟随鼠标的来源菜单。
     const [form, setForm] = useState<{ source: WeatherSource; adding: boolean }>(); // 添加或编辑弹窗。
-    const [confirm, setConfirm] = useState<"remove" | "discard">(); // 删除与未保存确认。
-    const [pending, setPending] = useState<WeatherSource>(); // 待删除来源。
+    const [removal, setRemoval] = useState<WeatherPendingRemoval>(); // 待确认的删除对象。
     const [draft, setDraft] = useState<Record<WeatherField, string>>(EMPTY_DRAFT); // 只在当前页内存保存。
     const [visible, setVisible] = useState(false); // 仅当前敏感草稿显隐。
-    const [city, setCity] = useState<WeatherCity>(); // 当前临时验证城市。
-    const [cities, setCities] = useState<WeatherCity[]>([]); // 当前搜索结果。
-    const [query, setQuery] = useState(""); // 手动提交搜索。
-    const [checks, setChecks] = useState<WeatherCheck[]>([]); // 当前来源的真实检查结果。
-    const [picker, setPicker] = useState(false); // 城市选择弹窗。
+    const [expandedLoading, setExpandedLoading] = useState(false); // 当前展开项的城市列表是否正在读取。
+    const [city, setCity] = useState<WeatherCity>(); // 编辑弹窗内经完整验证的城市。
+    const [cityDraft, setCityDraft] = useState<{ added: WeatherCity[]; removed: string[] }>({ added: [], removed: [] }); // 编辑弹窗内尚未提交的城市改动。
+    const [checks, setChecks] = useState<WeatherCheck[]>([]); // 编辑弹窗内本次验证的真实检查结果。
+    const [picker, setPicker] = useState<CityPicker>(); // 城市弹窗及其调用方。
+    const [expanded, setExpanded] = useState<WeatherSource>(); // 当前展开城市列表的来源。
     const formDialog = useRef<HTMLDialogElement>(null); // 添加与编辑弹窗元素。
-    const pickerDialog = useRef<HTMLDialogElement>(null); // 城市选择弹窗元素。
     const confirmDialog = useRef<HTMLDialogElement>(null); // 确认框元素。
     const file = useRef<HTMLInputElement>(null); // 本地私钥导入入口。
     const session = useRef<number | null>(null); // 后端会话身份。
@@ -98,10 +118,22 @@ export const WeatherSettings = ({
     const opened = useRef(""); // 打开弹窗时的草稿快照，用于判断是否有修改。
     const live = useRef({ dirty: false, busy: "", mounted: true }); // 长生命周期回调读取最新状态。
     const pendingLeave = useRef<() => void>(() => undefined); // 确认后执行的导航。
-    const complete = form ? WEATHER_SOURCES[form.source].fields.every((key) => (draft[key] ?? "").trim()) : false; // 仅控制本地按钮，后端仍独立校验。
-    const verified = checks.length > 0 && checks.every((check) => check.failure === null); // 仅展示和禁用用途。
-    const activeSource = preferences?.weatherSource ?? sources.find((item) => item.enabled)?.source; // 已保存偏好优先，加载前回退后端状态。
-    const enabled = sources.find((item) => item.source === activeSource); // 当前启用来源的列表状态。
+    const formRequired = form ? WEATHER_SOURCES[form.source].fields.filter((key) => form.adding || !FIELDS[key].keepBlankOnEdit) : []; // 可留空的字段只在编辑态放宽，新增时仍必须填写。
+    const formReady = formRequired.every((key) => draft[key].trim().length > 0); // 保存只要求必填字段非空，不以能力验证为门槛。
+    /** 该来源是否已有保存的凭据；城市弹窗的搜索、验证与写入都只走已保存凭据。 */
+    const sourceSaved = (source: WeatherSource) => sources.some((item) => item.source === source);
+    const formCities = form
+        ? [...(sources.find((item) => item.source === form.source)?.cities ?? []).filter((item) => !cityDraft.removed.includes(item.id)), ...cityDraft.added]
+        : []; // 编辑弹窗内的城市列表＝已保存项减去待删除、加上待添加。
+
+    /** 打开城市弹窗；每次进入都不沿用上一次的选择与验证结果。 */
+    const openPicker = (source: WeatherSource) => {
+        setCity(undefined);
+        setChecks([]);
+        setStatus("");
+        setFailure(false);
+        setPicker({ source });
+    };
 
     /** 丢弃当前验证会话并递增前端身份，旧结果一律作废。 */
     const invalidate = () => {
@@ -111,17 +143,18 @@ export const WeatherSettings = ({
         if (previous !== null) void weatherSettings({ type: "cancel", sessionId: previous }).catch(() => undefined);
     };
 
-    /** 只提交当前来源声明的字段，多余字段不发送。 */
-    const credentials = (): WeatherCredentials =>
-        form?.source === "foreca"
-            ? { apiKey: draft.apiKey.trim() }
-            : {
-                  host: draft.host.trim(),
-                  developerId: draft.developerId.trim(),
-                  projectId: draft.projectId.trim(),
-                  credentialId: draft.credentialId.trim(),
-                  privateKey: draft.privateKey,
-              };
+    /** 动作名称同步渲染状态与关闭保护读取的最新值。 */
+    const applyBusy = (kind: string) => {
+        live.current.busy = kind;
+        setBusy(kind);
+    };
+
+    /** 只提交当前来源声明的字段；所有字段统一去掉首尾空白，不按字段名或来源特判。 */
+    const credentials = (): WeatherCredentials => {
+        const fields = form ? WEATHER_SOURCES[form.source].fields : WEATHER_SOURCES.qweather.fields; // 没有打开弹窗时按第一个来源装配，调用方本就不会用到。
+        const values = Object.fromEntries(fields.map((key) => [key, draft[key].trim()])) as Record<WeatherField, string>;
+        return values as unknown as WeatherCredentials; // 后端按字段结构判定来源，这里只负责按来源装配字段。
+    };
 
     /** 字段改变时使会话失效并记录未保存修改。 */
     const handleDraft = (key: WeatherField, value: string) => {
@@ -133,7 +166,6 @@ export const WeatherSettings = ({
         });
         setChecks([]);
         setCity(undefined);
-        setCities([]);
         setStatus("");
         setFailure(false);
     };
@@ -141,8 +173,7 @@ export const WeatherSettings = ({
     /** 打开添加或编辑弹窗；编辑模式只回填非敏感字段，敏感材料一律留空。 */
     const openForm = (source: WeatherSource, adding: boolean) => {
         const saved = adding ? undefined : sources.find((item) => item.source === source); // 已保存来源的列表状态。
-        const filled: Record<WeatherField, string> = { ...EMPTY_DRAFT, ...saved?.identity };
-        if (source === "qweather") filled.host = saved?.address ?? ""; // 和风的 Host 由列表状态回填。
+        const filled: Record<WeatherField, string> = { ...EMPTY_DRAFT, ...saved?.identity }; // 非敏感字段由后端 identity 回填，不再按来源借道地址。
         invalidate();
         opened.current = JSON.stringify(filled);
         live.current.dirty = false;
@@ -150,39 +181,35 @@ export const WeatherSettings = ({
         setVisible(false);
         setChecks([]);
         setCity(undefined);
-        setCities([]);
-        setQuery("");
+        setCityDraft({ added: [], removed: [] }); // 新开一次编辑，不沿用上一次的城市改动。
         setStatus("");
         setFailure(false);
-        setPicker(false);
+        setPicker(undefined);
         setForm({ source, adding });
     };
 
     /** 关闭弹窗并释放后端草稿；有未保存修改时先确认。 */
     const closeForm = (discard = false) => {
         if (!discard && live.current.dirty) {
-            setConfirm("discard");
+            setRemoval({ kind: "discard" });
             return;
         }
         invalidate();
         live.current.dirty = false;
         setForm(undefined);
-        setConfirm(undefined);
-        setPicker(false);
+        setPicker(undefined);
         setDraft(EMPTY_DRAFT);
         setChecks([]);
         setCity(undefined);
-        setCities([]);
-        setQuery("");
+        setCityDraft({ added: [], removed: [] }); // 丢弃未提交的城市改动，关闭后城市列表回到已保存的状态。
         setStatus(""); // 弹窗内的验证或保存反馈不残留到来源列表。
         setFailure(false);
     };
 
     /** 串行动作并拒绝取消或卸载后的提交。 */
     const handleAction = async (kind: string, action: (current: number) => Promise<void>) => {
-        if (live.current.busy) return;
-        live.current.busy = kind;
-        setBusy(kind);
+        if (busy) return;
+        applyBusy(kind);
         setStatus("");
         setFailure(false);
         const current = ++revision.current; // 当前操作的前端身份。
@@ -194,18 +221,14 @@ export const WeatherSettings = ({
                 setStatus(typeof error === "string" ? error : "天气设置操作失败，请重试");
             }
         } finally {
-            if (live.current.mounted && current === revision.current) {
-                live.current.busy = "";
-                setBusy("");
-            }
+            if (live.current.mounted) applyBusy(""); // 成功动作会在收尾中递增身份（关闭弹窗释放草稿），忙碌门槛不跟着作废。
         }
     };
 
-    /** 检测可用或切换启用来源；打开另一来源的开关先做一次存活探测。 */
-    const handleProbe = async (source: WeatherSource, activate: boolean) => {
-        if (live.current.busy) return;
-        live.current.busy = activate ? "switch" : "probe";
-        setBusy(live.current.busy);
+    /** 检测可用并刷新列表状态；该来源没有城市时提示先添加城市，探测仍按已保存凭据执行。 */
+    const handleProbe = async (source: WeatherSource) => {
+        if (busy) return;
+        applyBusy("probe");
         setMenu(undefined);
         setStatus("");
         setFailure(false);
@@ -214,19 +237,21 @@ export const WeatherSettings = ({
             const snapshot = await weatherSettings({ type: "probe", source });
             if (!live.current.mounted || current !== revision.current) return;
             setSources(snapshot.sources);
-            if (activate) onPreferences({ weatherSource: source }); // 探测通过才提交新的启用来源。
-            setStatus(activate ? `已切换到 ${WEATHER_SOURCES[source].name}，正在获取天气数据` : `${WEATHER_SOURCES[source].name} ${AVAILABILITY.available}`);
+            const name = WEATHER_SOURCES[source].name; // 本次探测的来源名称。
+            const status = snapshot.sources.find((item) => item.source === source); // 探测结果里该来源的权威状态。
+            const available = status?.availability === "available"; // 按后端写入的可用状态给结论，不假定成功。
+            setFailure(!available);
+            const cities = status?.cities ?? []; // 探测结果同时给出该来源的城市列表。
+            const note = available ? AVAILABILITY.available : AVAILABILITY.unavailable;
+            setStatus(cities.length ? `${name} ${note}` : `${name} ${note}，尚未添加城市或地区，请先添加城市`);
         } catch (error) {
             if (live.current.mounted && current === revision.current) {
                 setFailure(true);
                 const reason = typeof error === "string" ? error : "探测失败"; // 探测只确认当前天气一次。
-                setStatus(activate ? `切换失败：${reason}${enabled ? `，仍使用 ${WEATHER_SOURCES[enabled.source].name}` : ""}` : `检测失败：${reason}`);
+                setStatus(`检测失败：${reason}`);
             }
         } finally {
-            if (live.current.mounted && current === revision.current) {
-                live.current.busy = "";
-                setBusy("");
-            }
+            if (live.current.mounted) applyBusy(""); // 忙碌门槛必须无条件释放：探测期间打开编辑会递增身份，否则按钮永久停在禁用。
         }
     };
 
@@ -243,73 +268,250 @@ export const WeatherSettings = ({
         return result.sessionId;
     };
 
-    /** 搜索只在提交时执行，结果仅用于当前验证。 */
-    const handleSearch = () =>
-        void handleAction("search", async (current) => {
-            setCities([]);
-            setCity(undefined);
-            setChecks([]);
-            const id = await ensureSession(current); // 后端已校验来源字段格式。
-            const result = await weatherSettings({ type: "search", sessionId: id, query }); // 不缓存位置检索结果。
-            if (current !== revision.current || !live.current.mounted) return;
-            setCities(result.cities);
-            if (!result.cities.length) setStatus("没有找到城市");
-        });
-
-    /** 按后端实际能力结果启用保存按钮。 */
-    const handleValidate = () =>
-        void handleAction("validate", async (current) => {
-            if (!city || session.current === null) return;
-            setChecks([]);
-            const result = await weatherSettings({ type: "validate", sessionId: session.current, cityId: city.id }); // 不传入通过标记。
-            if (current !== revision.current || !live.current.mounted) return;
-            setChecks(result.checks);
-            const passed = result.checks.length > 0 && result.checks.every((check) => check.failure === null); // 全部通过才可保存。
-            setFailure(!passed);
-            setStatus(passed ? "全部能力验证通过" : "部分能力未通过，原配置未改变");
-        });
-
-    /** 取消后立即清除本地门槛；后台有界请求仍由后端互斥保护。 */
-    const handleCancelValidation = () => {
-        invalidate();
-        live.current.busy = "";
-        setBusy("");
-        setCity(undefined);
-        setCities([]);
-        setChecks([]);
-        setStatus("验证已取消，请重新选择验证城市");
+    /** 城市弹窗的串行入口：忙碌期间拒绝重复提交，失败说明留在弹窗内。 */
+    const handleCityAction = async (action: () => Promise<void>) => {
+        if (cityBusy) return;
+        setCityBusy(true);
+        setStatus("");
+        setFailure(false);
+        try {
+            await action();
+        } catch (error) {
+            if (live.current.mounted) {
+                setFailure(true);
+                setStatus(typeof error === "string" ? error : "天气设置操作失败，请重试");
+            }
+        } finally {
+            if (live.current.mounted) setCityBusy(false);
+        }
     };
 
-    /** 保存成功后该来源成为当前使用；失败保留旧配置与本次草稿。 */
-    const handleSave = () =>
-        void handleAction("save", async (current) => {
-            if (session.current === null || !form) return;
-            const source = form.source; // 本次保存的来源。
-            const snapshot = await weatherSettings({ type: "save", sessionId: session.current }); // 服务端再次检查验证状态。
+    /** 搜索只在提交时执行，结果只回给城市弹窗；会话代次继续由调用方管理。 */
+    const handleSearch = async (search: string) => {
+        if (cityBusy || !picker) return [];
+        setCityBusy(true);
+        setCity(undefined);
+        setChecks([]);
+        setStatus("正在搜索…");
+        setFailure(false);
+        try {
+            const current = ++revision.current; // 本次搜索的前端身份。
+            if (!sourceSaved(picker.source)) {
+                setFailure(true);
+                setStatus("请先保存该来源的凭据，再添加城市或地区");
+                return [];
+            }
+            const found = await searchWeatherCities(picker.source, search); // 已保存凭据的按来源搜索，不缓存位置检索结果。
+            if (current !== revision.current || !live.current.mounted) return [];
+            setStatus(found.length ? "" : "没有找到该位置，可尝试所属城市或英文名称");
+            return found;
+        } catch (error) {
+            if (live.current.mounted) {
+                setFailure(true);
+                setStatus(typeof error === "string" ? error : "天气设置操作失败，请重试");
+            }
+            return [];
+        } finally {
+            if (live.current.mounted) setCityBusy(false);
+        }
+    };
+
+    /** 新搜索与改选都作废上一次验证结果，避免确认未验证的城市。 */
+    const handleSelect = (next?: WeatherCity) => {
+        setCity((current) => (current?.id === next?.id ? current : next));
+        setChecks([]);
+        setStatus("");
+        setFailure(false);
+    };
+
+    /** 按已保存凭据验证候选城市：验证只给出可用性结论，写入城市列表在确认时发生。 */
+    const handleValidate = (target: WeatherCity) =>
+        handleCityAction(async () => {
+            if (!picker) return;
+            setChecks([]);
+            const current = ++revision.current; // 本次验证的前端身份。
+            setStatus("正在验证天气能力…");
+            if (!sourceSaved(picker.source)) {
+                setFailure(true);
+                setStatus("请先保存该来源的凭据，再验证城市");
+                return;
+            }
+            const result = await validateWeatherCity(picker.source, target); // Rust 按该来源规则校验候选对象，不要求城市已在列表中。
             if (current !== revision.current || !live.current.mounted) return;
-            setSources(snapshot.sources);
-            closeForm(true);
-            live.current.busy = "";
-            setBusy("");
-            onPreferences({ weatherSource: source }); // 保存并启用当前来源。
-            setStatus(`已保存并启用 ${WEATHER_SOURCES[source].name}，正在获取天气数据`);
+            setCity(result);
+            setChecks([SOURCE_CITY_CHECK]); // 按来源命令只返回结论，不拆分为逐项能力。
+            setStatus("验证通过");
+        });
+
+    /** 确认时才把候选城市写入该来源城市列表；编辑弹窗内的城市改动留到保存时一起提交。 */
+    const handleConfirm = async (target: WeatherCity) =>
+        handleCityAction(async () => {
+            if (!picker) return;
+            if (!sourceSaved(picker.source)) throw new Error("请先保存该来源的凭据，再添加城市或地区");
+            if (form) {
+                // 编辑弹窗：城市改动属于本次编辑，取消时要一起丢弃，因此只记草稿。
+                setCityDraft((current) => ({ ...current, added: [...current.added.filter((item) => item.id !== target.id), target] }));
+                setCity(undefined);
+                setChecks([]);
+                setStatus("");
+                setFailure(false);
+                setPicker(undefined);
+                return;
+            }
+            const current = ++revision.current; // 本次写入的前端身份。
+            const added = await addWeatherCity(picker.source, target); // 入列只按该来源规则校验候选对象，不要求城市已在列表中。
+            if (current !== revision.current || !live.current.mounted) return;
+            setSources((items) => items.map((item) => (item.source === picker.source ? { ...item, cities: added } : item)));
+            setCity(undefined);
+            setChecks([]);
+            setStatus("");
+            setFailure(false);
+            setPicker(undefined);
+        });
+
+    /**
+     * 保存后的可用性验证：不阻塞保存收尾，结论回来后补写来源可用状态与状态行。
+     * 后端按该来源的配置代次丢弃旧结果，因此这里只需确认页面仍然挂载。
+     */
+    const verifyAfterSave = async (source: WeatherSource, name: string) => {
+        try {
+            const probed = await weatherSettings({ type: "probe", source }); // 用该来源第一座城市验证一次。
+            if (!live.current.mounted) return;
+            const availability = probed.sources.find((item) => item.source === source)?.availability; // 本次探测后的权威状态。
+            setSources((items) => items.map((item) => (item.source === source ? { ...item, availability: availability ?? item.availability } : item)));
+            setFailure(availability !== "available");
+            setStatus(availability === "available" ? `已保存 ${name}，${AVAILABILITY.available}` : `已保存 ${name}，检测未通过`);
+        } catch (error) {
+            if (!live.current.mounted) return;
+            setFailure(true);
+            setStatus(`已保存 ${name}，检测未通过：${typeof error === "string" ? error : "探测失败"}`); // 凭据已写入，失败只作为结论反馈。
+        }
+    };
+
+    /**
+     * 保存：先提交编辑弹窗里积累的城市改动，再写入凭据。
+     * 凭据没有改动时只提交城市改动；保存后两个来源都补一次可用性验证（用该来源第一座城市），
+     * 验证不阻塞保存也不阻止写入。
+     */
+    const handleSave = () =>
+        handleAction("save", async (current) => {
+            if (!form) return;
+            const source = form.source; // 本次保存的来源。
+            const name = WEATHER_SOURCES[source].name; // 本次保存的来源名称。
+            const untouched = !live.current.dirty && !cityDraft.added.length && !cityDraft.removed.length; // 凭据与城市都没有改动。
+            if (untouched) {
+                closeForm(true);
+                setStatus(`已保存 ${name}`);
+                return;
+            }
+            let cities = sources.find((item) => item.source === source)?.cities ?? []; // 本次提交后的城市列表。
+            // 每写入一项立即从草稿移除，凭据保存失败后重试不会重复添加或删除同一城市。
+            for (const city of [...cityDraft.added]) {
+                cities = await addWeatherCity(source, city);
+                setCityDraft((current) => ({ ...current, added: current.added.filter((item) => item.id !== city.id) }));
+            }
+            for (const id of [...cityDraft.removed]) {
+                cities = await removeWeatherCity(source, id);
+                setCityDraft((current) => ({ ...current, removed: current.removed.filter((item) => item !== id) }));
+            }
+            if (current !== revision.current || !live.current.mounted) return;
+            let next = sources.map((item) => (item.source === source ? { ...item, cities } : item)); // 无凭据改动时只替换城市列表。
+            if (live.current.dirty) {
+                if (session.current === null) await ensureSession(current);
+                if (session.current === null) throw new Error("会话创建失败");
+                const snapshot = await weatherSettings({ type: "save", sessionId: session.current }); // 服务端按草稿字段写入凭据。
+                if (current !== revision.current || !live.current.mounted) return;
+                next = snapshot.sources.map((item) => (item.source === source ? { ...item, cities } : item));
+            }
+            if (current !== revision.current || !live.current.mounted) return;
+            setSources(next);
+            closeForm(true); // 先收起弹窗，保存不等待网络验证。
+            setFailure(false);
+            setStatus(`已保存 ${name}`);
             const action = pendingLeave.current; // 未保存确认选择保存时继续原导航。
             pendingLeave.current = () => undefined;
             action();
+            void verifyAfterSave(source, name); // 保存后补一次可用性验证，不阻塞保存收尾；两个来源走同一条路径。
         });
 
     /** 删除来源凭据并刷新列表；失败保留旧配置与确认框。 */
     const handleRemove = () =>
         void handleAction("remove", async (current) => {
-            if (!pending) return;
-            const source = pending; // 本次删除的来源。
+            if (removal?.kind !== "source") return;
+            const source = removal.source; // 本次删除的来源。
             const snapshot = await weatherSettings({ type: "remove", source });
             if (current !== revision.current || !live.current.mounted) return;
             setSources(snapshot.sources);
-            setConfirm(undefined);
-            setPending(undefined);
+            setRemoval(undefined);
             setStatus(`已删除 ${WEATHER_SOURCES[source].name}`);
         });
+
+    /** 展开或收起某来源的城市列表；城市数据只保留在来源状态里，这里只切换加载状态。 */
+    const handleExpand = async (source: WeatherSource) => {
+        if (expanded === source) {
+            setExpanded(undefined);
+            return;
+        }
+        setExpanded(source);
+        setExpandedLoading(true);
+        try {
+            const list = await getWeatherCities(source);
+            if (!live.current.mounted) return;
+            setSources((items) => items.map((item) => (item.source === source ? { ...item, cities: list } : item)));
+        } catch (error) {
+            if (!live.current.mounted) return;
+            setFailure(true);
+            setStatus(typeof error === "string" ? error : "天气城市读取失败");
+        } finally {
+            if (live.current.mounted) setExpandedLoading(false);
+        }
+    };
+
+    /** 城市项的删除入口：只移除该项，正在使用该城市的格子保留配置并自行进入城市已移除状态。 */
+    const requestCityRemoval = (source: WeatherSource, city: WeatherCity) => {
+        if (busy) return;
+        setRemoval({ kind: "city", source, city });
+    };
+
+    /** 删除城市项：编辑弹窗内只记草稿，其余入口按来源命令立即移除该项。 */
+    const handleRemoveCity = (source: WeatherSource, city: WeatherCity) => {
+        if (form) {
+            // 本次刚加上的城市只需撤回 added，不能同时记入 removed，否则保存时会删除尚不存在的一行。
+            setCityDraft((current) => ({
+                added: current.added.filter((item) => item.id !== city.id),
+                removed:
+                    current.added.some((item) => item.id === city.id) || current.removed.includes(city.id) ? current.removed : [...current.removed, city.id],
+            }));
+            setRemoval(undefined);
+            return;
+        }
+        void handleAction("remove", async (current) => {
+            const list = await removeWeatherCity(source, city.id); // 命令返回值即本轮来源，不新增广播事件。
+            if (current !== revision.current || !live.current.mounted) return;
+            setSources((items) => items.map((item) => (item.source === source ? { ...item, cities: list } : item)));
+            setRemoval(undefined);
+        });
+    };
+
+    /** 确认框正文按删除对象区分；命令区的未保存确认复用同一确认框。 */
+    const confirmText =
+        removal?.kind === "source"
+            ? `删除 ${WEATHER_SOURCES[removal.source].name} 在本机保存的凭据，并停止该来源的联网更新。`
+            : removal?.kind === "city"
+              ? `从城市列表移除 ${removal.city.name}，正在使用该城市的天气格子会提示重新选择。`
+              : "关闭弹窗将丢失本次修改。可以取消关闭，或直接保存。";
+
+    /** 二级菜单按该来源已添加的城市创建格子；创建链路由 Rust 侧入口完成。 */
+    const handleCreateTile = (source: WeatherSource, city: WeatherCity) => {
+        setMenu(undefined);
+        void createWeatherTile(source, city.id)
+            .then(() => setStatus(`已添加 ${city.name} 天气格子`))
+            .catch((error: unknown) => {
+                if (!live.current.mounted) return;
+                setFailure(true);
+                setStatus(typeof error === "string" ? error : "天气格子创建失败");
+            });
+    };
 
     useEffect(() => {
         if (!menu) return;
@@ -327,7 +529,7 @@ export const WeatherSettings = ({
                 return;
             }
             pendingLeave.current = action;
-            setConfirm("discard");
+            setRemoval({ kind: "discard" });
         }; // 所有离开入口读取同一份最新状态。
         leaveGuard.current = guard;
         let active = true; // 处理异步监听注册晚于卸载的情况。
@@ -379,14 +581,13 @@ export const WeatherSettings = ({
     useEffect(() => {
         for (const [element, open] of [
             [formDialog.current, !!form],
-            [pickerDialog.current, picker],
-            [confirmDialog.current, !!confirm],
+            [confirmDialog.current, !!removal],
         ] as const) {
             if (!element) continue;
             if (open && !element.open) element.showModal(); // 城市弹窗在编辑弹窗之上独立打开。
             if (!open && element.open) element.close();
         }
-    }, [form, picker, confirm]);
+    }, [form, removal]);
 
     return (
         <section className="weather-settings">
@@ -398,20 +599,17 @@ export const WeatherSettings = ({
                     aria-label="返回功能格子"
                     onClick={() => leaveGuard.current?.(onBack)}
                 >
-                    <BackIcon />
+                    <Glyph source={backIcon} />
                 </button>
                 <h2>天气</h2>
-                <small>{enabled ? `当前使用 ${WEATHER_SOURCES[enabled.source].name}` : "未启用来源"}</small>
             </div>
             <h3>已配置的天气来源</h3>
             {sources.length ? (
                 <ul className="weather-settings__list">
-                    {sources.map((item) => {
-                        const current = item.source === activeSource; // 当前启用来源由已保存偏好决定。
-                        return (
-                            <li
-                                key={item.source}
-                                className="weather-settings__item"
+                    {sources.map((item) => (
+                        <li key={item.source} className="weather-settings__item">
+                            <div
+                                className="weather-settings__item-row"
                                 role="button"
                                 tabIndex={0}
                                 title="显示详情"
@@ -439,32 +637,59 @@ export const WeatherSettings = ({
                                     <i aria-hidden="true" />
                                     {AVAILABILITY[item.availability]}
                                 </span>
-                                <span onClick={(event) => event.stopPropagation()}>
-                                    <SettingsSwitch
-                                        label={`启用 ${WEATHER_SOURCES[item.source].name}`}
-                                        disabled={!!busy || current}
-                                        checked={current}
-                                        onChange={(checked) => {
-                                            if (checked) void handleProbe(item.source, true);
-                                        }}
-                                    />
-                                </span>
+                                {(() => {
+                                    const open = expanded === item.source; // 该项是否已展开城市列表。
+                                    return (
+                                        <button
+                                            type="button"
+                                            className={`weather-settings__expand${open ? " is-open" : ""}`}
+                                            aria-expanded={open}
+                                            aria-label={`${open ? "收起" : "展开"} ${WEATHER_SOURCES[item.source].name} 的城市列表`}
+                                            title={`${open ? "收起" : "展开"}城市列表`}
+                                            onClick={(event) => {
+                                                event.stopPropagation(); // 展开按键只负责展开收起，不触发进入编辑。
+                                                void handleExpand(item.source);
+                                            }}
+                                        >
+                                            <Glyph source={chevronRightIcon} />
+                                        </button>
+                                    );
+                                })()}
                                 <span className="weather-settings__arrow" aria-hidden="true">
-                                    <ChevronRightIcon />
+                                    <Glyph source={chevronRightIcon} />
                                 </span>
-                            </li>
-                        );
-                    })}
+                            </div>
+                            {expanded === item.source && (
+                                <div className="weather-settings__cities">
+                                    {expandedLoading ? (
+                                        <p className="weather-settings__status">正在读取城市列表…</p>
+                                    ) : (
+                                        <SettingsCityList
+                                            cities={item.cities}
+                                            busy={!!busy}
+                                            onDelete={(target) => requestCityRemoval(item.source, target)}
+                                            onAdd={() => openPicker(item.source)}
+                                        />
+                                    )}
+                                </div>
+                            )}
+                        </li>
+                    ))}
                 </ul>
             ) : (
                 <p className="weather-settings__empty">尚未添加任何天气来源</p>
             )}
-            <button type="button" className="weather-settings__add" disabled={!!busy} onClick={() => openForm("qweather", true)}>
+            <button
+                type="button"
+                className="weather-settings__add"
+                disabled={!!busy}
+                onClick={() => openForm((Object.keys(WEATHER_SOURCES) as WeatherSource[])[0], true)}
+            >
                 + 添加 API
             </button>
             {!form && (
                 <p className={failure ? "weather-settings__error" : "weather-settings__status"} role="status">
-                    {busy === "switch" ? "正在确认来源是否可用…" : status}
+                    {status}
                 </p>
             )}
             {menu && (
@@ -488,7 +713,7 @@ export const WeatherSettings = ({
                         </button>
                     </li>
                     <li role="none">
-                        <button type="button" role="menuitem" disabled={!!busy} onClick={() => void handleProbe(menu.source, false)}>
+                        <button type="button" role="menuitem" disabled={!!busy} onClick={() => void handleProbe(menu.source)}>
                             检测可用
                         </button>
                     </li>
@@ -497,11 +722,54 @@ export const WeatherSettings = ({
                         <button
                             type="button"
                             role="menuitem"
+                            disabled={!!busy}
+                            onClick={() => {
+                                const source = menu.source; // 先关闭菜单再打开弹窗。
+                                setMenu(undefined);
+                                openPicker(source);
+                            }}
+                        >
+                            添加城市
+                        </button>
+                    </li>
+                    <li role="none" className="weather-settings__submenu-host">
+                        <button type="button" role="menuitem" aria-haspopup="menu" onClick={() => undefined}>
+                            添加天气格子
+                            <span className="weather-settings__submenu-arrow" aria-hidden="true">
+                                <Glyph source={chevronRightIcon} />
+                            </span>
+                        </button>
+                        <menu className="weather-settings__submenu desktop-tile-menu" role="menu" aria-label="添加天气格子">
+                            {(() => {
+                                const cities = sources.find((item) => item.source === menu.source)?.cities ?? []; // 该来源已添加的城市。
+                                if (!cities.length)
+                                    return (
+                                        <li role="none">
+                                            <span className="desktop-tile-menu__heading">列表为空</span>
+                                        </li>
+                                    );
+                                return cities.map((item, index) => (
+                                    <Fragment key={item.id}>
+                                        {index === 0 && <li className="desktop-tile-menu__separator" role="separator" aria-hidden="true" />}
+                                        <li role="none">
+                                            <button type="button" role="menuitem" onClick={() => handleCreateTile(menu.source, item)}>
+                                                {item.name}
+                                            </button>
+                                        </li>
+                                    </Fragment>
+                                ));
+                            })()}
+                        </menu>
+                    </li>
+                    <li className="weather-settings__menu-separator" role="separator" />
+                    <li role="none">
+                        <button
+                            type="button"
+                            role="menuitem"
                             className="weather-settings__menu-danger"
                             onClick={() => {
-                                setPending(menu.source);
+                                setRemoval({ kind: "source", source: menu.source });
                                 setMenu(undefined);
-                                setConfirm("remove");
                             }}
                         >
                             删除
@@ -529,7 +797,7 @@ export const WeatherSettings = ({
                             disabled={busy === "save"}
                             onClick={() => closeForm()}
                         >
-                            <CloseIcon />
+                            <Glyph source={closeIcon} />
                         </button>
                     </header>
                     <div className="weather-settings__dialog-body">
@@ -554,8 +822,6 @@ export const WeatherSettings = ({
                                                 setForm({ source: item, adding: true });
                                                 setChecks([]);
                                                 setCity(undefined);
-                                                setCities([]);
-                                                setQuery("");
                                                 setStatus("");
                                                 setFailure(false);
                                             }}
@@ -567,7 +833,7 @@ export const WeatherSettings = ({
                             </div>
                         )}
                         {WEATHER_SOURCES[form.source].fields.map((key) =>
-                            key === "privateKey" ? (
+                            FIELDS[key].multiline ? (
                                 <div className="weather-settings__row weather-settings__row--secret" key={key}>
                                     <span>
                                         <label htmlFor={`weather-${key}`}>{FIELDS[key].label}</label>
@@ -598,7 +864,7 @@ export const WeatherSettings = ({
                                                 aria-pressed={visible}
                                                 onClick={() => setVisible(!visible)}
                                             >
-                                                {visible ? <ConcealIcon /> : <RevealIcon />}
+                                                {visible ? <Glyph source={eyeOffIcon} /> : <Glyph source={eyeIcon} />}
                                             </button>
                                         </div>
                                         <div className="weather-settings__actions">
@@ -617,12 +883,11 @@ export const WeatherSettings = ({
                                                 event.currentTarget.value = "";
                                                 if (!selected) return;
                                                 void handleAction("import", async (current) => {
-                                                    if (selected.size > FIELDS.privateKey.maxLength) throw "私钥文件超过大小限制";
+                                                    if (selected.size > FIELDS[key].maxLength) throw "私钥文件超过大小限制";
                                                     const text = await selected.text(); // 不保存导入路径。
                                                     if (current !== revision.current || !live.current.mounted) return;
-                                                    handleDraft("privateKey", text);
-                                                    live.current.busy = "";
-                                                    setBusy("");
+                                                    handleDraft(key, text);
+                                                    applyBusy("");
                                                 });
                                             }}
                                         />
@@ -655,7 +920,7 @@ export const WeatherSettings = ({
                                                 aria-pressed={visible}
                                                 onClick={() => setVisible(!visible)}
                                             >
-                                                {visible ? <ConcealIcon /> : <RevealIcon />}
+                                                {visible ? <Glyph source={eyeOffIcon} /> : <Glyph source={eyeIcon} />}
                                             </button>
                                         </div>
                                     ) : (
@@ -672,53 +937,27 @@ export const WeatherSettings = ({
                                 </div>
                             ),
                         )}
-                        <div className="weather-settings__row">
-                            <span>验证城市</span>
-                            <div className="weather-settings__city">
-                                <span>{city?.name ?? "尚未选择"}</span>
-                                {city && <small>{[city.adm2, city.adm1, city.country].filter(Boolean).join("，")}</small>}
-                            </div>
-                            <button
-                                type="button"
-                                disabled={!complete || !!busy}
-                                onClick={() => {
-                                    setStatus("");
-                                    setPicker(true);
-                                }}
-                            >
-                                选择城市
-                            </button>
-                        </div>
-                        <h3>验证结果</h3>
-                        <ul className="weather-settings__checks">
-                            {checks.map((check) => (
-                                <li key={check.label}>
-                                    <span className={`weather-settings__result-icon${check.failure === null ? " is-passed" : ""}`} aria-hidden="true">
-                                        {check.failure === null ? <PassedIcon /> : null}
-                                    </span>
-                                    <span>{check.label}</span>
-                                    <span className={check.failure ? "weather-settings__error" : check.failure === null ? "weather-settings__passed" : ""}>
-                                        {check.failure?.message ?? "通过"}
-                                    </span>
-                                </li>
-                            ))}
-                        </ul>
+                        {!form.adding && (
+                            <>
+                                <h3>城市列表</h3>
+                                <SettingsCityList
+                                    cities={formCities}
+                                    busy={!!busy}
+                                    onDelete={(target) => requestCityRemoval(form.source, target)}
+                                    onAdd={() => {
+                                        setStatus("");
+                                        openPicker(form.source); // 城市列表分组按来源命令添加，与来源展开区同一条后端路径。
+                                    }}
+                                />
+                            </>
+                        )}
                     </div>
                     <footer className="weather-settings__actions weather-settings__dialog-actions">
                         <span className={`weather-settings__dialog-status${failure ? " weather-settings__error" : ""}`} role="status">
-                            {busy === "validate" ? "正在验证天气能力…" : status}
+                            {status}
                         </span>
-                        {busy === "validate" ? (
-                            <button type="button" onClick={handleCancelValidation}>
-                                取消验证
-                            </button>
-                        ) : (
-                            <button type="button" disabled={!city || !!busy} onClick={handleValidate}>
-                                {checks.length ? "重新验证" : "验证配置"}
-                            </button>
-                        )}
-                        <button type="button" className="weather-settings__primary" disabled={!verified || !!busy} onClick={handleSave}>
-                            {busy === "save" ? "正在保存" : "保存并启用"}
+                        <button type="button" className="weather-settings__primary" disabled={!formReady || !!busy} onClick={() => void handleSave()}>
+                            {busy === "save" ? "正在保存" : "保存"}
                         </button>
                         <button type="button" disabled={busy === "save"} onClick={() => closeForm()}>
                             取消
@@ -727,117 +966,44 @@ export const WeatherSettings = ({
                 </dialog>
             )}
             {picker && (
-                <dialog
-                    ref={pickerDialog}
-                    className="weather-settings__dialog weather-settings__dialog--city"
-                    aria-label="选择验证城市"
-                    onCancel={(event) => {
-                        event.preventDefault();
-                        if (busy === "search") handleCancelValidation();
-                        setPicker(false);
+                <WeatherCityDialog
+                    title="添加城市"
+                    type="add"
+                    modal // 设置窗口的配置弹窗是顶层模态，城市弹窗必须是同一层才叠得上去。
+                    state={{ city, checks, status, failure }}
+                    busy={cityBusy || busy === "save"}
+                    onSearch={handleSearch}
+                    onSelect={handleSelect}
+                    onValidate={handleValidate}
+                    onConfirm={handleConfirm}
+                    onClose={() => {
+                        setCity(undefined);
+                        setChecks([]);
+                        setStatus("");
+                        setFailure(false);
+                        setPicker(undefined);
                     }}
-                >
-                    <header className="weather-settings__dialog-head">
-                        <h2>选择验证城市</h2>
-                        <button
-                            type="button"
-                            className="weather-settings__close"
-                            aria-label="关闭"
-                            title="关闭"
-                            onClick={() => {
-                                if (busy === "search") handleCancelValidation();
-                                setPicker(false);
-                            }}
-                        >
-                            <CloseIcon />
-                        </button>
-                    </header>
-                    <div className="weather-settings__dialog-body">
-                        <form
-                            className="weather-settings__search"
-                            onSubmit={(event) => {
-                                event.preventDefault();
-                                handleSearch();
-                            }}
-                        >
-                            <input
-                                autoFocus
-                                aria-label="搜索城市"
-                                value={query}
-                                maxLength={100}
-                                disabled={busy === "search"}
-                                onChange={(event) => {
-                                    setQuery(event.currentTarget.value);
-                                    setCities([]);
-                                }}
-                            />
-                            <button type="submit" className="weather-settings__icon" title="搜索城市" aria-label="搜索城市" disabled={!query.trim() || !!busy}>
-                                <SearchIcon />
-                            </button>
-                        </form>
-                        <div className="weather-settings__cities">
-                            {cities.map((result) => (
-                                <button
-                                    type="button"
-                                    key={result.id}
-                                    disabled={!!busy}
-                                    onClick={() => {
-                                        setCity(result);
-                                        setChecks([]);
-                                        setStatus("");
-                                        setPicker(false);
-                                    }}
-                                >
-                                    <span>{result.name}</span>
-                                    <small>{[result.adm2, result.adm1, result.country].filter(Boolean).join("，")}</small>
-                                </button>
-                            ))}
-                        </div>
-                        <p role="status">{busy === "search" ? "正在搜索…" : status}</p>
-                    </div>
-                </dialog>
+                />
             )}
-            {confirm && (
+            {removal && (
                 <dialog
                     ref={confirmDialog}
                     className="weather-settings__dialog weather-settings__dialog--confirm"
-                    aria-label={confirm === "remove" ? "删除天气来源？" : "配置尚未保存"}
+                    aria-label={removal.kind === "discard" ? "配置尚未保存" : "确认删除"}
                     onCancel={(event) => {
                         event.preventDefault();
                         if (busy === "remove") return;
-                        setConfirm(undefined);
-                        setPending(undefined);
+                        setRemoval(undefined);
                     }}
                 >
                     <header className="weather-settings__dialog-head">
-                        <h2>{confirm === "remove" ? "删除天气来源？" : "配置尚未保存"}</h2>
+                        <h2>{removal.kind === "source" ? "删除天气来源？" : removal.kind === "city" ? "删除城市或地区？" : "配置尚未保存"}</h2>
                     </header>
                     <div className="weather-settings__dialog-body">
-                        <p>
-                            {confirm === "remove"
-                                ? `删除 ${pending ? WEATHER_SOURCES[pending].name : ""} 在本机保存的凭据，并停止该来源的联网更新。`
-                                : "关闭弹窗将丢失本次修改。可以取消关闭，或直接保存。"}
-                        </p>
+                        <p>{confirmText}</p>
                     </div>
                     <footer className="weather-settings__actions weather-settings__dialog-actions">
-                        {confirm === "remove" ? (
-                            <>
-                                <button
-                                    type="button"
-                                    autoFocus
-                                    disabled={busy === "remove"}
-                                    onClick={() => {
-                                        setConfirm(undefined);
-                                        setPending(undefined);
-                                    }}
-                                >
-                                    取消
-                                </button>
-                                <button type="button" className="weather-settings__danger" disabled={busy === "remove"} onClick={() => void handleRemove()}>
-                                    {busy === "remove" ? "正在删除" : "删除"}
-                                </button>
-                            </>
-                        ) : (
+                        {removal.kind === "discard" ? (
                             <>
                                 <button
                                     type="button"
@@ -845,12 +1011,12 @@ export const WeatherSettings = ({
                                     disabled={busy === "save"}
                                     onClick={() => {
                                         pendingLeave.current = () => undefined;
-                                        setConfirm(undefined);
+                                        setRemoval(undefined);
                                     }}
                                 >
                                     取消关闭
                                 </button>
-                                <button type="button" className="weather-settings__primary" disabled={!verified || !!busy} onClick={handleSave}>
+                                <button type="button" className="weather-settings__primary" disabled={!formReady || !!busy} onClick={handleSave}>
                                     保存
                                 </button>
                                 <button
@@ -859,12 +1025,29 @@ export const WeatherSettings = ({
                                     onClick={() => {
                                         const action = pendingLeave.current; // 先保留导航再丢弃草稿。
                                         closeForm(true);
-                                        setConfirm(undefined);
+                                        setRemoval(undefined);
                                         pendingLeave.current = () => undefined;
                                         action();
                                     }}
                                 >
                                     不保存
+                                </button>
+                            </>
+                        ) : (
+                            <>
+                                <button type="button" autoFocus disabled={busy === "remove"} onClick={() => setRemoval(undefined)}>
+                                    取消
+                                </button>
+                                <button
+                                    type="button"
+                                    className="weather-settings__danger"
+                                    disabled={busy === "remove"}
+                                    onClick={() => {
+                                        if (removal.kind === "source") void handleRemove();
+                                        else void handleRemoveCity(removal.source, removal.city);
+                                    }}
+                                >
+                                    {busy === "remove" ? "正在删除" : "删除"}
                                 </button>
                             </>
                         )}

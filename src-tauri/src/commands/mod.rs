@@ -14,6 +14,15 @@ mod workspace;
 mod workspace_menu;
 pub use music::{execute_music_action, get_current_music_session};
 
+/// 新增格子共用的默认展开尺寸。
+const DEFAULT_TILE_WIDTH: f64 = 360.0;
+
+/// 新增格子共用的默认展开高度。
+const DEFAULT_TILE_HEIGHT: f64 = 280.0;
+
+/// 天气格子的官方组件包身份。
+const WEATHER_COMPONENT_ID: &str = "official.weather";
+
 /// 统一创建一个收集箱格子，设置页、桌面菜单和其他入口共用此逻辑。
 pub(crate) fn execute_create_collect_box(app: &tauri::AppHandle, monitor_id: String) -> Result<(), String>
 {
@@ -21,10 +30,17 @@ pub(crate) fn execute_create_collect_box(app: &tauri::AppHandle, monitor_id: Str
     let runtime = app.state::<std::sync::Arc<DesktopHostRuntime>>();
     let workspace = app.state::<WorkspaceState>();
     let items = app.state::<DesktopItemState>();
-    let bounds = workspace.next_component_bounds(&monitor_id, 360.0, 280.0).map_err(|error| error.message)?;
-    workspace::execute_apply_workspace_command(app, &workspace, &items, &runtime, monitor_id.clone(), WorkspaceCommand::CreateComponent { component_id: "official.collect-box".to_string(), bounds }).map_err(|error| error.message)?;
+    let bounds = workspace.next_component_bounds(&monitor_id, DEFAULT_TILE_WIDTH, DEFAULT_TILE_HEIGHT).map_err(|error| error.message)?;
+    workspace::execute_apply_workspace_command(app, &workspace, &items, &runtime, monitor_id.clone(), WorkspaceCommand::CreateComponent { component_id: "official.collect-box".to_string(), bounds, state: json!({}) }).map_err(|error| error.message)?;
     crate::log_info!("收集箱：已创建格子，显示器={monitor_id}");
     Ok(())
+}
+
+/// 选择创建入口使用的目标显示器；没有主显示器时退回第一个可用宿主。
+pub(crate) fn primary_monitor_id(runtime: &DesktopHostRuntime) -> Result<String, String>
+{
+    let hosts = runtime.snapshot().map_err(|error| error.message)?;
+    hosts.hosts.iter().find(|host| host.monitor.primary).or_else(|| hosts.hosts.first()).map(|host| host.monitor.id.clone()).ok_or("桌面宿主尚未就绪".to_string())
 }
 
 /// 设置页从当前主显示器创建收集箱，兼容 Tauri 和独立宿主命令通道。
@@ -32,10 +48,86 @@ pub(crate) fn execute_create_collect_box(app: &tauri::AppHandle, monitor_id: Str
 pub fn create_collect_box(app: tauri::AppHandle) -> Result<(), String>
 {
     use tauri::Manager;
-    let runtime = app.state::<std::sync::Arc<DesktopHostRuntime>>();
-    let hosts = runtime.snapshot().map_err(|error| error.message)?;
-    let monitor_id = hosts.hosts.iter().find(|host| host.monitor.primary).or_else(|| hosts.hosts.first()).map(|host| host.monitor.id.clone()).ok_or("桌面宿主尚未就绪")?;
+    let monitor_id = primary_monitor_id(&app.state::<std::sync::Arc<DesktopHostRuntime>>())?;
     execute_create_collect_box(&app, monitor_id)
+}
+
+/// 请求显示设置窗口：复用托盘同一显隐入口，不承载凭据或设置语义。
+#[tauri::command]
+pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String>
+{
+    crate::app::tray::set_settings_visible(&app, true).map_err(|error| {
+        crate::log_error!("设置：请求显示窗口失败，错误：{error}");
+        format!("设置窗口打开失败：{error}")
+    })
+}
+
+/// 把城市加入某来源的城市列表；Tauri 与原生通道共用同一条信任边界。
+pub(crate) fn add_weather_city(app: &tauri::AppHandle, source: crate::weather::Source, city: &crate::weather::City) -> Result<Vec<crate::weather::City>, String>
+{
+    use tauri::Manager;
+    let state = app.state::<crate::weather::WeatherState>(); // 入列只按该来源规则校验候选对象，不要求城市已在列表中。
+    state.save_city(source, city.clone())?;
+    state.cities(source)
+}
+
+/// 按标识从某来源的城市列表移除一项；Tauri 与原生通道共用同一条信任边界，只删除该项，不改动任何格子的绑定。
+pub(crate) fn remove_weather_city(app: &tauri::AppHandle, source: crate::weather::Source, city_id: &str) -> Result<Vec<crate::weather::City>, String>
+{
+    use tauri::Manager;
+    app.state::<crate::weather::WeatherState>().remove_city(source, city_id)
+}
+
+/// 创建天气格子入口统一应用的功能开关偏好；原本已开启时返回空值，不产生多余写入。
+pub(crate) fn weather_enabled_preferences(preferences: &crate::contracts::settings::ApplicationPreferences) -> Option<crate::contracts::settings::ApplicationPreferences>
+{
+    if preferences.weather_enabled
+    {
+        return None;
+    }
+    Some(crate::contracts::settings::ApplicationPreferences { weather_enabled: true, ..preferences.clone() })
+}
+
+/// 新格子的初始状态只保存来源与城市两个标识；未绑定入口使用空状态。
+pub(crate) fn weather_tile_state(binding: Option<(&crate::weather::Source, &str)>) -> serde_json::Value
+{
+    match binding
+    {
+        Some((source, city_id)) => json!({ "weatherSource": source.key(), "weatherCityId": city_id }),
+        None => json!({}),
+    }
+}
+
+/// 本次事务新增的天气实例身份；创建前已存在的身份之外的第一项即新实例。
+fn created_weather_instance(existing: &[String], components: &[crate::contracts::ComponentInstanceSnapshot]) -> Option<String> { components.iter().find(|component| component.component_id == WEATHER_COMPONENT_ID && !existing.contains(&component.instance_id)).map(|component| component.instance_id.clone()) }
+
+/// 创建天气格子的统一入口，桌面菜单、来源菜单与 Explorer 菜单共用；不绑定来源与城市时使用空初始状态。
+pub(crate) fn execute_create_weather_tile(app: &tauri::AppHandle, binding: Option<(crate::weather::Source, String)>, monitor_id: String) -> Result<String, String>
+{
+    use tauri::Manager;
+    if let Some((source, city_id)) = binding.as_ref()
+    {
+        app.state::<crate::weather::WeatherState>().validated_city(*source, city_id)?; // 创建前确认城市仍在该来源列表中。
+    }
+    // 先把功能开关写成开启并广播，使创建动作不以格子可见性作为成功条件。
+    let settings = app.state::<crate::app::settings::SettingsState>();
+    if let Some(preferences) = weather_enabled_preferences(&settings.preferences()?)
+    {
+        crate::commands::settings::execute_apply_preferences(app, &settings, preferences)?;
+        crate::log_info!("天气：创建入口已开启天气功能开关");
+    }
+    // 新格子的初始状态只保存来源与城市两个标识，未绑定入口保持空状态。
+    let state = weather_tile_state(binding.as_ref().map(|(source, city_id)| (source, city_id.as_str())));
+    let workspace = app.state::<WorkspaceState>();
+    let runtime = app.state::<std::sync::Arc<DesktopHostRuntime>>();
+    // 创建前已存在的天气实例身份。
+    let existing = workspace.snapshot().map_err(|error| error.message)?.components.into_iter().filter(|component| component.component_id == WEATHER_COMPONENT_ID).map(|component| component.instance_id).collect::<Vec<_>>();
+    let bounds = workspace.next_component_bounds(&monitor_id, DEFAULT_TILE_WIDTH, DEFAULT_TILE_HEIGHT).map_err(|error| error.message)?; // 创建前计算的可用位置。
+    let snapshot = workspace::execute_apply_workspace_command(app, &workspace, &app.state::<DesktopItemState>(), &runtime, monitor_id.clone(), WorkspaceCommand::CreateComponent { component_id: WEATHER_COMPONENT_ID.to_string(), bounds, state }).map_err(|error| error.message)?;
+    // 本次事务新提交的天气实例身份由工作区分配，创建入口沿用它作为返回值。
+    let instance_id = created_weather_instance(&existing, &snapshot.components).ok_or("天气格子创建结果缺失")?;
+    crate::log_info!("天气：已创建格子，实例={instance_id}，显示器={monitor_id}");
+    Ok(instance_id)
 }
 
 /// 执行 Explorer 注册表菜单回传的动作，复用现有布局事务和事件发布。
@@ -90,6 +182,11 @@ pub(crate) fn execute_registered_desktop_menu(app: &tauri::AppHandle, selected: 
             let next = reconcile_workspace_environment(&workspace, &runtime, &snapshot, true, &[]).map_err(|error| error.message)?; // 沿用原有协调。
             app.emit(crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, &snapshot).map_err(|error| error.to_string())?;
             app.emit(crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, &next).map_err(|error| error.to_string())?;
+        }
+        workspace_menu::WorkspaceMenuAction::Weather =>
+        {
+            // 空白菜单没有来源与城市绑定，创建出的格子进入未选来源状态。
+            execute_create_weather_tile(app, None, monitor.id.clone())?;
         }
     }
     crate::log_info!("桌面菜单：注册动词执行完成，命令={selected}，显示器={}", monitor.id);
@@ -166,15 +263,52 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         "get_preferences" => app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error).and_then(serialize_result),
         "get_weather_forecast" =>
         {
+            let source: crate::weather::Source = command_argument(&arguments, "source", "天气来源参数无效").map_err(serialize_error)?;
+            let city_id: String = command_argument(&arguments, "cityId", "天气城市标识无效").map_err(serialize_error)?;
+            app.state::<crate::weather::WeatherState>().forecast_for_city(source, &city_id).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+        }
+        "list_weather_sources" =>
+        {
+            // 桌面宿主只读已配置来源列表，不接触草稿会话。
+            weather::list_weather_sources(app.clone()).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+        }
+        "get_weather_cities" =>
+        {
+            let source: crate::weather::Source = command_argument(&arguments, "source", "天气来源参数无效").map_err(serialize_error)?;
+            app.state::<crate::weather::WeatherState>().cities(source).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+        }
+        "add_weather_city" =>
+        {
+            let source: crate::weather::Source = command_argument(&arguments, "source", "天气来源参数无效").map_err(serialize_error)?;
             let city: crate::weather::City = command_argument(&arguments, "city", "天气城市参数无效").map_err(serialize_error)?;
-            app.state::<crate::weather::WeatherState>().forecast(city).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+            add_weather_city(app, source, &city).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+        }
+        "remove_weather_city" =>
+        {
+            let source: crate::weather::Source = command_argument(&arguments, "source", "天气来源参数无效").map_err(serialize_error)?;
+            let city_id: String = command_argument(&arguments, "cityId", "天气城市标识无效").map_err(serialize_error)?;
+            remove_weather_city(app, source, &city_id).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+        }
+        "validate_weather_city" =>
+        {
+            let source: crate::weather::Source = command_argument(&arguments, "source", "天气来源参数无效").map_err(serialize_error)?;
+            let city: crate::weather::City = command_argument(&arguments, "city", "天气城市参数无效").map_err(serialize_error)?;
+            crate::weather::validate_city_for_source(source, &city).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(|()| serialize_result(city))
+        }
+        "create_weather_tile" =>
+        {
+            let source: crate::weather::Source = command_argument(&arguments, "source", "天气来源参数无效").map_err(serialize_error)?;
+            let city_id: String = command_argument(&arguments, "cityId", "天气城市标识无效").map_err(serialize_error)?;
+            let monitor_id: Option<String> = arguments.get("monitorId").cloned().map(serde_json::from_value).transpose().map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string())))?;
+            weather::create_weather_tile(app.clone(), source, city_id, monitor_id).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
         }
         "subscribe_weather" =>
         {
             let instance = command_argument(&arguments, "instanceId", "天气实例标识无效").map_err(serialize_error)?;
             let monitor = command_argument(&arguments, "monitorId", "天气显示器标识无效").map_err(serialize_error)?;
-            let city = command_argument(&arguments, "city", "天气城市参数无效").map_err(serialize_error)?;
-            weather::subscribe_weather(app.clone(), instance, monitor, city).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+            let source: crate::weather::Source = command_argument(&arguments, "source", "天气来源参数无效").map_err(serialize_error)?;
+            let city_id: String = command_argument(&arguments, "cityId", "天气城市标识无效").map_err(serialize_error)?;
+            weather::subscribe_weather(app.clone(), instance, monitor, source, city_id).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
         }
         "unsubscribe_weather" =>
         {
@@ -184,14 +318,9 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         }
         "search_weather_cities" =>
         {
+            let source: crate::weather::Source = command_argument(&arguments, "source", "天气来源参数无效").map_err(serialize_error)?;
             let query: String = command_argument(&arguments, "query", "城市搜索参数无效").map_err(serialize_error)?;
-            app.state::<crate::weather::WeatherState>().search_saved(query).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
-        }
-        "get_weather_city" => app.state::<crate::weather::WeatherState>().saved_city().map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result),
-        "set_weather_city" =>
-        {
-            let city: crate::weather::City = command_argument(&arguments, "city", "天气城市参数无效").map_err(serialize_error)?;
-            app.state::<crate::weather::WeatherState>().save_city(city).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+            app.state::<crate::weather::WeatherState>().search_saved(source, query).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
         }
         "get_collect_items" =>
         {
@@ -531,6 +660,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             workspace::execute_apply_workspace_command(app, &app.state::<WorkspaceState>(), &app.state::<DesktopItemState>(), runtime, monitor_id, command).map_err(serialize_error).and_then(serialize_result)
         }
         "create_collect_box" => create_collect_box(app.clone()).map_err(serialize_error).and_then(serialize_result),
+        "open_settings_window" => open_settings_window(app.clone()).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result), // 天气格子在原生宿主中请求显示设置窗口。
         "apply_workspace_interaction" =>
         {
             let monitor_id: String = command_argument(&arguments, "monitorId", "命令参数无效").map_err(serialize_error)?; // 已解码的 monitorId。

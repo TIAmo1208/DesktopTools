@@ -21,8 +21,8 @@ test("settings switches submit independently of submenu navigation", async () =>
 
         const { FeatureSettings } = await server.ssrLoadModule("/src/features/settings/FeatureSettings.tsx"); // 二级菜单入口。
         const markup = renderToStaticMarkup(createElement(FeatureSettings, { disabled: false, debugBuild: true, onPreferences: () => {} })); // 未加载配置的禁用入口。
-        assert.equal((markup.match(/role="switch"/g) ?? []).length, 4);
-        assert.equal((markup.match(/class="feature-settings__open"/g) ?? []).length, 4);
+        assert.equal((markup.match(/role="switch"/g) ?? []).length, 6); // 5 个常驻功能加 Debug 测试。
+        assert.equal((markup.match(/class="feature-settings__open"/g) ?? []).length, 6);
         assert.doesNotMatch(markup, /<button[^>]*>[^<]*<input/);
         assert.match(markup, /本地时间<\/button><label class="settings-switch">/);
         assert.match(markup, /Debug 测试<\/button><label class="settings-switch">/);

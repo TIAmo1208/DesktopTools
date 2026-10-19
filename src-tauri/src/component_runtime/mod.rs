@@ -8,7 +8,7 @@ use chrono::Utc;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRuntimeError, ComponentRuntimeSnapshot, WorkspaceRect};
+use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRuntimeError, ComponentRuntimeSnapshot, WorkspaceRect};
 
 /// 官方组件前端注册表当前支持的入口。
 const LOCAL_CLOCK_ENTRY: &str = "official:local-clock";
@@ -28,6 +28,8 @@ pub struct ComponentRuntimeState
 {
     /// 已通过清单和能力校验的官方组件注册表。
     manifests: HashMap<String, ComponentManifest>,
+    /// 已注册清单声明的创建与移除能力，按身份稳定排序。
+    declarations: Vec<ComponentCapabilityDeclaration>,
     /// 单个清单失败但不阻塞其他组件的结果。
     failures: Vec<ComponentRegistrationFailure>,
     /// 统一工作区的实例注册结果。
@@ -70,16 +72,15 @@ impl ComponentRuntimeState
         {
             instances.push(ComponentInstanceSnapshot { instance_id: "official.collect-box.default".to_string(), component_id: "official.collect-box".to_string(), monitor_id: String::new(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 0.0, top: 300.0, width: 360.0, height: 280.0 }, state_version: 1, state: json!({}) });
         }
-        if self.manifests.contains_key("official.weather")
-        {
-            instances.push(ComponentInstanceSnapshot { instance_id: "official.weather.default".to_string(), component_id: "official.weather".to_string(), monitor_id: String::new(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 380.0, top: 0.0, width: 192.0, height: 120.0 }, state_version: 1, state: json!({}) });
-        }
         if self.manifests.contains_key("official.debug-test")
         {
             instances.push(ComponentInstanceSnapshot { instance_id: "official.debug-test.default".to_string(), component_id: "official.debug-test".to_string(), monitor_id: String::new(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 0.0, top: 16.0, width: 420.0, height: 270.0 }, state_version: 1, state: json!({}) });
         }
         instances
     }
+
+    /// 返回全部已注册清单声明的创建与移除能力，供工作区命令校验可操作范围。
+    pub fn capability_declarations(&self) -> &[ComponentCapabilityDeclaration] { &self.declarations }
 
     /// 校验并注册统一工作区的全部组件实例。
     pub fn snapshot(&self, instances: &[ComponentInstanceSnapshot]) -> Result<ComponentRuntimeSnapshot, ComponentRuntimeError>
@@ -223,7 +224,7 @@ impl ComponentRuntimeState
                 }
             }
         }
-        Self { manifests, failures, instances: Mutex::new(Vec::new()), revision: AtomicU64::new(1), next_event_sequence: AtomicU64::new(1), latest_host_event: Mutex::new(None) }
+        Self { declarations: capability_declarations(&manifests), manifests, failures, instances: Mutex::new(Vec::new()), revision: AtomicU64::new(1), next_event_sequence: AtomicU64::new(1), latest_host_event: Mutex::new(None) }
     }
 
     /// 将一个持久实例转换为成功或失败的隔离注册结果。
@@ -240,6 +241,14 @@ impl ComponentRuntimeState
         }
         ComponentRegistrationSnapshot { instance_id: instance.instance_id.clone(), component_id: instance.component_id.clone(), entry: Some(manifest.entry.clone()), authorized_capabilities: manifest.required_capabilities.clone(), status: ComponentLoadStatus::Ready, error: None }
     }
+}
+
+/// 提取已注册清单声明的创建与移除能力，并按组件身份稳定排序。
+fn capability_declarations(manifests: &HashMap<String, ComponentManifest>) -> Vec<ComponentCapabilityDeclaration>
+{
+    let mut declarations = manifests.values().map(|manifest| ComponentCapabilityDeclaration { component_id: manifest.id.clone(), creatable: manifest.creatable, removable: manifest.removable }).collect::<Vec<_>>(); // 每个成功注册清单对应一项能力声明。
+    declarations.sort_by(|first, second| first.component_id.cmp(&second.component_id));
+    declarations
 }
 
 /// 校验官方组件清单身份、入口、能力和持久化版本。

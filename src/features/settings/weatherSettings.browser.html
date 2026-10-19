@@ -13,14 +13,15 @@
             import { WeatherSettings } from "./WeatherSettings.tsx";
             import "../../styles/global.css";
 
-            const calls = []; // 只记录动作名，不记录草稿内容。
+            const calls = []; // 只记录设置命令名，不记录草稿内容。
+            const commands = []; // 记录全部宿主命令名，用于核对按来源命令未进入设置会话。
+            const failures = []; // 记录被拒绝的宿主调用，便于定位手工验收失败。
+            const tileCalls = []; // 二级菜单的天气格子创建请求。
             let configured = { qweather: false, foreca: false }; // 替代 Windows 凭据状态。
-            let enabled; // 替代 weatherSource 偏好。
+            const cityLists = { qweather: [], foreca: [] }; // 替代按来源的城市列表。
             const availability = {}; // 替代运行期可用状态。
             let failSave = true; // 验证保存失败后可重试。
-            let failProbe = false; // 验证切换失败保留原来源。
-            let pendingValidation; // 用于控制迟到结果。
-            let delayValidation = false; // 取消场景开关。
+            let failProbe = false; // 验证保存时可用性检查失败保留凭据。
             let counter = 0; // 模拟后端会话身份。
             let back = 0; // 返回动作次数。
             let destroyed = 0; // 原生关闭动作次数。
@@ -36,83 +37,122 @@
                 tz: "Asia/Shanghai",
                 fxLink: "https://www.qweather.com/weather/test.html",
             }; // 纯测试位置。
+            const city2 = { ...city, id: "test-2", name: "汕头" }; // 第二个位置，用于核对展开区刷新。
             const list = () =>
                 ["qweather", "foreca"]
                     .filter((source) => configured[source])
                     .map((source) => ({
                         source,
                         address: source === "foreca" ? "weatherapi.foreca.net" : "example.qweatherapi.com",
-                        identity: source === "foreca" ? {} : { developerId: "Q12345ABCD", projectId: "PROJECT123", credentialId: "KEY123" },
+                        identity:
+                            source === "foreca"
+                                ? {}
+                                : { host: "example.qweatherapi.com", developerId: "Q12345ABCD", projectId: "PROJECT123", credentialId: "KEY123" },
                         availability: availability[source] ?? "unconfirmed",
-                        enabled: enabled === source,
-                    })); // 只返回已配置来源。
+                        cities: cityLists[source],
+                    })); // 只返回已配置来源，来源状态自带城市列表。
+            const draftSource = (credentials) => (credentials?.apiKey ? "foreca" : "qweather"); // 按字段结构判定草稿来源。
+            let sessionSource; // 本次草稿会话所属来源；保存只提交会话身份，来源要按会话还原。
+            const addCity = (candidate) => {
+                if (!cityLists[candidate.source].some((item) => item.id === candidate.city.id)) cityLists[candidate.source].push(candidate.city); // 重复添加同一标识不产生重复项。
+                return cityLists[candidate.source];
+            };
             mockWindows("main");
             mockIPC(
                 (command) => {
                     if (command === "plugin:window|destroy") destroyed++;
+                    if (command === "get_foreground_snapshot") return { revision: 1, locked: false }; // 普通页面的会话初始化读取。
                 },
                 { shouldMockEvents: true },
             );
             window.__DESKTOP_TOOLS_NATIVE__ = {
-                invoke: async (_, { command }) => {
-                    calls.push(command.type);
-                    const result = { sessionId: counter, cities: [], checks: [], sources: list() }; // 不回填账户与私钥。
-                    if (command.type === "begin") result.sessionId = ++counter;
-                    if (command.type === "search") result.cities = [city];
-                    if (command.type === "validate") {
-                        if (delayValidation) await new Promise((resolve) => (pendingValidation = resolve));
-                        result.checks = [
-                            { label: "城市搜索", failure: null },
-                            { label: "当前天气", failure: null },
-                            { label: "24 小时预报", failure: null },
-                            { label: "7 天预报", failure: null },
-                            { label: "来源与详情链接", failure: null },
-                        ];
+                invoke: async (command, payload = {}) => {
+                    commands.push(command);
+                    try {
+                        return await route(command, payload);
+                    } catch (error) {
+                        failures.push(`${command}: ${error instanceof Error ? error.message : String(error)}`);
+                        throw error;
                     }
-                    if (command.type === "save") {
-                        if (failSave) throw "Windows 凭据保存失败，原配置未改变";
-                        const source = command.credentials?.apiKey ? "foreca" : "qweather"; // 按字段结构判定来源。
-                        configured[source] = true;
-                        result.sources = list();
-                    }
-                    if (command.type === "probe") {
-                        if (failProbe) throw "凭据无效或接口权限不足";
-                        availability[command.source] = "available";
-                        result.sources = list();
-                    }
-                    if (command.type === "remove") {
-                        configured[command.source] = false;
-                        delete availability[command.source];
-                        result.sources = list();
-                    }
-                    return result;
                 },
             };
+            /** 模拟宿主返回；命令名与原生分发表一致。 */
+            const route = async (command, payload) => {
+                if (command.startsWith("plugin:") || command.startsWith("get_foreground")) return null;
+                // 桌面宿主与设置页共用的按来源命令；候选城市对象由 Rust 按该来源规则校验。
+                if (command === "get_weather_cities") return cityLists[payload.source].slice();
+                if (command === "search_weather_cities") return [city, city2];
+                if (command === "validate_weather_city") return payload.city; // 验证只给出可用性结论，不写入列表。
+                if (command === "add_weather_city") return addCity(payload);
+                if (command === "remove_weather_city") {
+                    cityLists[payload.source] = cityLists[payload.source].filter((item) => item.id !== payload.cityId); // 按标识移除一项。
+                    return cityLists[payload.source];
+                }
+                if (command === "create_weather_tile") {
+                    tileCalls.push({ source: payload.source, cityId: payload.cityId });
+                    return "instance-test";
+                }
+                // 天气设置会话命令。
+                const settings = payload.command ?? {}; // 会话用例载荷。
+                calls.push(`${settings.type}#${counter}`);
+                const result = { sessionId: counter, cities: [], checks: [], sources: list() }; // 不回填账户与私钥。
+                if (settings.type === "begin") result.sessionId = ++counter;
+                if (settings.type === "begin") sessionSource = draftSource(settings.credentials);
+                if (settings.type === "search") result.cities = [city];
+                if (settings.type === "validate") {
+                    result.checks = [
+                        { label: "城市搜索", failure: null },
+                        { label: "当前天气", failure: null },
+                        { label: "24 小时预报", failure: null },
+                        { label: "7 天预报", failure: null },
+                        { label: "来源与详情链接", failure: null },
+                    ];
+                }
+                if (settings.type === "save") {
+                    if (failSave) throw "Windows 凭据保存失败，原配置未改变";
+                    const source = sessionSource ?? "qweather"; // 保存只提交会话身份，来源取自本次草稿会话。
+                    configured[source] = true;
+                    result.sources = list();
+                }
+                if (settings.type === "probe") {
+                    if (failProbe) throw "凭据无效或接口权限不足";
+                    availability[settings.source] = "available";
+                    result.sources = list();
+                }
+                if (settings.type === "remove") {
+                    configured[settings.source] = false;
+                    delete availability[settings.source];
+                    result.sources = list();
+                }
+                return result;
+            };
             const root = createRoot(document.getElementById("fixture")); // 挂载生产组件。
-            root.render(
-                React.createElement(WeatherSettings, {
-                    onBack: () => back++,
-                    leaveGuard,
-                    preferences: undefined,
-                    onPreferences: (patch) => {
-                        if (patch.weatherSource) enabled = patch.weatherSource;
-                    },
-                }),
-            );
+            root.render(React.createElement(React.StrictMode, null, React.createElement(WeatherSettings, { onBack: () => back++, leaveGuard }))); // 与生产入口同样以严格模式暴露重复副作用。
             const settle = async () => {
                 for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 24));
             }; // 等待状态与模态提交，后台标签页下不依赖动画帧。
+            const waitFor = async (read, message) => {
+                for (let i = 0; i < 40; i++) {
+                    const value = read();
+                    if (value) return value;
+                    await new Promise((resolve) => setTimeout(resolve, 25));
+                }
+                throw new Error(message);
+            }; // 等待异步状态落到画面，避免固定等待在慢机器上误报。
             const assert = (condition, message) => {
                 if (!condition) throw new Error(message);
             }; // 回归断言。
-            const button = (text) => [...document.querySelectorAll("button")].find((element) => element.textContent === text); // 文案定位真实命令。
+            const button = (text, scope = document) => [...scope.querySelectorAll("button")].find((element) => element.textContent === text); // 文案定位真实命令。
             const fill = (element, value) => {
                 if (!element) throw new Error(`找不到输入框: ${value}`);
                 const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; // 私钥草稿使用多行输入。
                 Object.getOwnPropertyDescriptor(prototype, "value").set.call(element, value);
                 element.dispatchEvent(new Event("input", { bubbles: true }));
             }; // 触发 React 原生输入路径。
-            const dialog = () => document.querySelector("dialog[open]");
+            const cityDialog = () => [...document.querySelectorAll(".weather-city")].pop(); // 城市弹窗：设置页用顶层模态，格子用页面内浮层。
+            const settingsDialogs = () => [...document.querySelectorAll("dialog[open]")].filter((element) => !element.classList.contains("weather-city")); // 排除城市弹窗后的设置弹窗栈。
+            const formDialog = () => settingsDialogs().pop(); // 添加、编辑与确认框。
+            const dialog = () => cityDialog() ?? formDialog(); // 需要区分层级时优先使用上面两个具名入口。
             const PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----"; // 多行草稿用于核对换行保留。
             const fillDraft = async (host = "example.qweatherapi.com") => {
                 for (const [key, value] of [
@@ -125,15 +165,24 @@
                 fill(document.getElementById("weather-privateKey"), PRIVATE_KEY);
                 await settle();
             };
-            const selectCity = async () => {
-                button("选择城市").click();
+            const searchCity = async (scope, index = 0) => {
+                fill(scope.querySelector("input[aria-label='搜索城市']"), "北京");
                 await settle();
-                fill(document.querySelector("input[aria-label='搜索城市']"), "北京");
+                scope.querySelector("form").requestSubmit();
+                try {
+                    await waitFor(() => scope.querySelectorAll(".weather-city__cities button")[index], "搜索结果未渲染");
+                } catch (error) {
+                    throw new Error(
+                        `${error.message}：状态行=${scope.querySelector(".weather-city__status")?.textContent} 会话=${calls.join(">")} 命令=${commands.join(">")} 失败=${failures.join("|")}`,
+                    );
+                }
+                scope.querySelectorAll(".weather-city__cities button")[index].click();
                 await settle();
-                document.querySelector("form").requestSubmit();
-                await settle();
-                document.querySelector(".weather-settings__cities button").click();
-                await settle();
+            }; // 搜索并选中共享城市弹窗内的候选位置，按序号可选取第二个候选。
+            const validateCity = async (scope) => {
+                const before = scope.querySelector(".weather-city__status").textContent; // 本次验证前的状态行。
+                button(button("重新验证", scope) ? "重新验证" : "验证配置", scope).click();
+                await waitFor(() => scope.querySelector(".weather-city__status").textContent !== before, "验证结果未返回");
             };
             try {
                 await settle();
@@ -141,11 +190,12 @@
                 button("+ 添加 API").click();
                 await settle();
                 assert(
-                    dialog() && !document.querySelector(".weather-settings__segmented button[aria-selected='false']").disabled,
+                    formDialog() && !document.querySelector(".weather-settings__segmented button[aria-selected='false']").disabled,
                     "添加模式必须显示供应商切换",
                 );
+                assert(button("选择城市") === undefined, "编辑弹窗不再提供独立的验证城市入口");
                 await fillDraft();
-                const shield = dialog(); // 当前编辑弹窗。
+                const shield = formDialog(); // 当前编辑弹窗。
                 assert(getComputedStyle(shield).outlineStyle === "none", "弹窗本体不显示焦点轮廓");
                 assert(getComputedStyle(shield.querySelector(".weather-settings__glyph svg")).width === "16px", "图标按键使用矢量图标");
                 assert(getComputedStyle(document.querySelector(".weather-settings")).userSelect === "none", "设置文本不可选中");
@@ -158,73 +208,273 @@
                 assert(secret instanceof HTMLTextAreaElement, "私钥草稿使用多行输入");
                 assert(secret.value.split("\n").length === 3, "私钥草稿保留换行");
                 assert(secret.placeholder === "", "添加模式不显示替换提示");
-                const info = dialog().querySelector(".settings-info"); // 说明浮层需要显示在弹窗之上。
+                const info = formDialog().querySelector(".settings-info"); // 说明浮层需要显示在弹窗之上。
                 for (const type of ["pointerover", "pointermove", "pointerenter"])
                     info.dispatchEvent(new PointerEvent(type, { bubbles: type !== "pointerenter", pointerType: "mouse" }));
                 await new Promise((resolve) => setTimeout(resolve, 900));
                 const tooltip = document.querySelector(".settings-info__tooltip"); // 说明浮层需要显示在弹窗之上。
-                assert(tooltip && dialog().contains(tooltip), "详情提示显示在弹窗内部");
+                assert(tooltip && formDialog().contains(tooltip), "详情提示显示在弹窗内部");
                 assert(!!tooltip && tooltip.getBoundingClientRect().width > 0, "详情提示可见");
                 assert(!calls.includes("begin"), "输入不得触发 API 请求");
                 await emit("tauri://close-requested");
                 await settle();
-                assert(dialog() && destroyed === 0, "关闭回调必须读取最新 dirty");
+                assert(formDialog() && destroyed === 0, "关闭回调必须读取最新 dirty");
                 button("取消关闭").click();
                 await settle();
-                await selectCity();
-                button("验证配置").click();
-                button("验证配置").click();
-                await settle();
-                assert(calls.filter((type) => type === "validate").length === 1, "拒绝重复验证");
-                assert(!button("保存并启用").disabled, "完整验证后允许保存");
-                button("保存并启用").click();
+
+                // 添加模式只填凭据：保存不再要求先完成能力验证，也没有城市列表分组。
+                const groups = [...shield.querySelectorAll("h3")].map((element) => element.textContent);
+                assert(groups.length === 0, `添加模式不显示城市列表分组：${groups.join(",")}`);
+                assert(!button("验证配置", shield), "添加模式不提供能力验证");
+                assert(!button("保存").disabled, "必填凭据填写完成后允许保存");
+
+                button("保存").click();
                 await settle();
                 assert(document.getElementById("weather-privateKey").value === PRIVATE_KEY, "保存失败必须保留草稿");
-                assert(dialog().querySelector(".weather-settings__error")?.textContent.includes("Windows 凭据保存失败"), "弹窗内显示保存失败原因");
+                assert(formDialog().querySelector(".weather-settings__error")?.textContent.includes("Windows 凭据保存失败"), "弹窗内显示保存失败原因");
                 assert(!document.querySelector(".weather-settings__status"), "弹窗打开时列表区不显示弹窗反馈");
                 failSave = false;
-                button("保存并启用").click();
+                const probesBefore = calls.filter((type) => type.startsWith("probe")).length; // 保存前的探测次数。
+                button("保存").click();
+                await waitFor(() => !dialog(), "保存后未收起弹窗");
+                assert(document.querySelector(".weather-settings__item-row"), "保存后回到来源列表");
+                assert(document.querySelectorAll(".weather-settings__item").length === 1, "保存成功切换到来源列表");
+                // 保存不等待网络验证：弹窗先收起，验证结论随后补到可用状态与状态行。
+                await waitFor(
+                    () => document.querySelector(".weather-settings__item .weather-settings__state")?.textContent.includes("可用"),
+                    "保存后的可用性验证未回写",
+                );
+                assert(calls.filter((type) => type.startsWith("probe")).length === probesBefore + 1, "和风保存后自动验证一次");
+                assert(document.querySelector(".weather-settings > p").textContent.includes("已保存"), "保存结论留在列表区");
+
+                // 保存后验证失败不阻止写入：凭据已保存，失败原因按错误色反馈。
+                failProbe = true;
+                document.querySelector(".weather-settings__item-row").click();
+                await waitFor(() => formDialog(), "编辑弹窗未打开");
+                fill(document.getElementById("weather-developerId"), "Q111111111");
+                button("保存").click();
+                await waitFor(() => !dialog(), "验证失败时保存未完成写入");
+                assert(document.querySelectorAll(".weather-settings__item").length === 1, "验证失败不阻止凭据写入");
+                await waitFor(() => document.querySelector(".weather-settings > p")?.textContent.includes("检测未通过"), "保存后验证失败未给出原因");
+                assert(document.querySelector(".weather-settings > p").className.includes("weather-settings__error"), "验证失败结论使用错误色");
+                failProbe = false;
+
+                // 编辑弹窗的城市列表分组：编辑模式只保留城市列表，添加走已保存凭据的按来源命令，验证不写入。
+                await waitFor(() => !button("正在保存"), "保存动作未结束");
+                document.querySelector(".weather-settings__item-row").click();
                 await settle();
-                assert(!dialog() && document.querySelectorAll(".weather-settings__item").length === 1, "保存成功切换到来源列表");
-                assert(document.querySelector(".weather-settings__item .weather-settings__state").textContent.includes("未确认"), "新配置回到未确认状态");
-                document.querySelector(".weather-settings__item").click();
+                assert([...formDialog().querySelectorAll("h3")].map((element) => element.textContent).join(",") === "城市列表", "编辑模式只保留城市列表分组");
+                assert(formDialog().querySelector(".settings-city__empty")?.textContent === "尚未添加城市或地区", "城市列表为空时显示空态文案");
+                assert(button("添加城市或地区", formDialog()), "城市列表提供添加城市或地区");
+                assert(!button("保存").disabled, "未改动凭据时保存保持可用");
+                const sessionCallsBefore = calls.length; // 编辑态添加城市不得创建草稿会话。
+                button("添加城市或地区", formDialog()).click();
                 await settle();
+                const picker = cityDialog(); // 共享城市弹窗。
+                assert(picker.querySelector("h2").textContent === "添加城市", "城市弹窗标题由调用方给出");
+                await searchCity(picker);
+                assert(calls.length === sessionCallsBefore, `编辑态搜索使用已保存凭据：会话=${calls.join(">")}`);
+                await validateCity(picker);
+                const cityCommands = () => commands.filter((name) => ["search_weather_cities", "validate_weather_city", "add_weather_city"].includes(name));
+                assert(cityCommands().join(">") === "search_weather_cities>validate_weather_city", `验证只检查不写入：${commands.join(">")}`);
+                assert(cityLists.qweather.length === 0, "验证通过后候选城市尚未写入列表");
+                assert(picker.querySelector(".weather-city__status").textContent.includes("验证通过"), "验证后给出可用性结论");
+                button("添加", picker).click();
+                await waitFor(() => formDialog()?.querySelector(".settings-city__item"), "编辑弹窗的城市列表未刷新");
+                assert(
+                    cityCommands().join(">") === "search_weather_cities>validate_weather_city",
+                    `编辑弹窗内的城市改动先记草稿、不立即写入：${commands.join(">")}`,
+                );
+                assert(cityLists.qweather.length === 0, "编辑弹窗内添加城市尚未写入后端列表");
+                assert(formDialog().querySelector("h2").textContent === "编辑 和风天气", "确认后回到编辑弹窗");
+                assert(formDialog().querySelector(".settings-city__main span").textContent === "东城", "编辑弹窗的城市列表按草稿刷新");
+                assert(formDialog().querySelector(".settings-city__delete").getAttribute("aria-label") === "删除 东城", "城市项提供删除图标");
+                assert(getComputedStyle(formDialog().querySelector(".settings-city__delete svg")).width === "16px", "删除图标使用矢量图标");
+                const cityRow = formDialog().querySelector(".settings-city__item").getBoundingClientRect().height; // 行高按 44 设计，实际值随字体回退略有偏差。
+                assert(cityRow >= 44 && cityRow <= 48, `城市行高按 44 设计：${cityRow}`);
+
+                // 编辑弹窗内删除城市也只是草稿：不点保存就取消，城市列表必须回到原状。
+                formDialog().querySelector(".settings-city__delete").click();
+                await waitFor(() => settingsDialogs().length === 2, "删除城市未进入确认");
+                button("删除").click();
+                await waitFor(() => settingsDialogs().length === 1, "确认删除后未关闭确认框");
+                assert(!formDialog().querySelector(".settings-city__item"), "删除后城市项未从草稿列表移除");
+                assert(cityLists.qweather.length === 0, "删除城市在保存前不写入后端");
+                button("取消", formDialog()).click();
+                await settle();
+                assert(!formDialog(), "未改动凭据时取消直接关闭编辑弹窗");
+                assert(cityLists.qweather.length === 0, "取消后城市改动全部丢弃");
+
+                // 保存时才把草稿里的城市改动写入后端。
+                document.querySelector(".weather-settings__item-row").click();
+                await waitFor(() => formDialog(), "编辑弹窗未打开");
+                button("添加城市或地区", formDialog()).click();
+                await waitFor(() => cityDialog(), "城市弹窗未打开");
+                await searchCity(cityDialog());
+                await validateCity(cityDialog());
+                button("添加", cityDialog()).click();
+                await waitFor(() => formDialog()?.querySelector(".settings-city__item"), "城市未进入草稿列表");
+                assert(cityLists.qweather.length === 0, "点添加后仍未写入后端");
+                button("保存", formDialog()).click();
+                await waitFor(() => !formDialog(), "保存后未收起编辑弹窗");
+                await waitFor(() => cityLists.qweather.length === 1, "保存后城市未写入后端列表");
+
+                // 展开按键只负责展开收起，不触发进入编辑。
+                const expand = document.querySelector(".weather-settings__expand");
+                assert(expand.getBoundingClientRect().width === 24 && expand.getBoundingClientRect().height === 24, "展开按键命中区 24 × 24");
+                assert(getComputedStyle(expand.querySelector("svg")).width === "16px", "展开按键指示图标 16px");
+                assert(expand.getAttribute("aria-expanded") === "false", "展开按键带展开状态语义");
+                expand.click();
+                await settle();
+                assert(!formDialog(), "展开按键不触发进入编辑");
+                assert(document.querySelector(".weather-settings__expand").getAttribute("aria-expanded") === "true", "展开后更新展开状态语义");
+                const expanded = document.querySelector(".settings-city");
+                assert(expanded && expanded.querySelector(".settings-city__main span").textContent === "东城", "展开区按添加顺序列出该来源城市");
+                assert(expanded.querySelector(".settings-city__item small").textContent === "北京，北京市，中国", "城市项显示行政区副标题");
+                assert(button("添加城市或地区", expanded), "展开区末行为添加城市或地区");
+                assert(expanded.querySelectorAll(".settings-city__item").length === 1, "删除前城市项只有一项");
+
+                // 来源菜单：添加城市打开共享弹窗，添加天气格子只在二级菜单列出该来源城市。
+                const openMenu = () => {
+                    document
+                        .querySelector(".weather-settings__item-row")
+                        .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }));
+                    return waitFor(() => document.querySelector(".weather-settings__menu"), "来源菜单未打开"); // 按状态等待，不依赖固定延时。
+                };
+                let menu = await openMenu();
+                const menuLabels = [...menu.querySelectorAll(":scope > li > button")].map((element) => element.textContent.trim()); // 只取本层命令，不含二级菜单。
+                assert(menuLabels.join(",") === "显示详情,检测可用,添加城市,添加天气格子,删除", `右键菜单按分组提供五项命令：${menuLabels.join(">")}`);
+                const submenu = menu.querySelector(".weather-settings__submenu");
+                assert(button("添加天气格子", menu) === undefined && menuLabels.includes("添加天气格子"), "添加天气格子自身不响应点击");
+                assert(submenu.querySelectorAll("button").length === 1 && button("东城", submenu), "二级菜单按该来源已添加的城市创建");
+                assert(submenu.querySelector(".desktop-tile-menu__separator"), "二级菜单在添加命令与城市列表之间保留分隔线");
+                button("东城", submenu).click();
+                await settle();
+                assert(tileCalls.length === 1 && tileCalls[0].cityId === "test", "二级菜单按城市创建已绑定的天气格子");
+                document.querySelector(".weather-settings__item-row").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }));
+                await settle();
+                const sessionCalls = calls.length; // 来源菜单的城市命令不进入设置会话。
+                button("添加城市").click();
+                await waitFor(() => cityDialog(), "来源菜单的城市弹窗未打开");
+                const adding = cityDialog(); // 来源菜单的共享城市弹窗。
+                assert(adding.querySelector("h2").textContent === "添加城市", "来源菜单与验证城市共用同一弹窗");
+                await searchCity(adding, 1); // 选第二个候选，与已保存的东城区分开。
+                await validateCity(adding);
+                assert(calls.length === sessionCalls, "来源菜单的城市命令不进入设置会话");
+                assert(adding.querySelector(".weather-city__status").textContent.includes("验证通过"), "按来源命令完成后给出结论");
+                button("添加", adding).click();
+                await waitFor(() => !cityDialog(), "确认后未关闭城市弹窗");
+                assert(cityLists.qweather.length === 2, "来源入口添加城市未写入后端");
+                // 展开区必须跟着刷新：这里读的是另一份列表状态，漏掉同步就仍显示旧清单。
+                await waitFor(() => document.querySelectorAll(".settings-city__item").length === 2, "展开区未按本次写入刷新城市列表");
+                assert(document.querySelectorAll(".settings-city__main span")[1].textContent === "汕头", "展开区显示新加入的城市");
+
+                const openEditor = async () => {
+                    document.querySelector(".weather-settings__item-row").click();
+                    await waitFor(() => formDialog(), "编辑弹窗未打开");
+                }; // 按状态等待真实的进入编辑入口。
+                await openEditor();
                 assert(document.getElementById("weather-host").value === "example.qweatherapi.com", "编辑模式回填非敏感字段");
                 assert(document.getElementById("weather-privateKey").value === "", "编辑模式不回读已保存私钥");
                 assert(document.querySelector(".weather-settings__segmented") === null, "编辑模式不显示供应商切换");
+                assert(formDialog().querySelector(".settings-city__main span").textContent === "东城", "编辑弹窗复用同一份城市项渲染");
                 fill(document.getElementById("weather-developerId"), "Q999999999");
                 button("取消").click();
                 await settle();
                 assert(button("保存") && button("不保存"), "有修改时先进入未保存确认");
                 button("不保存").click();
                 await settle();
-                assert(!dialog(), "不保存后必须关闭弹窗");
+                assert(!formDialog(), "不保存后必须关闭弹窗");
                 assert(document.querySelector(".weather-settings__status").textContent === "", "关闭弹窗后不残留上次反馈");
-                document.querySelector(".weather-settings__item").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }));
+                // 保存的部分失败：城市改动先写后端，凭据写入失败时城市已生效，重试能继续完成保存。
+                await openEditor();
+                formDialog().querySelector(".settings-city__delete").click();
+                await waitFor(() => settingsDialogs().length === 2, "删除城市未进入确认");
+                button("删除").click();
+                await waitFor(() => settingsDialogs().length === 1, "确认删除后未关闭确认框");
+                fill(document.getElementById("weather-developerId"), "Q222222222");
                 await settle();
-                assert(button("显示详情") && button("检测可用") && button("删除"), "右键菜单必须提供三项命令");
+                const citiesBeforeFailure = cityLists.qweather.length; // 保存前的后端城市数量。
+                failSave = true;
+                button("保存", formDialog()).click();
+                await waitFor(() => formDialog()?.querySelector(".weather-settings__error"), "城市已写入后未显示凭据失败原因");
+                assert(cityLists.qweather.length === citiesBeforeFailure - 1, "凭据保存失败时城市删除已写入后端");
+                assert(!cityLists.qweather.some((item) => item.id === "test"), "已写入的是本次删除的城市");
+                failSave = false;
+                button("保存", formDialog()).click();
+                await waitFor(() => !formDialog(), "城市已落盘后重试保存未收起弹窗");
+                assert(cityLists.qweather.length === citiesBeforeFailure - 1, "重试保存不重复删除同一城市");
+                document.querySelector(".weather-settings__item-row").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }));
+                await settle();
+                assert(button("显示详情") && button("检测可用") && button("删除"), "右键菜单必须提供显示详情、检测可用与删除");
                 button("删除").click();
                 await settle();
-                assert(dialog() && button("取消"), "删除来源必须先确认");
+                assert(formDialog() && button("取消"), "删除来源必须先确认");
                 button("取消").click();
                 await settle();
                 assert(document.querySelectorAll(".weather-settings__item").length === 1, "取消删除保留来源");
-                const item = document.querySelector(".weather-settings__item"); // 切换前先确认目标来源已保存。
-                item.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }));
+                const target = document.querySelector(".weather-settings__item"); // 切换前先确认目标来源已保存。
+                document.querySelector(".weather-settings__item-row").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }));
                 await settle();
                 button("检测可用").click();
                 await settle();
-                assert(item.querySelector(".weather-settings__state").textContent.includes("可用"), "探测成功后更新可用状态");
-                enabled = "qweather";
-                await settle();
-                assert(item.querySelector(".settings-switch input").checked, "当前启用来源的开关保持开启");
-                item.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }));
+                assert(target.querySelector(".weather-settings__state").textContent.includes("可用"), "探测成功后更新可用状态");
+                document.querySelector(".weather-settings__item-row").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }));
                 await settle();
                 button("删除").click();
                 await settle();
                 button("删除").click();
                 await settle();
                 assert(document.querySelector(".weather-settings__empty"), "删除最后一个来源回到空态");
+
+                // 第二个来源必须走完全相同的保存与编辑路径：切换页签、只填该来源的字段、保存后同样自检可用性。
+                button("+ 添加 API").click();
+                await waitFor(() => formDialog(), "添加弹窗未打开");
+                const sourceTabs = [...formDialog().querySelectorAll(".weather-settings__segmented button")].map((element) => element.textContent.trim());
+                assert(sourceTabs.join(",") === "和风天气,Foreca", `供应商切换按来源表顺序提供页签：${sourceTabs.join(">")}`);
+                formDialog().querySelectorAll(".weather-settings__segmented button")[1].click();
+                await settle();
+                const forecaKey = document.getElementById("weather-apiKey");
+                assert(forecaKey, "切换到该来源后只显示它自己的字段");
+                assert(document.getElementById("weather-privateKey") === null, "切换到该来源后不显示其他来源的字段");
+                assert(button("保存").disabled, "字段为空时保存按键禁用");
+                fill(forecaKey, "A".repeat(64));
+                await settle();
+                assert(!button("保存").disabled, "只填该来源的必填字段即可保存");
+                const forecaProbes = calls.filter((type) => type.startsWith("probe")).length;
+                button("保存").click();
+                await waitFor(() => !formDialog(), "该来源保存后未收起弹窗");
+                await waitFor(() => list().length === 1, "该来源保存后未进入来源列表");
+                assert(list()[0].source === "foreca", "保存写入的是该来源自己的记录");
+                // 保存后的自检对两个来源都执行：跳过该来源时会一直停在“未确认”。
+                await waitFor(() => calls.filter((type) => type.startsWith("probe")).length === forecaProbes + 1, "该来源保存后未做可用性验证");
+                await waitFor(
+                    () => document.querySelector(".weather-settings__item .weather-settings__state")?.textContent.includes("可用"),
+                    "该来源保存后的可用状态未回写",
+                );
+
+                // 编辑态：密钥留空代表沿用已保存值，保存按键必须可用，且能真正收起弹窗。
+                document.querySelector(".weather-settings__item-row").click();
+                await waitFor(() => formDialog(), "该来源的编辑弹窗未打开");
+                assert(document.getElementById("weather-apiKey").value === "", "编辑态不回读已保存密钥");
+                assert(!button("保存").disabled, "密钥留空时该来源在编辑态仍可保存");
+                button("保存").click();
+                await waitFor(() => !formDialog(), "该来源在编辑态无法保存");
+                assert(cityLists.foreca.length === 0, "该来源保存不写入其他来源的城市");
+
+                // 城市入口对该来源同样可用，且验证不写入。
+                const qweatherCitiesBefore = cityLists.qweather.length; // 另一个来源的列表在本轮不应变化。
+                document.querySelector(".weather-settings__item-row").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }));
+                await settle();
+                button("添加城市").click();
+                await waitFor(() => cityDialog(), "该来源的城市弹窗未打开");
+                assert(cityLists.foreca.length === 0, "搜索与验证都不得写入该来源列表");
+                await searchCity(cityDialog());
+                await validateCity(cityDialog());
+                button("添加", cityDialog()).click();
+                await waitFor(() => !cityDialog(), "该来源确认后未关闭城市弹窗");
+                assert(cityLists.foreca.length === 1 && cityLists.foreca[0].id === "test", "城市写入该来源自己的列表");
+                assert(cityLists.qweather.length === qweatherCitiesBefore, "写入城市不影响另一个来源的列表");
                 if (new URLSearchParams(location.search).has("manual")) {
                     button("+ 添加 API").click(); // 目视检查模式：停在添加弹窗供人工核对样式。
                     await settle();
@@ -235,7 +485,7 @@
                     await settle();
                     assert(back === 0, "弹窗流程不得直接离开页面");
                     document.getElementById("result").textContent =
-                        "PASS: 空态、供应商切换、重复提交、保存失败重试、编辑回填、未保存确认、右键命令、探测状态与删除";
+                        "PASS: 空态、供应商切换、保存不等待验证且失败不阻止写入、编辑回填、城市列表分组、共享城市弹窗（验证不写入、编辑弹窗内城市改动留到保存、取消丢弃）、保存部分失败时城市已写入且重试不重复删除、来源菜单、删除城市延后提交、展开区按写入刷新、未保存确认、探测状态与删除、第二个来源的完整保存与编辑路径";
                 }
             } catch (error) {
                 document.getElementById("result").textContent = `FAIL: ${error.stack}`;

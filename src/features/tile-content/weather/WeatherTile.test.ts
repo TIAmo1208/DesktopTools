@@ -4,69 +4,90 @@ import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 
-test("城市搜索拒绝重复提交、旧配置和卸载后的迟到结果", async () => {
+test("城市弹窗动作串行，卸载后拒绝城市列表迟到结果", async () => {
     const source = await readFile(new URL("./WeatherTile.tsx", import.meta.url), "utf8");
-    const body = source.slice(
-        source.indexOf("    const session = useRef({ active:"),
-        source.indexOf("\n    return (", source.indexOf("    const session = useRef({ active:")),
-    );
-    assert.ok(body.includes("const handleSearch"));
-    let cleanup = () => {};
-    let changed = () => {};
-    let stopped = false;
-    let cities: unknown = ["old"];
-    let busy = false;
-    let failure: unknown;
-    const requests: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }> = [];
-    const context: any = {
-        query: "北京",
-        saving: false,
-        useRef: (value: unknown) => ({ current: value }),
-        useEffect: (callback: () => () => void) => {
-            cleanup = callback();
-        },
-        listenWeatherConfiguration: async (callback: () => void) => {
-            changed = callback;
-            return () => {
-                stopped = true;
-            };
-        },
-        searchWeatherCities: () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
-        setCities: (value: unknown) => {
-            cities = value;
-        },
-        setBusy: (value: boolean) => {
-            busy = value;
-        },
-        setFailure: (value: unknown) => {
-            failure = value;
-        },
+    const gate = source.slice(source.indexOf("    const runCityAction = async"), source.indexOf("\n    /** 按来源搜索候选位置"));
+    assert.ok(gate.includes("const runCityAction")); // 城市弹窗的提交门槛由格子自己持有。
+    const cityBusy = { current: false };
+    const states: any[] = [];
+    const action = async () => {
+        states.push({ ran: true });
     };
-    runInNewContext(stripTypeScriptTypes(body) + "\nglobalThis.search = handleSearch;", context);
-    await Promise.resolve();
-    const first = context.search();
-    void context.search();
-    assert.equal(requests.length, 1);
-    assert.equal((cities as unknown[]).length, 0);
-    changed();
-    assert.equal(busy, false);
-    const second = context.search();
-    requests[0].resolve(["obsolete"]);
-    await first;
-    assert.equal((cities as unknown[]).length, 0);
-    assert.equal(busy, true);
-    requests[1].resolve(["current"]);
-    await second;
-    assert.deepEqual(cities, ["current"]);
-    assert.equal(busy, false);
-    const pending = context.search();
-    cleanup();
-    requests[2].reject(new Error("late"));
-    await pending;
-    assert.equal(failure, undefined);
-    assert.equal(stopped, true);
-    changed();
-    assert.equal(failure, undefined);
+    const scope: any = {
+        cityBusy,
+        setCityBusyState: () => {},
+        setCityDialog: (update: (value: any) => any) => states.push(update({ checks: [], status: "", failure: false })),
+    };
+    const runCityAction = runInNewContext(stripTypeScriptTypes(gate) + "\nrunCityAction", scope);
+    await Promise.all([runCityAction(action), runCityAction(action)]); // 忙碌期间拒绝重复提交。
+    assert.equal(states.filter((value) => value.ran).length, 1);
+    assert.equal(cityBusy.current, false); // 结束后释放门槛。
+    await runCityAction(async () => {
+        throw new Error("保存失败"); // 非本 Realm 的错误不能被识别为 Error，回落文案同样进入状态行。
+    });
+    assert.ok(states.some((value) => value.failure === true && typeof value.status === "string" && value.status.length > 0)); // 失败说明留在弹窗状态行。
+
+    // 城市列表读取按来源与城市标识推导，换源与卸载后都不得回写状态；菜单打开时重读。
+    const effect = source.match(/useEffect\(\(\) => \{\s*let active = true; \/\/ 卸载或换源后拒绝迟到读取。[\s\S]*?\}, \[source\]\);/)?.[0];
+    assert.ok(effect);
+    assert.match(effect, /const current: WeatherSource \| undefined = source; \/\/ 本次读取的来源，换源后不再沿用上一家列表。/); // 只把捕获到的来源传入闭包，菜单监听不读取可变状态。
+    const flush = async () => {
+        for (let index = 0; index < 4; index++) await Promise.resolve(); // 读取链路含多层封装，逐层放行微任务。
+    };
+    const requests: Array<{ resolve: (value: unknown) => void; reject: (error: unknown) => void; command: string }> = [];
+    const window = new EventTarget(); // 菜单打开事件由窗口广播，测试沿用同一事件通道。
+    const cityIdRef = { current: "101010100" }; // 生产实现用 ref 读取最新城市标识，测试保持同一读取路径。
+    const notices: any[] = [];
+    let lists: Record<string, unknown[]> = {}; // 按来源缓存的已读取列表，未读取的来源缺项。
+    let cleanup: (() => void) | undefined;
+    const request = (command: string, index: number) => requests.filter((item) => item.command === command)[index]!; // 按发起顺序取同类读取。
+    const mount = (next: { source: string; cityId: string }) => {
+        cleanup?.();
+        runInNewContext(stripTypeScriptTypes(effect), {
+            source: next.source,
+            cityId: next.cityId,
+            cityIdRef,
+            window,
+            setCity: () => {},
+            setCitiesFor: (update: (value: Record<string, unknown[]>) => Record<string, unknown[]>) => {
+                lists = update(lists);
+            },
+            publishMessage: (value: unknown) => notices.push(value),
+            getWeatherCities: () => new Promise((resolve, reject) => requests.push({ resolve, reject, command: "cities" })),
+            listenWeatherConfiguration: () => Promise.resolve(() => {}), // 配置通知不影响本用例的城市读取通道。
+            useEffect: (callback: () => (() => void) | undefined) => {
+                cleanup = callback();
+            },
+        });
+    };
+    mount({ source: "qweather", cityId: "101010100" });
+    assert.equal(requests.map((item) => item.command).join(","), "cities");
+    mount({ source: "foreca", cityId: "101010100" }); // 切换来源后上一家的在途读取作废。
+    request("cities", 0).resolve([{ id: "old" }]);
+    await flush();
+    assert.equal(Object.keys(lists).length, 0);
+    request("cities", 1).resolve([{ id: "new" }]);
+    await flush();
+    assert.equal(JSON.stringify(lists.foreca), '[{"id":"new"}]');
+    assert.equal("qweather" in lists, false); // 上一家的在途结果不回写。
+    window.dispatchEvent(new Event("desktop-tile-menu-opening")); // 菜单打开时重读，设置页新增的城市进入二级菜单。
+    assert.equal(requests.length, 3);
+    request("cities", 2).resolve([{ id: "added" }]);
+    await flush();
+    assert.equal(JSON.stringify(lists.foreca), '[{"id":"added"}]');
+    window.dispatchEvent(new Event("desktop-tile-menu-opening"));
+    request("cities", 3).reject(new Error("天气城市读取失败")); // 读取失败给出可见反馈，且不能把失败当成“列表为空”。
+    await flush();
+    assert.equal(JSON.stringify(lists.foreca), '[{"id":"added"}]'); // 失败保留上一次成功读取的列表，避免把“读不到”误判成“城市已移除”。
+    assert.deepEqual(JSON.parse(JSON.stringify(notices)), [{ type: "error", content: "天气城市读取失败", source: "desktop-tile" }]);
+    cleanup?.(); // 卸载使在途读取与菜单监听一起失效。
+    request("cities", 1).resolve([{ id: "late" }]);
+    request("cities", 3).resolve([{ id: "late" }]);
+    await flush();
+    assert.equal(JSON.stringify(lists.foreca), '[{"id":"added"}]');
+    const settled = requests.length;
+    window.dispatchEvent(new Event("desktop-tile-menu-opening")); // 卸载后菜单事件不再发起读取。
+    assert.equal(requests.length, settled);
 });
 
 test("来源栏按模块有效期一次性到期，隐藏恢复重算且旧回调失效", async () => {
@@ -313,7 +334,7 @@ test("小时与日预报到期过滤，暂停停止计时且旧回调不清除�
 test("折叠和宿主暂停禁止读取，恢复保留缓存并拒绝旧响应", async () => {
     const source = await readFile(new URL("./WeatherTile.tsx", import.meta.url), "utf8");
     const effect = source.match(
-        /useEffect\(\(\) => \{\s*if \(!city\) return;[\s\S]*?\}, \[city\?\.id, visible, paused, instance\.instanceId, instance\.monitorId, instance\.projectionMonitorId\]\);/,
+        /useEffect\(\(\) => \{\s*if \(!config \|\| !city\) return;[\s\S]*?\}, \[config\?\.source, config\?\.cityId, city\?\.id, visible, paused, instance\.instanceId, instance\.monitorId, instance\.projectionMonitorId\]\);/,
     )?.[0];
     assert.ok(effect);
     const document = Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true });
@@ -326,6 +347,7 @@ test("折叠和宿主暂停禁止读取，恢复保留缓存并拒绝旧响应",
     const mount = async (visible: boolean, paused: boolean) => {
         cleanup?.();
         runInNewContext(stripTypeScriptTypes(effect), {
+            config: { source: "qweather", cityId: "test" }, // 格子自己保存的来源与城市标识。
             city: { id: "test" },
             instance: { instanceId: "weather", monitorId: "DISPLAY1", projectionMonitorId: null },
             visible,

@@ -45,6 +45,21 @@ impl From<&str> for Failure
     fn from(message: &str) -> Self { Self { message: message.into(), retry_at: None, retryable: false } }
 }
 
+/// 按 HTTP 状态码归类失败；只有限流与服务端错误可重试，402 额度不足不设置等待。
+fn status_failure(status: u16) -> Failure
+{
+    let mut failure = match status
+    {
+        401 => Failure::from("凭据无效，请核对账户、私钥和设备时间"),
+        402 => Failure::from("账户额度不足，请检查和风账户"),
+        403 => Failure::from("接口权限不足"),
+        429 => Failure::from("请求受到限流，请稍后重试"),
+        _ => Failure::from("天气服务请求失败"),
+    }; // 不向用户展示上游正文。
+    failure.retryable = status == 429 || status >= 500;
+    failure
+}
+
 /// 按来源校验凭据格式；格式通过不代表账户或接口可用。
 pub fn check_credentials(credentials: &Credentials) -> Result<(), String>
 {
@@ -139,18 +154,11 @@ impl Provider
         let status = response.status().as_u16(); // HTTP 错误分类。
         if status != 200
         {
-            let mut failure = match status
+            let mut failure = status_failure(status);
+            crate::log_debug!("天气请求：和风返回状态码 {status}"); // 只记录状态码，不记录凭据或响应正文。
+            if status == 429 || status == 503
             {
-                401 => Failure::from("凭据无效，请核对账户、私钥和设备时间"),
-                402 => Failure::from("账户额度不足，请检查和风账户"),
-                403 => Failure::from("接口权限不足"),
-                429 => Failure::from("请求受到限流，请稍后重试"),
-                _ => Failure::from("天气服务请求失败"),
-            }; // 不向用户展示上游正文。
-            failure.retryable = status == 429 || status >= 500;
-            if status == 402 || status == 429 || status == 503
-            {
-                failure.retry_at = retry_at(response.headers());
+                failure.retry_at = retry_at(response.headers()); // 与 Foreca 使用同一条等待判定。
             }
             return Err(failure);
         }
@@ -295,6 +303,16 @@ pub(super) fn retry_at(headers: &HeaderMap) -> Option<i64> { headers.get("retry-
 
 /// 详情 URL 必须属于和风且包含选定的位置 ID。
 fn valid_detail(city: &City) -> bool { Url::parse(&city.fx_link).ok().is_some_and(|url| url.scheme() == "https" && matches!(url.host_str(), Some("www.qweather.com" | "qweather.com")) && url.username().is_empty() && url.password().is_none() && url.port().is_none() && url.path().starts_with("/weather/") && url.path().ends_with(&format!("-{}.html", city.id))) }
+
+/// 和风的城市详情链接规则；由天气模块按来源在验证与保存入口调用。
+pub(super) fn validate_city_detail(city: &City) -> Result<(), &'static str>
+{
+    if valid_detail(city)
+    {
+        return Ok(());
+    }
+    Err("城市详情链接无效")
+}
 
 /// 验证连续小时和城市本地日期，跨夏令时按真实 UTC 小时及本地日历分别处理。
 pub(super) fn validate_weather(module: &str, value: &Value, city: &City, now: DateTime<Utc>) -> Result<(), &'static str>

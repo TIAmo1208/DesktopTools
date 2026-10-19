@@ -61,8 +61,7 @@ export const FeatureSettings = ({
             window.removeEventListener("blur", closeOnBlur);
         };
     }, [portalMenu]);
-    if (detail === "weather")
-        return <WeatherSettings onBack={() => setDetail(undefined)} leaveGuard={leaveGuard} preferences={preferences} onPreferences={onPreferences} />;
+    if (detail === "weather") return <WeatherSettings onBack={() => setDetail(undefined)} leaveGuard={leaveGuard} />;
     return (
         <section className="feature-settings">
             {detail && (

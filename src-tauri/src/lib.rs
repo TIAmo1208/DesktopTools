@@ -17,7 +17,7 @@ mod workspace;
 use app::ApplicationState;
 use commands::get_desktop_item_image;
 use commands::sync_message_appearance;
-use commands::{apply_workspace_command, apply_workspace_interaction, begin_desktop_host_input_drag, delete_desktop_items, end_desktop_host_input_drag, execute_music_action, exit_desktop_tools, get_application_snapshot, get_component_runtime_snapshot, get_current_music_session, get_desktop_host_snapshot, get_desktop_item_snapshot, get_workspace_snapshot, inspect_workspace_backup, invoke_component_capability, list_workspace_auto_snapshots, open_desktop_items, paste_desktop_items, publish_desktop_host_readiness, publish_message_notification, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, redo_workspace, rename_desktop_item, restore_workspace_backup, set_application_status, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag, undo_workspace, update_desktop_host_hit_map, write_workspace_backup};
+use commands::{apply_workspace_command, apply_workspace_interaction, begin_desktop_host_input_drag, delete_desktop_items, end_desktop_host_input_drag, execute_music_action, exit_desktop_tools, get_application_snapshot, get_component_runtime_snapshot, get_current_music_session, get_desktop_host_snapshot, get_desktop_item_snapshot, get_workspace_snapshot, inspect_workspace_backup, invoke_component_capability, list_workspace_auto_snapshots, open_desktop_items, open_settings_window, paste_desktop_items, publish_desktop_host_readiness, publish_message_notification, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, redo_workspace, rename_desktop_item, restore_workspace_backup, set_application_status, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag, undo_workspace, update_desktop_host_hit_map, write_workspace_backup};
 use commands::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
 use component_runtime::ComponentRuntimeState;
 use host::DesktopHostRuntime;
@@ -61,6 +61,7 @@ pub fn run()
     });
     let component_runtime = ComponentRuntimeState::new(); // 已隔离加载失败的官方组件注册表。
     let default_components = component_runtime.default_instances(); // 首次创建工作区使用的官方默认组件集合。
+    let component_capabilities = component_runtime.capability_declarations().to_vec(); // 工作区创建与移除命令读取的清单能力声明，注册表移入应用状态前取出。
     // Tauri 应用构建结果。
     let app = tauri::Builder::default()
         .manage(ApplicationState::default())
@@ -72,10 +73,14 @@ pub fn run()
             commands::weather::weather_settings,
             commands::weather::subscribe_weather,
             commands::weather::unsubscribe_weather,
+            commands::weather::list_weather_sources,
+            commands::weather::get_weather_cities,
             commands::weather::get_weather_forecast,
             commands::weather::search_weather_cities,
-            commands::weather::get_weather_city,
-            commands::weather::set_weather_city,
+            commands::weather::validate_weather_city,
+            commands::weather::add_weather_city,
+            commands::weather::remove_weather_city,
+            commands::weather::create_weather_tile,
             commands::settings::control_settings_window,
             commands::settings::get_preferences,
             commands::settings::get_windows_accent_color,
@@ -114,6 +119,7 @@ pub fn run()
             commands::collect::delete_collect_item,
             commands::collect::restore_collect_item,
             commands::create_collect_box,
+            open_settings_window,
             get_component_runtime_snapshot,
             invoke_component_capability,
             get_current_music_session,
@@ -152,8 +158,7 @@ pub fn run()
             let config_directory = crate::app::settings::prepare_config_directory(&app.path().app_data_dir()?)?; // 在后台写入线程启动前完成配置迁移。
             let settings_path = config_directory.join("settings.json"); // 当前用户的正式设置文件。
             app.manage(crate::app::settings::SettingsState::load(settings_path)?);
-            let weather_source = app.state::<crate::app::settings::SettingsState>().preferences()?.weather_source; // 已保存的启用来源。
-            app.manage(crate::weather::WeatherState::new(&config_directory, weather_source));
+            app.manage(crate::weather::WeatherState::new(&config_directory));
             std::fs::create_dir_all(config_directory.join("collect"))?;
             let _ = crate::platform::windows::directory_watch::start(app.handle().clone(), "collect".to_string(), config_directory.join("collect"));
             app.manage(crate::platform::windows::settings::WindowsAccentMonitor::install(app.handle().clone())?);
@@ -162,7 +167,7 @@ pub fn run()
             // 当前 Windows 用户独占的正式工作区快照路径。
             let workspace_path = config_directory.join("workspace-layout.json");
             // 启动前完成恢复的权威工作区状态。
-            let workspace = WorkspaceState::load_with_components(workspace_path, &default_components)?;
+            let workspace = WorkspaceState::load_with_components(workspace_path, &default_components, &component_capabilities)?;
             workspace.initialize_grid_preferences(app.state::<crate::app::settings::SettingsState>().preferences()?.desktop_grid)?;
             app.manage(workspace);
 

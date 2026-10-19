@@ -23,7 +23,7 @@ fn released_drop_keeps_shared_target_and_restores_only_confirmed_items()
         std::fs::create_dir(&root).unwrap();
         let path = root.join("workspace.json");
         let monitors = [DesktopHostMonitor { id: "screen".into(), name: "screen".into(), primary: true, x: 0, y: 0, width: 1200, height: 800, work_x: 0, work_y: 0, work_width: 1200, work_height: 800, scale_factor: 1.0, dpi: 96 }];
-        let mut state = super::super::WorkspaceState::load(path.clone()).unwrap();
+        let mut state = super::super::WorkspaceState::load_with_components(path.clone(), &[], &[]).unwrap();
         state.reconcile_host_monitors(&monitors, &["existing".into()], &[], &[]).unwrap();
         let created = state.apply(WorkspaceCommand::CreateFence { title: " ".into(), bounds: WorkspaceRect { left: 40.0, top: 40.0, width: 320.0, height: 240.0 } }).unwrap();
         let fence = created.fences[0].id.clone();

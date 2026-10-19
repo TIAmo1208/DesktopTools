@@ -1,0 +1,250 @@
+/* 浮层：覆盖整屏但不拦截桌面交互，弹窗本体居中。 */
+.weather-city__overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: grid;
+    place-items: center;
+    background: rgb(0 0 0 / 20%);
+}
+/* 城市弹窗本体：400 × 352 DIP、内边距 16、圆角 6。 */
+.weather-city {
+    box-sizing: border-box;
+    user-select: none;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 400px;
+    height: 352px;
+    padding: 16px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    color: var(--color-text);
+    background: var(--color-surface);
+    outline: none;
+}
+/* 模态模式（设置窗口）的遮罩：与浮层同一层黑色。 */
+.weather-city::backdrop {
+    background: rgb(0 0 0 / 20%);
+}
+/* 输入值保留编辑、选择与复制能力。 */
+.weather-city input {
+    user-select: text;
+}
+/* 标题行固定，标题与关闭按键分列两端。 */
+.weather-city__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+/* 弹窗标题。 */
+.weather-city__head h2 {
+    margin: 0;
+    font-size: 18px;
+}
+/* 关闭按键使用 28 DIP 命中区。 */
+.weather-city__close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    margin-left: auto;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--color-text);
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
+}
+/* 图标资源由 span 承载，颜色继承所在按键。 */
+.weather-city__glyph {
+    display: block;
+}
+/* 图标按键与关闭按键共用同一尺寸。 */
+.weather-city__glyph svg {
+    flex: none;
+    display: block;
+    width: 16px;
+    height: 16px;
+}
+/* 中间内容区：搜索固定在上方，结果区占满其余高度。 */
+.weather-city__body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+}
+/* 结果区占满剩余高度，空白时不留空档。 */
+.weather-city__results {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+    margin-top: 8px;
+}
+/* 搜索结果与验证结果整体滚动，两块内容各自保持自然高度。 */
+.weather-city__scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+/* 搜索输入与提交按键同一行。 */
+.weather-city__search {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+}
+/* 搜索输入高 38、圆角 4，占用剩余宽度。 */
+.weather-city__search input {
+    box-sizing: border-box;
+    flex: 1;
+    min-width: 0;
+    height: 38px;
+    padding: 6px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text);
+    background: var(--color-subtle);
+    font: inherit;
+}
+/* 搜索图标按键高 38，与输入框对齐。 */
+.weather-city__icon {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--color-text);
+    background: transparent;
+    cursor: pointer;
+}
+/* 图标按键的悬浮反馈。 */
+.weather-city__icon:hover:not(:disabled) {
+    background: var(--color-subtle);
+}
+/* 城市结果区按内容增高，超出结果区时与验证结果一同滚动。 */
+.weather-city__cities {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+}
+/* 单个结果行高 54，城市名与行政区上下排列。 */
+.weather-city__cities button {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 2px;
+    min-height: 54px;
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--color-text);
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+/* 行政区副标题使用次要颜色。 */
+.weather-city__cities small {
+    color: var(--color-muted);
+    font-size: 12px;
+}
+/* 悬浮与本次改选的城市使用同一选中外观。 */
+.weather-city__cities button:hover:not(:disabled),
+.weather-city__cities button.is-selected {
+    background: var(--color-subtle);
+}
+/* 本次改选的城市保留边框，区分已选与悬浮。 */
+.weather-city__cities button.is-selected {
+    border-color: var(--color-focus);
+}
+/* 能力验证结果逐项排列，位置固定在搜索结果之后。 */
+.weather-city__checks {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 4px;
+    margin: 8px 0 0;
+    padding: 8px 0 0;
+    border-top: 1px solid var(--color-border);
+    list-style: none;
+}
+/* 每项结果占满一行并保留状态列。 */
+.weather-city__checks li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+}
+/* 通过项保留勾选图标位，未通过项不占宽度。 */
+.weather-city__result-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    color: var(--color-muted);
+}
+/* 已通过的检查项使用语义色勾选。 */
+.weather-city__result-icon.is-passed {
+    color: var(--color-active);
+}
+/* 结果说明靠右，失败原因使用错误色。 */
+.weather-city__checks li > :last-child {
+    margin-left: auto;
+}
+/* 命令区固定，左侧保留本次动作的反馈。 */
+.weather-city__actions {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+/* 状态说明占用剩余宽度，过长时省略。 */
+.weather-city__status {
+    min-width: 0;
+    margin-right: auto;
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* 未通过、错误与失败说明统一使用错误色。 */
+.weather-city__error {
+    color: var(--color-error);
+}
+/* 全部通过的能力验证结果。 */
+.weather-city__passed {
+    color: var(--color-active);
+}
+/* 命令按钮高 38、圆角 4，与输入框对齐。 */
+.weather-city__actions button {
+    flex: none;
+    height: 38px;
+    padding: 0 16px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text);
+    background: var(--color-surface);
+    font: inherit;
+    cursor: pointer;
+}
+/* 主命令使用主题动作色。 */
+.weather-city__actions .weather-city__primary {
+    border-color: var(--color-action);
+    color: var(--color-action-text);
+    background: var(--color-action);
+}
+/* 禁用状态保持可读但不可操作。 */
+.weather-city button:disabled {
+    opacity: 48%;
+    cursor: default;
+}

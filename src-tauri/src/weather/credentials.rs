@@ -75,14 +75,18 @@ impl Credentials
 }
 
 /// 每个来源一条独立记录；和风沿用既有记录名称，已保存凭据不因新增来源失效。
-pub fn target(source: Source) -> String
+/// 读写两侧都必须经由本函数取名，否则改名会出现“写 A 读 B”，表现为已配置却显示未配置。
+pub fn record_name(namespace: &str, source: Source) -> String
 {
     match source
     {
-        Source::Qweather => "DesktopTools/Weather".into(),
-        Source::Foreca => format!("DesktopTools/Weather/{}", source.key()),
+        Source::Qweather => namespace.to_string(), // 和风沿用应用级记录名，迁移前的凭据继续有效。
+        source => format!("{}/{}", namespace, source.key()),
     }
 }
+
+/// 每个来源一条独立记录；和风沿用既有记录名称，已保存凭据不因新增来源失效。
+pub fn target(source: Source) -> String { record_name("DesktopTools/Weather", source) }
 
 /// 查询指定记录是否已保存，清零系统返回的敏感缓冲区后立即释放。
 pub fn configured(target: &str) -> Result<bool, String>

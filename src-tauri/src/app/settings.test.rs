@@ -21,6 +21,17 @@ fn weather_visibility_defaults_and_persists()
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// 已移除的天气来源偏好字段不参与反序列化，天气显隐仍按当前字段取值。
+#[test]
+fn retired_weather_source_preference_is_ignored()
+{
+    let enabled: ApplicationPreferences = serde_json::from_str(r#"{"weatherSource":"foreca","weatherEnabled":true}"#).unwrap(); // 旧版本遗留的来源字段。
+    assert!(enabled.weather_enabled, "天气显隐按当前字段恢复");
+    assert!(serde_json::to_value(&enabled).unwrap().get("weatherSource").is_none(), "已移除字段不再写回");
+    let disabled: ApplicationPreferences = serde_json::from_str(r#"{"weatherSource":"qweather","weatherEnabled":false}"#).unwrap();
+    assert!(!disabled.weather_enabled);
+}
+
 /// 格式正确的相对路径在应用层拒绝，文件和权威偏好保持原样。
 #[test]
 fn invalid_resolved_directory_preserves_saved_preferences()

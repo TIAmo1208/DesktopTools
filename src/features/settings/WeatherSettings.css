@@ -80,22 +80,61 @@
     padding: 0;
     list-style: none;
 }
-/* 单个来源项：整项可点击并等同显示详情。 */
+/* 单个来源项：整项可点击并等同显示详情，展开区保持在同一边框之内。 */
 .weather-settings__item {
     display: flex;
-    align-items: center;
-    gap: 12px;
+    flex-direction: column;
     padding: 16px;
     border: 1px solid var(--color-border);
     border-radius: var(--surface-radius);
     background: var(--color-surface);
+}
+/* 来源项悬浮与键盘聚焦使用主题焦点边框。 */
+.weather-settings__item:has(.weather-settings__item-row:hover),
+.weather-settings__item:has(.weather-settings__item-row:focus-visible) {
+    border-color: var(--color-focus);
+}
+/* 来源项主行：来源名、地址、模式、状态、展开按键与详情箭头。 */
+.weather-settings__item-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    outline: none;
     cursor: pointer;
 }
-/* 来源项悬浮与键盘聚焦。 */
-.weather-settings__item:hover,
-.weather-settings__item:focus-visible {
-    border-color: var(--color-focus);
+/* 展开城市按键使用 24 × 24 命中区与 16px 指示图标。 */
+.weather-settings__expand {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    color: var(--color-muted);
+    background: transparent;
+    cursor: pointer;
+}
+/* 展开按键悬浮与键盘聚焦给出表面反馈。 */
+.weather-settings__expand:hover,
+.weather-settings__expand:focus-visible {
+    color: var(--color-text);
+    background: var(--color-subtle);
     outline: none;
+}
+/* 指示图标只在展开时上下翻转，尺寸与位置不变。 */
+.weather-settings__expand .weather-settings__glyph {
+    transition: transform 120ms ease-out;
+}
+/* 展开状态下的图标旋转。 */
+.weather-settings__expand.is-open .weather-settings__glyph {
+    transform: rotate(90deg);
+}
+/* 展开区在列表项边框之内，按添加顺序列出该来源城市。 */
+.weather-settings__cities {
+    margin-top: 12px;
 }
 /* 来源名与地址两行结构。 */
 .weather-settings__item-main {
@@ -208,6 +247,35 @@
     margin: 4px 0;
     background: var(--color-border);
 }
+/* 二级菜单宿主只负责定位，不改变一级菜单行高。 */
+.weather-settings__submenu-host {
+    position: relative;
+}
+/* 二级菜单悬浮或键盘聚焦时展开，不接收自身点击以外的动作。 */
+.weather-settings__submenu {
+    display: none;
+    left: 100%;
+    top: 0;
+    min-width: 100%;
+}
+/* 父项悬浮与内部聚焦都保持二级菜单可见。 */
+.weather-settings__submenu-host:hover > .weather-settings__submenu,
+.weather-settings__submenu-host:focus-within > .weather-settings__submenu {
+    display: grid;
+}
+/* 二级菜单的展开指示图标靠右，与其他菜单一致。 */
+.weather-settings__submenu-arrow {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    transform: translateY(-50%);
+}
+/* 二级菜单行按一级菜单同一密度排列。 */
+.weather-settings__submenu button {
+    padding-right: 12px;
+}
 /* 删除命令使用错误色，与普通命令区分。 */
 .weather-settings__menu-danger {
     color: var(--color-error);
@@ -228,13 +296,9 @@
     background: var(--color-surface);
     outline: none;
 }
-/* 确认框与城市弹窗使用各自的固定宽度。 */
+/* 确认框使用各自的固定宽度。 */
 .weather-settings__dialog--confirm {
     width: 468px;
-}
-/* 城市选择沿用已确认的弹窗宽度。 */
-.weather-settings__dialog--city {
-    width: 400px;
 }
 /* 遮罩不改变底层内容。 */
 .weather-settings__dialog::backdrop {
@@ -293,9 +357,10 @@
 .weather-settings__row > :first-child {
     flex: 0 0 168px;
 }
-/* 输入与私钥组合可以随设置窗口收缩。 */
+/* 输入与私钥组合可以随设置窗口收缩；单行遮蔽输入同样占满剩余宽度。 */
 .weather-settings__row > input,
 .weather-settings__secret,
+.weather-settings__secret-input,
 .weather-settings__city {
     flex: 1;
     min-width: 0;
@@ -420,40 +485,6 @@
     color: var(--color-text);
     background: var(--color-surface);
     box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
-}
-/* 验证城市只读呈现。 */
-.weather-settings__city {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-/* 城市搜索结果列表。 */
-.weather-settings__cities {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    margin-top: 8px;
-}
-/* 单个城市结果行。 */
-.weather-settings__cities button {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    align-items: flex-start;
-    height: auto;
-    padding: 8px 12px;
-    text-align: left;
-}
-/* 搜索输入与提交按键同一行。 */
-.weather-settings__search {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-/* 搜索输入占用剩余宽度。 */
-.weather-settings__search input {
-    flex: 1;
-    min-width: 0;
 }
 /* 能力验证结果逐项排列。 */
 .weather-settings__checks {

@@ -1,0 +1,107 @@
+/* 浮层：覆盖整屏但不拦截桌面交互，弹层居中。 */
+.weather-source__overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: grid;
+    place-items: center;
+    background: rgb(0 0 0 / 20%);
+}
+
+/* 选择 API 弹层：与城市弹窗同构的圆角、边框、内边距，按内容增高。 */
+.weather-source {
+    box-sizing: border-box;
+    user-select: none;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: min(400px, calc(100vw - 32px));
+    max-height: min(352px, calc(100vh - 32px));
+    padding: 16px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    color: var(--color-text);
+    background: var(--color-surface);
+    outline: none;
+}
+
+/* 标题行固定，标题与关闭按键分列两端。 */
+.weather-source__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* 弹窗标题。 */
+.weather-source__head h2 {
+    margin: 0;
+    font-size: 18px;
+}
+
+/* 关闭按键使用 28 DIP 命中区。 */
+.weather-source__close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    margin-left: auto;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--color-text);
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
+}
+
+/* 关闭图标沿用资源尺寸，颜色继承所在按键。 */
+.weather-source__glyph svg {
+    flex: none;
+    display: block;
+    width: 16px;
+    height: 16px;
+}
+
+/* 来源列表占用剩余高度并单独滚动。 */
+.weather-source__list {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: auto;
+}
+
+/* 单个来源行高 54，来源名与地址上下排列。 */
+.weather-source__list button {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 2px;
+    min-height: 54px;
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--color-text);
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* 服务地址使用次要颜色。 */
+.weather-source__list small {
+    color: var(--color-muted);
+    font-size: 12px;
+}
+
+/* 悬浮使用与城市弹窗一致的选中表面。 */
+.weather-source__list button:hover {
+    background: var(--color-subtle);
+}
+
+/* 一家来源都没有时只显示不可交互文案。 */
+.weather-source__empty {
+    display: block;
+    padding: 12px;
+}

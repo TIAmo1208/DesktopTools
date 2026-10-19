@@ -1,5 +1,23 @@
 use super::*;
 
+/// 桌面背景菜单在“新建围栏”“新建文件夹门户”同组内新增“添加天气”，并返回该动作的产品命令编号。
+#[test]
+fn background_menu_offers_weather_creation_next_to_fence_and_folder_portal()
+{
+    let monitor = DesktopHostMonitor { id: "A".into(), name: "主屏".into(), primary: true, x: 0, y: 0, width: 1920, height: 1080, work_x: 0, work_y: 0, work_width: 1920, work_height: 1040, scale_factor: 1.0, dpi: 96 }; // 单屏菜单坐标来源。
+    let snapshot = WorkspaceSnapshot::default(); // 空白桌面只需要菜单项本身。
+    let choice = choose_workspace_menu(&snapshot, &monitor, WorkspaceContextMenuTarget::Background, 10.0, 20.0, |target, _, _, commands| {
+        assert!(matches!(target, NativeMenuTarget::Background));
+        let labels = commands.iter().map(|command| command.label.as_str()).collect::<Vec<_>>(); // 本次菜单展示的全部项目文案。
+        assert_eq!(labels, vec!["新建围栏", "新建文件夹门户", "添加天气", "刷新桌面项目", "打开设置"], "添加天气必须与创建类动作同组且顺序稳定");
+        let weather = commands.iter().find(|command| command.label == "添加天气").unwrap(); // 新增的创建入口项。
+        assert!(weather.enabled);
+        Ok(Some(weather.id))
+    })
+    .unwrap(); // 只解释选择结果，创建参数由统一入口补齐。
+    assert!(matches!(choice, WorkspaceMenuAction::Weather), "添加天气必须由统一创建入口执行，不在这里构造布局命令");
+}
+
 /// 验证菜单展示、DPI 坐标和选择解释通过同一入口执行。
 #[test]
 fn menu_selection_preserves_target_and_rejects_disabled_actions()

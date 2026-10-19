@@ -137,13 +137,13 @@ pub async fn show_workspace_context_menu(app: AppHandle, state: State<'_, Deskto
 pub(crate) fn execute_show_workspace_context_menu(app: &AppHandle, state: &DesktopItemState, workspace: &WorkspaceState, runtime: &DesktopHostRuntime, monitor_id: String, target: WorkspaceContextMenuTarget, client_x: f64, client_y: f64) -> Result<WorkspaceSnapshot, DesktopItemError>
 {
     // 已应用 Shell 或产品菜单动作的权威工作区快照。
-    let snapshot = show_workspace_context_menu_state(state, workspace, runtime, &monitor_id, target, client_x, client_y)?;
+    let snapshot = show_workspace_context_menu_state(app, state, workspace, runtime, &monitor_id, target, client_x, client_y)?;
     app.emit(WORKSPACE_SNAPSHOT_CHANGED_EVENT, &snapshot).map_err(|error| DesktopItemError::event_publish_failed(&error))?;
     Ok(snapshot)
 }
 
 /// 为 Tauri 与本地 transport 共享原生菜单领域协调。
-pub(crate) fn show_workspace_context_menu_state(state: &DesktopItemState, workspace: &WorkspaceState, runtime: &DesktopHostRuntime, monitor_id: &str, target: WorkspaceContextMenuTarget, client_x: f64, client_y: f64) -> Result<WorkspaceSnapshot, DesktopItemError>
+pub(crate) fn show_workspace_context_menu_state(app: &AppHandle, state: &DesktopItemState, workspace: &WorkspaceState, runtime: &DesktopHostRuntime, monitor_id: &str, target: WorkspaceContextMenuTarget, client_x: f64, client_y: f64) -> Result<WorkspaceSnapshot, DesktopItemError>
 {
     crate::log_info!("菜单：收到请求，显示器={monitor_id}，目标={target:?}，位置=({client_x},{client_y})");
     let host_snapshot = runtime.snapshot().map_err(|error| DesktopItemError::shell_operation_failed(&error.message))?; // 当前宿主环境。
@@ -166,6 +166,12 @@ pub(crate) fn show_workspace_context_menu_state(state: &DesktopItemState, worksp
             return reconcile_workspace_environment(workspace, runtime, &item_snapshot, true, &[]).map_err(|error| DesktopItemError::workspace_reconciliation_failed(&error));
         }
         super::workspace_menu::WorkspaceMenuAction::Layout(command) => command,
+        super::workspace_menu::WorkspaceMenuAction::Weather =>
+        {
+            // 空白菜单没有来源与城市绑定，创建出的格子进入未选来源状态；创建入口已发布新快照。
+            super::execute_create_weather_tile(app, None, monitor_id.to_string()).map_err(|message| DesktopItemError::shell_operation_failed(&message))?;
+            return workspace.snapshot().map_err(|error| DesktopItemError::shell_operation_failed(&error));
+        }
     }; // 进入现有事务路径的命令。
     let before_revision = snapshot.revision; // 判断产品菜单动作是否创建新统一时间线分支的修订号。
     let next = workspace.apply_on_monitor(Some(monitor_id), command).map_err(|error| DesktopItemError::shell_operation_failed(&error))?;

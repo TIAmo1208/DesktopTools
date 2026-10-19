@@ -1,1 +1,9 @@
-{"id":"official.weather","name":"天气","entry":"official:weather","requiredCapabilities":[],"persistenceVersion":1}
+{
+  "id": "official.weather",
+  "name": "天气",
+  "entry": "official:weather",
+  "requiredCapabilities": [],
+  "creatable": true,
+  "removable": true,
+  "persistenceVersion": 1
+}

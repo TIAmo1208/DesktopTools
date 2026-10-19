@@ -81,3 +81,15 @@ fn workspace_command_decodes_the_public_contract_shape()
 
     assert_eq!(command, WorkspaceCommand::MoveItemToFence { item_id: "::{project}".to_string(), fence_id: "fence-1".to_string(), before_item_id: None });
 }
+
+/// 创建组件命令继续接受省略初始状态的载荷，并保留调用方给出的初始状态。
+#[test]
+fn create_component_command_keeps_an_optional_initial_state()
+{
+    let bounds = serde_json::json!({ "left": 24.0, "top": 24.0, "width": 360.0, "height": 280.0 }); // 两种载荷共用的新实例边界。
+    let without_state: WorkspaceCommand = serde_json::from_value(serde_json::json!({ "type": "create-component", "componentId": "official.collect-box", "bounds": bounds.clone() })).expect("省略初始状态的创建命令应可反序列化");
+    assert!(matches!(without_state, WorkspaceCommand::CreateComponent { state, .. } if state == serde_json::json!({})));
+
+    let with_state: WorkspaceCommand = serde_json::from_value(serde_json::json!({ "type": "create-component", "componentId": "official.weather", "bounds": bounds, "state": { "weatherSource": "qweather", "weatherCityId": "101010100" } })).expect("带初始状态的创建命令应可反序列化");
+    assert!(matches!(with_state, WorkspaceCommand::CreateComponent { state, .. } if state["weatherSource"] == "qweather" && state["weatherCityId"] == "101010100"));
+}

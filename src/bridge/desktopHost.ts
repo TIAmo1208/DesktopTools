@@ -23,6 +23,13 @@ export const exitDesktopTools = async (): Promise<void> => {
     });
 };
 
+/** 请求显示设置窗口，桌面格子的“打开设置”入口复用托盘同一显隐语义。 */
+export const openSettingsWindow = async (): Promise<void> => {
+    await invokeRuntime("open_settings_window").catch((error: unknown) => {
+        throw parseApplicationCommandError(error);
+    });
+};
+
 /** 上报逐屏 Renderer 存活心跳。 */
 export const recordDesktopHostRendererHeartbeat = async (monitorId: string): Promise<void> => {
     await invokeRuntime("record_desktop_host_renderer_heartbeat", { monitorId }).catch((error: unknown) => {

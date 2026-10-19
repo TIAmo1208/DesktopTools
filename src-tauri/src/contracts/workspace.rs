@@ -641,13 +641,19 @@ pub enum WorkspaceCommand
         /// 拖动期间产生的围栏滚动位置。
         fence_scrolls: Vec<WorkspaceFenceScroll>,
     },
-    /// 创建一个可共享布局的官方组件实例。
+    /// 创建一个声明可创建的官方组件实例。
     #[serde(rename = "create-component")]
     CreateComponent
     {
-        component_id: String, bounds: WorkspaceRect
+        /// 目标组件包身份。
+        component_id: String,
+        /// 新实例在目标显示器上的初始边界。
+        bounds: WorkspaceRect,
+        /// 新实例的初始版本化状态；省略表示空状态。
+        #[serde(default = "empty_component_state")]
+        state: Value,
     },
-    /// 移除可重新创建的收集箱实例，不删除共享收集内容。
+    /// 移除一个声明可移除的组件实例，不删除组件自身的数据。
     #[serde(rename = "remove-component")]
     RemoveComponent
     {
@@ -681,6 +687,9 @@ pub enum WorkspaceCommand
     #[serde(rename = "redo-layout")]
     RedoLayout,
 }
+
+/// 创建组件时省略初始状态使用的空对象状态。
+fn empty_component_state() -> Value { serde_json::json!({}) }
 
 /// Tauri command 返回的工作区结构化错误。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

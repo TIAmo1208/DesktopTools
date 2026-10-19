@@ -52,6 +52,22 @@ fn credentials_are_classified_and_dispatched_by_source()
     assert!(serde_json::from_str::<Credentials>(r#"{"host":"example.qweatherapi.com","apiKey":"example-api-key"}"#).is_err()); // 混合字段不得落入任一来源。
 }
 
+/// HTTP 状态码归类：402 额度不足不设置等待且不可重试，只有限流与服务端错误可重试。
+#[test]
+fn status_failure_classifies_quota_and_retry_eligibility()
+{
+    let quota = status_failure(402); // 额度不足与限流是两种不同的恢复路径。
+    assert!(quota.message.contains("额度"), "402 必须说明额度不足：{}", quota.message);
+    assert!(quota.retry_at.is_none(), "402 不设置服务端等待时间");
+    assert!(!quota.retryable, "402 不能按同一请求自动重试");
+    assert!(status_failure(429).retryable, "429 限流可重试");
+    assert!(status_failure(503).retryable, "503 服务端错误可重试");
+    assert!(status_failure(401).message.contains("凭据无效"), "401 必须说明凭据无效");
+    let unknown = status_failure(418); // 未知状态码不暴露上游正文。
+    assert_eq!(unknown.message, "天气服务请求失败");
+    assert!(!unknown.retryable);
+}
+
 #[test]
 fn jwt_has_required_claims_and_valid_ed25519_signature()
 {

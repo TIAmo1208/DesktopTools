@@ -270,7 +270,7 @@
 .weather-tile__cities small {
     display: block;
     padding: 12px;
-    color: var(--color-surface);
+    color: var(--color-text);
 }
 .weather-tile__cities button small {
     padding: 0;

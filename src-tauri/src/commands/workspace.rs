@@ -28,11 +28,17 @@ pub(crate) fn execute_apply_workspace_command(app: &AppHandle, state: &Workspace
     {
         desktop_items.clear_redo_history().map_err(|error| WorkspaceError::history_failed(&error.message))?;
     }
-    app.emit(WORKSPACE_SNAPSHOT_CHANGED_EVENT, &snapshot).map_err(|error| {
+    publish_workspace_snapshot(app, &snapshot)?;
+    Ok(snapshot)
+}
+
+/// 发布一个已原子持久化的工作区快照，供布局命令与创建入口共用。
+pub(crate) fn publish_workspace_snapshot(app: &AppHandle, snapshot: &WorkspaceSnapshot) -> Result<(), WorkspaceError>
+{
+    app.emit(WORKSPACE_SNAPSHOT_CHANGED_EVENT, snapshot).map_err(|error| {
         crate::log_error!("工作区：快照事件发布失败，错误={error}");
         WorkspaceError::state_unavailable()
-    })?;
-    Ok(snapshot)
+    })
 }
 
 /// 按完成时间撤销统一时间线中的最近布局或 Shell 操作。

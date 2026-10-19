@@ -3,5 +3,7 @@
   "name": "收集箱",
   "entry": "official:collect-box",
   "requiredCapabilities": [],
+  "creatable": true,
+  "removable": true,
   "persistenceVersion": 1
 }

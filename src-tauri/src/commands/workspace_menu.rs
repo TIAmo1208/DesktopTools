@@ -8,6 +8,8 @@ pub(super) enum WorkspaceMenuAction
     None,
     /// 重新观察桌面。
     Refresh,
+    /// 在菜单目标处创建一个未绑定来源与城市的天气格子。
+    Weather,
     /// 提交单次布局事务。
     Layout(WorkspaceCommand),
 }
@@ -30,6 +32,8 @@ pub(super) fn choose_workspace_menu(snapshot: &WorkspaceSnapshot, monitor: &Desk
     const CREATE_FOLDER_PORTAL: u32 = 0x7808;
     /// 新建围栏并收纳完整选择集合的命令编号。
     const CREATE_FENCE_WITH_ITEMS: u32 = 0x780B;
+    /// 在菜单锚点创建天气格子的命令编号。
+    const CREATE_WEATHER_TILE: u32 = 0x780C;
     /// 重新枚举 Shell 项目并协调工作区命令编号。
     const REFRESH_ITEMS: u32 = 0x7806;
     /// 等待正式设置表面交付后启用的设置命令编号。
@@ -89,7 +93,7 @@ pub(super) fn choose_workspace_menu(snapshot: &WorkspaceSnapshot, monitor: &Desk
                 Some(fence_id),
             )
         }
-        WorkspaceContextMenuTarget::Background => (NativeMenuTarget::Background, vec![NativeMenuCommand { id: CREATE_FENCE, label: "新建围栏".to_string(), enabled: true }, NativeMenuCommand { id: CREATE_FOLDER_PORTAL, label: "新建文件夹门户".to_string(), enabled: true }, NativeMenuCommand { id: REFRESH_ITEMS, label: "刷新桌面项目".to_string(), enabled: true }, NativeMenuCommand { id: OPEN_SETTINGS, label: "打开设置".to_string(), enabled: false }], Vec::new(), None),
+        WorkspaceContextMenuTarget::Background => (NativeMenuTarget::Background, vec![NativeMenuCommand { id: CREATE_FENCE, label: "新建围栏".to_string(), enabled: true }, NativeMenuCommand { id: CREATE_FOLDER_PORTAL, label: "新建文件夹门户".to_string(), enabled: true }, NativeMenuCommand { id: CREATE_WEATHER_TILE, label: "添加天气".to_string(), enabled: true }, NativeMenuCommand { id: REFRESH_ITEMS, label: "刷新桌面项目".to_string(), enabled: true }, NativeMenuCommand { id: OPEN_SETTINGS, label: "打开设置".to_string(), enabled: false }], Vec::new(), None),
     };
     // 原生菜单关闭后返回的可选产品命令编号。
     let enabled = product_commands.iter().filter(|command| command.enabled).map(|command| command.id).collect::<Vec<_>>(); // 本次菜单允许的动作。
@@ -143,6 +147,7 @@ pub(super) fn choose_workspace_menu(snapshot: &WorkspaceSnapshot, monitor: &Desk
                 }
             }
             DISSOLVE_FENCE => WorkspaceCommand::DissolveFence { fence_id: fence_id.expect("围栏菜单命令包含目标围栏") },
+            CREATE_WEATHER_TILE => return Ok(WorkspaceMenuAction::Weather),
             CREATE_FENCE | CREATE_FENCE_WITH_ITEMS =>
             {
                 // 当前 CSS 工作区可容纳的新围栏初始边界。
