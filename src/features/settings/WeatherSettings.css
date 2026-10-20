@@ -236,49 +236,9 @@
 .weather-settings__passed {
     color: var(--color-active);
 }
-/* 来源项右键菜单沿用全局菜单尺寸，只补充分隔线与删除色。 */
-.weather-settings__menu {
-    position: fixed;
+/* 设置页右键菜单复用公共两级菜单，只按视觉规范固定一级宽度。 */
+.weather-settings .desktop-tile-menu {
     width: 232px;
-}
-/* 删除单独成组，与上方命令之间保留分隔线。 */
-.weather-settings__menu-separator {
-    height: 1px;
-    margin: 4px 0;
-    background: var(--color-border);
-}
-/* 二级菜单宿主只负责定位，不改变一级菜单行高。 */
-.weather-settings__submenu-host {
-    position: relative;
-}
-/* 二级菜单悬浮或键盘聚焦时展开，不接收自身点击以外的动作。 */
-.weather-settings__submenu {
-    display: none;
-    left: 100%;
-    top: 0;
-    min-width: 100%;
-}
-/* 父项悬浮与内部聚焦都保持二级菜单可见。 */
-.weather-settings__submenu-host:hover > .weather-settings__submenu,
-.weather-settings__submenu-host:focus-within > .weather-settings__submenu {
-    display: grid;
-}
-/* 二级菜单的展开指示图标靠右，与其他菜单一致。 */
-.weather-settings__submenu-arrow {
-    position: absolute;
-    right: 4px;
-    top: 50%;
-    width: 16px;
-    height: 16px;
-    transform: translateY(-50%);
-}
-/* 二级菜单行按一级菜单同一密度排列。 */
-.weather-settings__submenu button {
-    padding-right: 12px;
-}
-/* 删除命令使用错误色，与普通命令区分。 */
-.weather-settings__menu-danger {
-    color: var(--color-error);
 }
 /* 添加、编辑与确认框共用模态外观；弹窗不继承容器的不可选中设置，需要显式声明。 */
 .weather-settings__dialog {

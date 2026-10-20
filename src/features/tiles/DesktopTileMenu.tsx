@@ -18,6 +18,7 @@ export interface DesktopTileMenuItem {
     closeOnSelect?: boolean; // 复选筛选显式保持菜单打开。
     separatorBefore?: boolean; // 与前一功能组分离。
     heading?: boolean; // 非交互分组说明，不进入键盘导航。
+    danger?: boolean; // 删除类命令使用错误色。
 }
 
 /** 呈现同组两级菜单，统一焦点、边缘定位与透明宿主命中。 */
@@ -160,6 +161,7 @@ export const DesktopTileMenu = ({
                         <button
                             type="button"
                             role={item.checked === undefined ? "menuitem" : item.radio ? "menuitemradio" : "menuitemcheckbox"}
+                            className={item.danger ? "desktop-tile-menu__danger" : undefined}
                             aria-checked={item.checked}
                             disabled={item.disabled && item.closeOnSelect !== false}
                             aria-disabled={item.disabled}

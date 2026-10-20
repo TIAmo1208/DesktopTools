@@ -334,7 +334,7 @@ test("小时与日预报到期过滤，暂停停止计时且旧回调不清除�
 test("折叠和宿主暂停禁止读取，恢复保留缓存并拒绝旧响应", async () => {
     const source = await readFile(new URL("./WeatherTile.tsx", import.meta.url), "utf8");
     const effect = source.match(
-        /useEffect\(\(\) => \{\s*if \(!config \|\| !city\) return;[\s\S]*?\}, \[config\?\.source, config\?\.cityId, city\?\.id, visible, paused, instance\.instanceId, instance\.monitorId, instance\.projectionMonitorId\]\);/,
+        /useEffect\(\(\) => \{\s*if \(!config \|\| !city\) return;[\s\S]*?\}, \[config\?\.source, config\?\.cityId, city\?\.id, visible, paused, missing, instance\.instanceId, instance\.monitorId, instance\.projectionMonitorId\]\);/,
     )?.[0];
     assert.ok(effect);
     const document = Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true });
@@ -349,6 +349,7 @@ test("折叠和宿主暂停禁止读取，恢复保留缓存并拒绝旧响应",
         runInNewContext(stripTypeScriptTypes(effect), {
             config: { source: "qweather", cityId: "test" }, // 格子自己保存的来源与城市标识。
             city: { id: "test" },
+            missing: undefined, // 已绑定城市不属于缺失状态。
             instance: { instanceId: "weather", monitorId: "DISPLAY1", projectionMonitorId: null },
             visible,
             paused,

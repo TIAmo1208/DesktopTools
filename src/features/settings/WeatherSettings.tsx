@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
     addWeatherCity,
@@ -10,6 +10,7 @@ import {
     weatherSettings,
 } from "../../bridge/weather";
 import { WeatherCityDialog } from "../weather/WeatherCityDialog";
+import { DesktopTileMenu, type DesktopTileMenuItem } from "../tiles/DesktopTileMenu";
 import { SettingsCityList } from "./SettingsCityList";
 import { SettingsInfo } from "./SettingsInfo";
 import backIcon from "../../../resources/weather-back.svg?raw";
@@ -100,6 +101,7 @@ export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; le
     const [status, setStatus] = useState(""); // 脱敏的状态反馈。
     const [failure, setFailure] = useState(false); // 错误色只辅助文本。
     const [menu, setMenu] = useState<{ source: WeatherSource; left: number; top: number }>(); // 跟随鼠标的来源菜单。
+    const [cityMenu, setCityMenu] = useState<{ source: WeatherSource; city: WeatherCity; left: number; top: number }>(); // 城市项右键菜单，确认删除前只展示命令。
     const [form, setForm] = useState<{ source: WeatherSource; adding: boolean }>(); // 添加或编辑弹窗。
     const [removal, setRemoval] = useState<WeatherPendingRemoval>(); // 待确认的删除对象。
     const [draft, setDraft] = useState<Record<WeatherField, string>>(EMPTY_DRAFT); // 只在当前页内存保存。
@@ -473,6 +475,24 @@ export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; le
         setRemoval({ kind: "city", source, city });
     };
 
+    /** 城市项右键只打开菜单：删除命令由菜单触发，不再直接弹出确认框。 */
+    const openCityMenu = (source: WeatherSource, target: WeatherCity, position: { left: number; top: number }) => {
+        if (busy) return;
+        setMenu(undefined);
+        setCityMenu({ source, city: target, ...position });
+    };
+
+    /** 城市项右键菜单只有删除命令；编辑弹窗内与来源展开区共用同一份。 */
+    const renderCityMenu = () =>
+        cityMenu ? (
+            <DesktopTileMenu
+                items={[{ label: "删除", danger: true, disabled: !!busy, onSelect: () => setRemoval({ kind: "city", source: cityMenu.source, city: cityMenu.city }) }]}
+                left={cityMenu.left}
+                top={cityMenu.top}
+                onClose={() => setCityMenu(undefined)}
+            />
+        ) : null;
+
     /** 删除城市项：编辑弹窗内只记草稿，其余入口按来源命令立即移除该项。 */
     const handleRemoveCity = (source: WeatherSource, city: WeatherCity) => {
         if (form) {
@@ -512,13 +532,6 @@ export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; le
                 setStatus(typeof error === "string" ? error : "天气格子创建失败");
             });
     };
-
-    useEffect(() => {
-        if (!menu) return;
-        const close = () => setMenu(undefined); // 点击菜单以外区域立即收起。
-        document.addEventListener("pointerdown", close);
-        return () => document.removeEventListener("pointerdown", close);
-    }, [menu]);
 
     useEffect(() => {
         live.current.mounted = true;
@@ -668,6 +681,7 @@ export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; le
                                             cities={item.cities}
                                             busy={!!busy}
                                             onDelete={(target) => requestCityRemoval(item.source, target)}
+                                            onMenu={(target, position) => openCityMenu(item.source, target, position)}
                                             onAdd={() => openPicker(item.source)}
                                         />
                                     )}
@@ -692,91 +706,24 @@ export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; le
                     {status}
                 </p>
             )}
-            {menu && (
-                <menu
-                    className="desktop-tile-menu weather-settings__menu"
-                    role="menu"
-                    style={{ left: menu.left, top: menu.top }}
-                    onPointerDown={(event) => event.stopPropagation()}
-                >
-                    <li role="none">
-                        <button
-                            type="button"
-                            role="menuitem"
-                            onClick={() => {
-                                const source = menu.source; // 先关闭菜单再打开弹窗。
-                                setMenu(undefined);
-                                openForm(source, false);
-                            }}
-                        >
-                            显示详情
-                        </button>
-                    </li>
-                    <li role="none">
-                        <button type="button" role="menuitem" disabled={!!busy} onClick={() => void handleProbe(menu.source)}>
-                            检测可用
-                        </button>
-                    </li>
-                    <li className="weather-settings__menu-separator" role="separator" />
-                    <li role="none">
-                        <button
-                            type="button"
-                            role="menuitem"
-                            disabled={!!busy}
-                            onClick={() => {
-                                const source = menu.source; // 先关闭菜单再打开弹窗。
-                                setMenu(undefined);
-                                openPicker(source);
-                            }}
-                        >
-                            添加城市
-                        </button>
-                    </li>
-                    <li role="none" className="weather-settings__submenu-host">
-                        <button type="button" role="menuitem" aria-haspopup="menu" onClick={() => undefined}>
-                            添加天气格子
-                            <span className="weather-settings__submenu-arrow" aria-hidden="true">
-                                <Glyph source={chevronRightIcon} />
-                            </span>
-                        </button>
-                        <menu className="weather-settings__submenu desktop-tile-menu" role="menu" aria-label="添加天气格子">
-                            {(() => {
-                                const cities = sources.find((item) => item.source === menu.source)?.cities ?? []; // 该来源已添加的城市。
-                                if (!cities.length)
-                                    return (
-                                        <li role="none">
-                                            <span className="desktop-tile-menu__heading">列表为空</span>
-                                        </li>
-                                    );
-                                return cities.map((item, index) => (
-                                    <Fragment key={item.id}>
-                                        {index === 0 && <li className="desktop-tile-menu__separator" role="separator" aria-hidden="true" />}
-                                        <li role="none">
-                                            <button type="button" role="menuitem" onClick={() => handleCreateTile(menu.source, item)}>
-                                                {item.name}
-                                            </button>
-                                        </li>
-                                    </Fragment>
-                                ));
-                            })()}
-                        </menu>
-                    </li>
-                    <li className="weather-settings__menu-separator" role="separator" />
-                    <li role="none">
-                        <button
-                            type="button"
-                            role="menuitem"
-                            className="weather-settings__menu-danger"
-                            onClick={() => {
-                                setRemoval({ kind: "source", source: menu.source });
-                                setMenu(undefined);
-                            }}
-                        >
-                            删除
-                        </button>
-                    </li>
-                </menu>
-            )}
+            {menu &&
+                (() => {
+                    const cities = sources.find((item) => item.source === menu.source)?.cities ?? []; // 该来源已添加的城市。
+                    const items: DesktopTileMenuItem[] = [
+                        { label: "显示详情", onSelect: () => openForm(menu.source, false) },
+                        { label: "检测可用", disabled: !!busy, onSelect: () => void handleProbe(menu.source) },
+                        { label: "添加城市", separatorBefore: true, disabled: !!busy, onSelect: () => openPicker(menu.source) },
+                        {
+                            label: "添加天气格子",
+                            children: cities.length
+                                ? cities.map((item) => ({ label: item.name, onSelect: () => handleCreateTile(menu.source, item) }))
+                                : [{ label: "列表为空", heading: true }],
+                        },
+                        { label: "删除", separatorBefore: true, danger: true, onSelect: () => setRemoval({ kind: "source", source: menu.source }) },
+                    ];
+                    return <DesktopTileMenu items={items} left={menu.left} top={menu.top} onClose={() => setMenu(undefined)} />;
+                })()}
+            {!form && renderCityMenu()}
             {form && (
                 <dialog
                     ref={formDialog}
@@ -944,6 +891,7 @@ export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; le
                                     cities={formCities}
                                     busy={!!busy}
                                     onDelete={(target) => requestCityRemoval(form.source, target)}
+                                    onMenu={(target, position) => openCityMenu(form.source, target, position)}
                                     onAdd={() => {
                                         setStatus("");
                                         openPicker(form.source); // 城市列表分组按来源命令添加，与来源展开区同一条后端路径。
@@ -963,6 +911,7 @@ export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; le
                             取消
                         </button>
                     </footer>
+                    {renderCityMenu()}
                 </dialog>
             )}
             {picker && (

@@ -75,6 +75,7 @@
                         throw error;
                     }
                 },
+                listen: async () => () => {}, // 替代桥必须与真实注入桥同形：菜单订阅宿主前台状态时使用。
             };
             /** 模拟宿主返回；命令名与原生分发表一致。 */
             const route = async (command, payload) => {
@@ -334,20 +335,31 @@
                 assert(button("添加城市或地区", expanded), "展开区末行为添加城市或地区");
                 assert(expanded.querySelectorAll(".settings-city__item").length === 1, "删除前城市项只有一项");
 
-                // 来源菜单：添加城市打开共享弹窗，添加天气格子只在二级菜单列出该来源城市。
+                // 城市项右键先打开城市菜单，选中删除才进入确认；不直接弹出确认框。
+                const cityItem = expanded.querySelector(".settings-city__item");
+                cityItem.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 30, clientY: 30 }));
+                const cityMenu = await waitFor(() => document.querySelector(".weather-settings .desktop-tile-menu"), "城市右键菜单未打开");
+                assert([...cityMenu.querySelectorAll("button")].map((element) => element.textContent.trim()).join(",") === "删除", "城市菜单只提供删除命令");
+                button("删除", cityMenu).click();
+                await waitFor(() => settingsDialogs().length === 1, "城市删除未进入确认");
+                button("取消").click();
+                await settle();
+                assert(expanded.querySelectorAll(".settings-city__item").length === 1, "取消删除保留城市项");
+
+                // 来源菜单复用公共两级菜单：添加城市打开共享弹窗，添加天气格子点击后展开二级菜单。
                 const openMenu = () => {
                     document
                         .querySelector(".weather-settings__item-row")
                         .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }));
-                    return waitFor(() => document.querySelector(".weather-settings__menu"), "来源菜单未打开"); // 按状态等待，不依赖固定延时。
+                    return waitFor(() => document.querySelector(".weather-settings .desktop-tile-menu"), "来源菜单未打开"); // 按状态等待，不依赖固定延时。
                 };
                 let menu = await openMenu();
                 const menuLabels = [...menu.querySelectorAll(":scope > li > button")].map((element) => element.textContent.trim()); // 只取本层命令，不含二级菜单。
                 assert(menuLabels.join(",") === "显示详情,检测可用,添加城市,添加天气格子,删除", `右键菜单按分组提供五项命令：${menuLabels.join(">")}`);
-                const submenu = menu.querySelector(".weather-settings__submenu");
-                assert(button("添加天气格子", menu) === undefined && menuLabels.includes("添加天气格子"), "添加天气格子自身不响应点击");
+                button("添加天气格子", menu).click(); // 公共菜单点击父项立即展开二级菜单。
+                const submenu = await waitFor(() => document.querySelector('menu[aria-label="添加天气格子"]'), "二级菜单未展开");
                 assert(submenu.querySelectorAll("button").length === 1 && button("东城", submenu), "二级菜单按该来源已添加的城市创建");
-                assert(submenu.querySelector(".desktop-tile-menu__separator"), "二级菜单在添加命令与城市列表之间保留分隔线");
+                assert(!submenu.querySelector(".desktop-tile-menu__separator"), "二级菜单只承载城市列表，首项不加分隔线");
                 button("东城", submenu).click();
                 await settle();
                 assert(tileCalls.length === 1 && tileCalls[0].cityId === "test", "二级菜单按城市创建已绑定的天气格子");
@@ -388,6 +400,14 @@
                 assert(document.querySelector(".weather-settings__status").textContent === "", "关闭弹窗后不残留上次反馈");
                 // 保存的部分失败：城市改动先写后端，凭据写入失败时城市已生效，重试能继续完成保存。
                 await openEditor();
+                // 编辑弹窗内的城市右键菜单必须渲染在顶层模态内部，选中删除才进入确认。
+                formDialog().querySelector(".settings-city__item").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 30, clientY: 30 }));
+                const editCityMenu = await waitFor(() => formDialog()?.querySelector(".desktop-tile-menu"), "编辑弹窗内的城市右键菜单未打开");
+                button("删除", editCityMenu).click();
+                await waitFor(() => settingsDialogs().length === 2, "编辑弹窗内的城市删除未进入确认");
+                button("取消", settingsDialogs().at(-1)).click(); // 确认框在编辑弹窗之上，取消必须落在确认框。
+                await settle();
+                assert(formDialog()?.querySelector(".settings-city__item"), "取消删除保留编辑弹窗内的城市项");
                 formDialog().querySelector(".settings-city__delete").click();
                 await waitFor(() => settingsDialogs().length === 2, "删除城市未进入确认");
                 button("删除").click();
@@ -485,7 +505,7 @@
                     await settle();
                     assert(back === 0, "弹窗流程不得直接离开页面");
                     document.getElementById("result").textContent =
-                        "PASS: 空态、供应商切换、保存不等待验证且失败不阻止写入、编辑回填、城市列表分组、共享城市弹窗（验证不写入、编辑弹窗内城市改动留到保存、取消丢弃）、保存部分失败时城市已写入且重试不重复删除、来源菜单、删除城市延后提交、展开区按写入刷新、未保存确认、探测状态与删除、第二个来源的完整保存与编辑路径";
+                        "PASS: 空态、供应商切换、保存不等待验证且失败不阻止写入、编辑回填、城市列表分组、共享城市弹窗（验证不写入、编辑弹窗内城市改动留到保存、取消丢弃）、保存部分失败时城市已写入且重试不重复删除、来源菜单（含可展开的“添加天气格子”二级菜单）、城市右键先菜单后确认、删除城市延后提交、展开区按写入刷新、未保存确认、探测状态与删除、第二个来源的完整保存与编辑路径";
                 }
             } catch (error) {
                 document.getElementById("result").textContent = `FAIL: ${error.stack}`;

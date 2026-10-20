@@ -253,7 +253,7 @@ const WeatherContent = ({
         let activityRevision = 0; // 异步登记迟到时立即撤销。
         let activityPending = false;
         const loadForecast = () => {
-            if (!active || !visible || paused || document.visibilityState === "hidden") return;
+            if (!active || !visible || paused || document.visibilityState === "hidden" || missing) return; // 城市已从来源列表移除时不再请求或订阅。
             if (!stopActivity && !activityPending) {
                 activityPending = true;
                 const registration = ++activityRevision;
@@ -315,7 +315,7 @@ const WeatherContent = ({
             stopActivity?.();
             document.removeEventListener("visibilitychange", handleVisibilityChange);
         };
-    }, [config?.source, config?.cityId, city?.id, visible, paused, instance.instanceId, instance.monitorId, instance.projectionMonitorId]);
+    }, [config?.source, config?.cityId, city?.id, visible, paused, missing, instance.instanceId, instance.monitorId, instance.projectionMonitorId]);
     useEffect(() => {
         const currentFetchedAt = forecast?.moduleFetchedAt?.current; // 不从整包时间推断当前天气年龄。
         if (!forecast?.current || !visible || paused) return;
@@ -805,6 +805,19 @@ export const WeatherTile = (props: ComponentTileProps) => {
                     checked: (fixedMode ?? displayMode) === mode,
                     onSelect: () => void handleMode(mode, fixedMode !== undefined, true),
                 })),
+            },
+            {
+                label: "移除",
+                description: "仅移除当前天气格子，已保存的凭据与城市列表不受影响，可通过撤销恢复",
+                separatorBefore: true,
+                onSelect: () =>
+                    void props.onCommand({ type: "remove-component", instanceId: props.instance.instanceId }).catch((error: unknown) =>
+                        publishMessage({
+                            type: "error",
+                            content: error instanceof Error ? error.message : "移除天气格子失败",
+                            source: "desktop-tile",
+                        }),
+                    ),
             },
         ],
         [details, source, sources, sourceCities, cityId, fixedMode, displayMode, props, busy],

@@ -156,9 +156,17 @@
     gap: 8px;
 }
 .weather-tile__daily-module[data-horizontal="true"] .weather-tile__day {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     justify-items: center;
     gap: 6px;
+    min-width: 0;
+}
+/* 横向日预报的描述按列宽换行，不沿用固定单行宽度，避免相邻列文字相互遮挡。 */
+.weather-tile__daily-module[data-horizontal="true"] .weather-tile__day small {
+    width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
 }
 .weather-tile__daily-module[data-horizontal="true"] .weather-tile__day strong {
     font-size: max(11px, calc(var(--interface-font-size) - 2px));

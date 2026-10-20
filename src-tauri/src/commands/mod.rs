@@ -62,6 +62,16 @@ pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String>
     })
 }
 
+/// 城市从来源列表删除后通知桌面格子重读：绑定该城市的格子立即进入待重选状态，不再等到下次打开菜单。
+fn notify_weather_cities_changed(app: &tauri::AppHandle)
+{
+    use tauri::Emitter;
+    if let Err(error) = app.emit("weather-configuration-changed", ())
+    {
+        crate::log_warn!("天气城市列表已变化，但刷新通知失败：{error}");
+    }
+}
+
 /// 把城市加入某来源的城市列表；Tauri 与原生通道共用同一条信任边界。
 pub(crate) fn add_weather_city(app: &tauri::AppHandle, source: crate::weather::Source, city: &crate::weather::City) -> Result<Vec<crate::weather::City>, String>
 {
@@ -75,7 +85,9 @@ pub(crate) fn add_weather_city(app: &tauri::AppHandle, source: crate::weather::S
 pub(crate) fn remove_weather_city(app: &tauri::AppHandle, source: crate::weather::Source, city_id: &str) -> Result<Vec<crate::weather::City>, String>
 {
     use tauri::Manager;
-    app.state::<crate::weather::WeatherState>().remove_city(source, city_id)
+    let list = app.state::<crate::weather::WeatherState>().remove_city(source, city_id)?;
+    notify_weather_cities_changed(app); // 已展开的格子立即重读列表，不再等到下次打开菜单。
+    Ok(list)
 }
 
 /// 创建天气格子入口统一应用的功能开关偏好；原本已开启时返回空值，不产生多余写入。

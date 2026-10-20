@@ -145,3 +145,17 @@ test("无已配置来源的按键打开设置窗口，失败保留用户可见�
     handleMissingAction("source-removed");
     assert.equal(opened.at(-1), "source:true");
 });
+
+test("城市从来源列表删除后不再请求或订阅，并进入缺失状态", async () => {
+    // 删除城市由后端广播配置变化，格子重读城市列表后立即进入缺失态，不等下一次打开菜单。
+    assert.match(source, /listenWeatherConfiguration\(read\)/, "城市列表变化复用配置通知重读");
+    assert.match(source, /document\.visibilityState === "hidden" \|\| missing\) return;/, "缺失状态下不再请求预报");
+    assert.match(source, /city\?\.id, visible, paused, missing, instance\.instanceId/, "缺失状态变化会重建订阅并清理旧订阅");
+});
+
+test("格子菜单提供移除入口，只移除格子并保留凭据与城市列表", async () => {
+    assert.match(source, /label: "移除"/, "菜单提供移除命令");
+    assert.match(source, /type: "remove-component", instanceId: props\.instance\.instanceId/, "移除沿用工作区公共命令");
+    assert.match(source, /已保存的凭据与城市列表不受影响/, "移除说明明确保留数据");
+    assert.match(source, /移除天气格子失败/, "移除失败给出可见反馈");
+});

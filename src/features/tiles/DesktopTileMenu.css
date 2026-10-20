@@ -99,6 +99,11 @@
     transform: translateY(-50%);
 }
 
+/* 删除类命令使用主题错误色，与普通命令区分。 */
+.desktop-tile-menu__danger {
+    color: var(--color-error);
+}
+
 /* 子菜单方向指示继承主题文字色。 */
 .desktop-tile-menu__arrow {
     position: absolute;

@@ -55,7 +55,9 @@ test("城市列表项的渲染与删除入口契约", async () => {
     assert.match(source, /weather-trash\.svg/);
     assert.doesNotMatch(source, />\s*删除\s*</);
     assert.doesNotMatch(source, /from "[^"]*bridge\//);
-    assert.match(source, /if \(!busy\) onDelete\(city\)/, "忙时右键不触发删除");
+    // 右键只打开调用方提供的菜单，删除命令由菜单触发，不再直接弹出确认框。
+    assert.match(source, /onMenu\(city, \{ left: event\.clientX, top: event\.clientY \}\)/);
+    assert.doesNotMatch(source, /if \(!busy\) onDelete\(city\)/, "右键不直接触发删除");
 });
 
 test("天气来源选择浮层的渲染与关闭契约", async () => {

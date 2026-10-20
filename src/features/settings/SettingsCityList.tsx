@@ -8,17 +8,19 @@ const Glyph = ({ source }: { source: string }) => <span className="settings-city
 /** 行政区副标题按来源实际返回的字段降级显示。 */
 const subtitle = (city: WeatherCity) => [city.adm2, city.adm1, city.country].filter(Boolean).join("，");
 
-/** 城市列表项：来源展开区与编辑弹窗的城市列表共用同一份渲染与删除入口。 */
+/** 城市列表项：来源展开区与编辑弹窗的城市列表共用同一份渲染、右键菜单与删除入口。 */
 export const SettingsCityList = ({
     cities,
     onSelect,
     onDelete,
+    onMenu,
     onAdd,
     busy = false,
 }: {
     cities: WeatherCity[]; // 该来源已添加的城市，顺序即添加顺序。
     onSelect?: (city: WeatherCity) => void; // 点击城市项；未传入时该项只呈现不可操作。
-    onDelete?: (city: WeatherCity) => void; // 删除入口；未传入时不呈现删除图标与右键命令。
+    onDelete?: (city: WeatherCity) => void; // 删除入口；未传入时不呈现删除图标与右键菜单。
+    onMenu?: (city: WeatherCity, position: { left: number; top: number }) => void; // 右键弹出城市菜单，命令由调用方提供。
     onAdd?: () => void; // 末行“添加城市或地区”；未传入时不呈现该行。
     busy?: boolean; // 调用方的串行动作期间禁止城市项操作。
 }) => (
@@ -36,9 +38,9 @@ export const SettingsCityList = ({
                     onSelect(city);
                 }}
                 onContextMenu={(event) => {
-                    if (!onDelete) return;
+                    if (!onDelete || !onMenu) return; // 没有可执行命令时不拦截系统菜单。
                     event.preventDefault();
-                    if (!busy) onDelete(city);
+                    if (!busy) onMenu(city, { left: event.clientX, top: event.clientY });
                 }}
             >
                 <span className="settings-city__main">
