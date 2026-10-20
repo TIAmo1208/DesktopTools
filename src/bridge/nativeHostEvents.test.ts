@@ -4,6 +4,31 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 
+test("天气配置失效通知在暂停时仍交付且退订后停止", async () => {
+    const source = readFileSync(new URL("../../src-tauri/src/platform/windows/desktop_host.rs", import.meta.url), "utf8");
+    const script = source.split('const NATIVE_BRIDGE_SCRIPT: &str = r#"')[1].split('"#;')[0];
+    for (const paused of [false, true]) {
+        const window: any = { addEventListener() {}, setTimeout() {}, clearTimeout() {} };
+        runInNewContext(script.replace("let refreshPaused = false;", `let refreshPaused = ${paused};`), {
+            window,
+            __DESKTOP_NATIVE_ORIGIN__: "http://host.localhost",
+            __REFRESH_POLICY_FALLBACK__: false,
+            URLSearchParams,
+            location: { search: "?monitor=0" },
+        });
+        let calls = 0;
+        const bridge = window.__DESKTOP_TOOLS_NATIVE__;
+        const stop = await bridge.listen("weather-configuration-changed", () => {
+            calls++;
+        });
+        bridge.dispatch("weather-configuration-changed", null);
+        assert.equal(calls, 1);
+        stop();
+        bridge.dispatch("weather-configuration-changed", null);
+        assert.equal(calls, 1);
+    }
+});
+
 test("收集箱主动删除事件同时交付所有格子，退订后停止", async () => {
     const source = readFileSync(new URL("../../src-tauri/src/platform/windows/desktop_host.rs", import.meta.url), "utf8");
     const script = source.split('const NATIVE_BRIDGE_SCRIPT: &str = r#"')[1].split('"#;')[0];

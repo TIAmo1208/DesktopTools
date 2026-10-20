@@ -52,6 +52,7 @@ export interface ApplicationPreferences {
     desktopGrid: GridPreferences; // 未归类桌面网格。
     fenceGrid: GridPreferences; // 围栏内网格。
     clockEnabled: boolean; // 时间格子显隐。
+    weatherEnabled: boolean; // 天气格子显隐偏好，独立于凭据状态。
     musicEnabled: boolean; // 音乐格子显隐。
     collectEnabled: boolean; // 收集箱格子显隐。
     collectAutoSaveOnExit: boolean; // 编辑窗退出时自动保存。
@@ -106,6 +107,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     if (typeof fontFamily !== "string" || !APPLICATION_FONTS.some((font) => font === fontFamily)) throw new Error("字体数据无效");
     const features = {
         clockEnabled: true,
+        weatherEnabled: false,
         musicEnabled: false,
         collectEnabled: true,
         collectAutoSaveOnExit: false,

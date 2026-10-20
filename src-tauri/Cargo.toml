@@ -1,6 +1,6 @@
 [package]
 name = "desktop-tools"
-version = "0.2.0"
+version = "0.2.2"
 description = "Windows desktop content workspace"
 edition = "2024"
 build = "build.rs"
@@ -29,6 +29,10 @@ custom-protocol = ["tauri/custom-protocol"]
 [dependencies]
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10"
+jsonwebtoken = "9.3"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "native-tls", "gzip", "query"] }
+zeroize = "1"
 png = "0.17"
 pulldown-cmark = { version = "0.13", default-features = false }
 resvg = { version = "0.45", default-features = false }
@@ -50,6 +54,7 @@ windows = { version = "0.61.3", features = [
   "Win32_Graphics_Dxgi_Common",
   "Win32_Security",
   "Win32_Security_Cryptography",
+  "Win32_Security_Credentials",
   "Win32_Storage_Xps",
   "Win32_Storage_FileSystem",
   "Win32_System_Com",

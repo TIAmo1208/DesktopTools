@@ -12,7 +12,7 @@ const RECEIVER: PCWSTR = w!("DesktopToolsDesktopMenu"); // 当前会话的命令
 const MESSAGE: u32 = WM_APP + 0x64; // 仅传递固定数字动词，不接收路径或脚本。
 const DISPATCH_MESSAGE: u32 = MESSAGE + 1; // 脱离跨进程 SendMessage 的同步调用栈后再访问 COM。
 static OWN_RECEIVER: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0); // 退出时只销毁本进程创建的窗口。
-const ACTIONS: [(&str, &str, u32); 5] = [("create-fence", "新建围栏", 0x7804), ("create-folder-portal", "新建文件夹映射", 0x7808), ("create-collect-box", "添加收集箱", 0x780A), ("settings", "打开软件设置", 0x7807), ("exit", "退出整理", 0x7809)]; // 运行态注册表、启动参数与消息校验共用的动作清单。
+const ACTIONS: [(&str, &str, u32); 6] = [("create-fence", "新建围栏", 0x7804), ("create-folder-portal", "新建文件夹映射", 0x7808), ("create-collect-box", "添加收集箱", 0x780A), ("create-weather-tile", "添加天气", 0x780C), ("settings", "打开软件设置", 0x7807), ("exit", "退出整理", 0x7809)]; // 运行态注册表、启动参数与消息校验共用的动作清单。
 
 /// 区分已经处理的命令与需要启动应用的初始动作。
 pub enum Startup
@@ -87,7 +87,7 @@ fn register_actions(registry_path: &str, executable: &std::path::Path, running: 
 /// 从嵌入的 Lucide SVG 生成多尺寸 ICO，仅在内容变化时写入。
 fn prepare_menu_icons(directory: &std::path::Path) -> Result<(), String>
 {
-    let sources = [include_str!("../../../resources/menu-fence.svg"), include_str!("../../../resources/menu-folder.svg"), include_str!("../../../resources/menu-collect.svg"), include_str!("../../../resources/menu-settings.svg"), include_str!("../../../resources/menu-exit.svg")]; // 顺序与动作表一致。
+    let sources = [include_str!("../../../resources/menu-fence.svg"), include_str!("../../../resources/menu-folder.svg"), include_str!("../../../resources/menu-collect.svg"), include_str!("../../../resources/menu-weather.svg"), include_str!("../../../resources/menu-settings.svg"), include_str!("../../../resources/menu-exit.svg")]; // 顺序与动作表一致。
     std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     for ((action, _, _), source) in ACTIONS.iter().zip(sources)
     {

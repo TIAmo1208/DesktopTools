@@ -50,6 +50,7 @@ export const SettingsPage = () => {
     const [busy, setBusy] = useState(false); // 配置变更的控件禁用状态。
     const [directoryDraft, setDirectoryDraft] = useState<string>(); // 尚未保存的配置目录输入。
     const pending = useRef(false); // 阻止同一事件循环中的重复命令。
+    const leaveGuard = useRef<((action: () => void) => void) | undefined>(undefined); // 子页未保存草稿的导航保护。
     const requestRevision = useRef(0); // 防止较早的加载结果覆盖更新后的设置。
     const title = PAGES.find((entry) => entry.id === page)!.label; // 当前页面可见标题。
 
@@ -60,6 +61,10 @@ export const SettingsPage = () => {
             setPage(next);
             setGridDetail(undefined);
         };
+        if (leaveGuard.current) {
+            leaveGuard.current(update);
+            return;
+        }
         if (!animationsEnabled) {
             update();
             return;
@@ -391,6 +396,7 @@ export const SettingsPage = () => {
                         onWorkspaceCommand={handleWorkspaceCommand}
                         onChooseFolder={chooseFolderPortalDirectory}
                         onCreateCollectBox={handleCreateCollectBox}
+                        leaveGuard={leaveGuard}
                     />
                 )}
                 {page === "performance" && (

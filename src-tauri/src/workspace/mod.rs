@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::settings::SettingsState;
 use crate::contracts::settings::{ApplicationPreferences, GridPreferences};
-use crate::contracts::{ComponentInstanceSnapshot, DesktopHostMonitor, FenceLayoutMode, FenceSnapshot, FenceSortMode, TILE_MIN_HEIGHT, TILE_MIN_WIDTH, UnclassifiedItemSnapshot, WORKSPACE_BACKUP_SCHEMA_VERSION, WORKSPACE_GRID_BOTTOM_MARGIN, WORKSPACE_GRID_LEFT, WORKSPACE_GRID_TOP, WORKSPACE_SCHEMA_VERSION, WorkspaceBackupSummary, WorkspaceCommand, WorkspaceError, WorkspaceFenceScroll, WorkspaceFocusTarget, WorkspaceGrid, WorkspaceInteractionCommand, WorkspaceInteractionSnapshot, WorkspaceItemPlacement, WorkspaceMonitorGrid, WorkspacePoint, WorkspaceRect, WorkspaceRestoreResult, WorkspaceSelectionMode, WorkspaceSnapshot};
+use crate::contracts::{ComponentCapabilityDeclaration, ComponentInstanceSnapshot, DesktopHostMonitor, FenceLayoutMode, FenceSnapshot, FenceSortMode, TILE_MIN_HEIGHT, TILE_MIN_WIDTH, UnclassifiedItemSnapshot, WORKSPACE_BACKUP_SCHEMA_VERSION, WORKSPACE_GRID_BOTTOM_MARGIN, WORKSPACE_GRID_LEFT, WORKSPACE_GRID_TOP, WORKSPACE_SCHEMA_VERSION, WorkspaceBackupSummary, WorkspaceCommand, WorkspaceError, WorkspaceFenceScroll, WorkspaceFocusTarget, WorkspaceGrid, WorkspaceInteractionCommand, WorkspaceInteractionSnapshot, WorkspaceItemPlacement, WorkspaceMonitorGrid, WorkspacePoint, WorkspaceRect, WorkspaceRestoreResult, WorkspaceSelectionMode, WorkspaceSnapshot};
 use crate::persistence::{load_json, save_json_atomic};
 
 /// 统一工作区持久化格式版本。
@@ -41,6 +41,16 @@ pub(crate) struct WorkspaceEnvironment<'a>
     pub renames: &'a [(String, String)],                            // Shell 确认的精确重命名。
 }
 
+/// 工作区命令读取的两个清单能力声明。
+#[derive(Clone, Copy, Debug)]
+enum ComponentOperation
+{
+    /// 用户创建该组件的新实例。
+    Create,
+    /// 用户移除该组件的实例。
+    Remove,
+}
+
 /// 持有正式桌面内容工作区的权威布局和持久化位置。
 pub struct WorkspaceState
 {
@@ -55,6 +65,8 @@ pub struct WorkspaceState
     history: Mutex<WorkspaceHistory>,
     /// 每次成功布局事务使用的原子 JSON 文件。
     persistence_path: PathBuf,
+    /// 当前已注册官方清单声明的创建与移除能力。
+    capability_declarations: Vec<ComponentCapabilityDeclaration>,
     /// 等待 2 秒空闲合并写入的完整工作区自动快照发送端。
     auto_snapshot_sender: Option<Sender<PersistedWorkspaceStore>>,
     /// 应用退出前刷新待处理快照的后台线程。
@@ -121,12 +133,8 @@ struct PersistedWorkspaceStore
 /// 提供工作区 command 使用的领域操作。
 impl WorkspaceState
 {
-    /// 测试使用无默认组件的工作区。
-    #[cfg(test)]
-    pub fn load(persistence_path: PathBuf) -> Result<Self, WorkspaceError> { Self::load_with_components(persistence_path, &[]) }
-
     /// 恢复唯一工作区；缺失文件使用默认值，旧格式明确报错。
-    pub fn load_with_components(persistence_path: PathBuf, default_components: &[ComponentInstanceSnapshot]) -> Result<Self, WorkspaceError>
+    pub fn load_with_components(persistence_path: PathBuf, default_components: &[ComponentInstanceSnapshot], capability_declarations: &[ComponentCapabilityDeclaration]) -> Result<Self, WorkspaceError>
     {
         let value = load_json::<serde_json::Value>(&persistence_path).map_err(|error| WorkspaceError::restore_failed(&error))?; // 当前保存文件。
         let (mut snapshot, explorer_layout_imported) = match value
@@ -138,6 +146,7 @@ impl WorkspaceState
             }
             None => (default_workspace_snapshot(default_components), false),
         }; // 不查询或分区 Windows 虚拟桌面。
+        // 已保存布局按原样恢复：默认实例只用于新建工作区，用户移除的格子不自动补回。
         snapshot.interaction = WorkspaceInteractionSnapshot::default();
         let members = snapshot.fences.iter().flat_map(|fence| fence.members.iter()).collect::<std::collections::HashSet<_>>(); // 围栏身份权威与桌面位置互斥。
         snapshot.unclassified_items.retain(|item| !members.contains(&item.stable_reference)); // 启动时不将隐藏来源记录带入活动布局。
@@ -145,7 +154,7 @@ impl WorkspaceState
         crate::log_info!("工作区：统一布局恢复完成，修订={}，围栏={}，组件={}，路径={}", snapshot.revision, snapshot.fences.len(), snapshot.components.len(), persistence_path.display());
         let auto_snapshot_directory = persistence_path.with_extension("snapshots"); // 当前工作区快照目录。
         let (auto_snapshot_sender, auto_snapshot_worker) = start_auto_snapshot_worker(auto_snapshot_directory.clone()).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 空闲合并线程。
-        Ok(Self { grid_preferences: Mutex::new(GridPreferences::default()), item_names: Mutex::new(HashMap::new()), snapshot: Mutex::new(snapshot), explorer_layout_imported: Mutex::new(explorer_layout_imported), history: Mutex::new(WorkspaceHistory::default()), persistence_path, auto_snapshot_sender: Some(auto_snapshot_sender), auto_snapshot_worker: Some(auto_snapshot_worker), auto_snapshot_directory })
+        Ok(Self { grid_preferences: Mutex::new(GridPreferences::default()), item_names: Mutex::new(HashMap::new()), snapshot: Mutex::new(snapshot), explorer_layout_imported: Mutex::new(explorer_layout_imported), history: Mutex::new(WorkspaceHistory::default()), persistence_path, capability_declarations: capability_declarations.to_vec(), auto_snapshot_sender: Some(auto_snapshot_sender), auto_snapshot_worker: Some(auto_snapshot_worker), auto_snapshot_directory })
     }
 
     /// 更新 Shell 权威显示名称供后续布局事务排序。
@@ -266,6 +275,41 @@ impl WorkspaceState
             }
         }
         Err(WorkspaceError::invalid_command("工作区没有可用的组件位置"))
+    }
+
+    /// 返回指定组件清单是否声明了创建或移除能力，未注册清单按未声明处理。
+    fn component_declares_capability(&self, component_id: &str, operation: ComponentOperation) -> bool
+    {
+        // 当前操作对应的清单声明字段。
+        let declared = self.capability_declarations.iter().find(|declaration| declaration.component_id == component_id).map(|declaration| match operation
+        {
+            ComponentOperation::Create => declaration.creatable,
+            ComponentOperation::Remove => declaration.removable,
+        });
+        declared.unwrap_or(false)
+    }
+
+    /// 按清单声明校验创建与移除命令的可操作范围，其他命令不做组件能力校验。
+    fn validate_component_capability(&self, layout: &WorkspaceSnapshot, command: &WorkspaceCommand) -> Result<(), WorkspaceError>
+    {
+        let (component_id, operation) = match command
+        {
+            WorkspaceCommand::CreateComponent { component_id, .. } => (component_id.as_str(), ComponentOperation::Create),
+            WorkspaceCommand::RemoveComponent { instance_id } => (layout.components.iter().find(|component| component.instance_id == *instance_id).ok_or_else(|| WorkspaceError::invalid_command("组件实例不存在"))?.component_id.as_str(), ComponentOperation::Remove),
+            _ => return Ok(()),
+        }; // 创建按目标组件身份判定，移除按目标实例所属组件身份判定。
+        if self.component_declares_capability(component_id, operation)
+        {
+            return Ok(());
+        }
+        crate::log_warn!("工作区：组件未声明清单能力，组件={component_id}，操作={operation:?}");
+        // 用户可见的中文拒绝原因。
+        let message = match operation
+        {
+            ComponentOperation::Create => "不支持创建该组件",
+            ComponentOperation::Remove => "不支持移除该组件",
+        };
+        Err(WorkspaceError::invalid_command(message))
     }
 
     /// 将当前完整工作区写入用户指定的手动备份文件。
@@ -482,16 +526,20 @@ impl WorkspaceState
         {
             return Err(WorkspaceError::invalid_command("版本化投放不能提交历史命令"));
         }
-        if matches!(&command, WorkspaceCommand::UndoLayout)
+        self.apply_transaction(monitor_id, vec![command], expected_revision)
+    }
+
+    /// 校验并按顺序应用事务内的全部命令，最后原子提交一个撤销单元。
+    fn apply_transaction(&self, monitor_id: Option<&str>, commands: Vec<WorkspaceCommand>, expected_revision: Option<u64>) -> Result<WorkspaceSnapshot, WorkspaceError>
+    {
+        if matches!(commands.first(), Some(WorkspaceCommand::UndoLayout))
         {
             return self.restore_layout_history(false).map(|result| result.snapshot);
         }
-        if matches!(&command, WorkspaceCommand::RedoLayout)
+        if matches!(commands.first(), Some(WorkspaceCommand::RedoLayout))
         {
             return self.restore_layout_history(true).map(|result| result.snapshot);
         }
-        // 围栏滚动由拖动事务或当前滚动位置直接提交，不形成独立撤销单元。
-        let records_history = !matches!(&command, WorkspaceCommand::SetFolderPortalAppearance { .. } | WorkspaceCommand::SetFenceScroll { .. } | WorkspaceCommand::UpdateComponentState { .. } | WorkspaceCommand::SetTileAppearance { .. } | WorkspaceCommand::RenameFence { .. } | WorkspaceCommand::SetFenceAutoExpand { .. } | WorkspaceCommand::SetFenceCollapsed { .. });
         // 等待事务提交的当前工作区快照。
         let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?;
         if expected_revision.is_some_and(|revision| revision != current.revision)
@@ -503,15 +551,25 @@ impl WorkspaceState
         let mut next = current.clone();
         // 布局事务前的运行期交互状态。
         let interaction = next.interaction.clone();
-        // 当前命令用于中文日志的稳定名称。
-        let command = match command
+        // 本事务内是否产生独立撤销单元；状态与外观提交不进入历史。
+        let mut records_history = false;
+        // 本事务用于中文日志的最后一个稳定命令名称。
+        let mut command_name = "";
+        for command in commands
         {
-            WorkspaceCommand::RenameFence { fence_id, title } => WorkspaceCommand::SetTileAppearance { target: WorkspaceFocusTarget::Fence { fence_id }, change: crate::contracts::TileAppearanceChange::Title(title) },
-            WorkspaceCommand::SetFenceAutoExpand { fence_id, enabled } => WorkspaceCommand::SetTileAppearance { target: WorkspaceFocusTarget::Fence { fence_id }, change: crate::contracts::TileAppearanceChange::AutoExpand(enabled) },
-            WorkspaceCommand::SetFenceCollapsed { fence_id, collapsed } => WorkspaceCommand::SetTileAppearance { target: WorkspaceFocusTarget::Fence { fence_id }, change: crate::contracts::TileAppearanceChange::Collapsed(collapsed) },
-            command => command,
-        }; // 所有公共外观入口使用同一校验和共享保存边界。
-        let command_name = next.apply(command, monitor_id)?;
+            // 围栏滚动由拖动事务或当前滚动位置直接提交，不形成独立撤销单元。
+            records_history |= !matches!(&command, WorkspaceCommand::SetFolderPortalAppearance { .. } | WorkspaceCommand::SetFenceScroll { .. } | WorkspaceCommand::UpdateComponentState { .. } | WorkspaceCommand::SetTileAppearance { .. } | WorkspaceCommand::RenameFence { .. } | WorkspaceCommand::SetFenceAutoExpand { .. } | WorkspaceCommand::SetFenceCollapsed { .. });
+            self.validate_component_capability(&next, &command)?; // 创建与移除只按目标组件清单声明判定可操作范围，同一事务的前序结果可见。
+            // 当前命令用于中文日志的稳定名称。
+            let normalized = match command
+            {
+                WorkspaceCommand::RenameFence { fence_id, title } => WorkspaceCommand::SetTileAppearance { target: WorkspaceFocusTarget::Fence { fence_id }, change: crate::contracts::TileAppearanceChange::Title(title) },
+                WorkspaceCommand::SetFenceAutoExpand { fence_id, enabled } => WorkspaceCommand::SetTileAppearance { target: WorkspaceFocusTarget::Fence { fence_id }, change: crate::contracts::TileAppearanceChange::AutoExpand(enabled) },
+                WorkspaceCommand::SetFenceCollapsed { fence_id, collapsed } => WorkspaceCommand::SetTileAppearance { target: WorkspaceFocusTarget::Fence { fence_id }, change: crate::contracts::TileAppearanceChange::Collapsed(collapsed) },
+                command => command,
+            }; // 所有公共外观入口使用同一校验和共享保存边界。
+            command_name = next.apply(normalized, monitor_id)?;
+        }
         self.sort_fences(&mut next)?;
         if next == *current
         {
@@ -1755,13 +1813,10 @@ impl WorkspaceSnapshot
                 }
                 Ok("解散围栏")
             }
-            WorkspaceCommand::CreateComponent { component_id, bounds } =>
+            WorkspaceCommand::CreateComponent { component_id, bounds, state } =>
             {
                 validate_rect(bounds, false)?;
-                if component_id != "official.collect-box"
-                {
-                    return Err(WorkspaceError::invalid_command("不支持创建该组件"));
-                }
+                validate_component_state(1, &state)?;
                 let monitor_id = self.command_monitor_id(monitor_id)?;
                 let mut suffix = self.components.len() + 1;
                 let instance_id = loop
@@ -1773,20 +1828,17 @@ impl WorkspaceSnapshot
                     }
                     suffix += 1;
                 };
-                self.components.push(ComponentInstanceSnapshot { instance_id, component_id, monitor_id, projection_monitor_id: None, projection_bounds: None, bounds, state_version: 1, state: serde_json::json!({}) });
+                self.components.push(ComponentInstanceSnapshot { instance_id, component_id, monitor_id, projection_monitor_id: None, projection_bounds: None, bounds, state_version: 1, state });
                 Ok("创建组件")
             }
             WorkspaceCommand::RemoveComponent { instance_id } =>
             {
-                if self.component_mut(&instance_id)?.component_id != "official.collect-box"
-                {
-                    return Err(WorkspaceError::invalid_command("仅支持移除收集箱格子"));
-                }
+                self.component_mut(&instance_id)?; // 目标实例必须存在才能移除。
                 // 外观独立于布局历史保留，并占用旧身份，避免新格子继承旧偏好。
                 self.tile_appearances.entry(format!("component:{instance_id}")).or_default();
                 self.components.retain(|component| component.instance_id != instance_id);
                 self.normalize_interaction();
-                Ok("移除收集箱格子")
+                Ok("移除组件")
             }
             WorkspaceCommand::UpdateComponentBounds { instance_id, bounds } =>
             {
@@ -1801,15 +1853,7 @@ impl WorkspaceSnapshot
             }
             WorkspaceCommand::UpdateComponentState { instance_id, state_version, state } =>
             {
-                if state_version == 0
-                {
-                    return Err(WorkspaceError::invalid_command("组件状态版本无效"));
-                }
-                let state_size = serde_json::to_vec(&state).map_err(|error| WorkspaceError::invalid_command(format!("组件状态无效: {error}")))?.len(); // 组件持久状态的 UTF-8 JSON 字节数。
-                if state_size > 64 * 1024
-                {
-                    return Err(WorkspaceError::invalid_command("组件状态超过 64 KiB 限制"));
-                }
+                validate_component_state(state_version, &state)?;
                 let component = self.component_mut(&instance_id)?; // 等待提交版本化状态的组件实例。
                 component.state_version = state_version;
                 component.state = state;
@@ -2085,6 +2129,26 @@ fn validate_rect(bounds: WorkspaceRect, projection: bool) -> Result<(), Workspac
     if !bounds.left.is_finite() || !bounds.top.is_finite() || !bounds.width.is_finite() || !bounds.height.is_finite() || bounds.width <= 0.0 || bounds.height <= 0.0 || (!projection && (bounds.width < TILE_MIN_WIDTH || bounds.height < TILE_MIN_HEIGHT))
     {
         return Err(WorkspaceError::invalid_command("格子边界无效"));
+    }
+    Ok(())
+}
+
+/// 创建与更新共用同一份组件状态版本和体积校验。
+fn validate_component_state(state_version: u32, state: &serde_json::Value) -> Result<(), WorkspaceError>
+{
+    if state_version == 0
+    {
+        return Err(WorkspaceError::invalid_command("组件状态版本无效"));
+    }
+    if state.is_null()
+    {
+        return Err(WorkspaceError::invalid_command("组件状态无效"));
+    }
+    // 组件持久状态的 UTF-8 JSON 字节数。
+    let state_size = serde_json::to_vec(state).map_err(|error| WorkspaceError::invalid_command(format!("组件状态无效: {error}")))?.len();
+    if state_size > 64 * 1024
+    {
+        return Err(WorkspaceError::invalid_command("组件状态超过 64 KiB 限制"));
     }
     Ok(())
 }

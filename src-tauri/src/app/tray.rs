@@ -63,6 +63,10 @@ pub(crate) fn set_settings_visible(app: &AppHandle, visible: bool) -> tauri::Res
             window.on_window_event(move |event| {
                 if matches!(event, WindowEvent::Destroyed)
                 {
+                    if let Some(state) = handle.try_state::<crate::weather::WeatherState>()
+                    {
+                        state.cancel_all();
+                    }
                     if let Some(state) = handle.try_state::<TrayState>()
                     {
                         let _ = state.toggle.set_text("显示设置");

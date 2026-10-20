@@ -10,6 +10,14 @@ test("图片预览宽度使用默认值并验证整数边界", () => {
 
 import { parsePreferences, parseSettingsSnapshot, resolveAnimationsEnabled } from "./settings.ts";
 
+test("天气显示偏好默认关闭，往返保留并拒绝非布尔值", () => {
+    const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 缺失字段采用当前默认值。
+    assert.equal(defaults.weatherEnabled, false);
+    for (const weatherEnabled of [true, false])
+        assert.equal(parsePreferences(JSON.parse(JSON.stringify({ ...defaults, weatherEnabled }))).weatherEnabled, weatherEnabled);
+    for (const weatherEnabled of [null, 1, "true"]) assert.throws(() => parsePreferences({ ...defaults, weatherEnabled }));
+});
+
 test("刷新策略默认关闭，保存往返保留开关并拒绝错误类型", () => {
     const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 当前缺省策略。
     for (const key of ["pauseOnFullscreen", "pauseOnFocus"] as const) {

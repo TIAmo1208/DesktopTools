@@ -141,7 +141,7 @@ pub(crate) struct SourceDragSession
     pub pointer_offset: crate::contracts::WorkspacePoint, // 指针相对锚点表面的 DIP 偏移，跨屏保持。
     data: windows::core::AgileReference<IDataObject>,     // 在目标 apartment 重新解析真实 COM 身份。
     pub item_ids: Vec<String>,                            // 源端已经校验的完整选择，顺序以锚点开头。
-    pub collect_names: Option<Vec<String>>, // 收集条目身份只从本进程登记读取。
+    pub collect_names: Option<Vec<String>>,               // 收集条目身份只从本进程登记读取。
     pub portal_source: bool,                              // 门户来源跨本程序目标也必须执行真实文件传输。
     pub layout_committed: std::sync::atomic::AtomicBool,  // 内部完成不通过文件移动效果反馈。
 }

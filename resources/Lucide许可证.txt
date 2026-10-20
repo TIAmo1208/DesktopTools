@@ -1,4 +1,7 @@
-适用于 music-skip-back.svg、music-skip-forward.svg、music-play.svg、music-pause.svg。
+适用于 music-skip-back.svg、music-skip-forward.svg、music-play.svg、music-pause.svg、
+info.svg、weather-back.svg、weather-check.svg、weather-chevron-right.svg、weather-close.svg、
+weather-eye.svg、weather-eye-off.svg、weather-search.svg、weather-trash.svg、
+menu-weather.svg。
 来源：https://github.com/lucide-icons/lucide
 
 ISC License

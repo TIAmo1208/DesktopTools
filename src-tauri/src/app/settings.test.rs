@@ -1,6 +1,37 @@
 use super::*;
 use crate::contracts::settings::ApplicationTheme;
 
+/// 天气显示偏好沿用真实保存入口，缺失字段默认关闭且不接受伪布尔值。
+#[test]
+fn weather_visibility_defaults_and_persists()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-weather-preference-{}", std::process::id())); // 本测试独占目录。
+    let path = directory.join("settings.json"); // 普通偏好文件，不含凭据。
+    let state = SettingsState::load(path.clone()).unwrap(); // 真实加载入口。
+    let mut preferences = state.preferences().unwrap(); // 待保存偏好。
+    assert!(!preferences.weather_enabled);
+    for enabled in [true, false]
+    {
+        preferences.weather_enabled = enabled;
+        state.save(preferences.clone()).unwrap();
+        assert_eq!(SettingsState::load(path.clone()).unwrap().preferences().unwrap(), preferences);
+    }
+    assert!(!serde_json::from_str::<ApplicationPreferences>("{}").unwrap().weather_enabled);
+    assert!(serde_json::from_str::<ApplicationPreferences>(r#"{"weatherEnabled":"true"}"#).is_err());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// 已移除的天气来源偏好字段不参与反序列化，天气显隐仍按当前字段取值。
+#[test]
+fn retired_weather_source_preference_is_ignored()
+{
+    let enabled: ApplicationPreferences = serde_json::from_str(r#"{"weatherSource":"foreca","weatherEnabled":true}"#).unwrap(); // 旧版本遗留的来源字段。
+    assert!(enabled.weather_enabled, "天气显隐按当前字段恢复");
+    assert!(serde_json::to_value(&enabled).unwrap().get("weatherSource").is_none(), "已移除字段不再写回");
+    let disabled: ApplicationPreferences = serde_json::from_str(r#"{"weatherSource":"qweather","weatherEnabled":false}"#).unwrap();
+    assert!(!disabled.weather_enabled);
+}
+
 /// 格式正确的相对路径在应用层拒绝，文件和权威偏好保持原样。
 #[test]
 fn invalid_resolved_directory_preserves_saved_preferences()

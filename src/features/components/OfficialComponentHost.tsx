@@ -10,6 +10,7 @@ import { CollectBoxTile } from "../tile-content/collect-box/CollectBoxTile";
 import { MusicTile } from "../tile-content/music/MusicTile";
 import { ClockTile } from "../tile-content/clock/LocalClock";
 import { DebugTile } from "../tile-content/debug/DebugTest";
+import { WeatherTile } from "../tile-content/weather/WeatherTile";
 import "./OfficialComponentHost.css";
 
 /** 官方组件宿主接收的工作区实例和命令边界。 */
@@ -50,8 +51,10 @@ export const OfficialComponentHost = ({
               ? preferences?.debugEnabled !== false && runtime?.manifests.some((manifest) => manifest.id === "official.debug-test")
               : instance.componentId === "official.music-control"
                 ? preferences?.musicEnabled === true
-                : instance.componentId === "official.collect-box"
+              : instance.componentId === "official.collect-box"
                   ? preferences?.collectEnabled !== false
+                  : instance.componentId === "official.weather"
+                    ? preferences?.weatherEnabled === true
                   : true,
     ); // Release 没有 Debug 注册入口。
 
@@ -104,6 +107,7 @@ export const OfficialComponentHost = ({
                     onEndInputDrag,
                 }; // 每个实例沿用同一运行时与命令契约。
                 if (instance.componentId === "official.collect-box") return <CollectBoxTile key={instance.instanceId} {...props} />;
+                if (instance.componentId === "official.weather") return <WeatherTile key={instance.instanceId} {...props} />;
                 if (instance.componentId === "official.music-control") return <MusicTile key={instance.instanceId} {...props} />;
                 if (instance.componentId === "official.local-clock") return <ClockTile key={instance.instanceId} {...props} />;
                 if (instance.componentId === "official.debug-test")

@@ -1,0 +1,313 @@
+/* 天气内容按实际可用宽高选择稳定模块组合。 */
+.weather-tile__summary {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    min-height: 0;
+    gap: 8px;
+    font-size: var(--interface-font-size);
+}
+/* 模块使用留白与分隔线表达独立状态，不嵌套卡片。 */
+.weather-tile__modules {
+    position: relative;
+    display: grid;
+    align-content: start;
+    min-width: 0;
+    min-height: 0;
+    gap: 8px;
+}
+.weather-tile__modules[data-mode="hourly"] {
+    grid-template-columns: max-content minmax(0, 1fr);
+}
+.weather-tile__modules[data-mode="full"] {
+    grid-template-rows: auto auto;
+}
+/* 当前天气突出温度，摘要与完整视图共用身份。 */
+.weather-tile__module {
+    min-width: 0;
+    padding-top: 6px;
+    border-top: 1px solid var(--fence-text);
+}
+.weather-tile__current {
+    border-top: 0;
+    padding-top: 0;
+}
+.weather-tile__current-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+.weather-tile__current strong {
+    font-size: calc(var(--interface-font-size) * 2.46);
+    font-weight: 400;
+    line-height: 1;
+}
+.weather-tile__summary.is-summary .weather-tile__current strong {
+    font-size: calc(var(--interface-font-size) * 2);
+}
+.weather-tile__current span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.weather-tile__current small {
+    display: block;
+    margin-top: 8px;
+    font-size: calc(var(--interface-font-size) - 1px);
+}
+/* 模块级加载和失败提示不改变其他模块的布局。 */
+.weather-tile__module-notice {
+    margin: 8px 0 0;
+    color: var(--color-surface);
+    font-size: calc(var(--interface-font-size) - 1px);
+}
+/* 统一天气图标尺寸与主题颜色。 */
+.weather-tile__glyph {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+}
+.weather-tile__current .weather-tile__glyph {
+    width: 28px;
+    height: 28px;
+}
+/* 小时预报按设计分页，避免横向滚动隐藏内容。 */
+.weather-tile__hourly-module > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.weather-tile__module h3 {
+    margin: 0;
+    font-size: var(--interface-font-size);
+    font-weight: 400;
+}
+.weather-tile__hourly-module header div {
+    display: flex;
+    gap: 4px;
+}
+.weather-tile__hourly-module button {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+}
+.weather-tile__hourly-module button:disabled {
+    opacity: 0.48;
+    cursor: default;
+}
+.weather-tile__hourly {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+}
+.weather-tile__hour {
+    display: grid;
+    justify-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.weather-tile__hour small {
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+}
+.weather-tile__hour span {
+    font-size: var(--interface-font-size);
+}
+/* 日预报窄高纵排，完整视图横排全部七天。 */
+.weather-tile__daily {
+    display: grid;
+    gap: 5px;
+    margin-top: 8px;
+}
+.weather-tile__day {
+    display: grid;
+    grid-template-columns: 42px 18px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    min-height: 22px;
+}
+.weather-tile__day small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.weather-tile__day strong {
+    font-size: calc(var(--interface-font-size) - 1px);
+    font-weight: 400;
+    white-space: nowrap;
+}
+.weather-tile__daily-module[data-horizontal="true"] {
+    grid-column: 1 / -1;
+}
+.weather-tile__daily-module[data-horizontal="true"] .weather-tile__daily {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 8px;
+}
+.weather-tile__daily-module[data-horizontal="true"] .weather-tile__day {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+/* 横向日预报的描述按列宽换行，不沿用固定单行宽度，避免相邻列文字相互遮挡。 */
+.weather-tile__daily-module[data-horizontal="true"] .weather-tile__day small {
+    width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
+}
+.weather-tile__daily-module[data-horizontal="true"] .weather-tile__day strong {
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+}
+/* 来源与更新时间贴内容底边，保持固定高度，不分配多余空间。 */
+.weather-tile__footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    height: 18px;
+    align-self: end;
+    padding-top: 3px;
+    border-top: 1px solid var(--fence-text);
+}
+.weather-tile__footer small {
+    overflow: hidden;
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.weather-tile__footer .weather-tile__stale {
+    color: var(--color-error);
+}
+/* 无缓存失败保留清晰文字状态。 */
+.weather-tile__error {
+    margin: 0;
+    color: var(--color-error);
+    font-size: 12px;
+}
+/* 城市选择仅覆盖当前格子，搜索结果留在会话内存。 */
+.weather-tile__picker-backdrop {
+    position: fixed;
+    z-index: 30;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: rgb(0 0 0 / 35%);
+}
+.weather-tile__picker {
+    box-sizing: border-box;
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    gap: 8px;
+    width: min(400px, calc(100vw - 32px));
+    height: min(352px, calc(100vh - 32px));
+    padding: 16px;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    color: var(--color-text);
+    background: var(--color-surface);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+}
+.weather-tile__picker h2 {
+    margin: 0;
+    font-size: 18px;
+}
+.weather-tile__picker form {
+    display: flex;
+    gap: 8px;
+}
+.weather-tile__picker input {
+    min-width: 0;
+    flex: 1;
+    height: 38px;
+    box-sizing: border-box;
+    padding: 6px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: inherit;
+    background: var(--color-subtle);
+    font: inherit;
+}
+.weather-tile__picker button {
+    min-height: 38px;
+    padding: 6px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: inherit;
+    background: var(--color-subtle);
+    font: inherit;
+    cursor: pointer;
+}
+.weather-tile__picker button:disabled {
+    opacity: 0.48;
+    cursor: default;
+}
+.weather-tile__cities {
+    min-height: 0;
+    overflow: auto;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: var(--color-subtle);
+}
+.weather-tile__cities button {
+    display: grid;
+    gap: 4px;
+    width: 100%;
+    min-height: 54px;
+    padding: 8px 12px;
+    border-width: 0 0 1px;
+    border-radius: 0;
+    text-align: left;
+    background: transparent;
+}
+.weather-tile__cities button:last-of-type {
+    border-bottom: 0;
+}
+.weather-tile__cities small {
+    display: block;
+    padding: 12px;
+    color: var(--color-text);
+}
+.weather-tile__cities button small {
+    padding: 0;
+}
+.weather-tile__picker footer {
+    display: flex;
+    justify-content: flex-end;
+}
+
+/* 无城市时的首次使用状态。 */
+.weather-tile__empty {
+    display: grid;
+    grid-row: 1 / -1;
+    place-items: center;
+    gap: 12px;
+    min-height: 100%;
+    color: var(--color-surface);
+    text-align: center;
+}
+
+/* 无城市状态的选择入口。 */
+.weather-tile__empty button {
+    min-height: 32px;
+    padding: 5px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text);
+    background: var(--color-surface);
+    font-weight: 600;
+    font: inherit;
+    cursor: pointer;
+}

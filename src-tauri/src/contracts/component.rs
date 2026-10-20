@@ -33,8 +33,26 @@ pub struct ComponentManifest
     pub entry: String,
     /// 组件明确请求的全部宿主能力。
     pub required_capabilities: Vec<ComponentCapability>,
+    /// 用户是否可从工作区入口创建该组件的新实例。
+    #[serde(default)]
+    pub creatable: bool,
+    /// 用户是否可移除该组件的实例。
+    #[serde(default)]
+    pub removable: bool,
     /// 组件持久状态 Schema 版本。
     pub persistence_version: u32,
+}
+
+/// 官方组件清单对创建与移除能力的声明结果。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComponentCapabilityDeclaration
+{
+    /// 已注册清单的组件包身份。
+    pub component_id: String,
+    /// 用户是否可创建该组件的新实例。
+    pub creatable: bool,
+    /// 用户是否可移除该组件的实例。
+    pub removable: bool,
 }
 
 /// 工作区持久化的一个组件实例。

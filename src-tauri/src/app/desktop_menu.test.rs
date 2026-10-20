@@ -1,3 +1,19 @@
+/// 添加天气沿用固定数字动词转发，其动作与图标资源必须同时登记。
+#[test]
+fn weather_action_is_registered_with_its_icon_source()
+{
+    let (_, label, verb) = super::ACTIONS.iter().find(|entry| entry.0 == "create-weather-tile").expect("Explorer 菜单必须提供添加天气"); // 新增动作的注册表文案与数字动词。
+    assert_eq!((*label, *verb), ("添加天气", 0x780C));
+    assert!(super::command_line(std::path::Path::new(r"C:\Program Files\Desktop Tools\desktop-tools.exe"), "create-weather-tile").unwrap().ends_with("--desktop-menu create-weather-tile"), "动作必须只携带固定数字动词，不带来源、城市或路径");
+
+    let icon = include_str!("../../../resources/menu-weather.svg"); // 与动作表顺序对齐的嵌入资源。
+    assert!(icon.contains("viewBox=\"0 0 24 24\""), "菜单图标必须是可栅格化的 24 单位 SVG");
+    assert!(icon.contains("currentColor"), "图标颜色由使用方样式控制");
+    let sources = [include_str!("../../../resources/menu-fence.svg"), include_str!("../../../resources/menu-folder.svg"), include_str!("../../../resources/menu-collect.svg"), include_str!("../../../resources/menu-weather.svg"), include_str!("../../../resources/menu-settings.svg"), include_str!("../../../resources/menu-exit.svg")]; // 顺序与动作表一致。
+    assert_eq!(sources.len(), super::ACTIONS.len(), "每个动作必须有一份图标资源");
+    assert!(include_str!("../commands/workspace_menu.rs").contains("0x780C"), "两侧菜单必须共用同一个产品命令编号");
+}
+
 /// 动作插入导致序号变化后重复注册，旧子键必须消失且全部当前动作保留。
 #[test]
 fn registration_replaces_stale_actions()

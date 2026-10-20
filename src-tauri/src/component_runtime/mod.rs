@@ -8,7 +8,7 @@ use chrono::Utc;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRuntimeError, ComponentRuntimeSnapshot, WorkspaceRect};
+use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRuntimeError, ComponentRuntimeSnapshot, WorkspaceRect};
 
 /// 官方组件前端注册表当前支持的入口。
 const LOCAL_CLOCK_ENTRY: &str = "official:local-clock";
@@ -18,6 +18,7 @@ const MUSIC_ENTRY: &str = "official:music-control";
 const LOCAL_CLOCK_MANIFEST: &str = include_str!("../../components/official.local-clock.json");
 const MUSIC_MANIFEST: &str = include_str!("../../components/official.music-control.json");
 const COLLECT_MANIFEST: &str = include_str!("../../components/official.collect-box.json");
+const WEATHER_MANIFEST: &str = include_str!("../../components/official.weather.json");
 
 static TIME_CONSUMERS: LazyLock<(Mutex<HashMap<u64, String>>, Condvar)> = LazyLock::new(|| (Mutex::new(HashMap::new()), Condvar::new())); // 独立订阅身份映射到原生宿主。
 static NEXT_TIME_SUBSCRIPTION: AtomicU64 = AtomicU64::new(1); // 重载后的身份不复用。
@@ -27,6 +28,8 @@ pub struct ComponentRuntimeState
 {
     /// 已通过清单和能力校验的官方组件注册表。
     manifests: HashMap<String, ComponentManifest>,
+    /// 已注册清单声明的创建与移除能力，按身份稳定排序。
+    declarations: Vec<ComponentCapabilityDeclaration>,
     /// 单个清单失败但不阻塞其他组件的结果。
     failures: Vec<ComponentRegistrationFailure>,
     /// 统一工作区的实例注册结果。
@@ -45,7 +48,7 @@ impl ComponentRuntimeState
     /// 加载全部官方组件清单，单个失败只形成隔离错误。
     pub fn new() -> Self
     {
-        let mut sources = vec![("official.local-clock", LOCAL_CLOCK_MANIFEST), ("official.music-control", MUSIC_MANIFEST), ("official.collect-box", COLLECT_MANIFEST)]; // Release 只注册正式功能。
+        let mut sources = vec![("official.local-clock", LOCAL_CLOCK_MANIFEST), ("official.music-control", MUSIC_MANIFEST), ("official.collect-box", COLLECT_MANIFEST), ("official.weather", WEATHER_MANIFEST)]; // Release 只注册正式功能。
         if cfg!(debug_assertions)
         {
             sources.push(("official.debug-test", include_str!("../../components/official.debug-test.json")));
@@ -75,6 +78,9 @@ impl ComponentRuntimeState
         }
         instances
     }
+
+    /// 返回全部已注册清单声明的创建与移除能力，供工作区命令校验可操作范围。
+    pub fn capability_declarations(&self) -> &[ComponentCapabilityDeclaration] { &self.declarations }
 
     /// 校验并注册统一工作区的全部组件实例。
     pub fn snapshot(&self, instances: &[ComponentInstanceSnapshot]) -> Result<ComponentRuntimeSnapshot, ComponentRuntimeError>
@@ -218,7 +224,7 @@ impl ComponentRuntimeState
                 }
             }
         }
-        Self { manifests, failures, instances: Mutex::new(Vec::new()), revision: AtomicU64::new(1), next_event_sequence: AtomicU64::new(1), latest_host_event: Mutex::new(None) }
+        Self { declarations: capability_declarations(&manifests), manifests, failures, instances: Mutex::new(Vec::new()), revision: AtomicU64::new(1), next_event_sequence: AtomicU64::new(1), latest_host_event: Mutex::new(None) }
     }
 
     /// 将一个持久实例转换为成功或失败的隔离注册结果。
@@ -237,6 +243,14 @@ impl ComponentRuntimeState
     }
 }
 
+/// 提取已注册清单声明的创建与移除能力，并按组件身份稳定排序。
+fn capability_declarations(manifests: &HashMap<String, ComponentManifest>) -> Vec<ComponentCapabilityDeclaration>
+{
+    let mut declarations = manifests.values().map(|manifest| ComponentCapabilityDeclaration { component_id: manifest.id.clone(), creatable: manifest.creatable, removable: manifest.removable }).collect::<Vec<_>>(); // 每个成功注册清单对应一项能力声明。
+    declarations.sort_by(|first, second| first.component_id.cmp(&second.component_id));
+    declarations
+}
+
 /// 校验官方组件清单身份、入口、能力和持久化版本。
 fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntimeError>
 {
@@ -250,7 +264,8 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
     }
     let debug_manifest = cfg!(debug_assertions) && manifest.id == "official.debug-test" && manifest.entry == "official:debug-test"; // 仅 Debug 可注册测试入口。
     let collect_manifest = manifest.id == "official.collect-box" && manifest.entry == "official:collect-box";
-    if manifest.entry != LOCAL_CLOCK_ENTRY && manifest.entry != MUSIC_ENTRY && !debug_manifest && !collect_manifest
+    let weather_manifest = manifest.id == "official.weather" && manifest.entry == "official:weather";
+    if manifest.entry != LOCAL_CLOCK_ENTRY && manifest.entry != MUSIC_ENTRY && !debug_manifest && !collect_manifest && !weather_manifest
     {
         return Err(ComponentRuntimeError::invalid_manifest("组件前端入口不受支持"));
     }
@@ -258,7 +273,7 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
     {
         return Err(ComponentRuntimeError::invalid_manifest("组件持久化版本无效"));
     }
-    if (debug_manifest || collect_manifest) && manifest.required_capabilities.is_empty()
+    if (debug_manifest || collect_manifest || weather_manifest) && manifest.required_capabilities.is_empty()
     {
         return Ok(());
     }

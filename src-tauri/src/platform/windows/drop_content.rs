@@ -15,8 +15,8 @@ const TEXT_LIMIT: usize = 1024 * 1024; // UTF-16 原始正文上限。
 #[derive(Clone, Default)]
 pub(crate) struct ContentOffer
 {
-    pub collect_source: bool, // 可信内部收集来源只复制条目内容。
-    pub has_images: bool, // 只有真实图片文件受图片移动偏好影响。
+    pub collect_source: bool,       // 可信内部收集来源只复制条目内容。
+    pub has_images: bool,           // 只有真实图片文件受图片移动偏好影响。
     pub files: bool,                // 完整集合包含文件表示，不能降级到文字绕过白名单。
     pub targets: Vec<&'static str>, // 可接收内容的业务类型。
     image: Option<u16>,             // PNG 优先，其次 DIB。
@@ -52,7 +52,14 @@ pub(crate) fn content_effect(offer: &ContentOffer, target: &str, mode: &str, all
     {
         return DROPEFFECT_NONE;
     }
-    let expected = if target == COLLECT && offer.has_images && !offer.collect_source && mode == "move" { DROPEFFECT_MOVE } else { DROPEFFECT_COPY }; // 路径链接不等于 OLE LINK。
+    let expected = if target == COLLECT && offer.has_images && !offer.collect_source && mode == "move"
+    {
+        DROPEFFECT_MOVE
+    }
+    else
+    {
+        DROPEFFECT_COPY
+    }; // 路径链接不等于 OLE LINK。
     if super::drop_target::negotiated_effect(allowed, keys, expected, false) == expected
     {
         expected
@@ -75,22 +82,40 @@ pub(crate) fn collect_file_paths(data: &IDataObject) -> Result<Vec<String>, Stri
     }
     let mut medium = unsafe { data.GetData(&format(15)) }.map_err(|error| format!("读取拖入文件失败：{error}"))?; // 所有退出路径释放介质。
     let result = (|| {
-        if medium.tymed != TYMED_HGLOBAL.0 as u32 { return Err("拖入文件介质无效".into()); }
+        if medium.tymed != TYMED_HGLOBAL.0 as u32
+        {
+            return Err("拖入文件介质无效".into());
+        }
         let memory = unsafe { medium.u.hGlobal }; // 验证类型后访问联合体。
         let size = unsafe { GlobalSize(memory) }; // 系统解析前限制外部内存规模。
-        if size < 20 || size > 2 * 1024 * 1024 { return Err("拖入文件路径超过限制或无效".into()); }
+        if size < 20 || size > 2 * 1024 * 1024
+        {
+            return Err("拖入文件路径超过限制或无效".into());
+        }
         let drop = windows::Win32::UI::Shell::HDROP(memory.0); // Shell 原生支持 ANSI 和 Unicode DROPFILES。
         let count = unsafe { windows::Win32::UI::Shell::DragQueryFileW(drop, u32::MAX, None) }; // 顶层路径数量。
-        if count == 0 || count > 512 { return Err("拖入文件数量无效或超过 512 项".into()); }
+        if count == 0 || count > 512
+        {
+            return Err("拖入文件数量无效或超过 512 项".into());
+        }
         let mut paths = Vec::new(); // 保留顺序和当前已失效路径，由业务逐项校验。
         for index in 0..count
         {
             let length = unsafe { windows::Win32::UI::Shell::DragQueryFileW(drop, index, None) }; // 系统解析后的 UTF-16 长度。
-            if length == 0 || length > 32767 { return Err("拖入文件路径长度无效".into()); }
+            if length == 0 || length > 32767
+            {
+                return Err("拖入文件路径长度无效".into());
+            }
             let mut words = vec![0u16; length as usize + 1]; // 有界路径缓冲区。
-            if unsafe { windows::Win32::UI::Shell::DragQueryFileW(drop, index, Some(&mut words)) } != length { return Err("拖入文件路径读取失败".into()); }
+            if unsafe { windows::Win32::UI::Shell::DragQueryFileW(drop, index, Some(&mut words)) } != length
+            {
+                return Err("拖入文件路径读取失败".into());
+            }
             let path = String::from_utf16(&words[..length as usize]).map_err(|_| "拖入文件路径编码无效")?; // 不接受损坏代理项。
-            if !Path::new(&path).is_absolute() { return Err("拖入文件路径必须是绝对路径".into()); }
+            if !Path::new(&path).is_absolute()
+            {
+                return Err("拖入文件路径必须是绝对路径".into());
+            }
             paths.push(path);
         }
         Ok(paths)
@@ -111,7 +136,10 @@ pub(crate) fn offer(data: &IDataObject, paths: &[String]) -> ContentOffer
         let collect_source = super::drop_target::source_drag_session(data).is_some_and(|session| session.collect_names.is_some()); // 只信任本进程真实 COM 身份。
         let has_images = paths.iter().any(|path| Path::new(path).is_file() && Path::new(path).extension().and_then(|value| value.to_str()).is_some_and(|value| ["png", "jpg", "jpeg", "gif", "bmp", "webp", "ico"].contains(&value.to_ascii_lowercase().as_str()))); // 普通文件映射不请求源端移动。
         let mut targets = file_targets(paths); // 媒体保持整体白名单。
-        if collect_source && !targets.contains(&COLLECT) { targets.push(COLLECT); }
+        if collect_source && !targets.contains(&COLLECT)
+        {
+            targets.push(COLLECT);
+        }
         return ContentOffer { files, targets, collect_source, has_images, ..Default::default() };
     }
     let png = unsafe { RegisterClipboardFormatW(w!("PNG")) } as u16; // 常见浏览器与图像编辑器的 PNG 格式。
