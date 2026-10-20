@@ -57,11 +57,12 @@ pub fn get_weather_cities(app: tauri::AppHandle, source: Source) -> Result<Vec<C
 #[tauri::command]
 pub async fn search_weather_cities(app: tauri::AppHandle, source: Source, query: String) -> Result<Vec<City>, String> { tauri::async_runtime::spawn_blocking(move || app.state::<WeatherState>().search_saved(source, query)).await.map_err(|_| "城市搜索失败".to_string())? }
 
-/// 按来源验证候选城市：候选来自搜索结果，入列前即可校验该来源规则，详情链接规则由该来源决定。
+/// 按来源验证候选城市：搜索命中不能证明可用的来源用已保存凭据请求一次当前天气，仍不写入城市列表。
 #[tauri::command]
-pub fn validate_weather_city(source: Source, city: City) -> Result<City, String>
+pub async fn validate_weather_city(app: tauri::AppHandle, source: Source, city: City) -> Result<City, String>
 {
-    crate::weather::validate_city_for_source(source, &city)?; // 校验只依赖来源规则与候选对象，不读取运行期状态。
+    let target = city.clone(); // 验证结果原样返回给调用方。
+    tauri::async_runtime::spawn_blocking(move || app.state::<WeatherState>().validate_for_source(source, &target)).await.map_err(|_| "城市验证失败".to_string())??;
     Ok(city)
 }
 

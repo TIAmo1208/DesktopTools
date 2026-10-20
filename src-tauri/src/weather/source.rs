@@ -24,4 +24,14 @@ impl Source
             Source::Foreca => "foreca",
         }
     }
+
+    /// 该来源的搜索命中是否等价于位置可用于天气查询；只有官方明确说明时才省略验证请求。
+    pub fn search_hit_proves_weather(self) -> bool
+    {
+        match self
+        {
+            Source::Qweather => false, // 官方另列“位置不支持所查数据”与数据权限错误码，必须真实请求才能判断。
+            Source::Foreca => true,    // 官方 schema 标注位置标识即天气查询标识，搜索命中即可用于天气接口。
+        }
+    }
 }

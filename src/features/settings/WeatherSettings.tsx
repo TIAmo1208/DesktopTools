@@ -330,7 +330,7 @@ export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; le
             if (!picker) return;
             setChecks([]);
             const current = ++revision.current; // 本次验证的前端身份。
-            setStatus("正在验证天气能力…");
+            setStatus("正在验证城市…");
             if (!sourceSaved(picker.source)) {
                 setFailure(true);
                 setStatus("请先保存该来源的凭据，再验证城市");

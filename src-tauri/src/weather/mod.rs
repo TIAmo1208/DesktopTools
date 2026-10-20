@@ -383,6 +383,36 @@ impl WeatherState
     /// 按格子绑定的来源与城市标识读取缓存；城市对象由运行期状态从该来源列表解析。
     pub fn forecast_for_city(&self, source: Source, city_id: &str) -> Result<serde_json::Value, String> { self.forecast(source, self.city(source, city_id)?) }
 
+    /// 按来源验证候选城市：搜索命中不能证明可用的来源用已保存凭据真实请求一次当前天气。
+    pub fn validate_for_source(&self, source: Source, city: &City) -> Result<(), String>
+    {
+        validate_city_for_source(source, city)?;
+        if source.search_hit_proves_weather()
+        {
+            return Ok(()); // 搜索命中即可用的来源只校验字段与链接，不额外消耗一次请求。
+        }
+        self.probe_saved(source, city)
+    }
+
+    /// 用该来源已保存凭据请求一次当前天气；失败写回可用状态与等待时间，不改变城市列表。
+    fn probe_saved(&self, source: Source, city: &City) -> Result<(), String>
+    {
+        retry_gate(&self.inner.lock().map_err(|_| "天气设置状态不可用")?.retry_at, source)?; // 该来源的等待期先于任何请求。
+        let configuration = self.configuration(source); // 本次验证所属的配置代次。
+        let credentials = credentials::load(source, &self.record(source))?.ok_or("该来源尚未配置凭据")?;
+        let result = Backend::new(Arc::new(credentials), configuration.cancelled).and_then(|backend| backend.probe(city));
+        if self.configuration(source).revision != configuration.revision
+        {
+            return Err("天气配置已改变，旧城市验证已取消".into()); // 配置更换后的结果不作为本次结论。
+        }
+        self.observe(source, result.as_ref().err().cloned()); // 与列表探测共用可用状态记账。
+        if let Some(retry_at) = result.as_ref().err().and_then(|failure| failure.retry_at)
+        {
+            self.record_retry(source, retry_at); // 服务端要求等待时同样约束该来源的后续请求。
+        }
+        result.map_err(|failure| failure.message)
+    }
+
     /// 把城市写入该来源的列表，同一标识重复添加不产生重复项。
     pub fn save_city(&self, source: Source, city: City) -> Result<City, String>
     {

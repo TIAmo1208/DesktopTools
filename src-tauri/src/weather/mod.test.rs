@@ -429,6 +429,23 @@ fn retry_gate_is_scoped_to_the_limited_source()
     assert!(retry_gate(&std::collections::BTreeMap::new(), Source::Qweather).is_ok(), "没有等待记录时不拦截");
 }
 
+/// 验证按来源文档声明区分：搜索命中即可用的来源只校验格式，其余来源必须用已保存凭据真实请求。
+#[test]
+fn city_validation_only_requests_when_the_source_cannot_guarantee_availability()
+{
+    let _credentials = serialize_credentials(); // 与其它涉凭据用例串行。
+    let directory = test_directory("validation-source");
+    let state = WeatherState::for_test(&directory, ""); // 空记录名不触碰真实凭据。
+    let foreca = foreca_city("100184745", "北京");
+    assert!(state.validate_for_source(Source::Foreca, &foreca).is_ok(), "搜索命中即可用的来源只校验格式，不读取凭据");
+    let qweather = qweather_city("101010100");
+    let error = state.validate_for_source(Source::Qweather, &qweather).err().expect("无法证明可用的来源必须请求");
+    assert!(error.contains("凭据"), "缺少已保存凭据时给出可读原因且不触网：{error}");
+    let invalid_link = City { fx_link: "https://example.com/weather".into(), ..qweather };
+    assert!(state.validate_for_source(Source::Qweather, &invalid_link).is_err(), "公共与来源规则先于网络请求执行");
+    let _ = std::fs::remove_dir_all(directory);
+}
+
 /// 真实搜索入口遵守该来源的等待期，另一个来源仍进入自己的凭据读取。
 #[test]
 fn saved_search_respects_the_source_retry_gate()

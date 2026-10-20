@@ -293,7 +293,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         {
             let source: crate::weather::Source = command_argument(&arguments, "source", "天气来源参数无效").map_err(serialize_error)?;
             let city: crate::weather::City = command_argument(&arguments, "city", "天气城市参数无效").map_err(serialize_error)?;
-            crate::weather::validate_city_for_source(source, &city).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(|()| serialize_result(city))
+            app.state::<crate::weather::WeatherState>().validate_for_source(source, &city).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(|()| serialize_result(city))
         }
         "create_weather_tile" =>
         {
