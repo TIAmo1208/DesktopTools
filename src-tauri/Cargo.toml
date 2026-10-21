@@ -1,6 +1,6 @@
 [package]
 name = "desktop-tools"
-version = "0.3.0"
+version = "0.3.1"
 description = "Windows desktop content workspace"
 edition = "2024"
 build = "build.rs"

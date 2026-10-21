@@ -16,6 +16,7 @@
         "windows": {
             "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
             "nsis": {
+                "template": "installer/installer.nsi",
                 "installMode": "currentUser",
                 "languages": ["SimpChinese"],
                 "installerHooks": "installer/hooks.nsh"

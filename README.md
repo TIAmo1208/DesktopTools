@@ -53,7 +53,7 @@ npm run build
 npm run tauri:build
 ```
 
-`npm run build` 生成前端发布资源；`npm run tauri:build` 生成 Windows 应用构建产物。未签名的 Windows x64 测试安装包可通过 `npm run tauri:installer` 生成，NSIS 产物位于 `build/target/release/bundle/nsis/`。
+`npm run build` 生成前端发布资源；`npm run tauri:build` 生成 Windows 应用构建产物。未签名的 Windows x64 测试安装包可通过 `npm run tauri:installer` 生成，NSIS 产物位于 `build/target/release/bundle/nsis/`。已安装旧版本时，重装页默认勾选“添加/重新安装组件”并直接覆盖安装，勾选“卸载 Desktop Tools”则先卸载再安装；降级安装须先勾选卸载确认才能继续。
 
 ## 使用说明
 
