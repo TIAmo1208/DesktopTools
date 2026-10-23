@@ -128,6 +128,7 @@ pub fn run()
             commands::audio::start_audio_spectrum,
             commands::audio::stop_audio_spectrum,
             commands::audio::get_audio_spectrum_status,
+            commands::audio::set_audio_device_watch,
             open_desktop_items,
             rename_desktop_item,
             delete_desktop_items,

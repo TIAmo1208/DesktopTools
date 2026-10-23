@@ -32,3 +32,16 @@ export const listenSpectrumDevice = (onStatus: (status: AudioSpectrumStatus) => 
             onError(error);
         }
     });
+
+/** 订阅系统输出设备列表变化，仅在列表真正改变时投递。 */
+export const listenAudioDeviceChanges = (onDevices: (devices: AudioOutputDevice[]) => void, onError: (error: unknown) => void): Promise<UnlistenFn> =>
+    listenRuntime<unknown>("audio-devices-changed", (payload) => {
+        try {
+            onDevices(parseAudioOutputDevices(payload));
+        } catch (error) {
+            onError(error);
+        }
+    });
+
+/** 开关后端设备通知监听，面板关闭后释放监听线程。 */
+export const setAudioDeviceWatch = (active: boolean) => invokeRuntime<void>("set_audio_device_watch", { active });

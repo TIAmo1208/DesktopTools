@@ -15,3 +15,7 @@ pub fn stop_audio_spectrum() { crate::platform::windows::audio::stop() }
 /// 读取采集线程是否仍在运行。
 #[command]
 pub fn get_audio_spectrum_status() -> bool { crate::platform::windows::audio::running() }
+
+/// 开关设置页的设备列表通知监听，关闭面板后立即释放后端监听线程。
+#[command]
+pub fn set_audio_device_watch(app: AppHandle, active: bool) { crate::platform::windows::audio::watch_settings(&app, active); }

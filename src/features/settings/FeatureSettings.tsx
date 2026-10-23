@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { WeatherSettings } from "./WeatherSettings";
-import { listAudioOutputDevices } from "../../bridge/audio";
+import { listAudioOutputDevices, listenAudioDeviceChanges, setAudioDeviceWatch } from "../../bridge/audio";
 import type { AudioOutputDevice } from "../../contracts/audio";
 import type { ApplicationPreferences } from "../../contracts/settings";
 import type { FolderPortalInstance, WorkspaceCommand, WorkspaceSnapshot } from "../../contracts/workspace";
@@ -8,9 +8,7 @@ import { SettingsSwitch } from "./SettingsSwitch";
 import "../tiles/DesktopTileMenu.css";
 import "./FeatureSettings.css";
 
-const AUDIO_DEVICE_POLL_MS = 2000; // 与采集线程的设备检查同节奏，插拔后最多两秒反映到列表。
-
-/** 设备列表逐项相同，避免轮询命中相同结果时触发无意义重渲染。 */
+/** 设备列表逐项相同，避免重复通知触发无意义重渲染。 */
 const sameAudioDevices = (left: AudioOutputDevice[], right: AudioOutputDevice[]) =>
     left.length === right.length &&
     left.every((device, index) => device.id === right[index].id && device.name === right[index].name && device.isDefault === right[index].isDefault);
@@ -41,28 +39,30 @@ export const FeatureSettings = ({
     const [audioDevices, setAudioDevices] = useState<AudioOutputDevice[]>([]); // 进入音乐面板时读取的输出设备。
     useEffect(() => {
         if (detail !== "music") return;
-        let active = true; // 离开面板后忽略迟到的设备列表。
-        let busy = false; // 上一次枚举未返回时跳过本轮，避免请求堆叠。
-        const refresh = async () => {
-            if (busy) return;
-            busy = true;
-            try {
-                const devices = await listAudioOutputDevices();
-                if (active) setAudioDevices((current) => (sameAudioDevices(current, devices) ? current : devices)); // 硬件没有变化事件，只能低频比对列表。
-            } catch {
+        let active = true; // 离开面板后忽略迟到的结果。
+        let unlisten: (() => void) | undefined; // 后端设备通知的退订入口。
+        const apply = (devices: AudioOutputDevice[]) => setAudioDevices((current) => (sameAudioDevices(current, devices) ? current : devices)); // 后端只在列表变化时投递，这里再挡一层重复渲染。
+        void listenAudioDeviceChanges(
+            (devices) => {
+                if (active) apply(devices);
+            },
+            () => {},
+        ).then((stop) => {
+            if (active) unlisten = stop;
+            else stop();
+        });
+        void setAudioDeviceWatch(true).catch(() => {}); // 注册失败时列表停在打开面板时的快照。
+        void listAudioOutputDevices()
+            .then((devices) => {
+                if (active) apply(devices);
+            })
+            .catch(() => {
                 if (active) setAudioDevices((current) => (current.length ? [] : current));
-            } finally {
-                busy = false;
-            }
-        };
-        void refresh();
-        const timer = window.setInterval(() => void refresh(), AUDIO_DEVICE_POLL_MS); // 只在音乐面板打开期间轮询。
-        const handleFocus = () => void refresh(); // 窗口恢复前台时立即对齐，覆盖被节流的定时器。
-        window.addEventListener("focus", handleFocus);
+            });
         return () => {
             active = false;
-            window.clearInterval(timer);
-            window.removeEventListener("focus", handleFocus);
+            unlisten?.();
+            void setAudioDeviceWatch(false).catch(() => {}); // 面板关闭即释放后端监听线程。
         };
     }, [detail]);
     const [selectedPortalId, setSelectedPortalId] = useState<string>(); // 当前单击选中的映射。
