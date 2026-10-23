@@ -1,4 +1,5 @@
 mod application;
+pub mod audio;
 pub mod collect;
 mod component;
 mod desktop_host;
@@ -237,6 +238,20 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
     // 当前本地 transport 命令的统一 JSON 结果。
     let result: Result<Value, Value> = match command
     {
+        "list_audio_output_devices" => serialize_result(audio::list_audio_output_devices()),
+        "start_audio_spectrum" =>
+        {
+            let device: String = command_argument(&arguments, "device", "音频设备参数无效").map_err(serialize_error)?; // 空字符串表示跟随系统默认设备。
+            let bars: u8 = command_argument(&arguments, "bars", "频谱段数参数无效").map_err(serialize_error)?;
+            let fps: u8 = command_argument(&arguments, "fps", "频谱帧率参数无效").map_err(serialize_error)?;
+            audio::start_audio_spectrum(app.clone(), device, bars, fps).map_err(serialize_error).and_then(serialize_result)
+        }
+        "stop_audio_spectrum" =>
+        {
+            audio::stop_audio_spectrum();
+            serialize_result(())
+        }
+        "get_audio_spectrum_status" => serialize_result(audio::get_audio_spectrum_status()),
         "get_current_music_session" => music::get_current_music_session().map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))),
         "request_music_convergence" =>
         {

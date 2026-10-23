@@ -255,6 +255,13 @@ impl WorkspaceState
         Ok(snapshot.clone())
     }
 
+    /// 判断指定显示器上是否呈现该身份组件实例，供高频事件按宿主过滤且不复制整份快照。
+    pub(crate) fn has_component_on_monitor(&self, monitor_id: &str, component_id: &str) -> bool
+    {
+        // 只在布局锁内做一次归属比对。
+        snapshot_has_component(&self.snapshot.lock().unwrap_or_else(|error| error.into_inner()), monitor_id, component_id)
+    }
+
     /// 为新增组件选择当前显示器中不与已有格子重叠的默认边界。
     pub fn next_component_bounds(&self, monitor_id: &str, width: f64, height: f64) -> Result<WorkspaceRect, WorkspaceError>
     {
@@ -2067,6 +2074,9 @@ impl WorkspaceSnapshot
     /// 分配新的围栏最高层级。
     fn next_z_index(&self) -> u32 { self.fences.iter().map(|fence| fence.z_index).chain(self.unclassified_items.iter().map(|item| item.z_index)).max().unwrap_or(0).saturating_add(1) }
 }
+
+/// 判断快照中是否有投射到指定显示器的该身份组件实例。
+fn snapshot_has_component(snapshot: &WorkspaceSnapshot, monitor_id: &str, component_id: &str) -> bool { snapshot.components.iter().any(|component| component.component_id == component_id && component.projection_monitor_id.as_deref().unwrap_or(&component.monitor_id) == monitor_id) }
 
 /// 校验用户可见围栏标题。
 fn validate_title(title: &str) -> Result<(), WorkspaceError>

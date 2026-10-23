@@ -17,6 +17,7 @@
 
 /* 左封面保持正方形，图像不参与布局测量。 */
 .music-control__artwork {
+    position: relative;
     align-self: start;
     width: var(--music-cover);
     height: var(--music-cover);

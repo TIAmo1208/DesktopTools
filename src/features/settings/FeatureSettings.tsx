@@ -1,10 +1,19 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { WeatherSettings } from "./WeatherSettings";
+import { listAudioOutputDevices } from "../../bridge/audio";
+import type { AudioOutputDevice } from "../../contracts/audio";
 import type { ApplicationPreferences } from "../../contracts/settings";
 import type { FolderPortalInstance, WorkspaceCommand, WorkspaceSnapshot } from "../../contracts/workspace";
 import { SettingsSwitch } from "./SettingsSwitch";
 import "../tiles/DesktopTileMenu.css";
 import "./FeatureSettings.css";
+
+const AUDIO_DEVICE_POLL_MS = 2000; // 与采集线程的设备检查同节奏，插拔后最多两秒反映到列表。
+
+/** 设备列表逐项相同，避免轮询命中相同结果时触发无意义重渲染。 */
+const sameAudioDevices = (left: AudioOutputDevice[], right: AudioOutputDevice[]) =>
+    left.length === right.length &&
+    left.every((device, index) => device.id === right[index].id && device.name === right[index].name && device.isDefault === right[index].isDefault);
 
 /** 功能格子开关与二级配置，隐藏不销毁工作区实例。 */
 export const FeatureSettings = ({
@@ -29,6 +38,33 @@ export const FeatureSettings = ({
     leaveGuard: RefObject<((action: () => void) => void) | undefined>; // 天气草稿离开保护。
 }) => {
     const [detail, setDetail] = useState<"clock" | "music" | "collect" | "folder" | "debug" | "weather">(); // 当前二级菜单。
+    const [audioDevices, setAudioDevices] = useState<AudioOutputDevice[]>([]); // 进入音乐面板时读取的输出设备。
+    useEffect(() => {
+        if (detail !== "music") return;
+        let active = true; // 离开面板后忽略迟到的设备列表。
+        let busy = false; // 上一次枚举未返回时跳过本轮，避免请求堆叠。
+        const refresh = async () => {
+            if (busy) return;
+            busy = true;
+            try {
+                const devices = await listAudioOutputDevices();
+                if (active) setAudioDevices((current) => (sameAudioDevices(current, devices) ? current : devices)); // 硬件没有变化事件，只能低频比对列表。
+            } catch {
+                if (active) setAudioDevices((current) => (current.length ? [] : current));
+            } finally {
+                busy = false;
+            }
+        };
+        void refresh();
+        const timer = window.setInterval(() => void refresh(), AUDIO_DEVICE_POLL_MS); // 只在音乐面板打开期间轮询。
+        const handleFocus = () => void refresh(); // 窗口恢复前台时立即对齐，覆盖被节流的定时器。
+        window.addEventListener("focus", handleFocus);
+        return () => {
+            active = false;
+            window.clearInterval(timer);
+            window.removeEventListener("focus", handleFocus);
+        };
+    }, [detail]);
     const [selectedPortalId, setSelectedPortalId] = useState<string>(); // 当前单击选中的映射。
     const [portalMenu, setPortalMenu] = useState<{ portalId: string; left: number; top: number }>(); // 当前跟随鼠标的映射菜单。
     const portalMenuRef = useRef<HTMLMenuElement>(null); // 右键菜单外部点击边界。
@@ -155,6 +191,62 @@ export const FeatureSettings = ({
                             onChange={(checked) => onPreferences({ musicShowSource: checked })}
                         />
                     </div>
+                    <div className="feature-settings__row">
+                        <span>显示实时频谱</span>
+                        <SettingsSwitch
+                            label="显示实时频谱"
+                            disabled={unavailable}
+                            checked={preferences?.musicSpectrumEnabled ?? false}
+                            onChange={(checked) => onPreferences({ musicSpectrumEnabled: checked })}
+                        />
+                    </div>
+                    <label className="feature-settings__row">
+                        <span>频谱采集设备</span>
+                        <select
+                            disabled={unavailable || !preferences?.musicSpectrumEnabled}
+                            value={preferences?.musicSpectrumDevice ?? ""}
+                            onChange={(event) => onPreferences({ musicSpectrumDevice: event.currentTarget.value })}
+                        >
+                            <option value="">跟随系统默认设备</option>
+                            {preferences?.musicSpectrumDevice && !audioDevices.some((device) => device.id === preferences.musicSpectrumDevice) && (
+                                <option value={preferences.musicSpectrumDevice}>已保存的设备（当前不可用，将回退系统默认）</option>
+                            )}
+                            {audioDevices.map((device) => (
+                                <option key={device.id} value={device.id}>
+                                    {device.name}
+                                    {device.isDefault ? "（系统默认）" : ""}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <label className="feature-settings__row">
+                        <span>频谱段数</span>
+                        <select
+                            disabled={unavailable || !preferences?.musicSpectrumEnabled}
+                            value={String(preferences?.musicSpectrumBars ?? 32)}
+                            onChange={(event) => onPreferences({ musicSpectrumBars: Number(event.currentTarget.value) })}
+                        >
+                            {[16, 24, 32, 48, 64].map((bars) => (
+                                <option key={bars} value={String(bars)}>
+                                    {bars} 段
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <label className="feature-settings__row">
+                        <span>频谱帧率</span>
+                        <select
+                            disabled={unavailable || !preferences?.musicSpectrumEnabled}
+                            value={String(preferences?.musicSpectrumFps ?? 30)}
+                            onChange={(event) => onPreferences({ musicSpectrumFps: Number(event.currentTarget.value) })}
+                        >
+                            {[15, 30, 60].map((fps) => (
+                                <option key={fps} value={String(fps)}>
+                                    {fps} 帧/秒
+                                </option>
+                            ))}
+                        </select>
+                    </label>
                 </>
             ) : detail === "collect" ? (
                 <>

@@ -245,7 +245,14 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
 
   // 权威布局、桌面项目及组件注册事件使用真实投递。
   const listen = async (eventName, handler) => {
-    if (eventName === "folder-portal-changed" || eventName === "collect-items-changed" || eventName === "weather-configuration-changed" || eventName === "weather-forecast-changed") {
+    if (
+      eventName === "folder-portal-changed" ||
+      eventName === "collect-items-changed" ||
+      eventName === "weather-configuration-changed" ||
+      eventName === "weather-forecast-changed" ||
+      eventName === "audio-spectrum-changed" ||
+      eventName === "audio-spectrum-device-changed"
+    ) {
       const subscription = { receive: (payload) => { if (!refreshPaused || eventName === "weather-configuration-changed" || payload?.error || payload?.deletedName) handler(payload); } }; // 主动删除即使暂停也必须移除会话缓存。
       if (!eventSubscriptions.has(eventName)) eventSubscriptions.set(eventName, new Set());
       eventSubscriptions.get(eventName).add(subscription);
@@ -296,17 +303,26 @@ fn raw_hwnd(raw: isize) -> HWND { HWND(raw as *mut c_void) }
 pub(crate) fn install_host_events(app: &AppHandle)
 {
     super::refresh_policy::start_events(app);
-    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed"]
+    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed"]
     {
         let handle = app.clone(); // 原生窗口所属的 UI 调度器。
         app.listen(name, move |event| {
             let payload = event.payload().to_string(); // Tauri 已序列化的结构化快照。
             let watcher_failed = name == "folder-portal-changed" && serde_json::from_str::<Value>(&payload).is_ok_and(|value| value.get("error").is_some()); // 暂停仍保留监听故障恢复通道。
+            let spectrum_event = name == crate::platform::windows::audio::SPECTRUM_EVENT || name == crate::platform::windows::audio::SPECTRUM_DEVICE_EVENT; // 唯一按帧发布的高频事件。
+            let task_handle = handle.clone(); // 主线任务持有独立句柄，监听回调仍可重复执行。
             if let Err(error) = handle.run_on_main_thread(move || {
                 let script = format!("window.__DESKTOP_TOOLS_NATIVE__?.dispatch('{name}', {payload});"); // 内部白名单事件名，不执行外部脚本输入。
+                // 频谱只在同时开启音乐控件与频谱时才有订阅者，每帧读一次设置即可。
+                let spectrum_active = spectrum_event && task_handle.state::<crate::app::settings::SettingsState>().preferences().is_ok_and(|preferences| preferences.music_enabled && preferences.music_spectrum_enabled);
+                let workspace = task_handle.state::<crate::workspace::WorkspaceState>(); // 按显示器判断音乐控件归属，避免整份快照拷贝。
                 NATIVE_HOSTS.with(|hosts| {
                     for host in hosts.borrow().iter()
                     {
+                        if spectrum_event && (!spectrum_active || !workspace.has_component_on_monitor(&host.monitor_id, "official.music-control"))
+                        {
+                            continue; // 该屏没有正在显示频谱的音乐控件。
+                        }
                         if name == "component-host-event" && !crate::component_runtime::ComponentRuntimeState::has_time_consumers(&host.monitor_id)
                         {
                             continue;

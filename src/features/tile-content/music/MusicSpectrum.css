@@ -1,0 +1,9 @@
+/* 频谱绝对定位在封面内，不参与布局测量。 */
+.music-spectrum {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    color: var(--fence-text);
+    pointer-events: none;
+}
