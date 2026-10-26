@@ -70,6 +70,8 @@ export const MusicControl = ({
         const information = metadata.current; // 内部信息固有尺寸。
         const buttons = controls.current; // 内部操作固有尺寸。
         if (!onMinimumSizeChange || !element || !information || !buttons) return;
+        const band = spectrumEnabled ? 18 + 6 : 0; // 频谱条带高度及信息下间距。
+        const baseline = spectrumEnabled ? MUSIC_CONTROL_MINIMUM_SIZE.height + 18 : MUSIC_CONTROL_MINIMUM_SIZE.height; // 打开频谱时最小高度包含条带，关闭时保留 168 × 94 基线。
         let last: MusicControlMinimumSize | undefined; // 当前订阅最近上报的尺寸，避免父子重复更新。
         const handleMinimumSize = () => {
             if (!element.getClientRects().length) return;
@@ -77,10 +79,7 @@ export const MusicControl = ({
             const minimum = {
                 width: Math.ceil(Math.max(MUSIC_CONTROL_MINIMUM_SIZE.width, parseFloat(style.minWidth) || 0)),
                 height: Math.ceil(
-                    Math.max(
-                        MUSIC_CONTROL_MINIMUM_SIZE.height,
-                        information.offsetHeight + buttons.offsetHeight + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom),
-                    ),
+                    Math.max(baseline, information.offsetHeight + buttons.offsetHeight + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + band),
                 ),
             }; // offsetHeight 不包含动画变换；不读取封面或被外框拉伸后的右栏高度。
             if (last?.width === minimum.width && last.height === minimum.height) return;
@@ -91,7 +90,7 @@ export const MusicControl = ({
         for (const target of [element, information, buttons]) observer.observe(target);
         handleMinimumSize();
         return () => observer.disconnect();
-    }, [onMinimumSizeChange]);
+    }, [onMinimumSizeChange, spectrumEnabled]);
     useLayoutEffect(() => {
         const element = root.current; // 当前音乐内容根节点。
         if (!element) return;
@@ -170,6 +169,7 @@ export const MusicControl = ({
             className="music-control"
             data-layout={compact ? "compact" : "wide"}
             data-artwork={hasArtwork ? "ready" : "empty"}
+            data-spectrum={spectrumEnabled ? "on" : "off"}
             aria-label="音乐控制"
         >
             <div ref={artwork} className="music-control__artwork" aria-label={snapshot?.title ? `${snapshot.title} 封面` : "空白封面"}>
@@ -182,7 +182,6 @@ export const MusicControl = ({
                         onError={() => setLoadedArtwork(undefined)}
                     />
                 )}
-                {spectrumEnabled && <MusicSpectrum bars={spectrumBars} fps={spectrumFps} device={spectrumDevice} />}
             </div>
             <div ref={body} className="music-control__body">
                 <div ref={metadata} className="music-control__metadata">
@@ -192,6 +191,11 @@ export const MusicControl = ({
                         {empty ? "" : [showSource ? snapshot?.source : "", playbackLabel].filter(Boolean).join(" · ")}
                     </small>
                 </div>
+                {spectrumEnabled && (
+                    <div className="music-control__spectrum">
+                        <MusicSpectrum bars={spectrumBars} fps={spectrumFps} device={spectrumDevice} playing={snapshot?.playback === "playing"} />
+                    </div>
+                )}
                 <div ref={controls} className="music-control__actions">
                     {button("上一曲", previousIcon, Boolean(snapshot?.canPrevious), actions.previous)}
                     {button(

@@ -45,7 +45,7 @@
     z-index: 2;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    justify-content: flex-start;
     min-width: 0;
     min-height: 0;
 }
@@ -92,6 +92,16 @@
     grid-template-columns: repeat(3, minmax(0, 88px));
     gap: 11px;
     padding: 3px;
+    margin-top: auto;
+}
+
+/* 频谱条带独占信息下方一行，透明底且不接收指针。 */
+.music-control__spectrum {
+    flex: none;
+    height: 18px;
+    margin: 6px 0;
+    color: var(--fence-text);
+    pointer-events: none;
 }
 
 /* 点击表面调整大小，内部图标保持固定尺寸。 */
@@ -172,4 +182,33 @@
 /* 紧凑点击区域保持 24px 高。 */
 .music-control[data-layout="compact"] .music-control__actions button {
     height: 24px;
+}
+
+/* 打开频谱时取消底部内边距，条带贴内容底边。 */
+.music-control[data-layout="compact"][data-spectrum="on"] {
+    padding-bottom: 0;
+}
+
+/* 紧凑封面止于条带上沿，不再被频谱覆盖。 */
+.music-control[data-layout="compact"][data-spectrum="on"] .music-control__artwork {
+    height: calc(100% - 18px);
+}
+
+/* 压暗层同步止于条带上沿，条带保持透明。 */
+.music-control[data-layout="compact"][data-spectrum="on"][data-artwork="ready"]::after {
+    bottom: 18px;
+}
+
+/* 信息和按钮上移，为条带及 6px 间距留出位置。 */
+.music-control[data-layout="compact"][data-spectrum="on"] .music-control__body {
+    margin-bottom: 24px;
+}
+
+/* 紧凑条带绝对定位铺满整行，不参与内容高度。 */
+.music-control[data-layout="compact"][data-spectrum="on"] .music-control__spectrum {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    margin: 0;
 }
