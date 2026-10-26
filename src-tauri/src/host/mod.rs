@@ -8,7 +8,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::dispatch_native_command;
 use crate::contracts::{DesktopHostContextSnapshot, DesktopHostError, DesktopHostReadiness, DesktopHostSnapshot, FrontendHostReadiness, HitRegion, TakeoverPhase};
-use crate::platform::windows::{NativeCommandHandler, NativeDesktopHost, ShellDesktopState, apply_host_hit_regions, create_desktop_hosts, desktop_items_setting_visible, desktop_items_visible, destroy_desktop_hosts, discover_shell_desktop, enumerate_desktop_monitors, load_desktop_hosts, probe_host_pixels, redraw_shell_desktop, reload_desktop_host, set_desktop_items_visible, set_host_visible, suspend_host_hit_regions};
+use crate::platform::windows::{NativeCommandHandler, NativeDesktopHost, ShellDesktopState, apply_host_hit_regions, create_desktop_hosts, desktop_items_setting_visible, desktop_items_visible, destroy_desktop_hosts, discover_shell_desktop, enumerate_desktop_monitors, load_desktop_hosts, page_load_finished_at, probe_host_pixels, redraw_shell_desktop, reload_desktop_host, set_desktop_items_visible, set_host_visible, suspend_host_hit_regions};
 use crate::recovery::GuardianProcess;
 
 /// Renderer 心跳停止后触发轻量重载的等待时间。
@@ -16,6 +16,15 @@ const RENDERER_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Renderer 未恢复时再次尝试轻量重载的最小间隔。
 const RENDERER_RELOAD_RETRY: Duration = Duration::from_secs(5);
+
+/// 页面导航完成后等待前端就绪证据的宽限期，超过即视为页面停滞。
+const RENDERER_READY_GRACE: Duration = Duration::from_secs(15);
+
+/// 页面导航迟迟未完成时的兜底等待上限，避免启动阶段无限等待。
+const RENDERER_NAVIGATION_LIMIT: Duration = Duration::from_secs(120);
+
+/// 未就绪宿主连续重载的退避上限，避免页面恢复后仍被反复打断。
+const RENDERER_RELOAD_BACKOFF_CAP: Duration = Duration::from_secs(40);
 
 /// 环境事件到达后等待 Explorer 与显示器事实稳定的最大次数。
 const ENVIRONMENT_FAILURE_LIMIT: u32 = 20;
@@ -101,6 +110,12 @@ struct DesktopHostContext
     last_renderer_heartbeat: Instant,
     /// 当前 Renderer 最近一次轻量重载请求时间。
     renderer_reload_requested_at: Option<Instant>,
+    /// 当前 Renderer 本次等待页面就绪的起始时间。
+    renderer_wait_started: Instant,
+    /// 当前 Renderer 连续未就绪重载次数，页面就绪后清零。
+    renderer_reload_attempts: u32,
+    /// 当前 Renderer 是否已上报页面加载失败，用于跳过静默宽限期。
+    renderer_failure_reported: bool,
 }
 
 /// 正式宿主持续持有的协调状态与原生资源记录。
@@ -171,7 +186,7 @@ impl DesktopHostRuntime
         let mut coordinator = TakeoverCoordinator::new(shell.original_items_visible);
         coordinator.mark_guardian_ready();
         // 正式宿主共享运行时。
-        let runtime = Arc::new(Self { data: Mutex::new(DesktopHostRuntimeData { coordinator, hosts: hosts.into_iter().map(|host| DesktopHostContext { host, readiness: DesktopHostReadiness { guardian: true, ..Default::default() }, hit_regions: Vec::new(), input_drag_active: false, last_renderer_heartbeat: Instant::now(), renderer_reload_requested_at: None }).collect(), shell, guardian: Some(guardian), cleanup_complete: false, rebuild_in_progress: false, environment_stop_event: 0 }) });
+        let runtime = Arc::new(Self { data: Mutex::new(DesktopHostRuntimeData { coordinator, hosts: hosts.into_iter().map(|host| DesktopHostContext { host, readiness: DesktopHostReadiness { guardian: true, ..Default::default() }, hit_regions: Vec::new(), input_drag_active: false, last_renderer_heartbeat: Instant::now(), renderer_reload_requested_at: None, renderer_wait_started: Instant::now(), renderer_reload_attempts: 0, renderer_failure_reported: false }).collect(), shell, guardian: Some(guardian), cleanup_complete: false, rebuild_in_progress: false, environment_stop_event: 0 }) });
         runtime_slot.set(Arc::clone(&runtime)).map_err(|_| "正式宿主运行时重复初始化".to_string())?;
         load_desktop_hosts()?;
         crate::log_info!("宿主：等待全部逐屏页面、系统图像、像素和命中图门槛，宿主数量={}", monitors.len());
@@ -195,8 +210,25 @@ impl DesktopHostRuntime
         {
             crate::log_info!("恢复：Renderer 轻量重载已恢复，显示器={monitor_id}");
         }
+        context.renderer_reload_attempts = 0;
+        context.renderer_failure_reported = false;
         context.last_renderer_heartbeat = Instant::now();
         Ok(())
+    }
+
+    /// 记录前端上报的页面加载失败，由恢复线程按退避重载仍未就绪的宿主。
+    pub fn report_renderer_failure(&self)
+    {
+        // 等待标记失败报告的正式宿主状态。
+        let mut data = match self.data.lock()
+        {
+            Ok(data) => data,
+            Err(_) => return,
+        };
+        for context in data.hosts.iter_mut().filter(|context| !context.readiness.page)
+        {
+            context.renderer_failure_reported = true;
+        }
     }
 
     /// 返回当前重新发现的 Explorer 桌面层状态。
@@ -242,6 +274,9 @@ impl DesktopHostRuntime
             } // 重建期间旧 HWND 的结果不能污染新宿主门槛。
             context.hit_regions = report.hit_regions;
             context.readiness.page = true;
+            context.renderer_reload_attempts = 0;
+            context.renderer_failure_reported = false;
+            context.renderer_wait_started = Instant::now();
             context.readiness.system_images = true;
             context.readiness.pixels = visible_pixels > 0;
             context.readiness.hit_map = true;
@@ -384,42 +419,58 @@ impl DesktopHostRuntime
         destroy_desktop_hosts();
     }
 
-    /// 监视逐屏前端心跳，并按当前恢复契约轻量重载失效 Renderer。
+    /// 监视逐屏页面就绪与前端心跳，并按当前恢复契约轻量重载失效 Renderer。
     pub fn start_renderer_watchdog(app: AppHandle, runtime: Arc<Self>)
     {
         thread::spawn(move || {
             loop
             {
                 thread::sleep(Duration::from_secs(1));
-                let reloads = {
+                // 本轮重载目标与保留的命中图；提交前只重载未就绪页面，不携带命中图。
+                let (reloads, committed) = {
                     let mut data = match runtime.data.lock()
                     {
                         Ok(data) => data,
                         Err(_) => return,
                     };
-                    if data.cleanup_complete || !data.coordinator.is_committed() || matches!(data.coordinator.phase(), TakeoverPhase::Failed | TakeoverPhase::Restored)
+                    if data.cleanup_complete || matches!(data.coordinator.phase(), TakeoverPhase::Failed | TakeoverPhase::Restored)
                     {
-                        if data.cleanup_complete || matches!(data.coordinator.phase(), TakeoverPhase::Failed | TakeoverPhase::Restored)
-                        {
-                            return;
-                        }
-                        continue;
+                        return;
                     }
-                    let now = Instant::now(); // 本轮 Renderer 心跳超时判断基准。
-                    data.hosts
+                    let now = Instant::now(); // 本轮重载判断基准。
+                    let committed = data.coordinator.is_committed(); // 提交后按心跳恢复，提交前按页面就绪恢复。
+                    let reloads = data
+                        .hosts
                         .iter_mut()
                         .filter_map(|context| {
-                            let heartbeat_age = now.saturating_duration_since(context.last_renderer_heartbeat); // 当前 Renderer 未上报心跳的时间。
                             let retry_age = context.renderer_reload_requested_at.map(|requested| now.saturating_duration_since(requested)); // 最近轻量重载后的等待时间。
-                            if !renderer_restart_due(true, heartbeat_age, retry_age)
+                            if committed
+                            {
+                                let heartbeat_age = now.saturating_duration_since(context.last_renderer_heartbeat); // 当前 Renderer 未上报心跳的时间。
+                                if !renderer_restart_due(true, heartbeat_age, retry_age, context.renderer_reload_attempts)
+                                {
+                                    return None;
+                                }
+                                context.renderer_reload_attempts += 1;
+                                context.renderer_reload_requested_at = Some(now);
+                                context.input_drag_active = false;
+                                return Some((context.host.clone(), Some(context.hit_regions.clone())));
+                            }
+                            // 未提交页面按导航完成后的宽限期或失败报告触发重载，连续失败按指数退避。
+                            let wait_age = now.saturating_duration_since(context.renderer_wait_started); // 当前页面等待就绪的时间。
+                            let load_age = page_load_finished_at(&context.host.monitor.id).map(|finished| now.saturating_duration_since(finished)); // 当前页面导航完成后的等待时间。
+                            if !renderer_startup_reload_due(context.readiness.page, context.renderer_failure_reported, wait_age, load_age, retry_age, context.renderer_reload_attempts)
                             {
                                 return None;
                             }
+                            context.renderer_reload_attempts += 1;
+                            context.renderer_failure_reported = false;
                             context.renderer_reload_requested_at = Some(now);
-                            context.input_drag_active = false;
-                            Some((context.host.clone(), context.hit_regions.clone()))
+                            context.renderer_wait_started = now;
+                            Some((context.host.clone(), None))
                         })
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>();
+                    (reloads, committed)
                 };
                 if reloads.is_empty()
                 {
@@ -430,10 +481,11 @@ impl DesktopHostRuntime
                 if let Err(error) = app.run_on_main_thread(move || {
                     for (host, hit_regions) in reloads
                     {
-                        let result = reload_desktop_host(&host.monitor.id).and_then(|_| apply_host_hit_regions(&host, hit_regions).map(|_| ()));
+                        let result = reload_desktop_host(&host.monitor.id).and_then(|_| hit_regions.map_or(Ok(()), |hit_regions| apply_host_hit_regions(&host, hit_regions).map(|_| ())));
                         match result
                         {
-                            Ok(()) => crate::log_warn!("恢复：Renderer 心跳超时，已轻量重载并保留命中图，显示器={}", host.monitor.id),
+                            Ok(()) if committed => crate::log_warn!("恢复：Renderer 心跳超时，已轻量重载并保留命中图，显示器={}", host.monitor.id),
+                            Ok(()) => crate::log_warn!("恢复：宿主页面未就绪，已重载并重新等待，显示器={}", host.monitor.id),
                             Err(error) => reload_runtime.fail_host_adapter(&format!("Renderer 轻量重载失败，显示器={}，错误={error}", host.monitor.id)),
                         }
                     }
@@ -633,7 +685,7 @@ impl DesktopHostRuntime
                     {
                         return previous_contexts.remove(index);
                     }
-                    DesktopHostContext { host, readiness: DesktopHostReadiness { guardian: data.coordinator.guardian_ready, ..Default::default() }, hit_regions: Vec::new(), input_drag_active: false, last_renderer_heartbeat: Instant::now(), renderer_reload_requested_at: None }
+                    DesktopHostContext { host, readiness: DesktopHostReadiness { guardian: data.coordinator.guardian_ready, ..Default::default() }, hit_regions: Vec::new(), input_drag_active: false, last_renderer_heartbeat: Instant::now(), renderer_reload_requested_at: None, renderer_wait_started: Instant::now(), renderer_reload_attempts: 0, renderer_failure_reported: false }
                 })
                 .collect();
             if shell_replaced
@@ -780,8 +832,19 @@ fn monitor_layout_changed(previous: &[crate::contracts::DesktopHostMonitor], lat
 /// 判断显示器身份或物理边界变化是否需要重新协调持久归属。
 fn monitor_topology_changed(previous: &[crate::contracts::DesktopHostMonitor], latest: &[crate::contracts::DesktopHostMonitor]) -> bool { previous.len() != latest.len() || previous.iter().zip(latest).any(|(previous, latest)| previous.id != latest.id || previous.primary != latest.primary || previous.x != latest.x || previous.y != latest.y || previous.width != latest.width || previous.height != latest.height) }
 
-/// 判断已提交桌面的 Renderer 是否需要首次或再次轻量重载。
-fn renderer_restart_due(committed: bool, heartbeat_age: Duration, retry_age: Option<Duration>) -> bool { committed && heartbeat_age >= RENDERER_HEARTBEAT_TIMEOUT && retry_age.is_none_or(|age| age >= RENDERER_RELOAD_RETRY) }
+/// 判断已提交桌面的 Renderer 是否需要首次或再次轻量重载，连续重载按退避节流。
+fn renderer_restart_due(committed: bool, heartbeat_age: Duration, retry_age: Option<Duration>, attempts: u32) -> bool { committed && heartbeat_age >= RENDERER_HEARTBEAT_TIMEOUT && retry_age.is_none_or(|age| age >= renderer_startup_reload_delay(attempts)) }
+
+/// 判断未就绪页面是否需要重载：导航完成后超过宽限、导航长期未完成或前端已报告失败时重载，连续重载按退避节流。
+fn renderer_startup_reload_due(page_ready: bool, failure_reported: bool, wait_age: Duration, load_age: Option<Duration>, retry_age: Option<Duration>, attempts: u32) -> bool
+{
+    // 当前页面是否已经停滞而不是仍在加载。
+    let stalled = failure_reported || load_age.map_or(wait_age >= RENDERER_NAVIGATION_LIMIT, |age| age >= RENDERER_READY_GRACE);
+    !page_ready && stalled && retry_age.is_none_or(|age| age >= renderer_startup_reload_delay(attempts))
+}
+
+/// 返回连续未就绪重载的等待间隔，按次数倍增并封顶。
+fn renderer_startup_reload_delay(attempts: u32) -> Duration { RENDERER_RELOAD_RETRY.saturating_mul(1 << attempts.min(3)).min(RENDERER_RELOAD_BACKOFF_CAP) }
 
 /// 读取最近用户图标设置，并在已接管时继续维持 Explorer 临时隐藏。
 fn observe_desktop_visibility(runtime: &DesktopHostRuntime) -> bool

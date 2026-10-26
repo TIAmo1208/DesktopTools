@@ -528,6 +528,11 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         {
             let fields = ["origin", "url", "stage", "message"].map(|key| arguments.get(key).and_then(Value::as_str).unwrap_or("").chars().take(4096).collect::<String>().replace(['\r', '\n'], " ")); // 有界单行诊断，不执行页面内容。
             crate::log_error!("宿主前端：来源={}，页面={}，阶段={}，错误={}", fields[0], fields[1], fields[2], fields[3]);
+            // 页面脚本或资源加载失败时标记未就绪宿主，由恢复线程按退避重载，避免接管一直等待该页。
+            if matches!(fields[2].as_str(), "资源加载失败" | "脚本异常")
+            {
+                runtime.report_renderer_failure();
+            }
             serialize_result(())
         }
         "record_desktop_refresh_state" =>
