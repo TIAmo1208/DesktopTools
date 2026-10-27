@@ -16,6 +16,7 @@ if (!rootElement) throw new Error("缺少 React 应用挂载节点");
 const isDesktopHost = new URLSearchParams(window.location.search).get("desktop-host") === "1";
 const isCollectEditor = new URLSearchParams(window.location.search).get("collect-editor") === "1";
 document.documentElement.dataset.desktopHost = String(isDesktopHost);
+document.documentElement.dataset.collectEditor = String(isCollectEditor);
 document.documentElement.dataset.theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 document.documentElement.dataset.desktopTheme = document.documentElement.dataset.theme;
 
