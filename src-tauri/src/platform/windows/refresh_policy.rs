@@ -69,6 +69,9 @@ pub(crate) fn set_paused(monitor: &str, paused: bool)
 /// 后端只过滤已实际暂停屏幕的视觉事件。
 pub(crate) fn is_paused(monitor: &str) -> bool { SNAPSHOT.lock().unwrap_or_else(|error| error.into_inner()).locked == Some(true) || PAUSED_HOSTS.lock().unwrap_or_else(|error| error.into_inner()).contains(monitor) }
 
+/// 锁屏或任一桌面宿主暂停时判定为全局暂停，供频谱等跨屏幕订阅复用同一刷新规则。
+pub(crate) fn is_refresh_paused() -> bool { SNAPSHOT.lock().unwrap_or_else(|error| error.into_inner()).locked == Some(true) || !PAUSED_HOSTS.lock().unwrap_or_else(|error| error.into_inner()).is_empty() }
+
 /// 返回同一份缓存，不按页面重新查询系统。
 pub(crate) fn foreground_snapshot() -> ForegroundSnapshot { SNAPSHOT.lock().unwrap_or_else(|error| error.into_inner()).clone() }
 

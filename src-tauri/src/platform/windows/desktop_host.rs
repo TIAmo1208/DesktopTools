@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::num::NonZeroIsize;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tauri::{AppHandle, Listener, Manager};
@@ -109,6 +109,33 @@ thread_local! {
 
 /// 最近一次前端发布的完整语义命中图。
 static HIT_REGIONS: OnceLock<RwLock<HashMap<String, Vec<HitRegion>>>> = OnceLock::new();
+
+/// 逐屏页面最近一次导航完成时间，用于区分仍在加载与已加载但未就绪。
+static PAGE_LOAD_FINISHED: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+/// 返回逐屏页面加载完成记录表，首次使用时创建。
+fn page_load_records() -> &'static Mutex<HashMap<String, Instant>> { PAGE_LOAD_FINISHED.get_or_init(|| Mutex::new(HashMap::new())) }
+
+/// 记录逐屏页面导航完成时间，供恢复线程判断页面是否停滞。
+pub fn mark_page_load_finished(monitor_id: &str)
+{
+    if let Ok(mut finished) = page_load_records().lock()
+    {
+        finished.insert(monitor_id.to_string(), Instant::now());
+    }
+}
+
+/// 返回逐屏页面最近一次导航完成时间，从未完成时为空。
+pub fn page_load_finished_at(monitor_id: &str) -> Option<Instant> { page_load_records().lock().ok().and_then(|finished| finished.get(monitor_id).copied()) }
+
+/// 清除逐屏页面导航完成时间，新一次导航重新计时。
+pub fn clear_page_load_finished(monitor_id: &str)
+{
+    if let Ok(mut finished) = page_load_records().lock()
+    {
+        finished.remove(monitor_id);
+    }
+}
 
 /// 正式宿主窗口类名称。
 const HOST_WINDOW_CLASS: windows::core::PCWSTR = w!("DesktopToolsFormalDesktopHost");
@@ -245,7 +272,14 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
 
   // 权威布局、桌面项目及组件注册事件使用真实投递。
   const listen = async (eventName, handler) => {
-    if (eventName === "folder-portal-changed" || eventName === "collect-items-changed" || eventName === "weather-configuration-changed" || eventName === "weather-forecast-changed") {
+    if (
+      eventName === "folder-portal-changed" ||
+      eventName === "collect-items-changed" ||
+      eventName === "weather-configuration-changed" ||
+      eventName === "weather-forecast-changed" ||
+      eventName === "audio-spectrum-changed" ||
+      eventName === "audio-spectrum-device-changed"
+    ) {
       const subscription = { receive: (payload) => { if (!refreshPaused || eventName === "weather-configuration-changed" || payload?.error || payload?.deletedName) handler(payload); } }; // 主动删除即使暂停也必须移除会话缓存。
       if (!eventSubscriptions.has(eventName)) eventSubscriptions.set(eventName, new Set());
       eventSubscriptions.get(eventName).add(subscription);
@@ -296,17 +330,26 @@ fn raw_hwnd(raw: isize) -> HWND { HWND(raw as *mut c_void) }
 pub(crate) fn install_host_events(app: &AppHandle)
 {
     super::refresh_policy::start_events(app);
-    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed"]
+    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed"]
     {
         let handle = app.clone(); // 原生窗口所属的 UI 调度器。
         app.listen(name, move |event| {
             let payload = event.payload().to_string(); // Tauri 已序列化的结构化快照。
             let watcher_failed = name == "folder-portal-changed" && serde_json::from_str::<Value>(&payload).is_ok_and(|value| value.get("error").is_some()); // 暂停仍保留监听故障恢复通道。
+            let spectrum_event = name == crate::platform::windows::audio::SPECTRUM_EVENT || name == crate::platform::windows::audio::SPECTRUM_DEVICE_EVENT; // 唯一按帧发布的高频事件。
+            let task_handle = handle.clone(); // 主线任务持有独立句柄，监听回调仍可重复执行。
             if let Err(error) = handle.run_on_main_thread(move || {
                 let script = format!("window.__DESKTOP_TOOLS_NATIVE__?.dispatch('{name}', {payload});"); // 内部白名单事件名，不执行外部脚本输入。
+                // 频谱只在同时开启音乐控件与频谱时才有订阅者，每帧读一次设置即可。
+                let spectrum_active = spectrum_event && task_handle.state::<crate::app::settings::SettingsState>().preferences().is_ok_and(|preferences| preferences.music_enabled && preferences.music_spectrum_enabled);
+                let workspace = task_handle.state::<crate::workspace::WorkspaceState>(); // 按显示器判断音乐控件归属，避免整份快照拷贝。
                 NATIVE_HOSTS.with(|hosts| {
                     for host in hosts.borrow().iter()
                     {
+                        if spectrum_event && (!spectrum_active || !workspace.has_component_on_monitor(&host.monitor_id, "official.music-control"))
+                        {
+                            continue; // 该屏没有正在显示频谱的音乐控件。
+                        }
                         if name == "component-host-event" && !crate::component_runtime::ComponentRuntimeState::has_time_consumers(&host.monitor_id)
                         {
                             continue;
@@ -1221,6 +1264,8 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     // 本地协议使用的命令处理器。
     let protocol_handler = Arc::clone(&command_handler);
     let label = format!("desktop-host-{index}"); // Wry 内部使用的逐屏宿主标识。
+    // 页面导航进度记录使用的显示器身份。
+    let load_monitor = monitor.id.clone();
     let protocol = format!("desktop-tools-host-{index}"); // 避免多 WebView 协议处理器冲突的逐屏 scheme。
     let native_origin = format!("http://{protocol}.localhost"); // 本屏桥接始终使用自己的协议。
     let dev_url = if tauri::is_dev() { app.config().build.dev_url.as_ref() } else { None }; // Debug 构建不等同于 Tauri 开发模式。
@@ -1250,12 +1295,28 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
                 responder.respond(handle_protocol_request(request, &protocol_app, &protocol_handler));
             } // 已嵌入的静态资产不需要工作线程。
         })
-        .with_on_page_load_handler(|event, url| {
-            // 当前 React 页面加载阶段的中文名称。
+        .with_on_page_load_handler(move |event, url| {
+            // 初始占位页不代表真实页面的加载进度，不能作为就绪等待基准。
+            let placeholder = url == "about:blank";
+            // 记录导航进度，恢复线程据此区分仍在加载与已加载但未就绪。
             let stage = match event
             {
-                PageLoadEvent::Started => "开始",
-                PageLoadEvent::Finished => "完成",
+                PageLoadEvent::Started =>
+                {
+                    if !placeholder
+                    {
+                        clear_page_load_finished(&load_monitor);
+                    }
+                    "开始"
+                }
+                PageLoadEvent::Finished =>
+                {
+                    if !placeholder
+                    {
+                        mark_page_load_finished(&load_monitor);
+                    }
+                    "完成"
+                }
             };
             crate::log_debug!("宿主：React 页面加载{}，URL：{}", stage, url);
         })
@@ -1350,6 +1411,7 @@ pub fn reload_desktop_host(monitor_id: &str) -> Result<(), String>
     crate::component_runtime::ComponentRuntimeState::clear_time_monitor(monitor_id);
     crate::weather::activity::clear_monitor(monitor_id);
     super::refresh_policy::set_paused(monitor_id, false);
+    clear_page_load_finished(monitor_id);
     NATIVE_HOSTS.with(|hosts| {
         let hosts = hosts.borrow(); // 当前 UI 线程持有的全部正式 WebView2 宿主。
         let host = hosts.iter().find(|host| host.monitor_id == monitor_id).ok_or_else(|| format!("Renderer 重载目标不存在，显示器={monitor_id}"))?;
@@ -1563,6 +1625,7 @@ fn destroy_matching_hosts(matches: impl Fn(&str) -> bool)
         for index in removed
         {
             let host = hosts.remove(index); // 仅释放本次选中的宿主。
+            super::refresh_policy::set_paused(&host.monitor_id, false); // 销毁宿主时退出暂停集合，避免刷新策略永久判为暂停。
             super::directory_watch::clear_monitor(&host.monitor_id);
             crate::component_runtime::ComponentRuntimeState::clear_time_monitor(&host.monitor_id);
             crate::weather::activity::clear_monitor(&host.monitor_id);

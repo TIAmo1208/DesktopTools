@@ -1,0 +1,8 @@
+/* 频谱铺满条带，不参与布局测量。 */
+.music-spectrum {
+    display: block;
+    width: 100%;
+    height: 100%;
+    color: var(--fence-text);
+    pointer-events: none;
+}

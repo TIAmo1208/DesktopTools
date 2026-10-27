@@ -1,6 +1,6 @@
 [package]
 name = "desktop-tools"
-version = "0.3.1"
+version = "0.3.2"
 description = "Windows desktop content workspace"
 edition = "2024"
 build = "build.rs"
@@ -52,6 +52,7 @@ windows = { version = "0.61.3", features = [
   "Win32_Graphics_Direct2D_Common",
   "Win32_Graphics_DirectWrite",
   "Win32_Graphics_Dxgi_Common",
+  "Win32_Media_Audio",
   "Win32_Security",
   "Win32_Security_Cryptography",
   "Win32_Security_Credentials",
@@ -77,6 +78,8 @@ windows = { version = "0.61.3", features = [
 ] }
 windows-core = "0.61.2"
 wry = { version = "0.55.1", default-features = false, features = ["protocol"] }
+cpal = "0.18.2"
+realfft = "3.5.0"
 
 [dev-dependencies]
 windows = { version = "0.61.3", features = ["Win32_System_ProcessStatus"] }

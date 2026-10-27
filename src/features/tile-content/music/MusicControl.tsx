@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { usePreferences } from "../../settings/PreferencesProvider";
 import { isCompactMusicLayout } from "./musicLayout";
+import { MusicSpectrum } from "./MusicSpectrum";
 import previousIcon from "../../../../resources/music-skip-back.svg?raw";
 import nextIcon from "../../../../resources/music-skip-forward.svg?raw";
 import playIcon from "../../../../resources/music-play.svg?raw";
@@ -58,6 +59,10 @@ export const MusicControl = ({
     const { animationsEnabled, preferences } = usePreferences(); // 跨窗口共享的动画与字号偏好。
     const [loadedArtwork, setLoadedArtwork] = useState<string>(); // 仅成功加载的封面开启遮罩与白色文字。
     const showSource = preferences?.musicShowSource !== false; // 用户关闭时只隐藏来源名称。
+    const spectrumEnabled = preferences?.musicSpectrumEnabled === true; // 默认关闭，避免无播放时占用采集。
+    const spectrumBars = preferences?.musicSpectrumBars ?? 32; // 用户选择的频段数。
+    const spectrumFps = preferences?.musicSpectrumFps ?? 30; // 用户选择的刷新帧率。
+    const spectrumDevice = preferences?.musicSpectrumDevice ?? ""; // 空字符串表示跟随系统默认设备。
     const hasArtwork = Boolean(snapshot?.artworkUrl && loadedArtwork === snapshot.artworkUrl); // 缺失与加载失败保持主题背景。
     const playbackLabel = snapshot?.playback === "playing" ? "正在播放" : snapshot?.playback === "paused" ? "已暂停" : ""; // 播放状态独立于来源显示。
     useLayoutEffect(() => {
@@ -65,6 +70,8 @@ export const MusicControl = ({
         const information = metadata.current; // 内部信息固有尺寸。
         const buttons = controls.current; // 内部操作固有尺寸。
         if (!onMinimumSizeChange || !element || !information || !buttons) return;
+        const band = spectrumEnabled ? 18 + 6 : 0; // 频谱条带高度及信息下间距。
+        const baseline = spectrumEnabled ? MUSIC_CONTROL_MINIMUM_SIZE.height + 18 : MUSIC_CONTROL_MINIMUM_SIZE.height; // 打开频谱时最小高度包含条带，关闭时保留 168 × 94 基线。
         let last: MusicControlMinimumSize | undefined; // 当前订阅最近上报的尺寸，避免父子重复更新。
         const handleMinimumSize = () => {
             if (!element.getClientRects().length) return;
@@ -72,10 +79,7 @@ export const MusicControl = ({
             const minimum = {
                 width: Math.ceil(Math.max(MUSIC_CONTROL_MINIMUM_SIZE.width, parseFloat(style.minWidth) || 0)),
                 height: Math.ceil(
-                    Math.max(
-                        MUSIC_CONTROL_MINIMUM_SIZE.height,
-                        information.offsetHeight + buttons.offsetHeight + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom),
-                    ),
+                    Math.max(baseline, information.offsetHeight + buttons.offsetHeight + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + band),
                 ),
             }; // offsetHeight 不包含动画变换；不读取封面或被外框拉伸后的右栏高度。
             if (last?.width === minimum.width && last.height === minimum.height) return;
@@ -86,7 +90,7 @@ export const MusicControl = ({
         for (const target of [element, information, buttons]) observer.observe(target);
         handleMinimumSize();
         return () => observer.disconnect();
-    }, [onMinimumSizeChange]);
+    }, [onMinimumSizeChange, spectrumEnabled]);
     useLayoutEffect(() => {
         const element = root.current; // 当前音乐内容根节点。
         if (!element) return;
@@ -165,6 +169,7 @@ export const MusicControl = ({
             className="music-control"
             data-layout={compact ? "compact" : "wide"}
             data-artwork={hasArtwork ? "ready" : "empty"}
+            data-spectrum={spectrumEnabled ? "on" : "off"}
             aria-label="音乐控制"
         >
             <div ref={artwork} className="music-control__artwork" aria-label={snapshot?.title ? `${snapshot.title} 封面` : "空白封面"}>
@@ -186,6 +191,11 @@ export const MusicControl = ({
                         {empty ? "" : [showSource ? snapshot?.source : "", playbackLabel].filter(Boolean).join(" · ")}
                     </small>
                 </div>
+                {spectrumEnabled && (
+                    <div className="music-control__spectrum">
+                        <MusicSpectrum bars={spectrumBars} fps={spectrumFps} device={spectrumDevice} playing={snapshot?.playback === "playing"} />
+                    </div>
+                )}
                 <div ref={controls} className="music-control__actions">
                     {button("上一曲", previousIcon, Boolean(snapshot?.canPrevious), actions.previous)}
                     {button(

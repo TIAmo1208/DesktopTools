@@ -59,6 +59,10 @@ export interface ApplicationPreferences {
     collectImageImportMode: "copy" | "move" | "link"; // 图片收入方式。
     collectImagePreviewWidth: number; // 列表图片宽度，单位 DIP。
     musicShowSource: boolean; // 音乐格子显示媒体来源。
+    musicSpectrumEnabled: boolean; // 音乐格子显示实时频谱。
+    musicSpectrumDevice: string; // 频谱采集设备标识，空字符串表示跟随系统默认。
+    musicSpectrumBars: number; // 频谱段数。
+    musicSpectrumFps: number; // 频谱刷新帧率。
     clockHour12: boolean; // 十二小时制。
     clockShowSeconds: boolean; // 显示秒数。
     debugEnabled: boolean; // Debug 格子显隐。
@@ -112,6 +116,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         collectEnabled: true,
         collectAutoSaveOnExit: false,
         musicShowSource: true,
+        musicSpectrumEnabled: false,
         clockHour12: false,
         clockShowSeconds: true,
         debugEnabled: true,
@@ -144,6 +149,14 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         collectImagePreviewWidth > 156
     )
         throw new Error("图片预览宽度必须为 48 到 156 DIP 的整数");
+    const musicSpectrumDevice = candidate.musicSpectrumDevice === undefined ? "" : candidate.musicSpectrumDevice; // 缺失配置跟随系统默认设备。
+    if (typeof musicSpectrumDevice !== "string") throw new Error("频谱设备数据无效");
+    const musicSpectrumBars = candidate.musicSpectrumBars === undefined ? 32 : candidate.musicSpectrumBars; // 缺失配置使用默认段数。
+    if (typeof musicSpectrumBars !== "number" || !Number.isInteger(musicSpectrumBars) || musicSpectrumBars < 16 || musicSpectrumBars > 64)
+        throw new Error("频谱段数必须为 16 到 64 的整数");
+    const musicSpectrumFps = candidate.musicSpectrumFps === undefined ? 30 : candidate.musicSpectrumFps; // 缺失配置使用默认帧率。
+    if (typeof musicSpectrumFps !== "number" || !Number.isInteger(musicSpectrumFps) || musicSpectrumFps < 15 || musicSpectrumFps > 60)
+        throw new Error("频谱帧率必须为 15 到 60 的整数");
     return {
         theme: candidate.theme,
         desktopAppearance: {
@@ -163,6 +176,9 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         ...features,
         collectImageImportMode,
         collectImagePreviewWidth,
+        musicSpectrumDevice,
+        musicSpectrumBars,
+        musicSpectrumFps,
     };
 };
 

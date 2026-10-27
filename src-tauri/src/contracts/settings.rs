@@ -84,6 +84,10 @@ pub struct ApplicationPreferences
     pub collect_image_import_mode: String,     // 图片收入方式：copy、move 或 link。
     pub collect_image_preview_width: u16,      // 列表图片宽度，单位 DIP。
     pub music_show_source: bool,               // 音乐控制显示媒体来源。
+    pub music_spectrum_enabled: bool,          // 音乐控制显示实时频谱，默认关闭。
+    pub music_spectrum_device: String,         // 频谱采集设备标识，空字符串表示跟随系统默认。
+    pub music_spectrum_bars: u8,               // 频谱段数。
+    pub music_spectrum_fps: u8,                // 频谱刷新帧率。
     pub clock_hour12: bool,                    // 本地时间使用十二小时制。
     pub clock_show_seconds: bool,              // 本地时间显示秒数。
     pub debug_enabled: bool,                   // Debug 构建中的测试格子显隐。
@@ -100,7 +104,44 @@ pub struct ApplicationPreferences
 impl Default for ApplicationPreferences
 {
     /// 创建首次启动的应用偏好，音乐默认关闭。
-    fn default() -> Self { Self { theme: ApplicationTheme::System, desktop_appearance: DesktopAppearance::default(), config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(), double_click_to_open: true, accent_color: "#2563eb".to_string(), use_windows_accent_color: false, corner_radius: 6, font_family: "Segoe UI Variable".to_string(), font_size: 13, desktop_grid: GridPreferences::default(), fence_grid: GridPreferences { column_gap: 6, ..Default::default() }, clock_enabled: true, weather_enabled: false, music_enabled: false, collect_enabled: true, collect_auto_save_on_exit: false, collect_image_import_mode: "copy".to_string(), collect_image_preview_width: 78, music_show_source: true, clock_hour12: false, clock_show_seconds: true, debug_enabled: true, debug_show_details: true, component_snap: true, follow_system_reduced_motion: true, interface_animations: true, folder_portal_enabled: true, pause_on_fullscreen: false, pause_on_focus: false } }
+    fn default() -> Self
+    {
+        Self {
+            theme: ApplicationTheme::System,
+            desktop_appearance: DesktopAppearance::default(),
+            config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(),
+            double_click_to_open: true,
+            accent_color: "#2563eb".to_string(),
+            use_windows_accent_color: false,
+            corner_radius: 6,
+            font_family: "Segoe UI Variable".to_string(),
+            font_size: 13,
+            desktop_grid: GridPreferences::default(),
+            fence_grid: GridPreferences { column_gap: 6, ..Default::default() },
+            clock_enabled: true,
+            weather_enabled: false,
+            music_enabled: false,
+            collect_enabled: true,
+            collect_auto_save_on_exit: false,
+            collect_image_import_mode: "copy".to_string(),
+            collect_image_preview_width: 78,
+            music_show_source: true,
+            music_spectrum_enabled: false,
+            music_spectrum_device: String::new(),
+            music_spectrum_bars: 32,
+            music_spectrum_fps: 30,
+            clock_hour12: false,
+            clock_show_seconds: true,
+            debug_enabled: true,
+            debug_show_details: true,
+            component_snap: true,
+            follow_system_reduced_motion: true,
+            interface_animations: true,
+            folder_portal_enabled: true,
+            pause_on_fullscreen: false,
+            pause_on_focus: false,
+        }
+    }
 }
 
 /// 校验配置文件和命令输入共用的外观边界。
@@ -150,6 +191,14 @@ impl ApplicationPreferences
         if !["Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "Arial"].contains(&self.font_family.as_str())
         {
             return Err("不支持的界面字体".to_string());
+        }
+        if !(16..=64).contains(&self.music_spectrum_bars)
+        {
+            return Err("频谱段数必须为 16 到 64 之间的整数".to_string());
+        }
+        if !(15..=60).contains(&self.music_spectrum_fps)
+        {
+            return Err("频谱帧率必须为 15 到 60 之间的整数".to_string());
         }
         Ok(())
     }

@@ -1,4 +1,5 @@
 mod application;
+pub mod audio;
 pub mod collect;
 mod component;
 mod desktop_host;
@@ -237,6 +238,20 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
     // 当前本地 transport 命令的统一 JSON 结果。
     let result: Result<Value, Value> = match command
     {
+        "list_audio_output_devices" => serialize_result(audio::list_audio_output_devices()),
+        "start_audio_spectrum" =>
+        {
+            let device: String = command_argument(&arguments, "device", "音频设备参数无效").map_err(serialize_error)?; // 空字符串表示跟随系统默认设备。
+            let bars: u8 = command_argument(&arguments, "bars", "频谱段数参数无效").map_err(serialize_error)?;
+            let fps: u8 = command_argument(&arguments, "fps", "频谱帧率参数无效").map_err(serialize_error)?;
+            audio::start_audio_spectrum(app.clone(), device, bars, fps).map_err(serialize_error).and_then(serialize_result)
+        }
+        "stop_audio_spectrum" =>
+        {
+            audio::stop_audio_spectrum();
+            serialize_result(())
+        }
+        "get_audio_spectrum_status" => serialize_result(audio::get_audio_spectrum_status()),
         "get_current_music_session" => music::get_current_music_session().map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))),
         "request_music_convergence" =>
         {
@@ -513,6 +528,11 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         {
             let fields = ["origin", "url", "stage", "message"].map(|key| arguments.get(key).and_then(Value::as_str).unwrap_or("").chars().take(4096).collect::<String>().replace(['\r', '\n'], " ")); // 有界单行诊断，不执行页面内容。
             crate::log_error!("宿主前端：来源={}，页面={}，阶段={}，错误={}", fields[0], fields[1], fields[2], fields[3]);
+            // 页面脚本或资源加载失败时标记未就绪宿主，由恢复线程按退避重载，避免接管一直等待该页。
+            if matches!(fields[2].as_str(), "资源加载失败" | "脚本异常")
+            {
+                runtime.report_renderer_failure();
+            }
             serialize_result(())
         }
         "record_desktop_refresh_state" =>

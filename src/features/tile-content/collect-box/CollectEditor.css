@@ -142,6 +142,16 @@
     outline-offset: 2px;
 }
 
+/* 编辑窗占满视口并脱离文档流：Vditor 注入的图标精灵会占据文档流，编辑根不受其影响，也不产生滚动条。 */
+html[data-collect-editor="true"] body {
+    overflow: hidden;
+}
+
+html[data-collect-editor="true"] #root {
+    position: absolute;
+    inset: 0;
+}
+
 /* Vditor 由本组件集成，其外观变量映射至应用主题。 */
 .collect-editor__content.vditor {
     --border-color: var(--color-border);

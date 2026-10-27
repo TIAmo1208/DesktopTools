@@ -1141,3 +1141,19 @@ fn layout_history_merge_reports_partial_restore_and_keeps_external_items()
     assert!(merged.unclassified_items.iter().any(|item| item.stable_reference == "created"));
     assert!(merged.unclassified_items.iter().all(|item| item.stable_reference != "removed"));
 }
+
+/// 组件按投射显示器归属，高频事件过滤只命中当前屏幕真正呈现的实例。
+#[test]
+fn component_monitor_lookup_follows_projection()
+{
+    let mut snapshot = WorkspaceSnapshot::default(); // 只校验归属，不需要持久化。
+    let mut music = component_instance("official.music-control.default", "official.music-control"); // 位于 DISPLAY1 的音乐控件。
+    snapshot.components.push(music.clone());
+    assert!(super::snapshot_has_component(&snapshot, "DISPLAY1", "official.music-control"));
+    assert!(!super::snapshot_has_component(&snapshot, "DISPLAY2", "official.music-control"));
+    assert!(!super::snapshot_has_component(&snapshot, "DISPLAY1", "official.local-clock"));
+    music.projection_monitor_id = Some("DISPLAY2".to_string()); // 临时投射到另一屏时只在那屏呈现。
+    let projected = WorkspaceSnapshot { components: vec![music], ..WorkspaceSnapshot::default() };
+    assert!(!super::snapshot_has_component(&projected, "DISPLAY1", "official.music-control"));
+    assert!(super::snapshot_has_component(&projected, "DISPLAY2", "official.music-control"));
+}

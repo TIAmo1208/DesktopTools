@@ -1,3 +1,4 @@
+pub mod audio;
 mod desktop_host;
 pub(crate) mod directory_watch;
 pub(crate) mod refresh_policy;
@@ -17,7 +18,7 @@ mod shell;
 pub(crate) mod shell_image;
 pub(crate) use shell::{collect_data_object, drag_data_object, transfer_desktop_data, transfer_paths_to_directory};
 
-pub use desktop_host::{NativeCommandHandler, NativeDesktopHost, ShellDesktopState, apply_host_hit_regions, create_desktop_hosts, desktop_item_monitor_assignments, desktop_items_setting_visible, desktop_items_visible, destroy_desktop_hosts, discover_shell_desktop, enumerate_desktop_monitors, load_desktop_hosts, probe_host_pixels, reconcile_desktop_hosts, redraw_shell_desktop, reload_desktop_host, set_desktop_items_visible, set_host_visible, suspend_host_hit_regions};
+pub use desktop_host::{NativeCommandHandler, NativeDesktopHost, ShellDesktopState, apply_host_hit_regions, create_desktop_hosts, desktop_item_monitor_assignments, desktop_items_setting_visible, desktop_items_visible, destroy_desktop_hosts, discover_shell_desktop, enumerate_desktop_monitors, load_desktop_hosts, page_load_finished_at, probe_host_pixels, reconcile_desktop_hosts, redraw_shell_desktop, reload_desktop_host, set_desktop_items_visible, set_host_visible, suspend_host_hit_regions};
 
 pub use desktop_host::relay_workspace_drag;
 pub(crate) use file_system::move_resource_file;

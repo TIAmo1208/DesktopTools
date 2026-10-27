@@ -64,6 +64,12 @@ html[data-desktop-host="true"] #root {
     background: transparent;
 }
 
+/* 宿主根占满视口且脱离文档流：页内第三方注入（如 Vditor 图标精灵）不再推移桌面层。 */
+html[data-desktop-host="true"] #root {
+    position: absolute;
+    inset: 0;
+}
+
 /* 用户选择或系统主题解析后的深色变量。 */
 :root[data-theme="dark"] {
     color-scheme: dark;

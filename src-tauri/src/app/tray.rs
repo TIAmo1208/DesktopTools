@@ -71,6 +71,7 @@ pub(crate) fn set_settings_visible(app: &AppHandle, visible: bool) -> tauri::Res
                     {
                         let _ = state.toggle.set_text("显示设置");
                     }
+                    crate::platform::windows::audio::watch_settings(&handle, false); // 设置窗口销毁后释放设备通知监听。
                     crate::log_info!("设置：窗口已销毁，页面资源已释放");
                 }
                 else if matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_))

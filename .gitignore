@@ -50,3 +50,4 @@ package-lock.json
 .graphflow-cache/
 graphflow-out/
 .dsh-switchman/
+.agent-teams/

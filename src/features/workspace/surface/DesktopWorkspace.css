@@ -17,6 +17,11 @@
     background: transparent;
 }
 
+/* 桌面背景获焦时不绘制贴边整屏焦点环，焦点由选择状态与被聚焦目标自身的边框表达。 */
+.fence-workspace:focus {
+    outline: none;
+}
+
 /* 桌面空白区域连续框选预览。 */
 .fence-workspace__marquee {
     position: fixed;

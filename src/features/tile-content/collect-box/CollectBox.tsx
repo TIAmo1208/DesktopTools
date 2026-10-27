@@ -3,8 +3,6 @@ import { createPortal } from "react-dom";
 import { usePreferences } from "../../settings/PreferencesProvider";
 import { DesktopTileMenu } from "../../tiles/DesktopTileMenu";
 import { DesktopTileViewport } from "../../tiles/DesktopTileViewport";
-import Vditor from "vditor";
-import "vditor/dist/index.css";
 import {
     createCollectItem,
     deleteCollectItem,
@@ -416,39 +414,33 @@ export const CollectBox = ({
     useEffect(() => {
         const element = previewContentRef.current;
         if (!element || !preview) return;
-        let active = true;
+        let active = true; // 卸载或切换预览后丢弃迟到的渲染结果。
         const version = ++previewRenderVersion.current;
-        const render = (
-            Vditor as unknown as {
-                preview: (
-                    target: HTMLElement,
-                    markdown: string,
-                    options: { mode: "dark" | "light"; cdn: string; lang: "zh_CN"; transform: (html: string) => string },
-                ) => Promise<void>;
-            }
-        ).preview;
         const rendered = document.createElement("div");
         element.replaceChildren();
-        void render(rendered, preview.item.content || "（空白收集项）", {
-            mode: document.documentElement.dataset.theme === "light" ? "light" : "dark",
-            cdn: "/vditor",
-            lang: "zh_CN",
-            transform: (html) => {
-                const document = new DOMParser().parseFromString(html, "text/html");
-                document.querySelectorAll("img").forEach((image) => {
-                    const placeholder = document.createElement("span");
-                    const alt = image.getAttribute("alt")?.trim();
-                    placeholder.textContent = alt ? `[图片：${alt}]` : "[图片]";
-                    image.replaceWith(placeholder);
-                });
-                return document.body.innerHTML;
-            },
-        }).then(() => {
-            if (active && version === previewRenderVersion.current) {
-                element.classList.add("vditor-reset");
-                element.replaceChildren(...rendered.childNodes);
-            }
-        });
+        void (async () => {
+            // 预览才需要 Vditor：按需加载渲染器与样式，宿主页首屏不承担该库体积。
+            const [module] = await Promise.all([import("vditor"), import("vditor/dist/index.css")]);
+            if (!active || version !== previewRenderVersion.current) return; // 加载期间已切换或卸载。
+            await module.default.preview(rendered, preview.item.content || "（空白收集项）", {
+                mode: document.documentElement.dataset.theme === "light" ? "light" : "dark",
+                cdn: "/vditor",
+                lang: "zh_CN",
+                transform: (html: string) => {
+                    const document = new DOMParser().parseFromString(html, "text/html");
+                    document.querySelectorAll("img").forEach((image) => {
+                        const placeholder = document.createElement("span");
+                        const alt = image.getAttribute("alt")?.trim();
+                        placeholder.textContent = alt ? `[图片：${alt}]` : "[图片]";
+                        image.replaceWith(placeholder);
+                    });
+                    return document.body.innerHTML;
+                },
+            });
+            if (!active || version !== previewRenderVersion.current) return; // 渲染完成时已切换或卸载。
+            element.classList.add("vditor-reset");
+            element.replaceChildren(...rendered.childNodes);
+        })();
         return () => {
             active = false;
             previewRenderVersion.current++;
