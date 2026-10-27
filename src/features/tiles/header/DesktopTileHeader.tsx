@@ -1,4 +1,4 @@
-import { useContext, useRef, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { useContext, useEffect, useRef, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { DesktopTileContext } from "../DesktopTileBase";
 
 import "./DesktopTileHeader.css";
@@ -27,7 +27,16 @@ export const DesktopTileHeader = ({
     ...props
 }: DesktopTileHeaderProps) => {
     const cancelled = useRef(false); // Escape 取消时阻止失焦提交。
+    const editor = useRef<HTMLInputElement>(null); // 标题编辑框，菜单卸载后再取焦点。
     const shell = useContext(DesktopTileContext); // 外壳持有显隐状态，标题只负责呈现。
+    useEffect(() => {
+        // 等菜单卸载后再聚焦编辑框，避免菜单的外点关闭把这次聚焦判为外部点击而抢回焦点。
+        if (!editing) return;
+        const frame = requestAnimationFrame(() => {
+            editor.current?.focus({ preventScroll: true });
+        });
+        return () => cancelAnimationFrame(frame);
+    }, [editing]);
     return (
         <header
             {...props}
@@ -42,10 +51,10 @@ export const DesktopTileHeader = ({
         >
             {editing ? (
                 <input
+                    ref={editor}
                     className="desktop-tile-header__editor"
                     aria-label="格子名称"
                     defaultValue={title}
-                    autoFocus
                     onPointerDown={(event) => event.stopPropagation()}
                     onFocus={(event) => {
                         cancelled.current = false;

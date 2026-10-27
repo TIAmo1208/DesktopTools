@@ -1625,6 +1625,7 @@ fn destroy_matching_hosts(matches: impl Fn(&str) -> bool)
         for index in removed
         {
             let host = hosts.remove(index); // 仅释放本次选中的宿主。
+            super::refresh_policy::set_paused(&host.monitor_id, false); // 销毁宿主时退出暂停集合，避免刷新策略永久判为暂停。
             super::directory_watch::clear_monitor(&host.monitor_id);
             crate::component_runtime::ComponentRuntimeState::clear_time_monitor(&host.monitor_id);
             crate::weather::activity::clear_monitor(&host.monitor_id);

@@ -82,7 +82,7 @@ export const DesktopTileBase = ({
     const titleMode = appearance?.titleMode ?? "fixed"; // 默认固定标题。
     const buttonMode = appearance?.buttonMode ?? "hover"; // 默认悬停按钮。
     const { animationsEnabled } = usePreferences(); // 用户偏好与系统减少动态效果合并后的有效状态。
-    const visible = titleMode === "fixed" || collapsed || titleVisible || (!frozen.current && renaming); // 包括重命名和折叠入口的实际显示状态。
+    const visible = titleMode === "fixed" || collapsed || titleVisible || renaming; // 编辑标题期间始终可见，避免冻结态把输入框隐藏成不可聚焦。
     const state = useRef({ menu, renaming, visible }); // 原生监听读取最新交互状态。
     state.current = { menu, renaming, visible };
     const handleClose = useCallback(() => {
