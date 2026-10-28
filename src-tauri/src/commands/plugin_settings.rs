@@ -30,19 +30,19 @@ pub fn load_plugin_script(window: tauri::WebviewWindow, plugin_id: String) -> Re
     })
 }
 
-/// 卸载命令返回实际删除的文件名，不包含设置文件。
+/// 卸载命令返回实际删除的文件名。清理配置时包含设置文件。
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UninstallPluginResult
 {
-    pub removed: Vec<String>, // 本次删掉的清单或脚本文件名。
+    pub removed: Vec<String>, // 本次删掉的清单、脚本或设置文件名。
 }
 
-/// 删除当前插件目录中的清单与脚本，不改设置文件，也不改工作区实例。
+/// 删除清单与脚本。remove_settings 为真时再删配置目录中的设置文件，且不可恢复。
 #[tauri::command]
-pub fn uninstall_plugin(app: AppHandle, plugin_id: String) -> Result<UninstallPluginResult, String>
+pub fn uninstall_plugin(app: AppHandle, plugin_id: String, remove_settings: bool) -> Result<UninstallPluginResult, String>
 {
-    let removed = crate::app::settings::uninstall_plugin_files(app.state::<ComponentRuntimeState>().plugin_directory(), &plugin_id)?; // 启动时冻结的插件根。
+    let removed = crate::app::settings::uninstall_plugin_files(app.state::<ComponentRuntimeState>().plugin_directory(), &app.state::<SettingsState>().directory()?, &plugin_id, remove_settings)?; // 清单在插件根，设置在当前配置目录。
     Ok(UninstallPluginResult { removed })
 }
 

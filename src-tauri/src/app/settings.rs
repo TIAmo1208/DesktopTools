@@ -263,17 +263,25 @@ pub(crate) fn read_plugin_script_file(directory: &Path, relative: &str) -> Resul
     String::from_utf8(bytes).map_err(|_| "插件脚本不是 UTF-8 文本".to_string())
 }
 
-/// 只删除该插件的清单与脚本；缺失不算失败，设置文件不在删除范围内。
-pub(crate) fn uninstall_plugin_files(directory: &Path, plugin_id: &str) -> Result<Vec<String>, String>
+/// 删除清单与脚本；remove_settings 为真时再删配置目录中的设置文件。全部校验通过后才删除。
+pub(crate) fn uninstall_plugin_files(plugin_directory: &Path, config_directory: &Path, plugin_id: &str, remove_settings: bool) -> Result<Vec<String>, String>
 {
     let script = plugin_script_name(plugin_id).inspect_err(|_| crate::log_warn!("插件卸载：拒绝非法插件标识，插件={plugin_id}"))?; // 与脚本读取同一条标识规则。
     let manifest = format!("{plugin_id}.json"); // 与脚本同名的清单，不是 plugins- 设置文件。
     let mut pending = Vec::new(); // 校验通过后才删除，避免先删掉一半。
     for name in [manifest, script]
     {
-        if let Some(path) = confirmed_plugin_file(directory, &name).inspect_err(|error| crate::log_warn!("插件卸载：拒绝删除，插件={plugin_id}，文件={name}，原因={error}"))?
+        if let Some(path) = confirmed_plugin_file(plugin_directory, &name).inspect_err(|error| crate::log_warn!("插件卸载：拒绝删除，插件={plugin_id}，文件={name}，原因={error}"))?
         {
             pending.push((name, path));
+        }
+    }
+    if remove_settings
+    {
+        let file_name = plugin_settings_file_name(plugin_id).inspect_err(|_| crate::log_warn!("插件卸载：拒绝非法插件标识，插件={plugin_id}"))?; // 与读写设置同一条文件名校验。
+        if let Some(path) = confirmed_plugin_file(config_directory, &file_name).inspect_err(|error| crate::log_warn!("插件卸载：拒绝删除设置，插件={plugin_id}，原因={error}"))?
+        {
+            pending.push((file_name, path));
         }
     }
     let mut removed = Vec::new(); // 实际删除的文件名。

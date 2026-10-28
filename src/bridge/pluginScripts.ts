@@ -156,9 +156,9 @@ export const loadPluginScript = (pluginId: string): Promise<string | undefined> 
     return task;
 };
 
-/** 删除插件目录中的清单和脚本，返回实际删掉的文件名。 */
-export const uninstallPlugin = async (pluginId: string) => {
-    const result = await invokeRuntime<unknown>("uninstall_plugin", { pluginId }); // 后端只列出本次删除的文件名。
+/** 卸载插件。removeSettings 为真时同时删掉插件配置，返回实际删掉的文件名。 */
+export const uninstallPlugin = async (pluginId: string, removeSettings = false) => {
+    const result = await invokeRuntime<unknown>("uninstall_plugin", { pluginId, removeSettings }); // 后端只列出本次删除的文件名。
     if (typeof result !== "object" || result === null || !Array.isArray((result as { removed?: unknown }).removed)) throw new Error("插件卸载结果无效");
     const removed = (result as { removed: unknown[] }).removed; // 待确认的文件名。
     if (removed.some((name) => typeof name !== "string")) throw new Error("插件卸载结果无效");

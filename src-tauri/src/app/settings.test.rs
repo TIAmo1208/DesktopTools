@@ -301,8 +301,8 @@ fn uninstall_plugin_keeps_settings_and_rejects_illegal_paths()
     std::fs::write(directory.join("plugin.other.js"), "var other = 1;").unwrap();
     std::fs::write(root.join("outside.js"), "pwned").unwrap();
     assert_eq!(plugin_manifest_file(&directory, "plugin.ok").unwrap(), directory.join("plugin.ok.json").canonicalize().unwrap());
-    assert_eq!(uninstall_plugin_files(&directory, "plugin.missing").unwrap(), Vec::<String>::new());
-    assert_eq!(uninstall_plugin_files(&directory, "plugin.ok").unwrap(), vec!["plugin.ok.json".to_string(), "plugin.ok.js".to_string()]);
+    assert_eq!(uninstall_plugin_files(&directory, &directory, "plugin.missing", false).unwrap(), Vec::<String>::new());
+    assert_eq!(uninstall_plugin_files(&directory, &directory, "plugin.ok", false).unwrap(), vec!["plugin.ok.json".to_string(), "plugin.ok.js".to_string()]);
     assert!(!directory.join("plugin.ok.json").exists());
     assert!(!directory.join("plugin.ok.js").exists());
     assert_eq!(std::fs::read(directory.join("plugins-ok.json")).unwrap(), b"{\"hour\":1}");
@@ -311,15 +311,48 @@ fn uninstall_plugin_keeps_settings_and_rejects_illegal_paths()
     std::fs::write(directory.join("plugin.ok.json"), "{}").unwrap();
     for plugin_id in ["official.weather", "plugin.", "../outside", "plugin.ok/../../outside", r"plugin.ok\..\outside"]
     {
-        assert!(uninstall_plugin_files(&directory, plugin_id).is_err(), "{plugin_id}");
+        assert!(uninstall_plugin_files(&directory, &directory, plugin_id, true).is_err(), "{plugin_id}");
     }
     assert_eq!(std::fs::read(directory.join("plugin.ok.json")).unwrap(), b"{}");
     assert_eq!(std::fs::read(root.join("outside.js")).unwrap(), b"pwned");
     let junction = directory.join("plugin.link.js"); // 重解析点不能被当成可删脚本。
     std::fs::write(directory.join("plugin.link.json"), "{}").unwrap();
     assert!(std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&directory).output().unwrap().status.success());
-    assert!(uninstall_plugin_files(&directory, "plugin.link").is_err());
+    assert!(uninstall_plugin_files(&directory, &directory, "plugin.link", true).is_err());
     assert_eq!(std::fs::read(directory.join("plugin.link.json")).unwrap(), b"{}");
+    assert!(junction.exists());
+    std::fs::remove_dir(&junction).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// remove_settings 为假时保留配置目录中的设置；为真时只删这一份，且设置文件是重解析点时清单也不删。
+#[test]
+fn uninstall_plugin_remove_settings_is_optional_and_confined()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-remove-settings-{}", std::process::id())); // 本测试独占目录。
+    let plugin_directory = root.join("plugin"); // 清单与脚本所在目录。
+    let config_directory = root.join("config"); // 设置文件所在目录，与插件根分开。
+    std::fs::create_dir_all(&plugin_directory).unwrap();
+    std::fs::create_dir_all(&config_directory).unwrap();
+    std::fs::write(plugin_directory.join("plugin.ok.json"), "{}").unwrap();
+    std::fs::write(plugin_directory.join("plugin.ok.js"), "var ok = 1;").unwrap();
+    std::fs::write(config_directory.join("plugins-ok.json"), "{\"hour\":1}").unwrap();
+    std::fs::write(config_directory.join("plugins-other.json"), "{}").unwrap();
+    std::fs::write(root.join("outside.js"), "pwned").unwrap();
+    assert_eq!(plugin_settings_file_name("plugin.ok").unwrap(), "plugins-ok.json");
+    assert_eq!(uninstall_plugin_files(&plugin_directory, &config_directory, "plugin.ok", false).unwrap(), vec!["plugin.ok.json".to_string(), "plugin.ok.js".to_string()]);
+    assert_eq!(std::fs::read(config_directory.join("plugins-ok.json")).unwrap(), b"{\"hour\":1}");
+    std::fs::write(plugin_directory.join("plugin.ok.json"), "{}").unwrap();
+    std::fs::write(plugin_directory.join("plugin.ok.js"), "var ok = 1;").unwrap();
+    assert_eq!(uninstall_plugin_files(&plugin_directory, &config_directory, "plugin.ok", true).unwrap(), vec!["plugin.ok.json".to_string(), "plugin.ok.js".to_string(), "plugins-ok.json".to_string()]);
+    assert!(!config_directory.join("plugins-ok.json").exists());
+    assert_eq!(std::fs::read(config_directory.join("plugins-other.json")).unwrap(), b"{}");
+    assert_eq!(std::fs::read(root.join("outside.js")).unwrap(), b"pwned");
+    std::fs::write(plugin_directory.join("plugin.ok.json"), "{}").unwrap();
+    let junction = config_directory.join("plugins-ok.json"); // 设置文件本身是重解析点时不得先删清单。
+    assert!(std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&plugin_directory).output().unwrap().status.success());
+    assert!(uninstall_plugin_files(&plugin_directory, &config_directory, "plugin.ok", true).is_err());
+    assert_eq!(std::fs::read(plugin_directory.join("plugin.ok.json")).unwrap(), b"{}");
     assert!(junction.exists());
     std::fs::remove_dir(&junction).unwrap();
     std::fs::remove_dir_all(root).unwrap();

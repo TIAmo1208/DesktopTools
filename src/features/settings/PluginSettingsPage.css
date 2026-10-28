@@ -388,19 +388,6 @@
     padding: 16px 24px;
 }
 
-/* 待删文件。 */
-.plugin-settings__files {
-    margin: 0 0 12px;
-    padding: 8px 12px;
-    border: 1px solid var(--color-border);
-    border-radius: 4px;
-    background: var(--color-subtle);
-    color: var(--color-text);
-    font-size: 12px;
-    line-height: 24px;
-    list-style: none;
-}
-
 /* 确认说明。 */
 .plugin-settings__dialog p {
     margin: 0 0 8px;
@@ -430,7 +417,12 @@
     font: inherit;
 }
 
-/* 预选的危险确认，压过普通弹窗按钮的文字色。 */
+/* 次一级危险操作：只有文字用错误色，边框仍是普通按钮。 */
+.plugin-settings__dialog-actions .plugin-settings__purge {
+    color: var(--color-error);
+}
+
+/* 预选的危险确认，边框和文字都用错误色。 */
 .plugin-settings__dialog-actions .plugin-settings__confirm {
     border-color: var(--color-error);
     color: var(--color-error);

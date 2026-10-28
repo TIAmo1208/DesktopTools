@@ -121,16 +121,20 @@ export const PluginSettingsPage = ({
         setConfirm({ kind: "remove", instance, returnFocus: trigger });
     };
 
-    /** 执行当前确认。失败留在弹窗里，成功后关掉并把焦点还给触发元素。 */
-    const handleConfirm = async () => {
+    /** 执行当前确认。卸载时 removeSettings 决定是否同时清掉插件配置。失败留在弹窗里。 */
+    const handleConfirm = async (removeSettings = false) => {
         if (!confirm || confirming) return;
         setConfirming(true);
         try {
             if (confirm.kind === "uninstall") {
-                await uninstallPlugin(confirm.plugin.id);
+                await uninstallPlugin(confirm.plugin.id, removeSettings);
                 setRemovedIds((current) => new Set(current).add(confirm.plugin.id));
                 if (selectedId === confirm.plugin.id) setSelectedId(undefined);
-                publishMessage({ type: "success", content: "已卸载，重启后桌面上的格子会变为失效实例", source: "plugin-settings" });
+                publishMessage({
+                    type: "success",
+                    content: removeSettings ? "已卸载并清理配置，重装后设置不再恢复" : "已卸载，重启后桌面上的格子会变为失效实例",
+                    source: "plugin-settings",
+                });
             } else {
                 await applyWorkspaceCommand(confirm.instance.monitorId, { type: "remove-component", instanceId: confirm.instance.instanceId });
             }
@@ -167,7 +171,8 @@ export const PluginSettingsPage = ({
                     request={confirm}
                     pending={confirming}
                     onCancel={() => !confirming && setConfirm(undefined)}
-                    onConfirm={() => void handleConfirm()}
+                    onConfirm={() => void handleConfirm(false)}
+                    onPurge={() => void handleConfirm(true)}
                 />
             )}
         </>
@@ -338,16 +343,17 @@ const PluginConfirmDialog = ({
     pending,
     onCancel,
     onConfirm,
+    onPurge,
 }: {
     request: PluginConfirmRequest;
-    pending: boolean; // 命令进行中，两个按钮都不可用。
+    pending: boolean; // 命令进行中，按钮都不可用。
     onCancel: () => void;
-    onConfirm: () => void;
+    onConfirm: () => void; // 卸载或移除。卸载时不清理配置。
+    onPurge: () => void; // 卸载并清理配置。移除弹窗不用。
 }) => {
     const dialogRef = useRef<HTMLDialogElement>(null); // 原生对话框。
     const confirmRef = useRef<HTMLButtonElement>(null); // 预选的确认按钮。
     const uninstall = request.kind === "uninstall"; // 卸载与移除共用这一套键盘规则。
-    const files = uninstall ? pluginFiles(request.plugin.id) : undefined; // 将删除的清单和脚本。
 
     useEffect(() => {
         const dialog = dialogRef.current; // 当前弹窗。
@@ -408,15 +414,10 @@ const PluginConfirmDialog = ({
                 <h2>{uninstall ? `卸载「${request.plugin.name}」？` : `移除「${request.instance.componentId}」？`}</h2>
             </header>
             <div className="plugin-settings__dialog-body">
-                {uninstall && files ? (
+                {uninstall ? (
                     <>
-                        <ul className="plugin-settings__files">
-                            <li>{files.manifest}</li>
-                            <li>{files.script}</li>
-                        </ul>
-                        <p>只删除插件目录中的这两个文件。</p>
-                        <p>{files.settings} 会保留，重装后设置会恢复。</p>
                         <p>重启后，桌面上的格子才会变为失效实例，可在「失效插件」节移除。</p>
+                        <p>插件配置文件会保留。</p>
                     </>
                 ) : (
                     <p>只从桌面移除这个格子，不删除插件文件，也不删除插件设置。</p>
@@ -426,18 +427,17 @@ const PluginConfirmDialog = ({
                 <button type="button" disabled={pending} onClick={onCancel}>
                     取消
                 </button>
+                {uninstall && (
+                    <button type="button" className="plugin-settings__purge" disabled={pending} onClick={onPurge}>
+                        卸载并清理配置
+                    </button>
+                )}
                 <button ref={confirmRef} type="button" className="plugin-settings__confirm" disabled={pending} onClick={onConfirm}>
                     {uninstall ? "卸载" : "移除"}
                 </button>
             </footer>
         </dialog>
     );
-};
-
-/** 由插件标识得到将删除的文件和保留的设置文件。 */
-const pluginFiles = (pluginId: string) => {
-    const name = pluginId.startsWith("plugin.") ? pluginId.slice("plugin.".length) : pluginId; // 清单前缀后面的名称。
-    return { manifest: `${pluginId}.json`, script: `${pluginId}.js`, settings: `plugins-${name}.json` };
 };
 
 /** 一条设置条目。停用时只能看见标题。 */
