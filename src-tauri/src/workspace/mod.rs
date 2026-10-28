@@ -607,6 +607,42 @@ impl WorkspaceState
         Ok(next)
     }
 
+    /// 卸载时移除该插件在全部分显示器上的实例和布局残留，不写入撤销历史。
+    pub fn remove_uninstalled_plugin(&self, component_id: &str) -> Result<WorkspaceSnapshot, WorkspaceError>
+    {
+        let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 等待卸载清理的当前布局。
+        let imported = self.explorer_layout_imported.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 与布局一起保存的导入状态。
+        let mut histories = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 历史里的同名实例也不能被撤销救回。
+        let mut next = current.clone(); // 保存失败时当前布局不变。
+        let interaction = next.interaction.clone(); // 用来判断焦点是否因实例消失而变化。
+        let changed = next.strip_uninstalled_plugin(component_id); // 当前布局是否还有该插件的格子。
+        if changed
+        {
+            if next.interaction != interaction
+            {
+                next.interaction.revision += 1;
+            }
+            next.revision += 1;
+            next.validate()?;
+            let store = save_workspace_store(&self.persistence_path, &next, *imported).map_err(|error| {
+                crate::log_error!("工作区：卸载插件保存失败，插件={component_id}，错误={error}");
+                WorkspaceError::persistence_failed(&error)
+            })?; // 实例消失后的完整工作区文件。
+            *current = next;
+            self.schedule_auto_snapshot(store);
+            crate::log_info!("工作区：已移除卸载插件的实例，插件={component_id}，修订={}", current.revision);
+        }
+        for entry in &mut histories.undo
+        {
+            entry.layout.strip_uninstalled_plugin(component_id);
+        }
+        for entry in &mut histories.redo
+        {
+            entry.layout.strip_uninstalled_plugin(component_id);
+        }
+        Ok(current.clone())
+    }
+
     /// 从当前会话布局历史撤销或重做一个完整事务。
     pub(crate) fn restore_layout_history(&self, redo: bool) -> Result<WorkspaceLayoutHistoryResult, WorkspaceError>
     {
@@ -1872,6 +1908,32 @@ impl WorkspaceSnapshot
                 unreachable!("布局历史命令由 WorkspaceState 处理")
             }
         }
+    }
+
+    /// 去掉该插件的实例、包围盒、外观键和指向这些实例的焦点。用户移除格子不走这里。
+    fn strip_uninstalled_plugin(&mut self, component_id: &str) -> bool
+    {
+        let removed_ids = self.components.iter().filter(|component| component.component_id == component_id).map(|component| component.instance_id.clone()).collect::<Vec<_>>(); // 这次卸载实际拿掉的实例。
+        let before = self.tile_appearances.len(); // 用来发现已经没有实例、只剩外观键的残留。
+        self.components.retain(|component| component.component_id != component_id);
+        let prefix = format!("component:{component_id}."); // 创建实例时使用的身份前缀。
+        let exact = format!("component:{component_id}"); // 实例身份就等于插件身份的旧数据。
+        let live = self.components.iter().map(|component| component.instance_id.clone()).collect::<std::collections::HashSet<_>>(); // 其他插件仍占用的实例身份。
+        self.tile_appearances.retain(|key, _| {
+            let Some(instance_id) = key.strip_prefix("component:")
+            else
+            {
+                return true;
+            };
+            if removed_ids.iter().any(|removed| removed == instance_id)
+            {
+                return false;
+            }
+            !((key == &exact || key.starts_with(&prefix)) && !live.contains(instance_id))
+        });
+        let interaction = self.interaction.clone(); // 实例消失后焦点可能落到背景。
+        self.normalize_interaction();
+        !removed_ids.is_empty() || self.tile_appearances.len() != before || self.interaction != interaction
     }
 
     /// 清理布局变化后已经失效的选择、锚点和键盘焦点。

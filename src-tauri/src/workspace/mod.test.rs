@@ -1181,3 +1181,36 @@ fn component_monitor_lookup_follows_projection()
     assert!(!super::snapshot_has_component(&projected, "DISPLAY1", "official.music-control"));
     assert!(super::snapshot_has_component(&projected, "DISPLAY2", "official.music-control"));
 }
+
+/// 卸载清掉全部分显示器上的实例和外观，声明不可移除也不挡住，撤销不能把格子救回。
+#[test]
+fn uninstall_removes_plugin_instances_without_layout_history()
+{
+    let path = snapshot_path("uninstall-plugin-layout"); // 独立测试工作区。
+    let clock = component_instance("official.local-clock.default", "official.local-clock"); // 卸载后必须留下的其他格子。
+    let primary = ComponentInstanceSnapshot { monitor_id: "DISPLAY1".into(), ..component_instance("plugin.clock.1", "plugin.clock") }; // 主屏上的插件格子。
+    let secondary = ComponentInstanceSnapshot { monitor_id: "DISPLAY2".into(), ..component_instance("plugin.clock.2", "plugin.clock") }; // 另一屏上的同一插件。
+    let declarations = [ComponentCapabilityDeclaration { component_id: "plugin.clock".into(), creatable: false, removable: false }]; // 用户移除会被拒绝。
+    let state = WorkspaceState::load_with_components(path.clone(), &[clock.clone(), primary.clone(), secondary.clone()], &declarations).unwrap();
+    state.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0), monitor("DISPLAY2", false, 1920, 1.0)], &[], &[], &[]).unwrap();
+    state.apply(WorkspaceCommand::SetTileAppearance { target: WorkspaceFocusTarget::Component { component_id: primary.instance_id.clone() }, change: crate::contracts::TileAppearanceChange::Title("时钟".into()) }).unwrap();
+    state.apply_interaction_on_monitor("DISPLAY1", WorkspaceInteractionCommand::FocusSurface { focus: WorkspaceFocusTarget::Component { component_id: primary.instance_id.clone() } }).unwrap();
+    let moved = WorkspaceRect { left: 80.0, top: 80.0, width: 220.0, height: 116.0 }; // 制造一条含插件实例的撤销记录。
+    state.apply_on_monitor(Some("DISPLAY1"), WorkspaceCommand::UpdateComponentBounds { instance_id: clock.instance_id.clone(), bounds: moved }).unwrap();
+    let before = state.snapshot().unwrap(); // 用户移除失败时布局不能变。
+    let rejected = state.apply(WorkspaceCommand::RemoveComponent { instance_id: primary.instance_id.clone() }).expect_err("未声明可移除的插件格子仍应被拒绝");
+    assert_eq!(rejected.message, "不支持移除该组件");
+    assert_eq!(state.snapshot().unwrap().components, before.components);
+    let removed = state.remove_uninstalled_plugin("plugin.clock").unwrap(); // 宿主卸载不看 removable。
+    assert!(removed.components.iter().all(|component| component.component_id != "plugin.clock"));
+    assert_eq!(removed.components.len(), 1);
+    assert!(!removed.tile_appearances.keys().any(|key| key.starts_with("component:plugin.clock")));
+    assert_eq!(removed.interaction.keyboard_focus, WorkspaceFocusTarget::Background);
+    let undone = state.apply(WorkspaceCommand::UndoLayout).unwrap(); // 撤销只恢复其他格子，不恢复已卸载插件。
+    assert!(undone.components.iter().all(|component| component.component_id != "plugin.clock"));
+    assert_eq!(state.remove_uninstalled_plugin("plugin.clock").unwrap().revision, undone.revision);
+    drop(state);
+    let restored = WorkspaceState::load_with_components(path.clone(), &[clock, primary, secondary], &declarations).unwrap(); // 重启不把已删除实例补回。
+    assert!(restored.snapshot().unwrap().components.iter().all(|component| component.component_id != "plugin.clock"));
+    std::fs::remove_file(path).unwrap();
+}

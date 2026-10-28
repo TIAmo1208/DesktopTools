@@ -263,12 +263,12 @@ pub(crate) fn read_plugin_script_file(directory: &Path, relative: &str) -> Resul
     String::from_utf8(bytes).map_err(|_| "插件脚本不是 UTF-8 文本".to_string())
 }
 
-/// 删除清单与脚本；remove_settings 为真时再删配置目录中的设置文件。全部校验通过后才删除。
-pub(crate) fn uninstall_plugin_files(plugin_directory: &Path, config_directory: &Path, plugin_id: &str, remove_settings: bool) -> Result<Vec<String>, String>
+/// 只校验卸载目标，不删除。工作区清理插在校验和删除之间。
+pub(crate) fn plan_plugin_removal(plugin_directory: &Path, config_directory: &Path, plugin_id: &str, remove_settings: bool) -> Result<Vec<(String, PathBuf)>, String>
 {
     let script = plugin_script_name(plugin_id).inspect_err(|_| crate::log_warn!("插件卸载：拒绝非法插件标识，插件={plugin_id}"))?; // 与脚本读取同一条标识规则。
     let manifest = format!("{plugin_id}.json"); // 与脚本同名的清单，不是 plugins- 设置文件。
-    let mut pending = Vec::new(); // 校验通过后才删除，避免先删掉一半。
+    let mut pending = Vec::new(); // 全部通过后才允许删除。
     for name in [manifest, script]
     {
         if let Some(path) = confirmed_plugin_file(plugin_directory, &name).inspect_err(|error| crate::log_warn!("插件卸载：拒绝删除，插件={plugin_id}，文件={name}，原因={error}"))?
@@ -284,14 +284,29 @@ pub(crate) fn uninstall_plugin_files(plugin_directory: &Path, config_directory: 
             pending.push((file_name, path));
         }
     }
+    Ok(pending)
+}
+
+/// 删除已经校验过的卸载目标。中途失败时已删文件不会恢复，再次调用会补删剩余文件。
+pub(crate) fn commit_plugin_removal(pending: Vec<(String, PathBuf)>) -> Result<Vec<String>, String>
+{
     let mut removed = Vec::new(); // 实际删除的文件名。
     for (name, path) in pending
     {
-        std::fs::remove_file(&path).map_err(|error| format!("删除插件文件失败：{error}"))?;
-        removed.push(name);
+        match std::fs::remove_file(&path)
+        {
+            Ok(()) => removed.push(name),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+            {}
+            Err(error) => return Err(format!("删除插件文件失败：{error}")),
+        }
     }
     Ok(removed)
 }
+
+/// 删除清单与脚本；remove_settings 为真时再删配置目录中的设置文件。全部校验通过后才删除。
+#[cfg(test)]
+pub(crate) fn uninstall_plugin_files(plugin_directory: &Path, config_directory: &Path, plugin_id: &str, remove_settings: bool) -> Result<Vec<String>, String> { commit_plugin_removal(plan_plugin_removal(plugin_directory, config_directory, plugin_id, remove_settings)?) }
 
 /// 返回插件根内已校验的清单路径；文件不存在时不打开目录代替。
 pub(crate) fn plugin_manifest_file(directory: &Path, plugin_id: &str) -> Result<PathBuf, String>

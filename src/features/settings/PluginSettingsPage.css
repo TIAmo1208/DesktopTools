@@ -315,6 +315,13 @@
     font-weight: 600;
 }
 
+/* 失效节说明：只讲外部原因，不把卸载算进来。 */
+.plugin-settings__stale > p {
+    margin: 0 0 8px;
+    color: var(--color-muted);
+    font-size: 12px;
+}
+
 /* 失效行上的移除命令。 */
 .plugin-settings__remove {
     margin-left: auto;
@@ -417,15 +424,11 @@
     font: inherit;
 }
 
-/* 次一级危险操作：只有文字用错误色，边框仍是普通按钮。 */
-.plugin-settings__dialog-actions .plugin-settings__purge {
-    color: var(--color-error);
-}
-
-/* 预选的危险确认，边框和文字都用错误色。 */
+/* 危险主命令：错误色描边和底，卸载与清理配置共用。 */
 .plugin-settings__dialog-actions .plugin-settings__confirm {
     border-color: var(--color-error);
     color: var(--color-error);
+    background: var(--color-error-surface);
 }
 
 /* 弹窗按钮的键盘焦点。 */

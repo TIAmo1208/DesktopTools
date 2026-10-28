@@ -132,7 +132,7 @@ export const PluginSettingsPage = ({
                 if (selectedId === confirm.plugin.id) setSelectedId(undefined);
                 publishMessage({
                     type: "success",
-                    content: removeSettings ? "已卸载并清理配置，重装后设置不再恢复" : "已卸载，重启后桌面上的格子会变为失效实例",
+                    content: removeSettings ? "已卸载并清理配置，桌面上的格子已移除，重装后设置不再恢复" : "已卸载，桌面上的格子已移除",
                     source: "plugin-settings",
                 });
             } else {
@@ -310,6 +310,7 @@ export const PluginSettingsPage = ({
                 {plugins !== undefined && stale.length > 0 && (
                     <div className="plugin-settings__stale">
                         <h2>失效插件</h2>
+                        <p>插件因外部原因不可用，例如清单被外部删除或脚本加载失败。卸载不会留在这一节。</p>
                         {stale.map((instance) => (
                             <div className="plugin-settings__row" key={instance.instanceId}>
                                 <span className="plugin-settings__copy">
@@ -416,8 +417,8 @@ const PluginConfirmDialog = ({
             <div className="plugin-settings__dialog-body">
                 {uninstall ? (
                     <>
-                        <p>重启后，桌面上的格子才会变为失效实例，可在「失效插件」节移除。</p>
-                        <p>插件配置文件会保留。</p>
+                        <p>卸载会同时移除该插件在桌面上的所有格子，并清理对应的布局设置。</p>
+                        <p>插件配置文件会保留，重新安装后原有设置自动恢复。</p>
                     </>
                 ) : (
                     <p>只从桌面移除这个格子，不删除插件文件，也不删除插件设置。</p>
@@ -428,7 +429,7 @@ const PluginConfirmDialog = ({
                     取消
                 </button>
                 {uninstall && (
-                    <button type="button" className="plugin-settings__purge" disabled={pending} onClick={onPurge}>
+                    <button type="button" className="plugin-settings__confirm" disabled={pending} onClick={onPurge}>
                         卸载并清理配置
                     </button>
                 )}

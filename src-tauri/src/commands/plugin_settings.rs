@@ -38,11 +38,14 @@ pub struct UninstallPluginResult
     pub removed: Vec<String>, // 本次删掉的清单、脚本或设置文件名。
 }
 
-/// 删除清单与脚本。remove_settings 为真时再删配置目录中的设置文件，且不可恢复。
+/// 先校验文件，再移除全部显示器上的实例，最后删文件。工作区失败时文件仍在。
 #[tauri::command]
 pub fn uninstall_plugin(app: AppHandle, plugin_id: String, remove_settings: bool) -> Result<UninstallPluginResult, String>
 {
-    let removed = crate::app::settings::uninstall_plugin_files(app.state::<ComponentRuntimeState>().plugin_directory(), &app.state::<SettingsState>().directory()?, &plugin_id, remove_settings)?; // 清单在插件根，设置在当前配置目录。
+    let pending = crate::app::settings::plan_plugin_removal(app.state::<ComponentRuntimeState>().plugin_directory(), &app.state::<SettingsState>().directory()?, &plugin_id, remove_settings)?; // 非法路径在改工作区前拒绝。
+    let snapshot = app.state::<crate::workspace::WorkspaceState>().remove_uninstalled_plugin(&plugin_id).map_err(|error| error.message)?; // 不走用户移除门禁，也不进撤销历史。
+    let removed = crate::app::settings::commit_plugin_removal(pending)?; // 实例已清掉后再删文件，失败时可重入补删。
+    super::workspace::publish_workspace_snapshot(&app, &snapshot).map_err(|error| error.message)?;
     Ok(UninstallPluginResult { removed })
 }
 
