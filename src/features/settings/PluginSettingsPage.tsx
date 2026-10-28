@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../bridge/components";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../bridge/pluginSettings";
+import { invokeRuntime } from "../../bridge/runtime";
 import {
     openPluginDirectory,
     listenPluginScripts,
@@ -47,6 +48,7 @@ export const PluginSettingsPage = ({
     const [openEntryIds, setOpenEntryIds] = useState<ReadonlySet<string>>(new Set()); // 本插件内展开的条目，互不联动。
     const [, setShellEpoch] = useState(0); // 脚本注册或加载成功后重读条目。
     const [loadedIds, setLoadedIds] = useState<ReadonlySet<string>>(new Set()); // 设置窗口里已经执行成功的脚本。
+    const [reloaded, setReloaded] = useState<Readonly<Record<string, string>>>({}); // 重新加载后的结果；ok 表示不再沿用旧失败。
     const [menu, setMenu] = useState<{ pluginId: string; left: number; top: number; anchor: HTMLElement }>(); // 右键菜单锚点。
     const [confirm, setConfirm] = useState<PluginConfirmRequest>(); // 当前模态确认。
     const [confirming, setConfirming] = useState(false); // 确认命令进行中。
@@ -174,7 +176,7 @@ export const PluginSettingsPage = ({
     if (selected) {
         const pluginDisabled = disabledIds.includes(selected.id); // 当前插件是否停用。
         const entries = entriesFor(selected.id); // 已注册的设置条目；脚本未到时为 undefined。
-        const failure = pluginScriptFailure(selected.id); // 脚本失败说明。
+        const failure = scriptFailure(selected.id, reloaded); // 脚本失败说明；重新加载成功后不再沿用旧失败。
         const pending = !pluginDisabled && entries === undefined && !failure && !loadedIds.has(selected.id); // 启用后还在等脚本。
         return (
             <>
@@ -200,9 +202,12 @@ export const PluginSettingsPage = ({
                             正在加载插件设置…
                         </p>
                     ) : failure ? (
-                        <p className="plugin-settings__status" role="status">
-                            {failure}
-                        </p>
+                        <div className="plugin-settings__error" role="alert">
+                            <p>{failure}</p>
+                            <button type="button" onClick={() => handleReload(selected.id, setReloaded, setLoadedIds, setShellEpoch)}>
+                                重新加载
+                            </button>
+                        </div>
                     ) : pluginDisabled && !entries?.length ? (
                         <p className="plugin-settings__status">插件已停用，启用后显示设置条目。</p>
                     ) : entries && entries.length > 0 ? (
@@ -240,10 +245,13 @@ export const PluginSettingsPage = ({
             <section className="plugin-settings">
                 <p className="plugin-settings__lead">插件按行列出。停用后不加载插件脚本，插件行仍然保留。</p>
                 {plugins === undefined ? null : plugins.length === 0 ? (
-                    <p className="plugin-settings__empty">尚未安装插件</p>
+                    <p className="plugin-settings__empty">
+                        尚未安装插件
+                        <small>将插件放入插件目录后重新打开程序。</small>
+                    </p>
                 ) : (
                     <div className="plugin-settings__list">
-                        <h2>已安装插件</h2>
+                        <h2 className="plugin-settings__label">已安装插件</h2>
                         {plugins.map((plugin) => {
                             const pluginDisabled = disabledIds.includes(plugin.id); // 本行是否停用。
                             return (
@@ -263,8 +271,14 @@ export const PluginSettingsPage = ({
                                     >
                                         <span className="plugin-settings__copy">
                                             {plugin.name}
-                                            {pluginDisabled && <span className="plugin-settings__badge">停用</span>}
-                                            <small>{entrySummary(plugin.id, pluginDisabled, loadedIds.has(plugin.id))}</small>
+                                            <small>
+                                                {entrySummary(
+                                                    plugin.id,
+                                                    pluginDisabled,
+                                                    loadedIds.has(plugin.id) || reloaded[plugin.id] === "ok",
+                                                    reloaded[plugin.id] === "ok",
+                                                )}
+                                            </small>
                                         </span>
                                     </button>
                                     <button
@@ -390,27 +404,32 @@ const PluginConfirmDialog = ({
             }}
             onKeyDown={handleKeyDown}
         >
-            <h2>{uninstall ? `卸载「${request.plugin.name}」？` : `移除「${request.instance.componentId}」？`}</h2>
-            {uninstall && files ? (
-                <>
-                    <ul className="plugin-settings__files">
-                        <li>{files.manifest}</li>
-                        <li>{files.script}</li>
-                    </ul>
-                    <p>{files.settings} 会保留，重装后设置会恢复。</p>
-                    <p>重启后，桌面上的格子才会变为失效实例。</p>
-                </>
-            ) : (
-                <p>只从桌面移除这个格子，不删除插件文件，也不删除插件设置。</p>
-            )}
-            <div className="plugin-settings__dialog-actions">
+            <header>
+                <h2>{uninstall ? `卸载「${request.plugin.name}」？` : `移除「${request.instance.componentId}」？`}</h2>
+            </header>
+            <div className="plugin-settings__dialog-body">
+                {uninstall && files ? (
+                    <>
+                        <ul className="plugin-settings__files">
+                            <li>{files.manifest}</li>
+                            <li>{files.script}</li>
+                        </ul>
+                        <p>只删除插件目录中的这两个文件。</p>
+                        <p>{files.settings} 会保留，重装后设置会恢复。</p>
+                        <p>重启后，桌面上的格子才会变为失效实例，可在「失效插件」节移除。</p>
+                    </>
+                ) : (
+                    <p>只从桌面移除这个格子，不删除插件文件，也不删除插件设置。</p>
+                )}
+            </div>
+            <footer className="plugin-settings__dialog-actions">
                 <button type="button" disabled={pending} onClick={onCancel}>
                     取消
                 </button>
                 <button ref={confirmRef} type="button" className="plugin-settings__confirm" disabled={pending} onClick={onConfirm}>
                     {uninstall ? "卸载" : "移除"}
                 </button>
-            </div>
+            </footer>
         </dialog>
     );
 };
@@ -516,10 +535,35 @@ export const entriesFor = (pluginId: string) => {
     return api.settingsEntries ?? [];
 };
 
+/** 重新加载清掉这一页记住的旧失败，再执行同一次脚本命令。 */
+const handleReload = (
+    pluginId: string,
+    setReloaded: (update: (current: Readonly<Record<string, string>>) => Readonly<Record<string, string>>) => void,
+    setLoadedIds: (update: (current: ReadonlySet<string>) => ReadonlySet<string>) => void,
+    setShellEpoch: (update: (value: number) => number) => void,
+) => {
+    setReloaded((current) => ({ ...current, [pluginId]: "" }));
+    void invokeRuntime("load_plugin_script", { pluginId })
+        .then(() => {
+            setLoadedIds((current) => new Set(current).add(pluginId));
+            setReloaded((current) => ({ ...current, [pluginId]: "ok" }));
+            setShellEpoch((value) => value + 1);
+        })
+        .catch((error: unknown) => setReloaded((current) => ({ ...current, [pluginId]: error instanceof Error ? error.message : "插件脚本加载失败" })));
+};
+
+/** 脚本失败说明。重新加载成功后忽略模块里留下的旧失败。 */
+const scriptFailure = (pluginId: string, reloaded: Readonly<Record<string, string>>) => {
+    const again = reloaded[pluginId]; // 这一页重新加载的结果。
+    if (again === "ok") return undefined;
+    if (again) return again;
+    return pluginScriptFailure(pluginId);
+};
+
 /** 一级行的条目数说明。 */
-export const entrySummary = (pluginId: string, pluginDisabled: boolean, loaded: boolean) => {
+export const entrySummary = (pluginId: string, pluginDisabled: boolean, loaded: boolean, ignoreFailure = false) => {
     if (pluginDisabled) return "已停用";
-    const failure = pluginScriptFailure(pluginId); // 加载失败不伪装成零条目。
+    const failure = ignoreFailure ? undefined : pluginScriptFailure(pluginId); // 加载失败不伪装成零条目。
     if (failure) return "设置条目加载失败";
     const entries = entriesFor(pluginId);
     if (!entries && !loaded) return "正在加载插件设置…";
