@@ -59,14 +59,10 @@ pub fn run()
         let _ = tools::log::shutdown();
         panic!("FATAL Shell STA 运行时启动失败: {}", error.message);
     });
-    let component_runtime = ComponentRuntimeState::new(); // 已隔离加载失败的官方组件注册表。
-    let default_components = component_runtime.default_instances(); // 首次创建工作区使用的官方默认组件集合。
-    let component_capabilities = component_runtime.capability_declarations().to_vec(); // 工作区创建与移除命令读取的清单能力声明，注册表移入应用状态前取出。
     // Tauri 应用构建结果。
     let app = tauri::Builder::default()
         .manage(ApplicationState::default())
         .manage(desktop_items)
-        .manage(component_runtime)
         .invoke_handler(tauri::generate_handler![
             commands::get_foreground_snapshot,
             commands::settings::get_settings,
@@ -162,7 +158,13 @@ pub fn run()
         .setup(move |app| {
             let config_directory = crate::app::settings::prepare_config_directory(&app.path().app_data_dir()?)?; // 在后台写入线程启动前完成配置迁移。
             let settings_path = config_directory.join("settings.json"); // 当前用户的正式设置文件。
-            app.manage(crate::app::settings::SettingsState::load(settings_path)?);
+            let settings = crate::app::settings::SettingsState::load(settings_path)?; // 配置迁移后读取插件目录偏好。
+            let plugin_directory = crate::app::settings::resolve_plugin_directory(&settings.preferences()?.plugin_directory, &config_directory)?; // 使用实际生效配置目录计算缺省位置。
+            let component_runtime = ComponentRuntimeState::new(&plugin_directory); // 坏清单只进入 failures，不阻塞工作区加载。
+            let default_components = component_runtime.default_instances(); // 首次工作区的官方默认实例。
+            let component_capabilities = component_runtime.capability_declarations().to_vec(); // 注册表移入应用前取出工作区能力声明。
+            app.manage(component_runtime);
+            app.manage(settings);
             app.manage(crate::weather::WeatherState::new(&config_directory));
             std::fs::create_dir_all(config_directory.join("collect"))?;
             let _ = crate::platform::windows::directory_watch::start(app.handle().clone(), "collect".to_string(), config_directory.join("collect"));

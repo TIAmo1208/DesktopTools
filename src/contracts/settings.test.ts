@@ -42,6 +42,17 @@ test("界面动画使用默认值并严格校验布尔设置", () => {
     assert.equal(resolveAnimationsEnabled({ ...defaults, followSystemReducedMotion: false, interfaceAnimations: true }, true), true);
 });
 
+test("插件目录缺省跟随配置目录，保存往返保留且拒绝错误类型与纯空白", () => {
+    const base = { theme: "light", doubleClickToOpen: true }; // 当前最小偏好载荷。
+    assert.equal(parsePreferences(base).pluginDirectory, "");
+    for (const pluginDirectory of ["", "D:\\DesktopToolsPlugins", "%APPDATA%\\TIAmo\\plugin"]) {
+        const preferences = parsePreferences({ ...base, pluginDirectory }); // 已保存的自定义路径不可因前端解析丢失。
+        assert.equal(preferences.pluginDirectory, pluginDirectory);
+        assert.equal(parsePreferences(JSON.parse(JSON.stringify(preferences))).pluginDirectory, pluginDirectory);
+    }
+    for (const pluginDirectory of [null, false, 1, " ", "\t"]) assert.throws(() => parsePreferences({ ...base, pluginDirectory }));
+});
+
 // 桌面主题缺失时使用固定默认值，后续修改、系统色开关及序列化均不能串组。
 test("keeps desktop appearance independent from interface and menu appearance", () => {
     const legacy = parsePreferences({ theme: "dark", doubleClickToOpen: true, accentColor: "#aabbcc", useWindowsAccentColor: true }); // 用户原有的非默认主题。

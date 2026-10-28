@@ -120,7 +120,7 @@ fn snapshot_path(name: &str) -> std::path::PathBuf
 fn workspace_state(path: std::path::PathBuf) -> WorkspaceState { WorkspaceState::load_with_components(path, &[], &registered_capability_declarations()).expect("测试工作区应可启动") }
 
 /// 按当前官方注册表返回本测试使用的创建与移除能力声明。
-fn registered_capability_declarations() -> Vec<ComponentCapabilityDeclaration> { crate::component_runtime::ComponentRuntimeState::new().capability_declarations().to_vec() }
+fn registered_capability_declarations() -> Vec<ComponentCapabilityDeclaration> { crate::component_runtime::ComponentRuntimeState::new(&snapshot_path("no-plugins")).capability_declarations().to_vec() }
 
 /// 按清单声明与组件身份返回本测试使用的组件实例。
 fn component_instance(instance_id: &str, component_id: &str) -> ComponentInstanceSnapshot { ComponentInstanceSnapshot { instance_id: instance_id.to_string(), component_id: component_id.to_string(), monitor_id: "DISPLAY1".to_string(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 24.0, top: 24.0, width: 360.0, height: 280.0 }, state_version: 1, state: serde_json::json!({}) } }

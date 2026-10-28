@@ -1127,11 +1127,58 @@ fn protocol_response(status: StatusCode, content_type: &str, csp: Option<&str>, 
     builder.body(body).expect("FATAL 正式宿主协议响应构造失败")
 }
 
-/// 路由 Tauri 内嵌资产和正式宿主命令。
+/// 只读取插件根目录内的 JS/CSS，任何链接、重解析点或非普通路径均拒绝。
+fn read_plugin_asset(directory: &std::path::Path, relative: &str) -> Option<(&'static str, Vec<u8>)>
+{
+    use std::{
+        fs,
+        os::windows::fs::MetadataExt,
+        path::{Component, Path},
+    };
+    let relative_path = Path::new(relative); // 请求路径不解码，避免编码后的分隔符改变文件身份。
+    if relative.is_empty() || relative.contains([':', '%', '\\', '\0']) || relative_path.components().any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return None;
+    }
+    let content_type = match relative_path.extension()?.to_str()?
+    {
+        "js" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        _ => return None,
+    }; // 其他格式不能通过插件协议读取。
+    let candidate = directory.join(relative_path); // 尚未跟随链接的请求目标。
+    for ancestor in candidate.ancestors().take_while(|ancestor| ancestor.starts_with(directory))
+    {
+        let metadata = fs::symlink_metadata(ancestor).ok()?; // 仅检查插件根及其内部，不约束用户目录重定向。
+        if metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
+        {
+            return None;
+        }
+    }
+    let root = fs::canonicalize(directory).ok()?; // 实际插件根。
+    let path = fs::canonicalize(candidate).ok()?; // 实际资产路径必须仍在插件根内。
+    if !path.starts_with(&root) || !fs::metadata(&path).ok()?.is_file()
+    {
+        return None;
+    }
+    Some((content_type, fs::read(path).ok()?))
+}
+
+/// 路由插件资产、Tauri 内嵌资产和正式宿主命令。
 fn handle_protocol_request(request: Request<Vec<u8>>, app: &AppHandle, command_handler: &NativeCommandHandler) -> Response<Cow<'static, [u8]>>
 {
     // 当前本地协议请求路径。
     let path = request.uri().path();
+    if let Some(relative) = path.strip_prefix("/plugins/")
+    {
+        if let Some(runtime) = app.try_state::<crate::component_runtime::ComponentRuntimeState>()
+            && let Some((content_type, bytes)) = read_plugin_asset(runtime.plugin_directory(), relative)
+        {
+            return protocol_response(StatusCode::OK, content_type, None, Cow::Owned(bytes));
+        }
+        crate::log_warn!("插件：资产不存在或路径不受支持，相对路径={relative}");
+        return protocol_response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", None, Cow::Borrowed(b"not found"));
+    }
     if let Some(command) = path.strip_prefix("/__desktop_tools_invoke/")
     {
         // 前端提交的命令参数。
@@ -1218,6 +1265,32 @@ fn handle_desktop_request(request: Request<Vec<u8>>, app: &AppHandle, handler: &
 mod desktop_dev_tests
 {
     use super::{allowed_desktop_origin, desktop_page_url};
+
+    /// 插件资产仅允许根内 JS/CSS，拒绝穿越、设备流和目录联接。
+    #[test]
+    fn plugin_assets_reject_unsafe_paths_and_reparse_points()
+    {
+        let root = std::env::temp_dir().join(format!("desktop-tools-plugin-assets-{}", std::process::id())); // 独占资产目录。
+        let directory = root.join("plugin"); // 插件来源根。
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("plugin.test.js"), "window.test = true;").unwrap();
+        std::fs::write(directory.join("plugin.test.css"), "body {}").unwrap();
+        std::fs::write(directory.join("private.json"), "{}").unwrap();
+        assert_eq!(super::read_plugin_asset(&directory, "plugin.test.js").unwrap().0, "text/javascript; charset=utf-8");
+        assert_eq!(super::read_plugin_asset(&directory, "plugin.test.css").unwrap().1, b"body {}");
+        for path in ["", "../outside.js", "/plugin.test.js", "private.json", "missing.js", "plugin.test.js:stream", "%2e%2e/outside.js", r"..\outside.js"]
+        {
+            assert!(super::read_plugin_asset(&directory, path).is_none(), "不安全路径应拒绝: {path}");
+        }
+        std::fs::create_dir(directory.join("nested")).unwrap();
+        std::fs::write(directory.join("nested/plugin.test.js"), "redirected").unwrap();
+        let junction = directory.join("linked"); // 目录联接不需要创建符号链接权限。
+        assert!(std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&directory).output().unwrap().status.success());
+        assert!(super::read_plugin_asset(&directory, "linked/plugin.test.js").is_none());
+        assert_eq!(super::read_plugin_asset(&junction.join("nested"), "plugin.test.js").unwrap().1, b"redirected"); // 插件根以上的目录联接允许使用。
+        std::fs::remove_dir(&junction).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     /// 完整围栏图像超过普通消息上限时，两层必须接受相同的有界载荷。
     #[test]

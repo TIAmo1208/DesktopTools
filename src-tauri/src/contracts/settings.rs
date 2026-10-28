@@ -66,6 +66,7 @@ impl Default for DesktopAppearance
 pub struct ApplicationPreferences
 {
     pub config_directory: String,              // 下次启动使用的配置目录，支持 %APPDATA% 前缀。
+    pub plugin_directory: String,              // 非空时固定插件目录；空值使用当前配置目录同级 plugin。
     pub theme: ApplicationTheme,               // 当前用户选择的应用主题。
     pub desktop_appearance: DesktopAppearance, // 桌面独立主题，缺失时使用默认值。
     pub double_click_to_open: bool,            // 是否要求双击打开桌面项目。
@@ -110,6 +111,7 @@ impl Default for ApplicationPreferences
             theme: ApplicationTheme::System,
             desktop_appearance: DesktopAppearance::default(),
             config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(),
+            plugin_directory: String::new(),
             double_click_to_open: true,
             accent_color: "#2563eb".to_string(),
             use_windows_accent_color: false,
@@ -150,18 +152,25 @@ impl ApplicationPreferences
     /// 拒绝无效颜色、越界数值及不能安全应用的字体。
     pub fn validate(&self) -> Result<(), String>
     {
-        let directory = self.config_directory.trim(); // 契约只校验文本，不读取当前用户环境。
-        let suffix = if directory.get(..9).is_some_and(|prefix| prefix.eq_ignore_ascii_case("%APPDATA%"))
+        for (label, value) in [("配置目录", &self.config_directory), ("插件目录", &self.plugin_directory)]
         {
-            &directory[9..]
-        }
-        else
-        {
-            directory
-        }; // 只允许约定的变量前缀。
-        if directory.is_empty() || suffix.contains(['%', '\0', '*', '?', '"', '<', '>', '|'])
-        {
-            return Err("配置目录不能为空，且不能包含未知变量或特殊字符".to_string());
+            let directory = value.trim(); // 契约只校验文本，不读取当前用户环境。
+            if label == "插件目录" && directory.is_empty()
+            {
+                continue;
+            }
+            let suffix = if directory.get(..9).is_some_and(|prefix| prefix.eq_ignore_ascii_case("%APPDATA%"))
+            {
+                &directory[9..]
+            }
+            else
+            {
+                directory
+            }; // 只允许约定的变量前缀。
+            if directory.is_empty() || suffix.contains(['%', '\0', '*', '?', '"', '<', '>', '|'])
+            {
+                return Err(format!("{label}不能为空，且不能包含未知变量或特殊字符"));
+            }
         }
         if !matches!(self.collect_image_import_mode.as_str(), "copy" | "move" | "link")
         {

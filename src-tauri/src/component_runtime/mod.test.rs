@@ -2,11 +2,56 @@ use super::{ComponentRuntimeState, validate_manifest};
 use crate::contracts::{ComponentCapability, ComponentCapabilityDeclaration, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, WorkspaceRect};
 use serde_json::json;
 
+/// 插件槽只接受二选一能力，且不能冒用官方入口。
+#[test]
+fn plugin_slot_validates_identity_entry_and_single_capability()
+{
+    let mut manifest: ComponentManifest = serde_json::from_str(super::LOCAL_CLOCK_MANIFEST).unwrap(); // 从有效官方清单构造边界输入。
+    manifest.id = "plugin.test".to_string();
+    manifest.entry = super::PLUGIN_SLOT_ENTRY.to_string();
+    for capability in [ComponentCapability::ReadHostTime, ComponentCapability::ReadCurrentMedia]
+    {
+        manifest.required_capabilities = vec![capability];
+        assert_eq!(validate_manifest(&manifest), Ok(()));
+    }
+    manifest.required_capabilities = vec![ComponentCapability::ReadHostTime, ComponentCapability::ReadCurrentMedia];
+    assert!(validate_manifest(&manifest).is_err());
+    manifest.required_capabilities = vec![ComponentCapability::ReadHostTime];
+    for (id, entry) in [("official.weather", "official:local-clock"), ("plugin.test", "official:local-clock"), ("official.local-clock", "plugin:slot"), ("plugin.test", "https://example.com/plugin.js")]
+    {
+        manifest.id = id.to_string();
+        manifest.entry = entry.to_string();
+        assert_eq!(validate_manifest(&manifest).unwrap_err().code, "invalid-component-manifest");
+    }
+}
+
+/// 实际目录来源有界读取、坏清单隔离、缺失目录为空、官方身份优先。
+#[test]
+fn plugin_directory_sources_are_bounded_and_isolated()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-plugin-manifests-{}", std::process::id())); // 本测试独占的临时来源。
+    assert!(ComponentRuntimeState::new(&directory).failures.is_empty());
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut plugin: serde_json::Value = serde_json::from_str(super::LOCAL_CLOCK_MANIFEST).unwrap(); // 有效插件使用现有版本化契约。
+    plugin["id"] = "plugin.test".into();
+    plugin["entry"] = super::PLUGIN_SLOT_ENTRY.into();
+    std::fs::write(directory.join("plugin.test.json"), plugin.to_string()).unwrap();
+    std::fs::write(directory.join("broken.json"), "{").unwrap();
+    std::fs::write(directory.join("large.json"), " ".repeat(65537)).unwrap();
+    std::fs::write(directory.join("duplicate.json"), super::LOCAL_CLOCK_MANIFEST.replace("本地时间", "重复清单")).unwrap();
+    let runtime = ComponentRuntimeState::new(&directory); // 官方在前，插件目录中的损坏来源不阻断注册。
+    assert!(runtime.manifests.contains_key("plugin.test"));
+    assert_eq!(runtime.manifests["official.local-clock"].name, serde_json::from_str::<ComponentManifest>(super::LOCAL_CLOCK_MANIFEST).unwrap().name);
+    assert_eq!(runtime.failures.iter().map(|failure| failure.component_id.as_str()).collect::<Vec<_>>(), ["broken", "large", "official.local-clock"]);
+    assert!(runtime.failures[1].message.contains("64 KiB"));
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
 /// Debug 清单与默认实例严格跟随 Rust 构建模式。
 #[test]
 fn debug_widget_is_registered_only_in_debug_builds()
 {
-    let runtime = ComponentRuntimeState::new(); // 当前构建注册表。
+    let runtime = ComponentRuntimeState::new(&std::env::temp_dir().join(format!("desktop-tools-no-plugins-{}", std::process::id()))); // 当前构建注册表。
     let instances = runtime.default_instances(); // 当前构建默认实例。
     assert_eq!(instances.iter().any(|instance| instance.component_id == "official.debug-test"), cfg!(debug_assertions));
     assert_eq!(runtime.manifests.contains_key("official.debug-test"), cfg!(debug_assertions));
@@ -16,7 +61,7 @@ fn debug_widget_is_registered_only_in_debug_builds()
 #[test]
 fn default_instances_do_not_contain_a_weather_tile()
 {
-    let runtime = ComponentRuntimeState::new(); // 当前构建注册表。
+    let runtime = ComponentRuntimeState::new(&std::env::temp_dir().join(format!("desktop-tools-no-plugins-{}", std::process::id()))); // 当前构建注册表。
     let instances = runtime.default_instances(); // 当前构建默认实例。
 
     assert!(runtime.manifests.contains_key("official.weather"), "天气清单本身仍须注册，否则用户无法创建天气格子");
@@ -67,7 +112,7 @@ fn declared_creation_and_removal_default_to_false()
 #[test]
 fn registered_manifests_publish_creation_and_removal_declarations()
 {
-    let runtime = ComponentRuntimeState::new(); // 当前构建注册表。
+    let runtime = ComponentRuntimeState::new(&std::env::temp_dir().join(format!("desktop-tools-no-plugins-{}", std::process::id()))); // 当前构建注册表。
     let declaration = |component_id: &str| runtime.capability_declarations().iter().find(|declaration| declaration.component_id == component_id).cloned(); // 当前构建的单项能力声明。
 
     assert_eq!(declaration("official.collect-box"), Some(ComponentCapabilityDeclaration { component_id: "official.collect-box".to_string(), creatable: true, removable: true }));
@@ -80,7 +125,7 @@ fn registered_manifests_publish_creation_and_removal_declarations()
 #[test]
 fn failed_instance_is_isolated_from_ready_instances()
 {
-    let runtime = ComponentRuntimeState::new(); // 已注册本地时间清单的组件运行时。
+    let runtime = ComponentRuntimeState::new(&std::env::temp_dir().join(format!("desktop-tools-no-plugins-{}", std::process::id()))); // 已注册本地时间清单的组件运行时。
     let instance = |instance_id: &str, component_id: &str| ComponentInstanceSnapshot { instance_id: instance_id.to_string(), component_id: component_id.to_string(), monitor_id: "DISPLAY1".to_string(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 20.0, top: 20.0, width: 220.0, height: 116.0 }, state_version: 1, state: json!({}) }; // 当前测试复用的组件实例构造器。
 
     let snapshot = runtime.snapshot(&[instance("clock", "official.local-clock"), instance("missing", "official.missing")]).expect("实例集合应可隔离注册");

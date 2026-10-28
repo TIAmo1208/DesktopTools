@@ -1,6 +1,32 @@
 use super::*;
 use crate::contracts::settings::ApplicationTheme;
 
+/// 缺省目录随生效配置定位，显式偏好独立保存并拒绝不安全路径。
+#[test]
+fn plugin_directory_defaults_resolves_and_persists()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-plugin-preferences-{}", std::process::id())); // 本测试独占配置。
+    let config = directory.join("config"); // 模拟用户自定义配置目录。
+    let defaults: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 缺失字段直接使用当前默认值。
+    assert!(defaults.plugin_directory.is_empty());
+    assert_eq!(resolve_plugin_directory("", &config).unwrap(), directory.join("plugin"));
+    assert_eq!(resolve_plugin_directory("  ", &config).unwrap(), directory.join("plugin"));
+    assert_eq!(resolve_plugin_directory(r"%APPDATA%\TIAmo\plugin", &config).unwrap(), PathBuf::from(std::env::var_os("APPDATA").unwrap()).join("TIAmo/plugin"));
+    let path = config.join("settings.json"); // 使用正式保存入口验证字段往返。
+    let state = SettingsState::load(path.clone()).unwrap();
+    let mut preferences = state.preferences().unwrap(); // 显式路径不随配置目录变化。
+    preferences.plugin_directory = directory.join("custom-plugin").to_string_lossy().into_owned();
+    state.save(preferences.clone()).unwrap();
+    assert_eq!(SettingsState::load(path.clone()).unwrap().preferences().unwrap().plugin_directory, preferences.plugin_directory);
+    for invalid in ["relative", r"C:\data\..\other", "%UNKNOWN%\\data", r"\\.\device", r"C:\data\file:stream"]
+    {
+        let invalid_preferences = ApplicationPreferences { plugin_directory: invalid.into(), ..preferences.clone() }; // 每次错误都不得覆盖已存偏好。
+        assert!(state.save(invalid_preferences).is_err());
+    }
+    assert_eq!(state.preferences().unwrap(), preferences);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// 天气显示偏好沿用真实保存入口，缺失字段默认关闭且不接受伪布尔值。
 #[test]
 fn weather_visibility_defaults_and_persists()

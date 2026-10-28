@@ -17,18 +17,30 @@ pub fn resolve_config_directory(value: &str) -> Result<PathBuf, String>
         value.to_string()
     }; // 不展开未知变量，避免静默写入错误位置。
     let path = PathBuf::from(&expanded); // 待验证的绝对目录。
-    if !path.is_absolute() || expanded.contains(['%', '\0', '*', '?', '"', '<', '>', '|']) || expanded.starts_with(r"\\.\") || expanded.starts_with(r"\\?\") || path.components().any(|part| matches!(part, std::path::Component::ParentDir))
+    if !path.is_absolute() || expanded.contains(['%', '\0', '*', '?', '"', '<', '>', '|']) || expanded.starts_with(r"\\.\") || expanded.starts_with(r"\\?\") || path.components().any(|part| matches!(part, std::path::Component::ParentDir) || matches!(part, std::path::Component::Normal(value) if value.to_string_lossy().contains(':')))
     {
         return Err("配置目录必须为绝对路径或以 %APPDATA% 开头，不能包含父级跳转或特殊字符".to_string());
     }
     Ok(path)
 }
 
+/// 空偏好使用当前生效配置目录的同级 plugin，显式路径沿用配置目录安全边界。
+pub fn resolve_plugin_directory(value: &str, config_directory: &std::path::Path) -> Result<PathBuf, String>
+{
+    if value.trim().is_empty()
+    {
+        return config_directory.parent().map(|parent| parent.join("plugin")).ok_or_else(|| "配置目录没有可用的父目录".to_string());
+    }
+    resolve_config_directory(value).map_err(|error| error.replace("配置目录", "插件目录"))
+}
+
 /// 在保存偏好或关联布局前完成格式与实际路径校验。
 pub(crate) fn validate_preferences(preferences: &ApplicationPreferences) -> Result<PathBuf, String>
 {
     preferences.validate()?;
-    resolve_config_directory(&preferences.config_directory)
+    let config_directory = resolve_config_directory(&preferences.config_directory)?; // 两个目录在写入前统一完成解析。
+    resolve_plugin_directory(&preferences.plugin_directory, &config_directory)?;
+    Ok(config_directory)
 }
 
 /// 在加载任何写入线程前切换数据目录；固定引导文件只记录当前生效位置。

@@ -10,11 +10,12 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRuntimeError, ComponentRuntimeSnapshot, WorkspaceRect};
 
-/// 官方组件前端注册表当前支持的入口。
+/// 官方插件前端注册表当前支持的入口。
 const LOCAL_CLOCK_ENTRY: &str = "official:local-clock";
 const MUSIC_ENTRY: &str = "official:music-control";
+const PLUGIN_SLOT_ENTRY: &str = "plugin:slot"; // 插件共享的精确入口，不接受任意 URL。
 
-/// 内置官方组件清单来源。
+/// 内置官方插件清单来源。
 const LOCAL_CLOCK_MANIFEST: &str = include_str!("../../components/official.local-clock.json");
 const MUSIC_MANIFEST: &str = include_str!("../../components/official.music-control.json");
 const COLLECT_MANIFEST: &str = include_str!("../../components/official.collect-box.json");
@@ -23,14 +24,16 @@ const WEATHER_MANIFEST: &str = include_str!("../../components/official.weather.j
 static TIME_CONSUMERS: LazyLock<(Mutex<HashMap<u64, String>>, Condvar)> = LazyLock::new(|| (Mutex::new(HashMap::new()), Condvar::new())); // 独立订阅身份映射到原生宿主。
 static NEXT_TIME_SUBSCRIPTION: AtomicU64 = AtomicU64::new(1); // 重载后的身份不复用。
 
-/// 持有官方组件清单、活动实例注册结果和能力边界。
+/// 持有官方与用户插件清单、活动实例注册结果和能力边界。
 pub struct ComponentRuntimeState
 {
-    /// 已通过清单和能力校验的官方组件注册表。
+    /// 启动时解析并冻结的插件来源与资产目录。
+    plugin_directory: std::path::PathBuf,
+    /// 已通过清单和能力校验的官方插件注册表。
     manifests: HashMap<String, ComponentManifest>,
     /// 已注册清单声明的创建与移除能力，按身份稳定排序。
     declarations: Vec<ComponentCapabilityDeclaration>,
-    /// 单个清单失败但不阻塞其他组件的结果。
+    /// 单个清单失败但不阻塞其他插件的结果。
     failures: Vec<ComponentRegistrationFailure>,
     /// 统一工作区的实例注册结果。
     instances: Mutex<Vec<ComponentRegistrationSnapshot>>,
@@ -42,21 +45,70 @@ pub struct ComponentRuntimeState
     latest_host_event: Mutex<Option<ComponentHostEvent>>,
 }
 
-/// 提供官方组件注册、实例同步、能力调用和宿主事件。
+/// 提供官方插件注册、实例同步、能力调用和宿主事件。
 impl ComponentRuntimeState
 {
-    /// 加载全部官方组件清单，单个失败只形成隔离错误。
-    pub fn new() -> Self
+    /// 加载官方与插件目录清单，单个失败只形成隔离错误。
+    pub fn new(plugin_directory: &std::path::Path) -> Self
     {
-        let mut sources = vec![("official.local-clock", LOCAL_CLOCK_MANIFEST), ("official.music-control", MUSIC_MANIFEST), ("official.collect-box", COLLECT_MANIFEST), ("official.weather", WEATHER_MANIFEST)]; // Release 只注册正式功能。
+        use std::{fs, io::Read, os::windows::fs::MetadataExt};
+        let mut sources = vec![("official.local-clock".to_string(), LOCAL_CLOCK_MANIFEST.to_string()), ("official.music-control".to_string(), MUSIC_MANIFEST.to_string()), ("official.collect-box".to_string(), COLLECT_MANIFEST.to_string()), ("official.weather".to_string(), WEATHER_MANIFEST.to_string())]; // 官方先插入，重复身份不会覆盖。
+        let mut failures = Vec::new(); // 目录和单个文件错误不阻塞其余清单。
         if cfg!(debug_assertions)
         {
-            sources.push(("official.debug-test", include_str!("../../components/official.debug-test.json")));
+            sources.push(("official.debug-test".to_string(), include_str!("../../components/official.debug-test.json").to_string()));
         }
-        Self::from_manifest_sources(&sources)
+        match fs::read_dir(plugin_directory)
+        {
+            Ok(entries) =>
+            {
+                let mut paths = Vec::new(); // 稳定文件顺序也固定插件重复身份的优先级。
+                for entry in entries
+                {
+                    match entry
+                    {
+                        Ok(entry) if entry.path().extension().is_some_and(|extension| extension == "json") => paths.push(entry.path()),
+                        Ok(_) =>
+                        {}
+                        Err(error) => failures.push(ComponentRegistrationFailure { component_id: "plugin.directory".to_string(), message: format!("读取插件目录项失败: {error}") }),
+                    }
+                }
+                paths.sort();
+                for path in paths
+                {
+                    let fallback_id = path.file_stem().unwrap_or_default().to_string_lossy().into_owned(); // JSON 损坏时仍可定位来源。
+                    let source = (|| -> std::io::Result<String> {
+                        let metadata = fs::symlink_metadata(&path)?; // 不跟随插件清单链接与重解析点。
+                        if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0
+                        {
+                            return Err(std::io::Error::other("插件清单不支持链接、重解析点或目录"));
+                        }
+                        let mut bytes = Vec::new(); // 最多读取 64 KiB 加一个溢出哨兵字节。
+                        fs::File::open(&path)?.take(65537).read_to_end(&mut bytes)?;
+                        if bytes.len() > 65536
+                        {
+                            return Err(std::io::Error::other("插件清单超过 64 KiB"));
+                        }
+                        String::from_utf8(bytes).map_err(std::io::Error::other)
+                    })(); // 每个文件独立有界读取，失败继续。
+                    match source
+                    {
+                        Ok(source) => sources.push((fallback_id, source)),
+                        Err(error) => failures.push(ComponentRegistrationFailure { component_id: fallback_id, message: format!("读取插件清单失败: {error}") }),
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+            {}
+            Err(error) => failures.push(ComponentRegistrationFailure { component_id: "plugin.directory".to_string(), message: format!("读取插件目录失败: {error}") }),
+        }
+        Self::from_manifest_sources(&sources, failures, plugin_directory)
     }
 
-    /// 返回成功注册清单对应的默认组件实例。
+    /// 协议资产读取与启动清单使用同一个冻结目录，偏好变更下次启动生效。
+    pub fn plugin_directory(&self) -> &std::path::Path { &self.plugin_directory }
+
+    /// 返回成功注册清单对应的默认插件实例。
     pub fn default_instances(&self) -> Vec<ComponentInstanceSnapshot>
     {
         if !self.manifests.contains_key("official.local-clock")
@@ -82,7 +134,7 @@ impl ComponentRuntimeState
     /// 返回全部已注册清单声明的创建与移除能力，供工作区命令校验可操作范围。
     pub fn capability_declarations(&self) -> &[ComponentCapabilityDeclaration] { &self.declarations }
 
-    /// 校验并注册统一工作区的全部组件实例。
+    /// 校验并注册统一工作区的全部插件实例。
     pub fn snapshot(&self, instances: &[ComponentInstanceSnapshot]) -> Result<ComponentRuntimeSnapshot, ComponentRuntimeError>
     {
         let registrations = instances.iter().filter(|instance| cfg!(debug_assertions) || instance.component_id != "official.debug-test").map(|instance| self.registration_snapshot(instance)).collect::<Vec<_>>(); // 当前布局中每个实例互相隔离的注册结果。
@@ -101,7 +153,7 @@ impl ComponentRuntimeState
     pub fn invoke_capability(&self, instances: &[ComponentInstanceSnapshot], instance_id: &str, capability: ComponentCapability) -> Result<ComponentCapabilityResult, ComponentRuntimeError>
     {
         let snapshot = self.snapshot(instances)?; // 能力调用前同步的当前实例注册结果。
-        let registration = snapshot.instances.iter().find(|instance| instance.instance_id == instance_id).ok_or_else(|| ComponentRuntimeError::invalid_instance("组件实例不存在"))?;
+        let registration = snapshot.instances.iter().find(|instance| instance.instance_id == instance_id).ok_or_else(|| ComponentRuntimeError::invalid_instance("插件实例不存在"))?;
         if registration.status != ComponentLoadStatus::Ready || !registration.authorized_capabilities.contains(&capability)
         {
             return Err(ComponentRuntimeError::capability_denied(capability));
@@ -113,11 +165,11 @@ impl ComponentRuntimeState
             }),
             ComponentCapability::ReadCurrentMedia => crate::platform::windows::music::snapshot().map_err(|message| ComponentRuntimeError { code: "media-read-failed".to_string(), message })?,
         }; // 当前授权能力的最小结构化结果。
-        crate::log_debug!("组件：宿主能力调用完成，实例={}，能力={capability:?}", instance_id);
+        crate::log_debug!("插件：宿主能力调用完成，实例={}，能力={capability:?}", instance_id);
         Ok(ComponentCapabilityResult { instance_id: instance_id.to_string(), capability, payload })
     }
 
-    /// 返回最近一次已发布的组件宿主事件。
+    /// 返回最近一次已发布的插件宿主事件。
     pub fn current_host_event(&self) -> Result<Option<ComponentHostEvent>, ComponentRuntimeError> { Ok(Some(ComponentHostEvent { sequence: self.next_event_sequence.fetch_add(1, Ordering::Relaxed), kind: "time-tick".to_string(), unix_millis: Utc::now().timestamp_millis() })) }
 
     /// 登记已经通过命令层实例与能力校验的时间消费者。
@@ -154,10 +206,10 @@ impl ComponentRuntimeState
         TIME_CONSUMERS.1.notify_one();
     }
 
-    /// 启动官方组件共享的低频宿主时间事件。
+    /// 启动官方插件共享的低频宿主时间事件。
     pub fn start_host_events(app: AppHandle)
     {
-        crate::log_info!("组件：宿主事件发布器已启动，间隔=1秒");
+        crate::log_info!("插件：宿主事件发布器已启动，间隔=1秒");
         thread::spawn(move || {
             loop
             {
@@ -181,11 +233,11 @@ impl ComponentRuntimeState
                 {
                     continue;
                 }
-                let event = ComponentHostEvent { sequence: state.next_event_sequence.fetch_add(1, Ordering::Relaxed), kind: "time-tick".to_string(), unix_millis: Utc::now().timestamp_millis() }; // 已注册时间能力组件共享的宿主事件。
+                let event = ComponentHostEvent { sequence: state.next_event_sequence.fetch_add(1, Ordering::Relaxed), kind: "time-tick".to_string(), unix_millis: Utc::now().timestamp_millis() }; // 已注册时间能力插件共享的宿主事件。
                 let Ok(mut latest_event) = state.latest_host_event.lock()
                 else
                 {
-                    crate::log_error!("组件：宿主事件状态不可用，事件发布器停止");
+                    crate::log_error!("插件：宿主事件状态不可用，事件发布器停止");
                     break;
                 }; // 供独立 Windowed transport 轮询的最近事件。
                 *latest_event = Some(event.clone());
@@ -199,32 +251,32 @@ impl ComponentRuntimeState
     }
 
     /// 从一组独立清单来源建立容错官方注册表。
-    fn from_manifest_sources(sources: &[(&str, &str)]) -> Self
+    fn from_manifest_sources(sources: &[(String, String)], mut failures: Vec<ComponentRegistrationFailure>, plugin_directory: &std::path::Path) -> Self
     {
-        let mut manifests = HashMap::new(); // 已通过校验的官方组件清单。
-        let mut failures = Vec::new(); // 不阻塞其他组件的清单失败集合。
+        let mut manifests = HashMap::new(); // 已通过校验的插件清单。
         for (fallback_id, source) in sources
         {
-            let manifest = serde_json::from_str::<ComponentManifest>(source).map_err(|error| ComponentRuntimeError::invalid_manifest(format!("组件清单 JSON 无效: {error}"))).and_then(|manifest| {
+            let manifest = serde_json::from_str::<ComponentManifest>(source).map_err(|error| ComponentRuntimeError::invalid_manifest(format!("插件清单 JSON 无效: {error}"))).and_then(|manifest| {
                 validate_manifest(&manifest)?;
                 Ok(manifest)
             });
             match manifest
             {
-                Ok(manifest) if manifests.contains_key(&manifest.id) => failures.push(ComponentRegistrationFailure { component_id: manifest.id, message: "组件清单身份重复".to_string() }),
+                Ok(manifest) if manifests.contains_key(&manifest.id) => failures.push(ComponentRegistrationFailure { component_id: manifest.id, message: "插件清单身份重复".to_string() }),
                 Ok(manifest) =>
                 {
-                    crate::log_info!("组件：官方清单已注册，身份={}，入口={}，能力={}", manifest.id, manifest.entry, manifest.required_capabilities.len());
+                    crate::log_info!("插件：清单已注册，身份={}，入口={}，能力={}", manifest.id, manifest.entry, manifest.required_capabilities.len());
                     manifests.insert(manifest.id.clone(), manifest);
                 }
                 Err(error) =>
                 {
-                    crate::log_error!("组件：官方清单加载失败，身份={}，错误={}", fallback_id, error.message);
+                    crate::log_error!("插件：清单加载失败，身份={}，错误={}", fallback_id, error.message);
                     failures.push(ComponentRegistrationFailure { component_id: (*fallback_id).to_string(), message: error.message });
                 }
             }
         }
-        Self { declarations: capability_declarations(&manifests), manifests, failures, instances: Mutex::new(Vec::new()), revision: AtomicU64::new(1), next_event_sequence: AtomicU64::new(1), latest_host_event: Mutex::new(None) }
+        failures.sort_by(|first, second| first.component_id.cmp(&second.component_id));
+        Self { plugin_directory: plugin_directory.to_path_buf(), declarations: capability_declarations(&manifests), manifests, failures, instances: Mutex::new(Vec::new()), revision: AtomicU64::new(1), next_event_sequence: AtomicU64::new(1), latest_host_event: Mutex::new(None) }
     }
 
     /// 将一个持久实例转换为成功或失败的隔离注册结果。
@@ -233,17 +285,17 @@ impl ComponentRuntimeState
         let Some(manifest) = self.manifests.get(&instance.component_id)
         else
         {
-            return failed_registration(instance, "组件清单不存在");
+            return failed_registration(instance, "插件清单不存在");
         };
         if instance.state_version != manifest.persistence_version
         {
-            return failed_registration(instance, "组件持久状态版本不兼容");
+            return failed_registration(instance, "插件持久状态版本不兼容");
         }
         ComponentRegistrationSnapshot { instance_id: instance.instance_id.clone(), component_id: instance.component_id.clone(), entry: Some(manifest.entry.clone()), authorized_capabilities: manifest.required_capabilities.clone(), status: ComponentLoadStatus::Ready, error: None }
     }
 }
 
-/// 提取已注册清单声明的创建与移除能力，并按组件身份稳定排序。
+/// 提取已注册清单声明的创建与移除能力，并按插件身份稳定排序。
 fn capability_declarations(manifests: &HashMap<String, ComponentManifest>) -> Vec<ComponentCapabilityDeclaration>
 {
     let mut declarations = manifests.values().map(|manifest| ComponentCapabilityDeclaration { component_id: manifest.id.clone(), creatable: manifest.creatable, removable: manifest.removable }).collect::<Vec<_>>(); // 每个成功注册清单对应一项能力声明。
@@ -251,27 +303,30 @@ fn capability_declarations(manifests: &HashMap<String, ComponentManifest>) -> Ve
     declarations
 }
 
-/// 校验官方组件清单身份、入口、能力和持久化版本。
+/// 校验官方插件清单身份、入口、能力和持久化版本。
 fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntimeError>
 {
     if manifest.id.is_empty() || manifest.id.len() > 128 || !manifest.id.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || matches!(character, '.' | '-'))
     {
-        return Err(ComponentRuntimeError::invalid_manifest("组件清单身份无效"));
+        return Err(ComponentRuntimeError::invalid_manifest("插件清单身份无效"));
     }
     if manifest.name.trim().is_empty() || manifest.name.chars().count() > 64
     {
-        return Err(ComponentRuntimeError::invalid_manifest("组件清单名称无效"));
+        return Err(ComponentRuntimeError::invalid_manifest("插件清单名称无效"));
     }
+    let clock_manifest = manifest.id == "official.local-clock" && manifest.entry == LOCAL_CLOCK_ENTRY; // 官方身份与入口必须成对。
+    let music_manifest = manifest.id == "official.music-control" && manifest.entry == MUSIC_ENTRY;
     let debug_manifest = cfg!(debug_assertions) && manifest.id == "official.debug-test" && manifest.entry == "official:debug-test"; // 仅 Debug 可注册测试入口。
     let collect_manifest = manifest.id == "official.collect-box" && manifest.entry == "official:collect-box";
     let weather_manifest = manifest.id == "official.weather" && manifest.entry == "official:weather";
-    if manifest.entry != LOCAL_CLOCK_ENTRY && manifest.entry != MUSIC_ENTRY && !debug_manifest && !collect_manifest && !weather_manifest
+    let plugin_slot = manifest.id.starts_with("plugin.") && manifest.entry == PLUGIN_SLOT_ENTRY; // 插件只能进入宿主槽，不能选择 URL 或官方入口。
+    if !clock_manifest && !music_manifest && !debug_manifest && !collect_manifest && !weather_manifest && !plugin_slot
     {
-        return Err(ComponentRuntimeError::invalid_manifest("组件前端入口不受支持"));
+        return Err(ComponentRuntimeError::invalid_manifest("插件前端入口不受支持"));
     }
     if manifest.persistence_version == 0
     {
-        return Err(ComponentRuntimeError::invalid_manifest("组件持久化版本无效"));
+        return Err(ComponentRuntimeError::invalid_manifest("插件持久化版本无效"));
     }
     if (debug_manifest || collect_manifest || weather_manifest) && manifest.required_capabilities.is_empty()
     {
@@ -280,24 +335,28 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
     let capabilities = manifest.required_capabilities.iter().copied().collect::<HashSet<_>>(); // 清单中唯一的能力声明集合。
     if capabilities.len() != manifest.required_capabilities.len() || capabilities.is_empty()
     {
-        return Err(ComponentRuntimeError::invalid_manifest("组件能力声明无效"));
+        return Err(ComponentRuntimeError::invalid_manifest("插件能力声明无效"));
     }
-    let expected = if manifest.id == "official.music-control" && manifest.entry == MUSIC_ENTRY
+    if plugin_slot && (capabilities == HashSet::from([ComponentCapability::ReadHostTime]) || capabilities == HashSet::from([ComponentCapability::ReadCurrentMedia]))
+    {
+        return Ok(());
+    }
+    let expected = if music_manifest
     {
         ComponentCapability::ReadCurrentMedia
     }
     else
     {
         ComponentCapability::ReadHostTime
-    }; // 各官方组件只授权自身需要的能力。
+    }; // 各官方插件只授权自身需要的能力。
     if capabilities != HashSet::from([expected])
     {
-        return Err(ComponentRuntimeError::invalid_manifest("组件请求了未授权宿主能力"));
+        return Err(ComponentRuntimeError::invalid_manifest("插件请求了未授权宿主能力"));
     }
     Ok(())
 }
 
-/// 创建不影响其他实例的组件加载失败快照。
+/// 创建不影响其他实例的插件加载失败快照。
 fn failed_registration(instance: &ComponentInstanceSnapshot, message: &str) -> ComponentRegistrationSnapshot { ComponentRegistrationSnapshot { instance_id: instance.instance_id.clone(), component_id: instance.component_id.clone(), entry: None, authorized_capabilities: Vec::new(), status: ComponentLoadStatus::Failed, error: Some(message.to_string()) } }
 
 #[cfg(test)]

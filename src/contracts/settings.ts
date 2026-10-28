@@ -41,6 +41,7 @@ export const APPLICATION_FONTS = ["Segoe UI Variable", "Segoe UI", "Microsoft Ya
 /** 已由 Rust 保存的应用偏好。 */
 export interface ApplicationPreferences {
     configDirectory: string; // 下次启动使用的配置目录。
+    pluginDirectory: string; // 空串由 Rust 解析为当前配置目录同级的 plugin 目录。
     theme: ApplicationTheme; // 应用界面与自绘菜单的深浅模式。
     desktopAppearance: DesktopAppearance; // 独立于界面与菜单的桌面主题。
     doubleClickToOpen: boolean; // 是否通过双击打开桌面项目。
@@ -89,6 +90,8 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     const candidate = value as Record<string, unknown>; // 等待边界校验的原始偏好。
     const configDirectory = candidate.configDirectory === undefined ? "%APPDATA%\\TIAmo\\DesktopTools" : candidate.configDirectory; // 旧配置使用新的默认目录。
     if (typeof configDirectory !== "string" || !configDirectory.trim()) throw new Error("配置目录无效");
+    const pluginDirectory = candidate.pluginDirectory === undefined ? "" : candidate.pluginDirectory; // 空串交给 Rust 解析默认目录。
+    if (typeof pluginDirectory !== "string" || (pluginDirectory !== "" && !pluginDirectory.trim())) throw new Error("插件目录无效");
     if (candidate.theme !== "system" && candidate.theme !== "light" && candidate.theme !== "dark") throw new Error("应用主题数据无效");
     if (typeof candidate.doubleClickToOpen !== "boolean") throw new Error("项目打开方式数据无效");
     const accentColor = candidate.accentColor === undefined ? "#2563eb" : candidate.accentColor; // 旧配置缺省时的主题色。
@@ -165,6 +168,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
             useWindowsAccentColor: desktopAppearance.useWindowsAccentColor,
         },
         configDirectory,
+        pluginDirectory,
         doubleClickToOpen: candidate.doubleClickToOpen,
         accentColor,
         useWindowsAccentColor,
