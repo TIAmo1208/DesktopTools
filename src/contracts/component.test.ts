@@ -38,16 +38,39 @@ test("parses the official component runtime snapshot", () => {
     });
 
     assert.equal(snapshot.manifests[0].entry, "official:local-clock");
+    assert.equal(snapshot.manifests[0].creatable, false);
+    assert.equal(snapshot.manifests[0].removable, false);
     assert.equal(snapshot.instances[0].authorizedCapabilities[0], "read-host-time");
     assert.equal(snapshot.instances[1].status, "failed");
 });
 
+// 清单未声明创建与移除时按不可用处理，非法声明仍拒绝。
+test("组件清单的创建与移除声明缺失按不可用处理", () => {
+    const manifest = { id: "official.collect-box", name: "收集箱", entry: "official:collect-box", requiredCapabilities: [], persistenceVersion: 1 }; // 未声明创建与移除的清单。
+    const parse = (overrides: Record<string, unknown>) =>
+        parseComponentRuntimeSnapshot({ revision: 1, manifests: [{ ...manifest, ...overrides }], instances: [], failures: [] }).manifests[0];
+    assert.deepEqual([parse({}).creatable, parse({}).removable], [false, false]);
+    assert.deepEqual([parse({ creatable: true, removable: false }).creatable, parse({ creatable: true, removable: false }).removable], [true, false]);
+    for (const invalid of [null, "true", 1]) assert.throws(() => parse({ creatable: invalid }));
+});
+
 // 投射边界不能误用持久尺寸底线，非有限值始终拒绝。
 test("组件持久尺寸和小视口投射分别校验", () => {
-    const instance = { instanceId: "clock", componentId: "official.local-clock", monitorId: "A", projectionMonitorId: "B", projectionBounds: { left: 0, top: 0, width: 40, height: 24 }, bounds: { left: 0, top: 0, width: 80, height: 48 }, stateVersion: 1, state: {} }; // 最小持久矩形与临时投射。
+    const instance = {
+        instanceId: "clock",
+        componentId: "official.local-clock",
+        monitorId: "A",
+        projectionMonitorId: "B",
+        projectionBounds: { left: 0, top: 0, width: 40, height: 24 },
+        bounds: { left: 0, top: 0, width: 80, height: 48 },
+        stateVersion: 1,
+        state: {},
+    }; // 最小持久矩形与临时投射。
     assert.equal(parseComponentInstanceSnapshot(instance).projectionBounds?.width, 40);
-    for (const size of [0, -1, NaN, Infinity, 79]) assert.throws(() => parseComponentInstanceSnapshot({ ...instance, bounds: { ...instance.bounds, width: size } }));
-    for (const size of [0, -1, NaN, Infinity, 47]) assert.throws(() => parseComponentInstanceSnapshot({ ...instance, bounds: { ...instance.bounds, height: size } }));
+    for (const size of [0, -1, NaN, Infinity, 79])
+        assert.throws(() => parseComponentInstanceSnapshot({ ...instance, bounds: { ...instance.bounds, width: size } }));
+    for (const size of [0, -1, NaN, Infinity, 47])
+        assert.throws(() => parseComponentInstanceSnapshot({ ...instance, bounds: { ...instance.bounds, height: size } }));
     assert.throws(() => parseComponentInstanceSnapshot({ ...instance, projectionBounds: { ...instance.projectionBounds, height: NaN } }));
 });
 

@@ -10,6 +10,10 @@ export interface ComponentManifest {
     name: string;
     entry: string;
     requiredCapabilities: ComponentCapability[];
+    // 用户是否可从工作区入口创建该组件的新实例。
+    creatable: boolean;
+    // 用户是否可移除该组件的实例。
+    removable: boolean;
     persistenceVersion: number;
 }
 
@@ -118,6 +122,13 @@ const parseCapability = (value: unknown): ComponentCapability => {
     return value;
 };
 
+/** 校验可缺省的创建或移除声明，缺失按不可用处理。 */
+const parseDeclarationFlag = (value: unknown): boolean => {
+    if (value === undefined) return false;
+    if (typeof value !== "boolean") throw new ComponentContractError();
+    return value;
+};
+
 /** 校验组件运行时快照。 */
 export const parseComponentRuntimeSnapshot = (value: unknown): ComponentRuntimeSnapshot => {
     if (typeof value !== "object" || value === null) throw new ComponentContractError();
@@ -135,6 +146,8 @@ export const parseComponentRuntimeSnapshot = (value: unknown): ComponentRuntimeS
             name: item.name,
             entry: item.entry,
             requiredCapabilities: item.requiredCapabilities.map(parseCapability),
+            creatable: parseDeclarationFlag(item.creatable),
+            removable: parseDeclarationFlag(item.removable),
             persistenceVersion: item.persistenceVersion as number,
         };
     });
