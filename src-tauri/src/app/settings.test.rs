@@ -187,3 +187,140 @@ fn retired_preference_fields_do_not_block_startup()
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir(directory).unwrap();
 }
+
+/// 插件设置文件名只接受可往返的 plugin. 标识。
+#[test]
+fn plugin_settings_file_name_maps_and_rejects_illegal_ids()
+{
+    assert_eq!(plugin_settings_file_name("plugin.clock").unwrap(), "plugins-clock.json");
+    assert_eq!(plugin_settings_file_name("plugin.my-clock_2").unwrap(), "plugins-my-clock_2.json");
+    assert_eq!(plugin_settings_file_name("plugin.Clock").unwrap(), "plugins-Clock.json");
+    assert_eq!(plugin_settings_file_name("plugin.a.b").unwrap(), "plugins-a.b.json");
+    for plugin_id in ["clock", "official.weather", "plugin.", "Plugin.clock", "plugin.时钟", "plugin.clock/../x", r"plugin.clock\..\x", "plugin.clock:stream", "plugin.clock ", "", "plugin.clock\0"]
+    {
+        assert!(plugin_settings_file_name(plugin_id).is_err(), "{plugin_id}");
+    }
+}
+
+/// 缺失文件返回空；损坏的 JSON 保持原字节，非法标识不另建文件。
+#[test]
+fn missing_or_corrupt_plugin_settings_do_not_overwrite()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-settings-{}", std::process::id())); // 本测试独占配置目录。
+    std::fs::create_dir_all(&root).unwrap();
+    assert_eq!(read_plugin_settings(&root, "plugin.clock").unwrap(), None);
+    assert!(!root.join("plugins-clock.json").exists());
+    let path = root.join("plugins-clock.json"); // 已损坏的用户文件。
+    let bytes = b"{not json";
+    std::fs::write(&path, bytes).unwrap();
+    assert_eq!(read_plugin_settings(&root, "plugin.clock").unwrap(), None);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(write_plugin_settings(&root, "plugin.clock/../outside", &serde_json::json!({})).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(!root.join("outside").exists());
+    write_plugin_settings(&root, "plugin.clock", &serde_json::json!({"hour": 12})).unwrap();
+    assert_eq!(read_plugin_settings(&root, "plugin.clock").unwrap(), Some(serde_json::json!({"hour": 12})));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 配置目录迁移复制整个目录，插件设置文件随目录离开。
+#[test]
+fn configuration_directory_migration_takes_plugin_settings()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-settings-migration-{}", std::process::id())); // 本测试独占目录。
+    let source = root.join("bootstrap"); // 当前生效配置目录。
+    let target = root.join("target"); // 下次启动目录。
+    std::fs::create_dir_all(source.join("nested")).unwrap();
+    let preferences = ApplicationPreferences { config_directory: target.to_string_lossy().into_owned(), ..Default::default() }; // 已保存的迁移意图。
+    save_json_atomic(&source.join("settings.json"), &preferences).unwrap();
+    std::fs::write(source.join("plugins-clock.json"), b"{\"hour\":1}").unwrap();
+    std::fs::write(source.join("nested/extra.txt"), b"keep").unwrap();
+    assert_eq!(std::fs::canonicalize(prepare_config_directory(&source).unwrap()).unwrap(), std::fs::canonicalize(&target).unwrap());
+    assert_eq!(std::fs::read(target.join("plugins-clock.json")).unwrap(), b"{\"hour\":1}");
+    assert_eq!(std::fs::read(target.join("nested/extra.txt")).unwrap(), b"keep");
+    assert_eq!(std::fs::read(source.join("plugins-clock.json")).unwrap(), b"{\"hour\":1}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 插件脚本只接受根目录内可往返的 .js，拒绝穿越、非脚本和重解析点。
+#[test]
+fn plugin_script_path_rejects_escape_and_reads_js()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-script-{}", std::process::id())); // 本测试独占目录。
+    let directory = root.join("plugin"); // 插件根。
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("plugin.ok.js"), "var ok = 1;").unwrap();
+    std::fs::write(directory.join("private.json"), "{}").unwrap();
+    std::fs::write(directory.join("plugin.ok.css"), "body{}").unwrap();
+    std::fs::write(root.join("outside.js"), "pwned").unwrap();
+    assert_eq!(read_plugin_script(&directory, "plugin.ok").unwrap(), "var ok = 1;");
+    for plugin_id in ["official.weather", "plugin.", "../outside", "plugin.ok/../../outside", r"plugin.ok\..\outside", "plugin.ok:stream", "plugin.ok%2ejs"]
+    {
+        assert!(read_plugin_script(&directory, plugin_id).is_err(), "{plugin_id}");
+    }
+    assert!(read_plugin_script_file(&directory, "private.json").is_err());
+    assert!(read_plugin_script_file(&directory, "plugin.ok.css").is_err());
+    assert!(read_plugin_script_file(&directory, "../outside.js").is_err());
+    let junction = directory.join("plugin.link.js"); // 指向目录的联接，不需要符号链接权限。
+    assert!(std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&directory).output().unwrap().status.success());
+    assert!(read_plugin_script(&directory, "plugin.link").is_err());
+    std::fs::remove_dir(&junction).unwrap();
+    assert_eq!(std::fs::read(root.join("outside.js")).unwrap(), b"pwned");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 停用名单缺失为空，非法与重复条目丢弃，超过 64 条截断。
+#[test]
+fn disabled_plugins_drop_invalid_entries_and_keep_sixty_four()
+{
+    let missing: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 旧文件没有该字段。
+    assert!(missing.disabled_plugins.is_empty());
+    let parsed: ApplicationPreferences = serde_json::from_str(r#"{"disabledPlugins":["plugin.clock","official.weather","plugin.clock","plugin.","plugin.b"]}"#).unwrap();
+    assert_eq!(parsed.disabled_plugins, vec!["plugin.clock".to_string(), "plugin.b".to_string()]);
+    let overflow = (0..70).map(|index| format!("plugin.n{index}")).collect::<Vec<_>>(); // 超过上限的合法标识。
+    assert_eq!(crate::contracts::settings::normalize_disabled_plugins(overflow).len(), 64);
+    let directory = std::env::temp_dir().join(format!("desktop-tools-disabled-plugins-{}", std::process::id())); // 本测试独占配置目录。
+    let path = directory.join("settings.json");
+    let state = SettingsState::load(path).unwrap();
+    let mut preferences = state.preferences().unwrap();
+    preferences.disabled_plugins = vec!["plugin.ok".into(), "bad".into(), "plugin.ok".into()];
+    assert_eq!(state.save(preferences).unwrap().disabled_plugins, vec!["plugin.ok".to_string()]);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// 卸载只删除该插件的清单和脚本，设置文件、其他插件和目录外文件都保留。
+#[test]
+fn uninstall_plugin_keeps_settings_and_rejects_illegal_paths()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-uninstall-{}", std::process::id())); // 本测试独占目录。
+    let directory = root.join("plugin"); // 插件根。
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("plugin.ok.json"), "{}").unwrap();
+    std::fs::write(directory.join("plugin.ok.js"), "var ok = 1;").unwrap();
+    std::fs::write(directory.join("plugins-ok.json"), "{\"hour\":1}").unwrap();
+    std::fs::write(directory.join("plugin.other.js"), "var other = 1;").unwrap();
+    std::fs::write(root.join("outside.js"), "pwned").unwrap();
+    assert_eq!(plugin_manifest_file(&directory, "plugin.ok").unwrap(), directory.join("plugin.ok.json").canonicalize().unwrap());
+    assert_eq!(uninstall_plugin_files(&directory, "plugin.missing").unwrap(), Vec::<String>::new());
+    assert_eq!(uninstall_plugin_files(&directory, "plugin.ok").unwrap(), vec!["plugin.ok.json".to_string(), "plugin.ok.js".to_string()]);
+    assert!(!directory.join("plugin.ok.json").exists());
+    assert!(!directory.join("plugin.ok.js").exists());
+    assert_eq!(std::fs::read(directory.join("plugins-ok.json")).unwrap(), b"{\"hour\":1}");
+    assert_eq!(std::fs::read(directory.join("plugin.other.js")).unwrap(), b"var other = 1;");
+    assert_eq!(std::fs::read(root.join("outside.js")).unwrap(), b"pwned");
+    std::fs::write(directory.join("plugin.ok.json"), "{}").unwrap();
+    for plugin_id in ["official.weather", "plugin.", "../outside", "plugin.ok/../../outside", r"plugin.ok\..\outside"]
+    {
+        assert!(uninstall_plugin_files(&directory, plugin_id).is_err(), "{plugin_id}");
+    }
+    assert_eq!(std::fs::read(directory.join("plugin.ok.json")).unwrap(), b"{}");
+    assert_eq!(std::fs::read(root.join("outside.js")).unwrap(), b"pwned");
+    let junction = directory.join("plugin.link.js"); // 重解析点不能被当成可删脚本。
+    std::fs::write(directory.join("plugin.link.json"), "{}").unwrap();
+    assert!(std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&directory).output().unwrap().status.success());
+    assert!(uninstall_plugin_files(&directory, "plugin.link").is_err());
+    assert_eq!(std::fs::read(directory.join("plugin.link.json")).unwrap(), b"{}");
+    assert!(junction.exists());
+    std::fs::remove_dir(&junction).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}

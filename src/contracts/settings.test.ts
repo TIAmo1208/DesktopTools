@@ -137,3 +137,16 @@ test("migrates old preferences and rejects invalid appearance values", () => {
     }
     assert.equal(parsePreferences({ ...legacy, accentColor: "#AABBCC", cornerRadius: 0, fontSize: 18 }).cornerRadius, 0);
 });
+
+test("停用插件缺失按空列表，非数组和非字符串条目丢弃", () => {
+    const base = { theme: "system", doubleClickToOpen: true }; // 旧配置没有停用名单。
+    assert.deepEqual(parsePreferences(base).disabledPlugins, []);
+    assert.deepEqual(parsePreferences({ ...base, disabledPlugins: "plugin.clock" }).disabledPlugins, []);
+    assert.deepEqual(
+        parsePreferences({ ...base, disabledPlugins: ["plugin.clock", "official.weather", "plugin.clock", "plugin.", "plugin.b", 1, null] }).disabledPlugins,
+        ["plugin.clock", "plugin.b"],
+    );
+    const overflow = Array.from({ length: 70 }, (_item, index) => `plugin.n${index}`); // 超过后端上限的合法标识。
+    assert.equal(parsePreferences({ ...base, disabledPlugins: overflow }).disabledPlugins.length, 64);
+    assert.equal(parsePreferences({ ...base, disabledPlugins: overflow }).disabledPlugins[0], "plugin.n0");
+});

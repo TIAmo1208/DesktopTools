@@ -488,6 +488,30 @@ fn remove_component_requires_a_declared_removal_capability()
     std::fs::remove_file(path).unwrap();
 }
 
+/// 当前运行时快照中没有清单的实例允许移除，清单存在但未声明可移除的实例与创建门禁都不受影响。
+#[test]
+fn missing_manifest_component_can_be_removed_without_opening_creation()
+{
+    let path = snapshot_path("missing-manifest-component"); // 独立测试工作区。
+    let ghost = component_instance("plugin.missing.default", "plugin.missing"); // 运行时快照中没有对应清单的实例。
+    let music = component_instance("official.music-control.default", "official.music-control"); // 清单存在但未声明可移除。
+    let declarations = registered_capability_declarations(); // 当前运行时快照的清单声明，不含 plugin.missing。
+    let state = WorkspaceState::load_with_components(path.clone(), &[ghost.clone(), music.clone()], &declarations).unwrap();
+    state.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0)], &[], &[], &[]).unwrap();
+
+    let create = state.apply_on_monitor(Some("DISPLAY1"), WorkspaceCommand::CreateComponent { component_id: ghost.component_id.clone(), bounds: ghost.bounds, state: serde_json::json!({}) }); // 同一缺失清单的创建命令仍受门禁限制。
+    assert_eq!(create.expect_err("清单缺失的组件仍不可创建").message, "不支持创建该组件");
+    let rejected = state.apply(WorkspaceCommand::RemoveComponent { instance_id: music.instance_id.clone() }).expect_err("清单存在但未声明可移除的实例仍应被拒绝"); // 例外不覆盖已声明的不可移除。
+    assert_eq!(rejected.message, "不支持移除该组件");
+    let before = state.snapshot().unwrap(); // 被拒绝的命令必须保持整个快照。
+    assert_eq!(before.components, vec![ghost.clone(), music.clone()]);
+
+    let removed = state.apply(WorkspaceCommand::RemoveComponent { instance_id: ghost.instance_id.clone() }).unwrap(); // 缺失清单的实例按例外允许移除。
+    assert_eq!(removed.components, vec![music]);
+    drop(state);
+    std::fs::remove_file(path).unwrap();
+}
+
 /// 备份还原按布局原样带回未声明创建/移除能力的实例，后续命令仍按未声明能力拒绝。
 #[test]
 fn backup_restore_does_not_validate_component_capabilities()

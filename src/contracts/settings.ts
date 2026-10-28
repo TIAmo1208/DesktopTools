@@ -74,6 +74,7 @@ export interface ApplicationPreferences {
     folderPortalEnabled: boolean; // 文件夹门户功能入口显隐。
     pauseOnFullscreen: boolean; // 前台全屏或最大化覆盖本屏时暂停刷新。
     pauseOnFocus: boolean; // 外部应用获得焦点时暂停全部桌面刷新。
+    disabledPlugins: string[]; // 宿主停用的插件标识，不属于插件自己的设置文件。
 }
 
 /** 设置页读取的真实应用和 Windows 状态。 */
@@ -160,6 +161,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     const musicSpectrumFps = candidate.musicSpectrumFps === undefined ? 30 : candidate.musicSpectrumFps; // 缺失配置使用默认帧率。
     if (typeof musicSpectrumFps !== "number" || !Number.isInteger(musicSpectrumFps) || musicSpectrumFps < 15 || musicSpectrumFps > 60)
         throw new Error("频谱帧率必须为 15 到 60 的整数");
+    const disabledPlugins = parseDisabledPlugins(candidate.disabledPlugins); // 缺失、非数组和非法条目都按空或丢弃处理。
     return {
         theme: candidate.theme,
         desktopAppearance: {
@@ -183,7 +185,21 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         musicSpectrumDevice,
         musicSpectrumBars,
         musicSpectrumFps,
+        disabledPlugins,
     };
+};
+
+/** 停用名单只保留带 plugin. 前缀且前缀后仍有名称的标识，去重后最多 64 条。 */
+const parseDisabledPlugins = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    const kept: string[] = []; // 按首次出现顺序保留的合法标识。
+    const seen = new Set<string>(); // 已保留的标识。
+    for (const item of value) {
+        if (typeof item !== "string" || !item.startsWith("plugin.") || item.length <= "plugin.".length || seen.has(item) || kept.length >= 64) continue;
+        seen.add(item);
+        kept.push(item);
+    }
+    return kept;
 };
 
 /** 解析当前窗口实际使用的动画状态。 */

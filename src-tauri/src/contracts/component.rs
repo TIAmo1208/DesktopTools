@@ -9,6 +9,9 @@ pub const COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT: &str = "component-runtime-sn
 /// 组件接收宿主事件的事件名称。
 pub const COMPONENT_HOST_EVENT: &str = "component-host-event";
 
+/// 插件设置保存成功后的通知；载荷只含 pluginId，读者重新读取命令。
+pub const PLUGIN_SETTINGS_CHANGED_EVENT: &str = "plugin-settings-changed";
+
 /// 官方组件可以声明并由宿主授权的能力。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]

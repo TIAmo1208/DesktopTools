@@ -330,7 +330,7 @@ fn raw_hwnd(raw: isize) -> HWND { HWND(raw as *mut c_void) }
 pub(crate) fn install_host_events(app: &AppHandle)
 {
     super::refresh_policy::start_events(app);
-    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed"]
+    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT]
     {
         let handle = app.clone(); // 原生窗口所属的 UI 调度器。
         app.listen(name, move |event| {

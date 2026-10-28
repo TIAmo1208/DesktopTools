@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import applicationIcon from "../../../resources/application.png";
+import pluginNavIcon from "../../../resources/settings-plugin.svg?raw";
 import { getDesktopHostSnapshot } from "../../bridge/desktopHost";
 import { getSettings, openLogs, savePreferences, setAutostart, settingsErrorMessage } from "../../bridge/settings";
 import { applyWorkspaceCommand, getWorkspaceSnapshot, listenWorkspaceSnapshots } from "../../bridge/workspace";
@@ -11,6 +12,7 @@ import { usePreferences } from "./PreferencesProvider";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { GridSettings } from "./GridSettings";
 import { FeatureSettings } from "./FeatureSettings";
+import { PluginSettingsPage } from "./PluginSettingsPage";
 import { SettingsSwitch } from "./SettingsSwitch";
 import { SettingsInfo } from "./SettingsInfo";
 import { invokeRuntime } from "../../bridge/runtime";
@@ -18,11 +20,12 @@ import { MessageNotificationHost } from "../notifications/MessageNotificationHos
 import { publishMessage } from "../notifications/messageNotification";
 import "./SettingsPage.css";
 
-// 设置页使用 Windows 自带的 Fluent 图标字体，不新增图标依赖。
+// 设置页导航沿用 Windows 图标字体；插件项改用 resources 里的 SVG。
 const PAGES = [
     { id: "general", label: "常规", icon: "\uE80F" },
     { id: "appearance", label: "外观", icon: "\uE790" },
     { id: "features", label: "功能格子", icon: "\uE80A" },
+    { id: "plugins", label: "插件", icon: "" },
     { id: "performance", label: "性能", icon: "\uE9D9" },
     { id: "diagnostics", label: "诊断与维护", icon: "\uE90F" },
     { id: "about", label: "关于", icon: "\uE946" },
@@ -254,8 +257,8 @@ export const SettingsPage = () => {
                             aria-label={entry.label}
                             onClick={() => handlePageChange(entry.id)}
                         >
-                            <span className="settings__icon" aria-hidden="true">
-                                {entry.icon}
+                            <span className={`settings__icon${entry.id === "plugins" ? " settings__icon--svg" : ""}`} aria-hidden="true" dangerouslySetInnerHTML={entry.id === "plugins" ? { __html: pluginNavIcon } : undefined}>
+                                {entry.id === "plugins" ? null : entry.icon}
                             </span>
                             <span className="settings__navigation-label">{entry.label}</span>
                         </button>
@@ -399,6 +402,7 @@ export const SettingsPage = () => {
                         leaveGuard={leaveGuard}
                     />
                 )}
+                {page === "plugins" && <PluginSettingsPage preferences={preferences} disabled={busy || !preferences} onPreferences={handlePreferences} />}
                 {page === "performance" && (
                     <div className="settings__rows">
                         {(

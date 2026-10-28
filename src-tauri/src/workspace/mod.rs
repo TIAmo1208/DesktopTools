@@ -284,7 +284,7 @@ impl WorkspaceState
         Err(WorkspaceError::invalid_command("工作区没有可用的组件位置"))
     }
 
-    /// 返回指定组件清单是否声明了创建或移除能力，未注册清单按未声明处理。
+    /// 返回指定组件清单是否声明了创建或移除能力，当前运行时快照中缺失清单时只对移除放行。
     fn component_declares_capability(&self, component_id: &str, operation: ComponentOperation) -> bool
     {
         // 当前操作对应的清单声明字段。
@@ -293,7 +293,8 @@ impl WorkspaceState
             ComponentOperation::Create => declaration.creatable,
             ComponentOperation::Remove => declaration.removable,
         });
-        declared.unwrap_or(false)
+        // 清单缺失的实例无法创建，但允许用户移除，避免留下无法清理的僵尸实例。
+        declared.unwrap_or(matches!(operation, ComponentOperation::Remove))
     }
 
     /// 按清单声明校验创建与移除命令的可操作范围，其他命令不做组件能力校验。

@@ -99,6 +99,8 @@ pub struct ApplicationPreferences
     pub folder_portal_enabled: bool,           // 文件夹门户功能入口显隐。
     pub pause_on_fullscreen: bool,             // 前台全屏或最大化覆盖本屏时暂停刷新。
     pub pause_on_focus: bool,                  // 外部应用获得焦点时暂停全部桌面刷新。
+    #[serde(default, deserialize_with = "deserialize_disabled_plugins")]
+    pub disabled_plugins: Vec<String>, // 宿主停用的插件标识，不属于插件自己的设置文件。
 }
 
 /// 首次启动跟随系统，并沿用现有双击打开行为。
@@ -142,8 +144,40 @@ impl Default for ApplicationPreferences
             folder_portal_enabled: true,
             pause_on_fullscreen: false,
             pause_on_focus: false,
+            disabled_plugins: Vec::new(),
         }
     }
+}
+
+/// 停用名单只保留带 plugin. 前缀的标识，去重后最多 64 条。
+pub fn normalize_disabled_plugins(values: impl IntoIterator<Item = String>) -> Vec<String>
+{
+    let mut kept = Vec::new(); // 按首次出现顺序保留的合法标识。
+    let mut seen = std::collections::HashSet::new(); // 已保留的标识。
+    let mut dropped = 0u32; // 非法、重复或超出上限的条数。
+    for plugin_id in values
+    {
+        let valid = plugin_id.starts_with("plugin.") && plugin_id.len() > "plugin.".len(); // 空名称不算插件标识。
+        if !valid || !seen.insert(plugin_id.clone()) || kept.len() >= 64
+        {
+            dropped += 1;
+            continue;
+        }
+        kept.push(plugin_id);
+    }
+    if dropped > 0
+    {
+        crate::log_warn!("插件停用：已丢弃 {dropped} 条非法、重复或超出上限的标识");
+    }
+    kept
+}
+
+/// 缺失字段走默认空列表；出现的非法条目在反序列化时丢弃。
+fn deserialize_disabled_plugins<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(normalize_disabled_plugins(Vec::<String>::deserialize(deserializer)?))
 }
 
 /// 校验配置文件和命令输入共用的外观边界。
