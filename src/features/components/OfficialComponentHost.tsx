@@ -4,6 +4,7 @@ import type { ComponentInstanceSnapshot, ComponentRuntimeSnapshot } from "../../
 import type { DesktopHostMonitor } from "../../contracts/desktopHost";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspaceSnapshot, WorkspaceFocusTarget } from "../../contracts/workspace";
 import type { TileAppearance } from "../../contracts/tile";
+import type { ApplicationPreferences } from "../../contracts/settings";
 import { usePreferences } from "../settings/PreferencesProvider";
 import { ComponentTile, type ComponentTileProps } from "./ComponentTile";
 import { CollectBoxTile } from "../tile-content/collect-box/CollectBoxTile";
@@ -27,6 +28,57 @@ interface OfficialComponentHostProps {
     onEndInputDrag: () => Promise<void>;
 }
 
+/** 插件宿主显隐与内容分派所需的当前状态。 */
+interface PluginHostContext {
+    preferences?: ApplicationPreferences; // 官方功能开关。
+    runtime?: ComponentRuntimeSnapshot; // 当前可用清单。
+    debugContent?: ReactNode; // 调试实例的宿主诊断内容。
+}
+
+// 未列出的插件保持可见；Release 没有 Debug 注册入口。
+const pluginVisibility = new Map<string, (context: PluginHostContext) => boolean>([
+    ["official.local-clock", ({ preferences }) => preferences?.clockEnabled !== false],
+    [
+        "official.debug-test",
+        ({ preferences, runtime }) =>
+            preferences?.debugEnabled !== false && Boolean(runtime?.manifests.some((manifest) => manifest.id === "official.debug-test")),
+    ],
+    ["official.music-control", ({ preferences }) => preferences?.musicEnabled === true],
+    ["official.collect-box", ({ preferences }) => preferences?.collectEnabled !== false],
+    ["official.weather", ({ preferences }) => preferences?.weatherEnabled === true],
+]);
+
+// 官方 id 仅用于注册快照尚未到达时，和对应 entry 共用同一内容入口。
+const pluginRenderers = new Map<string, (props: ComponentTileProps, context: PluginHostContext) => ReactNode>([
+    ["official:collect-box", (props) => <CollectBoxTile key={props.instance.instanceId} {...props} />],
+    ["official:weather", (props) => <WeatherTile key={props.instance.instanceId} {...props} />],
+    ["official:music-control", (props) => <MusicTile key={props.instance.instanceId} {...props} />],
+    ["official:local-clock", (props) => <ClockTile key={props.instance.instanceId} {...props} />],
+    [
+        "official:debug-test",
+        (props, { debugContent }) => (
+            <DebugTile key={props.instance.instanceId} {...props}>
+                {debugContent}
+            </DebugTile>
+        ),
+    ],
+    [
+        "plugin:slot",
+        (props, { runtime }) => (
+            <ComponentTile
+                key={props.instance.instanceId}
+                {...props}
+                title={runtime?.manifests.find((manifest) => manifest.id === props.instance.componentId)?.name ?? props.instance.componentId}
+            >
+                <div data-plugin-container={props.instance.instanceId}>插件内容尚未加载</div>
+            </ComponentTile>
+        ),
+    ],
+]);
+for (const [entry, render] of Array.from(pluginRenderers)) {
+    if (entry.startsWith("official:")) pluginRenderers.set(entry.replace("official:", "official."), render);
+}
+
 /** 同步 Component Runtime 并呈现当前显示器的全部官方组件实例。 */
 export const OfficialComponentHost = ({
     tileAppearances,
@@ -44,19 +96,8 @@ export const OfficialComponentHost = ({
     const [runtime, setRuntime] = useState<ComponentRuntimeSnapshot>(); // 当前后端组件注册表和实例状态。
     const [failure, setFailure] = useState<string>(); // 组件运行时 command 或 event 错误说明。
     const registrations = useMemo(() => new Map(runtime?.instances.map((instance) => [instance.instanceId, instance]) ?? []), [runtime]);
-    const visibleInstances = instances.filter((instance) =>
-        instance.componentId === "official.local-clock"
-            ? preferences?.clockEnabled !== false
-            : instance.componentId === "official.debug-test"
-              ? preferences?.debugEnabled !== false && runtime?.manifests.some((manifest) => manifest.id === "official.debug-test")
-              : instance.componentId === "official.music-control"
-                ? preferences?.musicEnabled === true
-              : instance.componentId === "official.collect-box"
-                  ? preferences?.collectEnabled !== false
-                  : instance.componentId === "official.weather"
-                    ? preferences?.weatherEnabled === true
-                  : true,
-    ); // Release 没有 Debug 注册入口。
+    const pluginContext = { preferences, runtime, debugContent }; // 本次呈现的偏好、注册表与调试内容。
+    const visibleInstances = instances.filter((instance) => pluginVisibility.get(instance.componentId)?.(pluginContext) ?? true); // 插件实例没有独立开关。
 
     useEffect(() => {
         let mounted = true; // 当前组件宿主挂载标记。
@@ -106,16 +147,9 @@ export const OfficialComponentHost = ({
                     onBeginInputDrag,
                     onEndInputDrag,
                 }; // 每个实例沿用同一运行时与命令契约。
-                if (instance.componentId === "official.collect-box") return <CollectBoxTile key={instance.instanceId} {...props} />;
-                if (instance.componentId === "official.weather") return <WeatherTile key={instance.instanceId} {...props} />;
-                if (instance.componentId === "official.music-control") return <MusicTile key={instance.instanceId} {...props} />;
-                if (instance.componentId === "official.local-clock") return <ClockTile key={instance.instanceId} {...props} />;
-                if (instance.componentId === "official.debug-test")
-                    return (
-                        <DebugTile key={instance.instanceId} {...props}>
-                            {debugContent}
-                        </DebugTile>
-                    );
+                const pluginEntry = props.registration?.entry ?? instance.componentId; // 注册入口优先，尚未同步时沿用官方身份。
+                const pluginRender = pluginRenderers.get(pluginEntry); // 所有插件实例共用 plugin:slot。
+                if (pluginRender) return pluginRender(props, { ...pluginContext, runtime });
                 return (
                     <ComponentTile key={instance.instanceId} {...props} title="本地时间" minimum={{ width: 164, height: 90 }}>
                         <p className="official-component__error">组件前端入口不存在</p>
