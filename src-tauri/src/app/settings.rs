@@ -20,11 +20,18 @@ pub fn resolve_config_directory(value: &str) -> Result<PathBuf, String>
         value.to_string()
     }; // 不展开未知变量，避免静默写入错误位置。
     let path = PathBuf::from(&expanded); // 待验证的绝对目录。
-    if !path.is_absolute() || expanded.contains(['%', '\0', '*', '?', '"', '<', '>', '|']) || expanded.starts_with(r"\\.\") || expanded.starts_with(r"\\?\") || path.components().any(|part| matches!(part, std::path::Component::ParentDir) || matches!(part, std::path::Component::Normal(value) if value.to_string_lossy().contains(':')))
+    if directory_outside_boundary(&expanded, &path)
     {
         return Err("配置目录必须为绝对路径或以 %APPDATA% 开头，不能包含父级跳转或特殊字符".to_string());
     }
     Ok(path)
+}
+
+/// 配置路径与启动定位指针共用的目录安全边界：拒绝相对路径、父级跳转、设备前缀和特殊字符。
+fn directory_outside_boundary(value: &str, path: &Path) -> bool
+{
+    use std::path::Component;
+    !path.is_absolute() || value.contains(['%', '\0', '*', '?', '"', '<', '>', '|']) || value.starts_with(r"\\.\") || value.starts_with(r"\\?\") || path.components().any(|part| matches!(part, Component::ParentDir) || matches!(part, Component::Normal(value) if value.to_string_lossy().contains(':')))
 }
 
 /// 空偏好使用 `%APPDATA%\TIAmo\plugins`，不跟随配置目录。显式路径沿用配置目录安全边界。
@@ -51,8 +58,8 @@ pub(crate) fn validate_preferences(preferences: &ApplicationPreferences) -> Resu
 /// 在加载任何写入线程前切换数据目录；固定引导文件只记录当前生效位置。
 pub fn prepare_config_directory(bootstrap: &std::path::Path) -> std::io::Result<PathBuf>
 {
-    let pointer = bootstrap.join("config-location.json"); // 不随配置目录迁移的启动定位文件。
-    let source: PathBuf = load_json(&pointer)?.unwrap_or_else(|| bootstrap.to_path_buf()); // 兼容旧版固定数据目录。
+    let pointer = bootstrap.join(CONFIG_LOCATION_FILE); // 不随配置目录迁移的启动定位文件。
+    let source = current_config_directory(bootstrap)?; // 兼容旧版固定数据目录。
     let preferences: ApplicationPreferences = load_json(&source.join("settings.json"))?.unwrap_or_default(); // 从当前目录读取待迁移意图。
     let target = validate_preferences(&preferences).map_err(std::io::Error::other)?; // 下次启动目标。
     if source == target
@@ -75,24 +82,109 @@ pub fn prepare_config_directory(bootstrap: &std::path::Path) -> std::io::Result<
     }
 }
 
+const CONFIG_LOCATION_FILE: &str = "config-location.json"; // 启动定位目录里的配置目录指针。
+const PLUGIN_LOCATION_FILE: &str = "plugin-location.json"; // 启动定位目录里的插件目录指针。
+
+/// 当前配置目录：启动定位文件优先，缺失时仍使用启动定位目录本身。
+fn current_config_directory(bootstrap: &std::path::Path) -> std::io::Result<PathBuf> { Ok(load_json(&bootstrap.join(CONFIG_LOCATION_FILE))?.unwrap_or_else(|| bootstrap.to_path_buf())) }
+
+/// 读取并校验插件目录指针；文件缺失、损坏或路径非法时都按缺失处理。
+fn stored_plugin_directory(pointer: &std::path::Path) -> Option<PathBuf>
+{
+    let stored: Option<PathBuf> = match load_json(pointer)
+    {
+        Ok(stored) => stored,
+        Err(error) =>
+        {
+            crate::log_warn!("设置：插件目录指针损坏，按缺失处理，路径={}，错误={error}", pointer.display());
+            return None;
+        }
+    }; // 损坏的指针不阻止启动。
+    if let Some(directory) = &stored
+    {
+        if directory_outside_boundary(&directory.to_string_lossy(), directory)
+        {
+            crate::log_warn!("设置：插件目录指针非法，按缺失处理，路径={}", directory.display());
+            return None;
+        }
+    }
+    stored
+}
+
+/// 有效插件目录取指针值；指针缺失时按偏好解析，第二项表示指针是否已经存在。
+pub(crate) fn effective_plugin_directory(pointer: &std::path::Path, preferences: &ApplicationPreferences, config_directory: &Path) -> std::io::Result<(PathBuf, bool)>
+{
+    if let Some(directory) = stored_plugin_directory(pointer)
+    {
+        return Ok((directory, true));
+    }
+    let fallback = resolve_plugin_directory(&preferences.plugin_directory, config_directory).map_err(std::io::Error::other)?; // 用偏好重新定位。
+    Ok((fallback, false))
+}
+
+/// 安装器命令的只读定位：指针优先；缺失、损坏或非法时按当前配置目录的偏好解析，不写指针、不触发迁移。
+pub fn locate_plugin_directory(bootstrap: &std::path::Path) -> Result<PathBuf, String>
+{
+    let config_directory = current_config_directory(bootstrap).map_err(|error| format!("读取配置目录指针失败：{error}"))?; // 当前生效配置目录。
+    let preferences: ApplicationPreferences = load_json(&config_directory.join("settings.json")).map_err(|error| format!("读取用户偏好失败：{error}"))?.unwrap_or_default(); // 尚未保存偏好时用当前默认值。
+    effective_plugin_directory(&bootstrap.join(PLUGIN_LOCATION_FILE), &preferences, &config_directory).map(|(directory, _)| directory).map_err(|error| error.to_string())
+}
+
+/// 重启时按偏好迁移插件目录；指针缺失只写基线，迁移失败继续使用原目录并下次重试。
+pub fn prepare_plugin_directory(bootstrap: &std::path::Path, config_directory: &std::path::Path, preferences: &ApplicationPreferences) -> std::io::Result<PathBuf>
+{
+    let pointer = bootstrap.join(PLUGIN_LOCATION_FILE); // 与 config-location.json 同级的启动定位文件。
+    let (source, located) = effective_plugin_directory(&pointer, preferences, config_directory)?; // 本次运行生效的插件目录。
+    if !located
+    {
+        if let Err(error) = save_json_atomic(&pointer, &source)
+        {
+            crate::log_warn!("设置：插件目录基线写入失败，继续使用当前目录={}，错误={error}", source.display());
+        }
+        else
+        {
+            crate::log_info!("设置：插件目录基线已记录，目录={}", source.display());
+        }
+        return Ok(source);
+    }
+    let target = resolve_plugin_directory(&preferences.plugin_directory, config_directory).map_err(std::io::Error::other)?; // 下次启动目标。
+    if source == target
+    {
+        return Ok(source);
+    }
+    match migrate_config_directory(&source, &target, &pointer)
+    {
+        Ok(()) =>
+        {
+            crate::log_info!("设置：插件目录已迁移，原目录={}，当前目录={}，原文件保留", source.display(), target.display());
+            Ok(target)
+        }
+        Err(error) =>
+        {
+            crate::log_error!("设置：插件目录迁移失败，继续使用原目录={}，目标={}，错误={error}", source.display(), target.display());
+            Ok(source)
+        }
+    }
+}
+
 /// 复制数据并最后提交启动位置；拒绝非空目标，失败不删除或覆盖原数据。
 fn migrate_config_directory(source: &std::path::Path, target: &std::path::Path, pointer: &std::path::Path) -> std::io::Result<()>
 {
     use std::{fs, io};
     fs::create_dir_all(source)?;
     fs::create_dir_all(target)?;
-    let source = fs::canonicalize(source)?; // 消除大小写、链接和路径别名差异。
-    let target = fs::canonicalize(target)?; // 创建后验证最终真实位置。
-    if source == target
+    let source_real = fs::canonicalize(source)?; // 消除大小写、链接和路径别名差异，仅用于判断与复制。
+    let target_real = fs::canonicalize(target)?; // 创建后验证最终真实位置。
+    if source_real == target_real
     {
         return Ok(());
     }
-    if source.starts_with(&target) || target.starts_with(&source) || fs::read_dir(&target)?.next().is_some()
+    if source_real.starts_with(&target_real) || target_real.starts_with(&source_real) || fs::read_dir(&target_real)?.next().is_some()
     {
-        return Err(io::Error::other("配置目录不能互相包含，且目标目录必须为空"));
+        return Err(io::Error::other("目录不能互相包含，且目标目录必须为空"));
     }
     // 整目录复制，不再按固定名单挑选；不跟随链接或重解析点，插件设置因此一起离开。
-    let mut pending = vec![(source.clone(), target.clone())]; // 待复制的目录或文件，根目录本身已经存在。
+    let mut pending = vec![(source_real.clone(), target_real)]; // 待复制的目录或文件，根目录本身已经存在。
     while let Some((from, to)) = pending.pop()
     {
         use std::os::windows::fs::MetadataExt;
@@ -104,11 +196,11 @@ fn migrate_config_directory(source: &std::path::Path, target: &std::path::Path, 
         }; // 复制过程中消失的项跳过，其他读取错误不得忽略。
         if metadata.file_attributes() & 0x400 != 0
         {
-            return Err(io::Error::other("配置迁移不支持链接或重解析点"));
+            return Err(io::Error::other("目录迁移不支持链接或重解析点"));
         }
         if metadata.is_dir()
         {
-            if from != source
+            if from != source_real
             {
                 fs::create_dir(&to)?;
             }
@@ -126,7 +218,7 @@ fn migrate_config_directory(source: &std::path::Path, target: &std::path::Path, 
             output.sync_all()?;
         }
     }
-    // 复制完成后才切换指针；中途失败留下的目标副本不自动清除或覆盖。
+    // 复制完成后才切换指针；写调用方传入的目标绝对路径，避免 canonicalize 的 verbatim 形式进入指针。
     save_json_atomic(pointer, &target)
 }
 

@@ -238,8 +238,16 @@ _避免使用_：写死不可创建、写死不可移除
 _避免使用_：按单个显示器分别计数、另设一个是否可添加的开关
 
 **插件包**：
-插件根下一层的一个文件夹。文件夹内的 `manifest.ini` 是 UTF-8 的 `[plugin]` 节，文件夹名等于其中的 `name`。`id` 由宿主安装时写入；`version` 必填且为三段数字，`minAppVersion`、`maxAppVersion`、`author`、`description`、`repository` 可空，`author` 与 `description` 缺省为空串，`repository` 只保留 `http`/`https`，非法地址视同未声明。`entry` 是文件夹内的脚本相对路径，必须以 `.js` 结尾并位于文件夹内。运行时算出 `script`，值为插件根相对路径 `<文件夹>/<entry>`。前端分派仍用固定的 `plugin:slot`，不把脚本路径放进 `entry`。偏好为空时插件根是 `%APPDATA%\TIAmo\plugins`，不跟随配置目录。
+插件根下一层的一个文件夹。文件夹内的 `manifest.ini` 是 UTF-8 的 `[plugin]` 节，文件夹名等于其中的 `name`。`id` 由宿主安装时写入；`version` 必填且为三段数字，`minAppVersion`、`maxAppVersion`、`author`、`description`、`repository` 可空，`author` 与 `description` 缺省为空串，`repository` 只保留 `http`/`https`，非法地址视同未声明。`entry` 是文件夹内的脚本相对路径，必须以 `.js` 结尾并位于文件夹内。运行时算出 `script`，值为插件根相对路径 `<文件夹>/<entry>`。前端分派仍用固定的 `plugin:slot`，不把脚本路径放进 `entry`。偏好为空时插件根是 `%APPDATA%\TIAmo\plugins`，不跟随配置目录自动迁移。
 _避免使用_：`plugin.<id>.json`、扁平清单
+
+**预设插件**：
+随 Desktop Tools 安装程序分发并自动解压释放的内置示例插件（位于仓库根 `plugin/`）。安装时按当前生效插件目录写入：若目标已存在同名插件且版本相同则跳过复制以保留本地自改；版本不同则整目录替换。卸载程序提供「同时移除随程序安装的预设插件」复选框，默认不勾选；勾选时按预设清单 `id` 逐一精确匹配删除，静默卸载或更新模式不删除，且始终保留其保存在 `settings-plugins.json` 中的自定义配置。预设插件在运行时与用户通过设置页安装的本地插件遵循同一套清单、外壳契约与安全约束。
+_避免使用_：官方插件（官方插件特指以 official. 为前缀并在编译期内置于核心的内置能力）
+
+**生效插件目录与插件目录迁移**：
+存放所有本地插件文件夹的根目录。程序在启动定位目录（固定为 Tauri 的 `app_data_dir()`，即 `%APPDATA%\<bundle identifier>`，当前为 `%APPDATA%\io.github.tiamo1208.desktop-tools`，不随配置或插件目录迁移）维护 `plugin-location.json` 指针文件，记录当前生效插件目录的标准绝对路径（指针缺失时按偏好解析，偏好为空回退至默认 `%APPDATA%\TIAmo\plugins`，并自动写入基线指针）。生效插件目录在运行期冻结；用户在设置中更改插件目录偏好后，在下次程序启动时执行整目录迁移，目标非空、互相包含或含符号链接时拒绝迁移并记录错误，继续使用原旧目录并保留偏好供下次重试。安装包安装预设插件时只读解析该指针或偏好以定位当前生效目录，偏好改动未重启时仍写入旧生效目录。
+_避免使用_：随配置目录自动迁移、运行期热切换插件目录
 
 **插件脚本**：
 清单 `script` 指向的页面脚本。当前屏幕出现该插件的格子后，宿主按这份相对路径去重加载；同一标识只加载一次，加载失败不重试。设置窗口与逐屏都用同源 `import("/plugins/<script>")` 加载同一份模块；模块默认导出外壳对象，宿主按清单 id 绑定，不放宽内容安全策略。

@@ -1,7 +1,8 @@
-; 本文件取自 tauri-bundler 的 NSIS 模板（tauri-cli-v2.11.4），仅改动重装页：
+; 本文件取自 tauri-bundler 的 NSIS 模板（tauri-cli-v2.11.4），改动重装页与卸载确认页：
 ; 同版本与升级提供“添加/重新安装组件”（默认勾选）与“卸载 Desktop Tools”两个互斥勾选项；
-; 降级必须勾选卸载确认后才能继续。
-; 升级 @tauri-apps/cli 后须重新对比上游模板并回放这项修改，约束见 ADR-0024。
+; 降级必须勾选卸载确认后才能继续；
+; 卸载确认页在“删除应用数据”下方新增“同时移除随程序安装的预设插件”勾选项（默认不勾选，静默卸载不删）。
+; 升级 @tauri-apps/cli 后须重新对比上游模板并回放这些修改，约束见 ADR-0024。
 Unicode true
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
@@ -440,6 +441,8 @@ FunctionEnd
 ; 1. Confirm uninstall page
 Var DeleteAppDataCheckbox
 Var DeleteAppDataCheckboxState
+Var DeletePresetPluginsCheckbox
+Var DeletePresetPluginsCheckboxState
 !define /ifndef WS_EX_LAYOUTRTL         0x00400000
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow
 Function un.ConfirmShow ; Add add a `Delete app data` check box
@@ -462,18 +465,25 @@ Function un.ConfirmShow ; Add add a `Delete app data` check box
   IntOp $5 100 * $2
   IntOp $6 400 * $2
   IntOp $7 25 * $2
+  IntOp $8 130 * $2
   IntOp $4 $4 / 96
   IntOp $5 $5 / 96
   IntOp $6 $6 / 96
   IntOp $7 $7 / 96
+  IntOp $8 $8 / 96
   System::Call 'user32::CreateWindowEx(i r3, w "${__NSD_CheckBox_CLASS}", w "$(deleteAppData)", i ${__NSD_CheckBox_STYLE}, i r4, i r5, i r6, i r7, p r1, i0, i0, i0) i .s'
   Pop $DeleteAppDataCheckbox
   SendMessage $HWNDPARENT ${WM_GETFONT} 0 0 $1
   SendMessage $DeleteAppDataCheckbox ${WM_SETFONT} $1 1
+  ; 当前安装包只启用简体中文；新增语言时须把本页文案改为 LangString。
+  System::Call 'user32::CreateWindowEx(i r3, w "${__NSD_CheckBox_CLASS}", w "同时移除随程序安装的预设插件", i ${__NSD_CheckBox_STYLE}, i r4, i r8, i r6, i r7, p r1, i0, i0, i0) i .s'
+  Pop $DeletePresetPluginsCheckbox
+  SendMessage $DeletePresetPluginsCheckbox ${WM_SETFONT} $1 1
 FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE un.ConfirmLeave
 Function un.ConfirmLeave
   SendMessage $DeleteAppDataCheckbox ${BM_GETCHECK} 0 0 $DeleteAppDataCheckboxState
+  SendMessage $DeletePresetPluginsCheckbox ${BM_GETCHECK} 0 0 $DeletePresetPluginsCheckboxState
 FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_PRE un.SkipIfPassive
 !insertmacro MUI_UNPAGE_CONFIRM

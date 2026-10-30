@@ -146,6 +146,17 @@ pub fn prepare_startup() -> Result<Startup, String>
             refresh_shell_menu();
             return Ok(Startup::Exit);
         }
+        [flag, source, bootstrap] if flag == "--install-preset-plugins" =>
+        {
+            crate::app::preset_plugins::install_preset_plugins(std::path::Path::new(source), std::path::Path::new(bootstrap))?;
+            return Ok(Startup::Exit);
+        }
+        [flag, source, bootstrap] if flag == "--uninstall-preset-plugins" =>
+        {
+            crate::app::preset_plugins::uninstall_preset_plugins(std::path::Path::new(source), std::path::Path::new(bootstrap))?;
+            return Ok(Startup::Exit);
+        }
+        [flag, ..] if flag == "--install-preset-plugins" || flag == "--uninstall-preset-plugins" => return Err("预设插件命令参数无效".into()),
         [flag, action] if flag == "--desktop-menu" => Some(ACTIONS.iter().find(|entry| entry.0 == action).ok_or("未知桌面菜单动作")?.2),
         _ => return Err("未知启动参数".into()),
     }; // 没有运行实例时保留的初始动作。

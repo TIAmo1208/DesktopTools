@@ -173,10 +173,11 @@ pub fn run()
             crate::platform::windows::dispatch_settings_protocol(request, context.app_handle().clone(), move |response| responder.respond(response)); // wry 在创建 WebView 时调用 with_asynchronous_custom_protocol。
         })
         .setup(move |app| {
-            let config_directory = crate::app::settings::prepare_config_directory(&app.path().app_data_dir()?)?; // 在后台写入线程启动前完成配置迁移。
+            let bootstrap = app.path().app_data_dir()?; // 启动定位目录，两个位置指针都放在这里。
+            let config_directory = crate::app::settings::prepare_config_directory(&bootstrap)?; // 在后台写入线程启动前完成配置迁移。
             let settings_path = config_directory.join("settings.json"); // 当前用户的正式设置文件。
             let settings = crate::app::settings::SettingsState::load(settings_path)?; // 配置迁移后读取插件目录偏好。
-            let plugin_directory = crate::app::settings::resolve_plugin_directory(&settings.preferences()?.plugin_directory, &config_directory)?; // 使用实际生效配置目录计算缺省位置。
+            let plugin_directory = crate::app::settings::prepare_plugin_directory(&bootstrap, &config_directory, &settings.preferences()?)?; // 插件目录同样在重启时迁移，本次运行内保持不变。
             let component_runtime = ComponentRuntimeState::new(&plugin_directory); // 坏清单只进入 failures，不阻塞工作区加载。
             let default_components = component_runtime.default_instances(); // 首次工作区的官方默认实例。
             let component_capabilities = component_runtime.capability_declarations().to_vec(); // 注册表移入应用前取出工作区能力声明。

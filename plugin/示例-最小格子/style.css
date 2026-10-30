@@ -1,0 +1,29 @@
+/* 示例-最小格子 专用样式，严格使用插件前缀隔离 */
+
+.plugin-example-minimal-tile {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: 12px;
+    font-family: sans-serif;
+    user-select: none;
+}
+
+.plugin-example-minimal-tile .tile-title {
+    font-weight: bold;
+    font-size: 14px;
+    margin-bottom: 6px;
+}
+
+.plugin-example-minimal-tile .tile-meta {
+    font-size: 12px;
+    opacity: 0.8;
+    margin-bottom: 4px;
+}
+
+.plugin-example-minimal-tile .tile-clock {
+    margin-top: 8px;
+    font-size: 13px;
+    font-family: monospace;
+    color: #3b82f6;
+}

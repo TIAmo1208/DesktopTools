@@ -1,0 +1,116 @@
+/* 示例-格子与设置 专用样式，严格使用插件前缀隔离 */
+
+.plugin-example-combined-tile {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    user-select: none;
+    overflow: hidden;
+}
+
+.plugin-example-combined-tile .tile-title {
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: #3b82f6;
+}
+
+.plugin-example-combined-tile .tile-content {
+    word-break: break-word;
+    line-height: 1.4;
+    transition: font-size 0.2s ease;
+}
+
+/* 动态字号样式类（避免在 HTML 字符串中写内联 style="font-size: ..." 触发 CSP 拦截） */
+.plugin-example-combined-tile .tile-content--size-12 {
+    font-size: 12px;
+}
+
+.plugin-example-combined-tile .tile-content--size-14 {
+    font-size: 14px;
+}
+
+.plugin-example-combined-tile .tile-content--size-16 {
+    font-size: 16px;
+}
+
+.plugin-example-combined-tile .tile-content--size-18 {
+    font-size: 18px;
+}
+
+.plugin-example-combined-tile .tile-footer {
+    margin-top: 8px;
+    font-size: 11px;
+    opacity: 0.6;
+}
+
+.plugin-example-combined-tile .tile-footer-item {
+    margin-right: 8px;
+}
+
+.plugin-example-combined-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    font-size: 13px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.plugin-example-combined-settings .field-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.plugin-example-combined-settings .field-label {
+    font-size: 12px;
+    opacity: 0.8;
+}
+
+.plugin-example-combined-settings input[type="text"],
+.plugin-example-combined-settings select {
+    padding: 6px 8px;
+    border: 1px solid rgba(128, 128, 128, 0.4);
+    border-radius: 4px;
+    font-size: 13px;
+    background: transparent;
+    color: inherit;
+}
+
+.plugin-example-combined-settings .actions-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.plugin-example-combined-settings .save-button {
+    padding: 6px 16px;
+    border-radius: 4px;
+    background: #2563eb;
+    color: #ffffff;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    align-self: flex-start;
+}
+
+.plugin-example-combined-settings .save-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.plugin-example-combined-settings .status-msg {
+    font-size: 12px;
+    color: #16a34a;
+    visibility: hidden;
+}
+
+.plugin-example-combined-settings .status-msg--visible {
+    visibility: visible;
+}

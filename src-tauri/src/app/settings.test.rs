@@ -126,19 +126,218 @@ fn configuration_directory_moves_on_next_start_without_overwriting()
     assert_eq!(std::fs::read(target.join("workspace-layout.json")).unwrap(), std::fs::read(source.join("workspace-layout.json")).unwrap());
     assert!(target.join("workspace-layout.snapshots/backup.json").exists());
     assert!(source.join("settings.json").exists());
+    assert_eq!(load_json::<PathBuf>(&source.join("config-location.json")).unwrap(), Some(target.clone()), "配置指针写调用方目标路径，不含 verbatim 前缀");
     assert_eq!(std::fs::canonicalize(prepare_config_directory(&source).unwrap()).unwrap(), std::fs::canonicalize(&target).unwrap());
     let occupied = root.join("occupied"); // 有用户数据的目标必须拒绝覆盖。
     std::fs::create_dir(&occupied).unwrap();
     std::fs::write(occupied.join("settings.json"), b"keep").unwrap();
     let conflicting = ApplicationPreferences { config_directory: occupied.to_string_lossy().into_owned(), ..preferences }; // 模拟再次更改目录。
     save_json_atomic(&target.join("settings.json"), &conflicting).unwrap();
-    assert_eq!(prepare_config_directory(&source).unwrap(), std::fs::canonicalize(&target).unwrap());
+    assert_eq!(std::fs::canonicalize(prepare_config_directory(&source).unwrap()).unwrap(), std::fs::canonicalize(&target).unwrap());
     assert_eq!(std::fs::read(occupied.join("settings.json")).unwrap(), b"keep");
     for invalid in ["", "relative", r"C:\data\..\other", "%UNKNOWN%\\data", r"\\.\device"]
     {
         assert!(resolve_config_directory(invalid).is_err());
     }
     assert_eq!(resolve_config_directory(r"%APPDATA%\TIAmo\DesktopTools").unwrap(), PathBuf::from(std::env::var_os("APPDATA").unwrap()).join("TIAmo/DesktopTools"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 插件位置指针缺失时只写基线；偏好保存后重启才整目录迁移并更新指针。
+#[test]
+fn plugin_directory_moves_on_next_start_after_preferences_saved()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-directory-migration-{}", std::process::id())); // 本测试独占目录。
+    let bootstrap = root.join("bootstrap"); // 启动定位目录，指针放在这里。
+    let config = root.join("config"); // 当前生效配置目录。
+    let old = root.join("plugins"); // 当前生效插件目录。
+    let new = root.join("moved-plugins"); // 下次启动目标。
+    std::fs::create_dir_all(&bootstrap).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(old.join("Clock")).unwrap();
+    std::fs::write(old.join("Clock/manifest.ini"), b"[plugin]\nid = plugin.clock\n").unwrap();
+    let pointer = bootstrap.join("plugin-location.json"); // 插件位置指针。
+    let preferences = ApplicationPreferences { plugin_directory: old.to_string_lossy().into_owned(), ..Default::default() }; // 首次定位的偏好。
+    assert_eq!(prepare_plugin_directory(&bootstrap, &config, &preferences).unwrap(), old);
+    assert_eq!(load_json::<PathBuf>(&pointer).unwrap(), Some(old.clone()));
+    assert!(!new.exists(), "指针缺失只记录基线，不复制");
+
+    let saved = ApplicationPreferences { plugin_directory: new.to_string_lossy().into_owned(), ..preferences.clone() };
+    let state = SettingsState::load(config.join("settings.json")).unwrap(); // 真实保存入口。
+    state.save(saved.clone()).unwrap();
+    assert!(!new.exists(), "保存偏好本身不迁移目录");
+    assert_eq!(effective_plugin_directory(&pointer, &state.preferences().unwrap(), &config).unwrap(), (old.clone(), true));
+
+    let restarted = SettingsState::load(config.join("settings.json")).unwrap(); // 重启后读取新偏好。
+    assert_eq!(std::fs::canonicalize(prepare_plugin_directory(&bootstrap, &config, &restarted.preferences().unwrap()).unwrap()).unwrap(), std::fs::canonicalize(&new).unwrap());
+    assert_eq!(std::fs::read(new.join("Clock/manifest.ini")).unwrap(), b"[plugin]\nid = plugin.clock\n");
+    assert!(old.join("Clock/manifest.ini").exists(), "原目录保留");
+    let stored = load_json::<PathBuf>(&pointer).unwrap().unwrap(); // 迁移后写入的指针值。
+    assert_eq!(stored, new, "插件指针写调用方目标路径");
+    assert!(!stored.to_string_lossy().starts_with(r"\\?\"), "指针不含 verbatim 前缀");
+    assert_eq!(effective_plugin_directory(&pointer, &saved, &config).unwrap(), (new.clone(), true), "迁移后的指针按有效值读取");
+    assert_eq!(std::fs::canonicalize(prepare_plugin_directory(&bootstrap, &config, &saved).unwrap()).unwrap(), std::fs::canonicalize(&new).unwrap(), "同一目录再次启动不再迁移");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 连续修改插件目录可从 A 迁到 B 再迁到 C，迁移后的指针始终按有效值读取。
+#[test]
+fn consecutive_plugin_directory_migrations_keep_pointer_usable()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-directory-chain-{}", std::process::id())); // 本测试独占目录。
+    let bootstrap = root.join("bootstrap");
+    let config = root.join("config");
+    let first = root.join("plugins-a"); // 初始插件目录。
+    let second = root.join("plugins-b"); // 第一次迁移目标。
+    let third = root.join("plugins-c"); // 第二次迁移目标。
+    std::fs::create_dir_all(&bootstrap).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::write(first.join("plugin.txt"), b"keep").unwrap();
+    let pointer = bootstrap.join("plugin-location.json");
+    let preferences = ApplicationPreferences { plugin_directory: first.to_string_lossy().into_owned(), ..Default::default() };
+    assert_eq!(prepare_plugin_directory(&bootstrap, &config, &preferences).unwrap(), first);
+    let moved = ApplicationPreferences { plugin_directory: second.to_string_lossy().into_owned(), ..preferences.clone() };
+    assert_eq!(std::fs::canonicalize(prepare_plugin_directory(&bootstrap, &config, &moved).unwrap()).unwrap(), std::fs::canonicalize(&second).unwrap());
+    assert_eq!(load_json::<PathBuf>(&pointer).unwrap(), Some(second.clone()), "第一次迁移后的指针不是 verbatim 形式");
+    assert_eq!(effective_plugin_directory(&pointer, &moved, &config).unwrap(), (second.clone(), true), "迁移后的指针按有效值读取");
+    let last = ApplicationPreferences { plugin_directory: third.to_string_lossy().into_owned(), ..moved.clone() };
+    assert_eq!(std::fs::canonicalize(prepare_plugin_directory(&bootstrap, &config, &last).unwrap()).unwrap(), std::fs::canonicalize(&third).unwrap());
+    assert_eq!(std::fs::read(third.join("plugin.txt")).unwrap(), b"keep", "第二次迁移从 B 复制到 C，未走缺失回退");
+    assert_eq!(load_json::<PathBuf>(&pointer).unwrap(), Some(third.clone()), "第二次迁移指针仍写调用方目标路径");
+    assert_eq!(effective_plugin_directory(&pointer, &last, &config).unwrap(), (third, true));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 目标非空时迁移失败并继续使用旧目录，偏好保持新值，清空目标后下次启动重试成功。
+#[test]
+fn plugin_directory_migration_keeps_old_directory_when_target_occupied()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-directory-occupied-{}", std::process::id())); // 本测试独占目录。
+    let bootstrap = root.join("bootstrap");
+    let config = root.join("config");
+    let old = root.join("plugins");
+    let occupied = root.join("occupied"); // 已有用户数据的目标目录。
+    std::fs::create_dir_all(&bootstrap).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("keep.json"), b"{}").unwrap();
+    let preferences = ApplicationPreferences { plugin_directory: old.to_string_lossy().into_owned(), ..Default::default() };
+    assert_eq!(prepare_plugin_directory(&bootstrap, &config, &preferences).unwrap(), old);
+    std::fs::create_dir_all(&occupied).unwrap();
+    std::fs::write(occupied.join("keep.txt"), b"keep").unwrap();
+    let pointer = bootstrap.join("plugin-location.json"); // 上次生效位置。
+    let blocked = ApplicationPreferences { plugin_directory: occupied.to_string_lossy().into_owned(), ..preferences.clone() };
+    let pointer_before = std::fs::read(&pointer).unwrap(); // 失败前后的指针字节。
+    assert_eq!(prepare_plugin_directory(&bootstrap, &config, &blocked).unwrap(), old);
+    assert_eq!(std::fs::read(&pointer).unwrap(), pointer_before, "失败不切换指针");
+    assert_eq!(std::fs::read(occupied.join("keep.txt")).unwrap(), b"keep");
+    assert_eq!(std::fs::read(old.join("keep.json")).unwrap(), b"{}");
+    std::fs::remove_dir_all(&occupied).unwrap();
+    assert_eq!(std::fs::canonicalize(prepare_plugin_directory(&bootstrap, &config, &blocked).unwrap()).unwrap(), std::fs::canonicalize(&occupied).unwrap());
+    assert_eq!(std::fs::read(occupied.join("keep.json")).unwrap(), b"{}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 插件目录互相包含、目标含链接或重解析点时拒绝迁移，数据保持原样。
+#[test]
+fn plugin_directory_migration_rejects_containment_and_links()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-directory-reject-{}", std::process::id())); // 本测试独占目录。
+    let bootstrap = root.join("bootstrap");
+    let config = root.join("config");
+    let old = root.join("plugins");
+    std::fs::create_dir_all(&bootstrap).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("main.js"), b"var ok = 1;").unwrap();
+    let preferences = ApplicationPreferences { plugin_directory: old.to_string_lossy().into_owned(), ..Default::default() };
+    assert_eq!(prepare_plugin_directory(&bootstrap, &config, &preferences).unwrap(), old);
+    let pointer = bootstrap.join("plugin-location.json"); // 上次生效位置。
+    let pointer_before = std::fs::read(&pointer).unwrap();
+    for target in [old.join("nested"), root.clone()]
+    {
+        let blocked = ApplicationPreferences { plugin_directory: target.to_string_lossy().into_owned(), ..preferences.clone() }; // 目标在源内或源在目标内。
+        assert_eq!(prepare_plugin_directory(&bootstrap, &config, &blocked).unwrap(), old);
+        assert_eq!(std::fs::read(&pointer).unwrap(), pointer_before);
+    }
+    std::fs::remove_dir(old.join("nested")).unwrap(); // 清除包含检测留下的空目录。
+    let real = root.join("real"); // 链接指向的真实目录。
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("outside.js"), b"outside").unwrap();
+    let junction = old.join("Linked");
+    assert!(std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&real).output().unwrap().status.success());
+    let linked = ApplicationPreferences { plugin_directory: root.join("linked-target").to_string_lossy().into_owned(), ..preferences };
+    assert_eq!(prepare_plugin_directory(&bootstrap, &config, &linked).unwrap(), old);
+    assert_eq!(std::fs::read(&pointer).unwrap(), pointer_before);
+    assert_eq!(std::fs::read(real.join("outside.js")).unwrap(), b"outside");
+    assert!(old.join("main.js").exists());
+    std::fs::remove_dir(&junction).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 空偏好回退 %APPDATA%\TIAmo\plugins，指针缺失时只记录基线而不创建目录。
+#[test]
+fn empty_plugin_preference_baselines_to_default_directory()
+{
+    let bootstrap = std::env::temp_dir().join(format!("desktop-tools-plugin-directory-default-{}", std::process::id())); // 只写指针，不碰真实插件目录。
+    std::fs::create_dir_all(&bootstrap).unwrap();
+    let expected = PathBuf::from(std::env::var_os("APPDATA").unwrap()).join("TIAmo").join("plugins"); // 与配置目录无关的默认插件根。
+    assert_eq!(prepare_plugin_directory(&bootstrap, &bootstrap.join("config"), &ApplicationPreferences::default()).unwrap(), expected);
+    assert_eq!(load_json::<PathBuf>(&bootstrap.join("plugin-location.json")).unwrap(), Some(expected));
+    std::fs::remove_dir_all(bootstrap).unwrap();
+}
+
+/// 来自磁盘的插件目录指针非法时被忽略，按偏好重写基线后继续启动。
+#[test]
+fn invalid_plugin_location_pointer_is_ignored_and_rebaselined()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-pointer-invalid-{}", std::process::id())); // 本测试独占目录。
+    let bootstrap = root.join("bootstrap");
+    let config = root.join("config");
+    let plugins = root.join("plugins"); // 偏好解析出的有效目录。
+    std::fs::create_dir_all(&bootstrap).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    let preferences = ApplicationPreferences { plugin_directory: plugins.to_string_lossy().into_owned(), ..Default::default() }; // 显式偏好。
+    let pointer = bootstrap.join("plugin-location.json"); // 来自磁盘的指针。
+    for value in [r#""relative-directory""#, r#""C:\\data\\..\\plugins""#, r#""\\\\.\\device\\plugins""#, r#""\\\\?\\C:\\plugins""#, r#""C:\\plugins*bad""#]
+    {
+        std::fs::write(&pointer, value).unwrap();
+        assert_eq!(prepare_plugin_directory(&bootstrap, &config, &preferences).unwrap(), plugins, "{value}");
+        assert_eq!(load_json::<PathBuf>(&pointer).unwrap(), Some(plugins.clone()), "{value}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 损坏的插件目录指针按缺失处理并重写基线，不阻止启动。
+#[test]
+fn corrupt_plugin_location_pointer_is_ignored_and_rebaselined()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-pointer-corrupt-{}", std::process::id())); // 本测试独占目录。
+    let bootstrap = root.join("bootstrap");
+    let config = root.join("config");
+    let plugins = root.join("plugins");
+    std::fs::create_dir_all(&bootstrap).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    let preferences = ApplicationPreferences { plugin_directory: plugins.to_string_lossy().into_owned(), ..Default::default() };
+    let pointer = bootstrap.join("plugin-location.json");
+    std::fs::write(&pointer, b"{not json").unwrap();
+    assert_eq!(prepare_plugin_directory(&bootstrap, &config, &preferences).unwrap(), plugins);
+    assert_eq!(load_json::<PathBuf>(&pointer).unwrap(), Some(plugins.clone()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 基线写入失败只记警告，首次启动仍使用当前解析出的目录。
+#[test]
+fn plugin_location_write_failure_keeps_running_directory()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-pointer-write-failure-{}", std::process::id())); // 本测试独占目录。
+    let bootstrap = root.join("bootstrap");
+    std::fs::create_dir_all(bootstrap.join("plugin-location.json")).unwrap(); // 用目录占住指针路径，原子替换必定失败。
+    let plugins = root.join("plugins"); // 期望继续使用的目录。
+    let preferences = ApplicationPreferences { plugin_directory: plugins.to_string_lossy().into_owned(), ..Default::default() };
+    assert_eq!(prepare_plugin_directory(&bootstrap, &bootstrap, &preferences).unwrap(), plugins);
+    assert!(bootstrap.join("plugin-location.json").is_dir(), "写入失败不得删除原路径");
     std::fs::remove_dir_all(root).unwrap();
 }
 

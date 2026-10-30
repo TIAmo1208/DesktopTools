@@ -9,6 +9,7 @@
         "license": "GPL-3.0-or-later",
         "licenseFile": "../resources/许可证/GPL-3.0.txt",
         "resources": {
+            "../plugin/": "plugin/",
             "../resources/许可证/": "许可证/",
             "../resources/Lucide许可证.txt": "许可证/Lucide许可证.txt",
             "../build/licenses/第三方许可证.txt": "许可证/第三方许可证.txt"

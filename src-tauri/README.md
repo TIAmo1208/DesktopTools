@@ -9,7 +9,7 @@ src-tauri/
 ├─ src/
 │  ├─ main.rs             # 进程入口
 │  ├─ lib.rs              # Tauri 应用装配和命令注册
-│  ├─ app/                # 生命周期、运行时状态和桌面接管
+│  ├─ app/                # 生命周期、运行时状态、桌面接管与预设插件管理（preset_plugins）
 │  ├─ commands/           # 前端命令边界、校验和用例调度
 │  ├─ workspace/          # 布局、围栏、门户、组件和事务规则
 │  ├─ shell/              # 桌面项目事实、Shell 身份、菜单、剪贴板和拖放
@@ -26,15 +26,19 @@ src-tauri/
 ├─ components/            # Tauri 组件配置
 ├─ gen/                   # Tauri 生成文件
 ├─ icons/                 # 应用图标资源
-├─ installer/             # NSIS 重装页模板与安装、卸载生命周期钩子
+├─ installer/             # NSIS 重装页模板、卸载预设确认与安装、卸载生命周期钩子
 ├─ Cargo.toml             # Rust 依赖和构建配置
 ├─ tauri.conf.json        # Tauri 应用配置
-└─ tauri.installer.conf.json # 当前用户 NSIS 测试安装包覆盖配置
+└─ tauri.installer.conf.json # 当前用户 NSIS 测试安装包覆盖配置（含 plugin/ 预设资源映射）
 ```
 
 ## 关键边界
 
 - `commands/weather.rs` 把凭据草稿类命令（临时城市搜索、验证城市、把验证通过的城市写入来源列表、保存与清除）保留给设置窗口，桌面 transport 另提供已保存凭据下的来源列表、某来源城市列表读写、按来源城市搜索与天气读取。`weather/source.rs` 定义来源标识与顺序；`weather/credentials.rs` 按来源各保存一条 Windows Credential Manager 记录（和风沿用既有应用级记录名，其他来源在其后追加来源标识）；`weather/mod.rs` 管理草稿、并发互斥、取消、保存门槛、来源列表与运行期可用状态、存活探测与按来源删除，运行期状态按来源索引：凭据记录名与 `weather-cities-<来源>.json` 城市列表文件按来源派生，配置代次、取消标记与退避记录都以来源为键，磁盘预报缓存仍按配置指纹与城市标识保存；`weather/provider.rs` 与 `weather/foreca.rs` 分别校验各自凭据、签发 JWT 或使用 Bearer 令牌、按来源校验城市与天气数据。网络任务只在用户操作时创建，禁止重定向，限制超时与响应大小；城市搜索结果和天气验证响应不落盘。天气格子在拖动缩放期间按实时尺寸切换布局，详情入口由前端公共标题栏提供；`weather/activity.rs` 负责展开实例的共享活动调度，并通过 `weather-forecast-changed` 通知预报更新。天气格子与收集箱一样由组件清单声明可创建、可移除，创建入口写入绑定标识并在同一链路开启天气功能开关。
+
+- `app/preset_plugins.rs` 负责预设插件随安装包解压写入与卸载清理，提供无 GUI 的 CLI 执行入口。安装器在 `POSTINSTALL` 阶段调用其安装子命令，按当前生效插件目录写入预设（同版本跳过保留用户自改，不同版本替换）；在卸载且用户勾选移除预设时调用其卸载子命令，按清单 `id` 精确删除对应目录并保留自定义设置。
+- `app/settings.rs` 维护配置目录与插件目录的生命周期。启动定位目录（`%APPDATA%\<bundle identifier>`，当前 `%APPDATA%\io.github.tiamo1208.desktop-tools`）下的 `plugin-location.json` 记录当前生效插件目录的标准绝对路径（指针缺失时按偏好解析，偏好为空回退至 `%APPDATA%\TIAmo\plugins`，并自动补写基线）。插件目录在运行期冻结，用户更改偏好后在下次启动由 `prepare_plugin_directory` 执行整目录迁移，目标非空或包含链接时拒绝迁移并降级继续使用原目录。
+- `installer/` 包含 NSIS 自定义重装页与生命周期钩子，`hooks.nsh` 分派预设插件的安装与受控清理，`tauri.installer.conf.json` 通过 `bundle.resources` 将仓库根 `plugin/` 映射为安装包内部资源。
 
 - `commands/` 负责跨边界校验与调度，不持有长期领域状态。
 - `workspace/` 负责自有布局、围栏归属、门户和组件布局事务，不执行文件操作。各类格子的持久展开边界统一使用工作区契约中的公共尺寸底线，临时投射单独校验；内容可读性和标题占位由前端负责。
