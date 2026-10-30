@@ -21,6 +21,8 @@ pub enum ComponentCapability
     ReadHostTime,
     /// 读取系统当前媒体会话。
     ReadCurrentMedia,
+    /// 探活宿主固定的本机服务地址（当前只有 AstrBot）。
+    ProbeServiceStatus,
 }
 
 /// 一个官方组件的版本化清单。

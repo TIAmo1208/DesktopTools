@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseComponentHostEvent, parseComponentInstanceSnapshot, parseComponentRuntimeSnapshot } from "./component.ts";
+import { parseComponentCapabilityResult, parseComponentHostEvent, parseComponentInstanceSnapshot, parseComponentRuntimeSnapshot } from "./component.ts";
 
 // 验证官方清单、授权能力和实例隔离状态通过公开运行时快照。
 test("parses the official component runtime snapshot", () => {
@@ -100,7 +100,30 @@ test("parses a persisted component instance and host event", () => {
     assert.equal(event.sequence, 4);
 });
 
-// 验证未知能力不会越过前端契约边界。
+// 验证探活结果按四档通过契约边界，非 ok 档不带启动时间。
+test("parses a probe service status payload", () => {
+    assert.deepEqual(parseComponentCapabilityResult({ instanceId: "tile", capability: "probe-service-status", payload: { level: "ok", startTime: 1_793_365_017, checkedAt: 1_793_372_400 } }), {
+        instanceId: "tile",
+        capability: "probe-service-status",
+        payload: { level: "ok", startTime: 1_793_365_017, checkedAt: 1_793_372_400 },
+    });
+    for (const level of ["warn", "off", "unknown"]) {
+        const result = parseComponentCapabilityResult({ instanceId: "tile", capability: "probe-service-status", payload: { level, startTime: null, checkedAt: 1_793_372_400 } }); // 非 ok 档的探活结果。
+        assert.deepEqual(result.payload, { level, startTime: null, checkedAt: 1_793_372_400 });
+    }
+});
+
+// 验证未知档、ok 缺启动时间和非 ok 带启动时间都被拒绝。
+test("rejects an invalid probe service status payload", () => {
+    const invalid = [
+        { level: "online", startTime: null, checkedAt: 1_793_372_400 },
+        { level: "ok", startTime: null, checkedAt: 1_793_372_400 },
+        { level: "off", startTime: 1_793_365_017, checkedAt: 1_793_372_400 },
+        { level: "ok", startTime: 1_793_365_017, checkedAt: 0 },
+    ];
+    for (const payload of invalid) assert.throws(() => parseComponentCapabilityResult({ instanceId: "tile", capability: "probe-service-status", payload }), { name: "ComponentContractError" });
+});
+
 test("rejects an unknown component capability", () => {
     assert.throws(
         () =>

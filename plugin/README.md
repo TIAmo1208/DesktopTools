@@ -25,13 +25,14 @@ Desktop Tools 支持通过本地插件扩展桌面格子与设置页选项。插
 
 ## 预设示例索引与开发方向
 
-仓库根目录下的 `plugin/` 目录提供了三个官方示例插件，涵盖不同功能方向：
+仓库根目录下的 `plugin/` 目录提供官方示例插件与一个功能插件，涵盖不同功能方向：
 
 | 示例目录 | 插件 ID | 适用场景 / 开发方向 |
 |---|---|---|
 | [示例-最小格子](./示例-最小格子) | `plugin.example.minimal` | **纯桌面格子组件**：演示 `renderTile` 挂载静态 DOM、开启定时器及返回注销清理函数。 |
 | [示例-设置条目](./示例-设置条目) | `plugin.example.settings` | **纯设置扩展条目**：`creatable=0`，不导出 `renderTile`，仅导出 `settingsEntries` 演示读取与保存插件自定义设置。 |
 | [示例-格子与设置](./示例-格子与设置) | `plugin.example.combined` | **复合型插件**：同时具备桌面格子与独立设置页条目。演示设置变更驱动格子重新渲染、多实例限制（`maxTiles=2`）及通过 `import.meta.url` 加载独立样式表 `style.css`。 |
+| [AstrBot 状态](./AstrBot%20状态) | `plugin.astrbot-status` | **声明宿主能力的功能插件**：清单声明 `required_capabilities = probe-service-status`，通过 `invoke_component_capability` 探活本机 AstrBot，按四档状态轮询并在格子不可见时暂停刷新。 |
 
 ## 快速开始
 
@@ -65,4 +66,4 @@ Desktop Tools 支持通过本地插件扩展桌面格子与设置页选项。插
   - 宿主严格执行内容安全策略 `script-src 'self'`，**严禁使用 `eval`、`new Function` 或内联脚本 `<script>`**。
   - 宿主执行 `style-src 'self'`（未放开 `unsafe-inline`），**内联 `<style>` 标签与 DOM 元素的内联 `style="..."` 属性均会被 CSP 拦截**。插件样式只能来自独立 `.css` 静态资产或通过 JS CSSOM 属性赋值操作。
 - **静态资产路由限制**：宿主本地协议仅对插件目录提供 `.js` 与 `.css` 两种静态资源文件的路由，其他类型资源不支持通过 `/plugins/` 协议直接加载（`img-src` 允许 `data:` 图片，但自定义字体 data URL 不可依赖）。
-- **无宿主能力通道**：插件清单当前不分配宿主能力通道，插件无法直接调用宿主原生特权能力（如系统时间直读、媒体控制等）。
+- **声明宿主能力**：插件在清单中用 `required_capabilities = probe-service-status` 声明宿主能力（逗号分隔，可用值见[开发指南](./docs/开发指南.md)），运行时只能通过 `invoke_component_capability` 按实例调用；插件无法调用未声明的能力。

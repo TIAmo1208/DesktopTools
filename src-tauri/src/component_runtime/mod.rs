@@ -5,6 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use chrono::Utc;
+use serde::Deserialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -138,6 +139,7 @@ impl ComponentRuntimeState
                 "unixMillis": Utc::now().timestamp_millis()
             }),
             ComponentCapability::ReadCurrentMedia => crate::platform::windows::music::snapshot().map_err(|message| ComponentRuntimeError { code: "media-read-failed".to_string(), message })?,
+            ComponentCapability::ProbeServiceStatus => crate::commands::probe::probe(&json!({ "service": "astrbot" })),
         }; // 当前授权能力的最小结构化结果。
         crate::log_debug!("插件：宿主能力调用完成，实例={}，能力={capability:?}", instance_id);
         Ok(ComponentCapabilityResult { instance_id: instance_id.to_string(), capability, payload })
@@ -415,9 +417,27 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     let repository = plugin_repository(&id, values.get("repository").map(String::as_str)); // 非法地址视同未声明。
     let description = plugin_description(values.get("description").map(String::as_str)); // ini 按行切，换行写成 \n。
     let author = values.get("author").map(|value| value.trim().to_string()).unwrap_or_default(); // 缺省没有作者。
-    let manifest = ComponentManifest { id, name, entry: PLUGIN_SLOT_ENTRY.to_string(), script, required_capabilities: Vec::new(), creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
+    let required_capabilities = plugin_capabilities(values.get("required_capabilities").map(String::as_str))?; // 缺省不声明任何能力。
+    let manifest = ComponentManifest { id, name, entry: PLUGIN_SLOT_ENTRY.to_string(), script, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
     validate_manifest(&manifest).map_err(|error| error.message)?;
     Ok(manifest)
+}
+
+/// 解析 ini 的 required_capabilities：逗号分隔的能力名，非法值或重复值让插件加载失败。
+fn plugin_capabilities(raw: Option<&str>) -> Result<Vec<ComponentCapability>, String>
+{
+    let mut capabilities = Vec::new(); // 按声明顺序保留的能力。
+    for name in raw.unwrap_or("").split(',').map(str::trim).filter(|name| !name.is_empty())
+    {
+        let value = serde_json::Value::String(name.to_string()); // 借 JSON 表示解析 kebab-case 能力名，不另打一份名字表。
+        let capability = serde_json::from_value::<ComponentCapability>(value).map_err(|_| format!("插件声明了未知能力：{name}"))?;
+        if capabilities.contains(&capability)
+        {
+            return Err(format!("插件重复声明了能力：{name}"));
+        }
+        capabilities.push(capability);
+    }
+    Ok(capabilities)
 }
 
 /// 只接受 1/0 和 true/false。缺省不记警告；空串和其他值记警告后用缺省。
@@ -649,7 +669,7 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
     {
         return Err(ComponentRuntimeError::invalid_manifest("插件能力声明无效"));
     }
-    if plugin_slot && (capabilities == HashSet::from([ComponentCapability::ReadHostTime]) || capabilities == HashSet::from([ComponentCapability::ReadCurrentMedia]))
+    if plugin_slot && (capabilities == HashSet::from([ComponentCapability::ReadHostTime]) || capabilities == HashSet::from([ComponentCapability::ReadCurrentMedia]) || capabilities == HashSet::from([ComponentCapability::ProbeServiceStatus]))
     {
         return Ok(());
     }

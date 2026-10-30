@@ -2,7 +2,7 @@ import type { WorkspaceRect } from "./workspace";
 import { TILE_MIN_HEIGHT, TILE_MIN_WIDTH } from "./tile.ts";
 
 /** 官方组件可以声明并由宿主授权的能力。 */
-export type ComponentCapability = "read-host-time" | "read-current-media";
+export type ComponentCapability = "read-host-time" | "read-current-media" | "probe-service-status";
 
 /** 一个官方组件的版本化清单。 */
 export interface ComponentManifest {
@@ -69,11 +69,21 @@ export interface ComponentHostEvent {
     unixMillis: number;
 }
 
+/** 服务探活的四档状态，未知不得当成离线。 */
+export type ProbeLevel = "ok" | "warn" | "off" | "unknown";
+
+/** 服务探活的结构化结果，时长由前端用 startTime 现算。 */
+export interface ProbeServiceStatus {
+    level: ProbeLevel;
+    startTime: number | null;
+    checkedAt: number;
+}
+
 /** 一次受能力检查保护的组件宿主调用结果。 */
 export interface ComponentCapabilityResult {
     instanceId: string;
     capability: ComponentCapability;
-    payload: { unixMillis: number };
+    payload: { unixMillis: number } | ProbeServiceStatus;
 }
 
 /** 标识组件清单、实例或宿主事件契约错误。 */
@@ -124,7 +134,7 @@ export const parseComponentInstanceSnapshot = (value: unknown): ComponentInstanc
 
 /** 校验组件能力名称。 */
 const parseCapability = (value: unknown): ComponentCapability => {
-    if (value !== "read-host-time" && value !== "read-current-media") throw new ComponentContractError();
+    if (value !== "read-host-time" && value !== "read-current-media" && value !== "probe-service-status") throw new ComponentContractError();
     return value;
 };
 
@@ -213,14 +223,28 @@ export const parseComponentHostEvent = (value: unknown): ComponentHostEvent => {
     return { sequence: candidate.sequence as number, kind: "time-tick", unixMillis: candidate.unixMillis as number };
 };
 
-/** 校验组件宿主能力调用结果。 */
+/** 按能力校验载荷：探活只接受固定四档，出现其它值时拒绝。 */
 export const parseComponentCapabilityResult = (value: unknown): ComponentCapabilityResult => {
     if (typeof value !== "object" || value === null) throw new ComponentContractError();
     const candidate = value as Record<string, unknown>; // 等待字段校验的组件能力结果。
     if (typeof candidate.instanceId !== "string") throw new ComponentContractError();
     const capability = parseCapability(candidate.capability);
     if (typeof candidate.payload !== "object" || candidate.payload === null) throw new ComponentContractError();
-    const payload = candidate.payload as Record<string, unknown>; // 宿主时间能力的结构化载荷。
+    const payload = candidate.payload as Record<string, unknown>; // 当前能力的结构化载荷，字段由能力决定。
+    if (capability === "probe-service-status") return { instanceId: candidate.instanceId, capability, payload: parseProbeServiceStatus(payload) };
     if (!Number.isSafeInteger(payload.unixMillis)) throw new ComponentContractError();
     return { instanceId: candidate.instanceId, capability, payload: { unixMillis: payload.unixMillis as number } };
+};
+
+/** 校验探活载荷：只有 ok 带启动时间，其它档一律为 null。 */
+const parseProbeServiceStatus = (payload: Record<string, unknown>): ProbeServiceStatus => {
+    const level = payload.level;
+    if (level !== "ok" && level !== "warn" && level !== "off" && level !== "unknown") throw new ComponentContractError();
+    if (!Number.isSafeInteger(payload.checkedAt) || (payload.checkedAt as number) <= 0) throw new ComponentContractError();
+    if (level === "ok") {
+        if (!Number.isSafeInteger(payload.startTime) || (payload.startTime as number) <= 0) throw new ComponentContractError();
+        return { level, startTime: payload.startTime as number, checkedAt: payload.checkedAt as number };
+    }
+    if (payload.startTime !== null) throw new ComponentContractError();
+    return { level, startTime: null, checkedAt: payload.checkedAt as number };
 };

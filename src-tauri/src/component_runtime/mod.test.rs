@@ -285,3 +285,56 @@ fn plugin_description_keeps_escaped_newlines()
     assert_eq!(runtime.catalog().manifests["plugin.about"].author, "张三");
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+/// ini 以逗号分隔声明能力，未知值与重复值只让该插件进入 failures。
+#[test]
+fn plugin_capabilities_are_parsed_from_the_ini()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-plugin-capabilities-{}", std::process::id())); // 本测试独占目录。
+    let write = |folder: &str, id: &str, capabilities: &str| {
+        let path = directory.join(folder); // 一个待注册的插件文件夹。
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("main.js"), "var ok = 1;").unwrap();
+        std::fs::write(path.join("manifest.ini"), format!("[plugin]\nid = {id}\nname = {folder}\nversion = 1.0.0\nentry = main.js\n{capabilities}")).unwrap();
+    };
+    write("探活", "plugin.probe", "required_capabilities = probe-service-status\n");
+    write("空白能力", "plugin.spaced", "required_capabilities =  read-current-media , \n");
+    write("未知能力", "plugin.unknown", "required_capabilities = probe-service-status, readRegistry\n");
+    write("重复能力", "plugin.repeat", "required_capabilities = probe-service-status,probe-service-status\n");
+    let runtime = ComponentRuntimeState::new(&directory);
+    let manifests = runtime.catalog().manifests.clone(); // 解析后的插件清单。
+    assert_eq!(manifests["plugin.probe"].required_capabilities, [ComponentCapability::ProbeServiceStatus]);
+    assert_eq!(manifests["plugin.spaced"].required_capabilities, [ComponentCapability::ReadCurrentMedia]);
+    let failures = runtime.catalog().failures.clone(); // 非法声明形成的隔离失败。
+    assert!(failures.iter().any(|failure| failure.component_id == "未知能力" && failure.message.contains("readRegistry")));
+    assert!(failures.iter().any(|failure| failure.component_id == "重复能力"));
+    assert!(!manifests.contains_key("plugin.unknown") && !manifests.contains_key("plugin.repeat"));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// 能力通道按实例校验：声明探活能力的插件成功，未声明的插件实例被拒绝。
+#[test]
+fn probe_service_status_is_authorized_per_instance()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-plugin-probe-gate-{}", std::process::id())); // 本测试独占目录。
+    for (folder, id, capabilities) in [("探活", "plugin.probe", "probe-service-status"), ("时间", "plugin.clock", "read-host-time"), ("无能力", "plugin.plain", "")]
+    {
+        let path = directory.join(folder); // 一个待注册的插件文件夹。
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("main.js"), "var ok = 1;").unwrap();
+        std::fs::write(path.join("manifest.ini"), format!("[plugin]\nid = {id}\nname = {folder}\nversion = 1.0.0\nentry = main.js\nrequired_capabilities = {capabilities}\n")).unwrap();
+    }
+    let runtime = ComponentRuntimeState::new(&directory); // 三个插件与官方清单共享的注册表。
+    let instance = |instance_id: &str, component_id: &str| ComponentInstanceSnapshot { instance_id: instance_id.to_string(), component_id: component_id.to_string(), monitor_id: "DISPLAY1".to_string(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 20.0, top: 20.0, width: 220.0, height: 116.0 }, state_version: 1, state: json!({}) }; // 当前测试复用的插件实例构造器。
+    let instances = [instance("probe", "plugin.probe"), instance("clock", "plugin.clock"), instance("plain", "plugin.plain")]; // 声明者与未声明者。
+    for denied in ["clock", "plain"]
+    {
+        assert_eq!(runtime.invoke_capability(&instances, denied, ComponentCapability::ProbeServiceStatus).unwrap_err().code, "component-capability-denied");
+    }
+    assert_eq!(runtime.invoke_capability(&instances, "probe", ComponentCapability::ReadHostTime).unwrap_err().code, "component-capability-denied"); // 反向也不越权。
+    let result = runtime.invoke_capability(&instances, "probe", ComponentCapability::ProbeServiceStatus).expect("声明探活能力的插件应被授权");
+    assert_eq!(result.capability, ComponentCapability::ProbeServiceStatus);
+    assert!(["ok", "warn", "off", "unknown"].contains(&result.payload["level"].as_str().unwrap()));
+    assert!(result.payload["checkedAt"].as_i64().unwrap() > 0);
+    std::fs::remove_dir_all(directory).unwrap();
+}
