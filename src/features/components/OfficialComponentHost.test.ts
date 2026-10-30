@@ -11,7 +11,7 @@ const server = await createServer({
             name: "plugin-host-test-tables",
             transform(code, id) {
                 if (id.endsWith("/features/components/OfficialComponentHost.tsx"))
-                    return `${code}\nexport { pluginVisibility, pluginRenderers, syncPluginScripts, mountPluginTile, releasePluginTile };`;
+                    return `${code}\nexport { pluginVisibility, instanceVisible, pluginRenderers, syncPluginScripts, mountPluginTile, releasePluginTile, syncPluginTileSettings };`;
             },
         },
     ],
@@ -26,7 +26,7 @@ test.after(async () => {
 const slotProps = (instanceId, componentId) => ({ instance: { instanceId, componentId }, registration: { entry: "plugin:slot" } });
 
 test("插件宿主保留官方显隐、入口别名和未知入口兜底", async () => {
-    const { pluginVisibility, pluginRenderers } = host;
+    const { pluginVisibility, instanceVisible, pluginRenderers } = host;
     for (const value of [undefined, false, true]) {
         for (const debugRegistered of [false, true]) {
             const context = {
@@ -41,7 +41,7 @@ test("插件宿主保留官方显隐、入口别名和未知入口兜底", async
                 ["official.weather", value === true],
             ])
                 assert.equal(pluginVisibility.get(id)(context), expected);
-            assert.equal(pluginVisibility.get("plugin.sample")?.(context) ?? true, true);
+            assert.equal(instanceVisible("plugin.sample", context), true);
         }
     }
     assert.equal(pluginVisibility.get("official.debug-test")({}), false);
@@ -80,37 +80,28 @@ test("插件宿主保留官方显隐、入口别名和未知入口兜底", async
     assert.match(source, /removeEventListener\("desktop-refresh-changed", handleRefresh\)/);
 });
 
-test("按插件 id 去重只插入一次脚本，失败不重试并进入错误态", async () => {
-    const scripts = [];
-    const previous = globalThis.document;
-    globalThis.document = {
-        createElement(tag) {
-            assert.equal(tag, "script");
-            const element = { src: "", async: false, onerror: null };
-            scripts.push(element);
-            return element;
-        },
-        head: { appendChild() {} },
-        documentElement: { appendChild() {} },
+test("按插件 id 去重只导入一次模块，失败不重试并进入错误态", async () => {
+    const imported = []; // 实际请求过的模块地址。
+    const previous = globalThis.window;
+    scripts.pluginModules.load = async (specifier) => {
+        imported.push(specifier);
+        if (specifier === "/plugins/a/main.js") throw new Error("模块加载失败");
     };
-    try {
-        const manifests = [{ id: "plugin.b" }, { id: "plugin.a" }, { id: "plugin.c" }, { id: "official.local-clock" }];
-        host.syncPluginScripts(manifests, ["plugin.a", "plugin.a", "plugin.b", "official.local-clock"]);
-        assert.deepEqual(
-            scripts.map((script) => script.src),
-            ["/plugins/plugin.a.js", "/plugins/plugin.b.js"],
-        );
-        host.syncPluginScripts(manifests, ["plugin.a", "plugin.b"]);
-        assert.equal(scripts.length, 2);
-        scripts[0].onerror();
-        host.syncPluginScripts(manifests, ["plugin.a", "plugin.b"]);
-        assert.equal(scripts.length, 2);
-        const failed = host.pluginRenderers.get("plugin:slot")(slotProps("broken-script", "plugin.a"), {});
-        assert.equal(failed.props.children.props.className, "official-component__error");
-        assert.equal(failed.props.children.props.children, "组件渲染失败");
-    } finally {
-        globalThis.document = previous;
-    }
+    globalThis.window = { __DESKTOP_TOOLS_NATIVE__: { invoke: () => ({ theme: "system", doubleClickToOpen: true, disabledPlugins: [] }) } };
+    const manifests = [
+        { id: "plugin.b", script: "b/main.js" },
+        { id: "plugin.a", script: "a/main.js" },
+        { id: "plugin.c", script: "c/main.js" },
+        { id: "official.local-clock", script: "" },
+    ];
+    await host.syncPluginScripts(manifests, ["plugin.a", "plugin.a", "plugin.b", "official.local-clock"]);
+    assert.deepEqual(imported, ["/plugins/a/main.js", "/plugins/b/main.js"]);
+    await host.syncPluginScripts(manifests, ["plugin.a", "plugin.b"]);
+    assert.equal(imported.length, 2);
+    const failed = host.pluginRenderers.get("plugin:slot")(slotProps("broken-script", "plugin.a"), {});
+    assert.equal(failed.props.children.props.className, "official-component__error");
+    assert.equal(failed.props.children.props.children, "组件渲染失败");
+    globalThis.window = previous;
 });
 
 test("缺 renderTile 与未知或重复注册不参与渲染", async () => {
@@ -119,12 +110,6 @@ test("缺 renderTile 与未知或重复注册不参与渲染", async () => {
     console.warn = (...parts) => warnings.push(parts.map(String).join(" "));
     try {
         scripts.adoptPluginManifests([{ id: "plugin.sample" }]);
-        scripts.pluginShell["plugin.stranger"] = { renderTile() {} };
-        assert.equal(scripts.pluginShell["plugin.stranger"], undefined);
-        assert.equal(
-            warnings.some((message) => message.includes("未知标识") && message.includes("plugin.stranger")),
-            true,
-        );
         const second = { renderTile() {} };
         scripts.pluginShell["plugin.sample"] = {};
         scripts.pluginShell["plugin.sample"] = second;
@@ -216,6 +201,66 @@ test("逐屏设置事件走 dispatch，退订后不再投递", async () => {
     assert.match(source, /plugin-settings-changed/);
 });
 
+test("收到 plugin-settings-changed 后用新设置重绘，并先执行上一轮清理", async () => {
+    const order = [];
+    const seen = [];
+    scripts.adoptPluginManifests([{ id: "plugin.greet" }]);
+    scripts.pluginShell["plugin.greet"] = {
+        renderTile(_container, context) {
+            seen.push(context.settings);
+            const generation = seen.length;
+            return () => order.push(generation);
+        },
+    };
+    const context = (settings) => ({ pluginId: "plugin.greet", instanceId: "tile-1", collapsed: false, settings, saveSettings: async () => undefined });
+    host.mountPluginTile({}, context(null));
+    const native = {
+        invoke: async (command, args) => {
+            assert.equal(command, "get_plugin_settings");
+            assert.equal(args.pluginId, "plugin.greet");
+            return { greeting: "TEST" };
+        },
+        dispatch() {},
+        listen() {
+            throw new Error("逐屏不应使用 listen 订阅插件设置");
+        },
+    };
+    const previous = globalThis.window;
+    globalThis.window = { __DESKTOP_TOOLS_NATIVE__: native };
+    try {
+        const stop = await bridge.listenPluginSettings(
+            (pluginId) => {
+                void host.syncPluginTileSettings(pluginId, (settings) => host.mountPluginTile({}, context(settings)));
+            },
+            () => {},
+        );
+        globalThis.window.__DESKTOP_TOOLS_NATIVE__.dispatch(bridge.PLUGIN_SETTINGS_CHANGED_EVENT, '{"pluginId":"plugin.greet"}');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        stop();
+    } finally {
+        globalThis.window = previous;
+    }
+    assert.deepEqual(seen, [null, { greeting: "TEST" }]);
+    assert.deepEqual(order, [1]);
+});
+
+test("插件格子菜单最后一项是可按清单置灰的移除", async () => {
+    const tile = await server.ssrLoadModule("/src/features/tiles/DesktopTileBase.tsx");
+    const blocked = tile.tileRemoveMenuItem(false, () => undefined);
+    assert.equal(blocked.label, "移除");
+    assert.equal(blocked.separatorBefore, true);
+    assert.equal(blocked.danger, true);
+    assert.equal(blocked.disabled, true);
+    assert.equal(blocked.description, "该组件不支持移除");
+    const allowed = tile.tileRemoveMenuItem(true, () => undefined);
+    assert.equal(allowed.disabled, false);
+    assert.equal(allowed.description, undefined);
+    const hostSource = await readFile(new URL("./OfficialComponentHost.tsx", import.meta.url), "utf8");
+    assert.match(hostSource, /tileRemoveMenuItem/);
+    assert.match(hostSource, /remove-component/);
+    assert.match(hostSource, /plugin:slot/);
+});
+
 test("设置条目缺字段或重复时丢弃该条，不影响 renderTile", () => {
     scripts.adoptPluginManifests([{ id: "plugin.entries" }, { id: "plugin.bad-entries" }]);
     const renderTile = () => {};
@@ -242,18 +287,20 @@ test("设置条目缺字段或重复时丢弃该条，不影响 renderTile", () 
 
 test("设置窗口按插件 id 幂等加载，停用不加载，失败可查询", async () => {
     const calls = [];
+    const imported = []; // 实际导入过的模块。
     let disabled = ["plugin.off"];
     const loaded = [];
     const previous = globalThis.window;
+    scripts.pluginModules.load = async (specifier) => {
+        imported.push(specifier);
+        if (specifier === "/plugins/fail/main.js") throw new Error("插件脚本执行失败");
+        return { default: { renderTile() {} } }; // 默认导出，标识由宿主绑定。
+    };
     globalThis.window = {
         __DESKTOP_TOOLS_NATIVE__: {
             invoke(command, payload) {
                 calls.push([command, payload?.pluginId]);
                 if (command === "get_preferences") return { theme: "system", doubleClickToOpen: true, disabledPlugins: disabled };
-                if (command === "load_plugin_script") {
-                    if (payload.pluginId === "plugin.fail") throw new Error("插件脚本执行失败");
-                    return null;
-                }
                 if (command === "uninstall_plugin") return { removed: ["plugin.ok.json", "plugin.ok.js"] };
                 if (command === "open_plugin_directory") return null;
                 throw new Error(command);
@@ -262,23 +309,34 @@ test("设置窗口按插件 id 幂等加载，停用不加载，失败可查询"
     };
     const stop = scripts.listenPluginScripts((pluginId) => loaded.push(pluginId));
     try {
-        await scripts.loadPluginScript("plugin.off");
-        assert.equal(
-            calls.some((call) => call[0] === "load_plugin_script"),
-            false,
-        );
+        await scripts.loadPluginScript("plugin.off", "off/main.js");
+        assert.equal(imported.length, 0);
         disabled = [];
-        await scripts.loadPluginScript("plugin.off");
-        assert.equal(calls.filter((call) => call[0] === "load_plugin_script" && call[1] === "plugin.off").length, 1);
-        await scripts.loadPluginScript("plugin.off");
-        assert.equal(calls.filter((call) => call[0] === "load_plugin_script" && call[1] === "plugin.off").length, 1);
+        await scripts.loadPluginScript("plugin.off", "off/main.js");
+        assert.deepEqual(imported, ["/plugins/off/main.js"]);
+        await scripts.loadPluginScript("plugin.off", "off/main.js");
+        assert.deepEqual(imported, ["/plugins/off/main.js"]);
         assert.deepEqual(loaded, ["plugin.off"]);
-        const failure = await scripts.loadPluginScript("plugin.fail");
-        assert.equal(failure, "插件脚本执行失败");
-        assert.equal(scripts.pluginScriptFailure("plugin.fail"), "插件脚本执行失败");
-        const before = calls.length;
-        assert.equal(await scripts.loadPluginScript("plugin.fail"), "插件脚本执行失败");
-        assert.equal(calls.length, before);
+        assert.equal(typeof scripts.readPluginApi("plugin.off")?.renderTile, "function");
+        const failure = await scripts.loadPluginScript("plugin.fail", "fail/main.js");
+        assert.equal(failure, "插件模块加载失败：插件脚本执行失败");
+        assert.equal(scripts.pluginScriptFailure("plugin.fail"), "插件模块加载失败：插件脚本执行失败");
+        const before = imported.length;
+        assert.equal(await scripts.loadPluginScript("plugin.fail", "fail/main.js"), "插件模块加载失败：插件脚本执行失败");
+        assert.equal(imported.length, before);
+        scripts.pluginModules.load = async (specifier) => {
+            imported.push(specifier);
+            return specifier.endsWith("shape/main.js")
+                ? { default: 1 }
+                : {
+                      renderTile() {
+                          return "ns";
+                      },
+                  };
+        };
+        assert.equal(await scripts.loadPluginScript("plugin.shape", "shape/main.js"), "插件导出不是对象");
+        assert.equal(await scripts.loadPluginScript("plugin.ns", "ns/main.js"), undefined);
+        assert.equal(scripts.readPluginApi("plugin.ns").renderTile(), "ns");
         assert.deepEqual(await scripts.uninstallPlugin("plugin.ok"), ["plugin.ok.json", "plugin.ok.js"]);
         await scripts.openPluginDirectory("plugin.ok");
         assert.equal(
@@ -291,12 +349,28 @@ test("设置窗口按插件 id 幂等加载，停用不加载，失败可查询"
     }
 });
 
-test("停用插件显示插件已停用，不显示组件渲染失败", () => {
-    const turnedOff = host.pluginRenderers.get("plugin:slot")(slotProps("off-1", "plugin.off"), { preferences: { disabledPlugins: ["plugin.off"] } });
-    const turnedOffBody = typeof turnedOff.props.children === "function" ? turnedOff.props.children(false) : turnedOff.props.children;
-    assert.equal(turnedOffBody.props.className, "official-component__error");
-    assert.equal(turnedOffBody.props.children, "插件已停用");
-    const broken = host.pluginRenderers.get("plugin:slot")(slotProps("still-broken", "plugin.sample"), { preferences: { disabledPlugins: [] } });
+test("停用插件不进入可见列表，启用后恢复作者内容", async () => {
+    const off = { preferences: { disabledPlugins: ["plugin.off"] } }; // 名单里的插件。
+    const on = { preferences: { disabledPlugins: [] } }; // 重新启用。
+    assert.equal(host.instanceVisible("plugin.off", off), false);
+    assert.equal(host.instanceVisible("plugin.other", off), true);
+    assert.equal(host.instanceVisible("plugin.off", on), true);
+    const restored = host.pluginRenderers.get("plugin:slot")(slotProps("back-1", "plugin.restore"), on);
+    assert.equal(typeof restored.props.children, "function");
+    const broken = host.pluginRenderers.get("plugin:slot")(slotProps("still-broken", "plugin.sample"), on);
     const brokenBody = typeof broken.props.children === "function" ? broken.props.children(false) : broken.props.children;
     assert.equal(brokenBody.props.children, "组件渲染失败");
+    const source = await readFile(new URL("./OfficialComponentHost.tsx", import.meta.url), "utf8");
+    assert.equal(source.includes("插件已停用"), false);
+    assert.equal(source.includes("component-runtime-failure"), false);
+});
+
+test("运行时失败只通知一次，命令失败同样通知", () => {
+    const seen: string[] = [];
+    const notify = (content: string) => seen.push(content);
+    const item = { componentId: "plugin.item2", message: "插件清单身份重复" };
+    host.reportRuntimeFailures(undefined, [item], notify);
+    host.reportRuntimeFailures(undefined, [item], notify);
+    host.reportRuntimeFailures("读取组件快照失败", undefined, notify);
+    assert.deepEqual(seen, ["plugin.item2：插件清单身份重复", "读取组件快照失败"]);
 });

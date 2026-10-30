@@ -32,16 +32,31 @@ pub struct ComponentManifest
     pub id: String,
     /// 用户可见组件名称。
     pub name: String,
-    /// 前端官方组件注册表入口。
+    /// 前端分派入口。插件固定为 `plugin:slot`，不拿来当脚本路径。
     pub entry: String,
+    /// 插件根内的脚本相对路径，形如 `<文件夹>/<入口脚本>`。官方清单为空。
+    #[serde(default)]
+    pub script: String,
     /// 组件明确请求的全部宿主能力。
     pub required_capabilities: Vec<ComponentCapability>,
-    /// 用户是否可从工作区入口创建该组件的新实例。
+    /// 用户是否可从工作区入口创建该组件的新实例。JSON 缺省为 false。
     #[serde(default)]
     pub creatable: bool,
-    /// 用户是否可移除该组件的实例。
+    /// 用户是否可移除该组件的实例。JSON 缺省为 false；插件 ini 缺省为 true。
     #[serde(default)]
     pub removable: bool,
+    /// 桌面格子数量上限。0 表示不限。
+    #[serde(default)]
+    pub max_tiles: u32,
+    /// 插件仓库地址。空字符串表示未声明。只保留 http 或 https。
+    #[serde(default)]
+    pub repository: String,
+    /// 插件简介。空字符串表示未写。换行在 ini 里写成 \n。
+    #[serde(default)]
+    pub description: String,
+    /// 插件作者。空字符串表示未写。
+    #[serde(default)]
+    pub author: String,
     /// 组件持久状态 Schema 版本。
     pub persistence_version: u32,
 }

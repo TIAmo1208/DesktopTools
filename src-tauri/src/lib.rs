@@ -17,9 +17,9 @@ mod workspace;
 use app::ApplicationState;
 use commands::get_desktop_item_image;
 use commands::sync_message_appearance;
+use commands::{apply_plugin_install, apply_plugin_installs, cancel_plugin_install, choose_plugin_directory, create_plugin_component, get_plugin_settings, open_plugin_directory, open_plugin_repository, prepare_plugin_install_from_archive, prepare_plugin_install_from_folder, resolved_plugin_directory, save_plugin_settings, uninstall_plugin};
 use commands::{apply_workspace_command, apply_workspace_interaction, begin_desktop_host_input_drag, delete_desktop_items, end_desktop_host_input_drag, execute_music_action, exit_desktop_tools, get_application_snapshot, get_component_runtime_snapshot, get_current_music_session, get_desktop_host_snapshot, get_desktop_item_snapshot, get_workspace_snapshot, inspect_workspace_backup, invoke_component_capability, list_workspace_auto_snapshots, open_desktop_items, open_settings_window, paste_desktop_items, publish_desktop_host_readiness, publish_message_notification, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, redo_workspace, rename_desktop_item, restore_workspace_backup, set_application_status, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag, undo_workspace, update_desktop_host_hit_map, write_workspace_backup};
 use commands::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
-use commands::{get_plugin_settings, load_plugin_script, open_plugin_directory, save_plugin_settings, uninstall_plugin};
 use component_runtime::ComponentRuntimeState;
 use host::DesktopHostRuntime;
 use notifications::ToastManager;
@@ -82,8 +82,16 @@ pub fn run()
             commands::settings::get_preferences,
             commands::settings::get_windows_accent_color,
             commands::settings::save_preferences,
+            apply_plugin_install,
+            apply_plugin_installs,
+            cancel_plugin_install,
+            choose_plugin_directory,
+            prepare_plugin_install_from_archive,
+            prepare_plugin_install_from_folder,
+            create_plugin_component,
+            resolved_plugin_directory,
             get_plugin_settings,
-            load_plugin_script,
+            open_plugin_repository,
             uninstall_plugin,
             open_plugin_directory,
             save_plugin_settings,
@@ -161,6 +169,9 @@ pub fn run()
             sync_message_appearance,
             update_desktop_host_hit_map,
         ])
+        .register_asynchronous_uri_scheme_protocol(crate::platform::windows::SETTINGS_PROTOCOL, |context, request, responder| {
+            crate::platform::windows::dispatch_settings_protocol(request, context.app_handle().clone(), move |response| responder.respond(response)); // wry 在创建 WebView 时调用 with_asynchronous_custom_protocol。
+        })
         .setup(move |app| {
             let config_directory = crate::app::settings::prepare_config_directory(&app.path().app_data_dir()?)?; // 在后台写入线程启动前完成配置迁移。
             let settings_path = config_directory.join("settings.json"); // 当前用户的正式设置文件。

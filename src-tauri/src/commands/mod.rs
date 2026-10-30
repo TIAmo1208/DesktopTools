@@ -11,7 +11,7 @@ pub mod music;
 mod notifications;
 pub mod plugin_settings;
 pub mod settings;
-pub use plugin_settings::{get_plugin_settings, load_plugin_script, open_plugin_directory, save_plugin_settings, uninstall_plugin};
+pub use plugin_settings::{apply_plugin_install, apply_plugin_installs, cancel_plugin_install, choose_plugin_directory, create_plugin_component, get_plugin_settings, open_plugin_directory, open_plugin_repository, prepare_plugin_install_from_archive, prepare_plugin_install_from_folder, resolved_plugin_directory, save_plugin_settings, uninstall_plugin};
 pub mod weather;
 mod workspace;
 mod workspace_menu;
@@ -695,6 +695,14 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         }
         "create_collect_box" => create_collect_box(app.clone()).map_err(serialize_error).and_then(serialize_result),
         "open_settings_window" => open_settings_window(app.clone()).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result), // 天气格子在原生宿主中请求显示设置窗口。
+        "get_plugin_settings" =>
+        {
+            let plugin_id: String = command_argument(&arguments, "pluginId", "插件标识无效").map_err(serialize_error)?; // 逐屏载荷用 camelCase。
+            let directory = app.state::<crate::app::settings::SettingsState>().directory().map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message)))?; // 与设置窗口同一份配置目录。
+            let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.message)))?.manifests; // 作者取自当前清单。
+            let author = crate::app::settings::plugin_settings_author(&manifests, &plugin_id).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message)))?;
+            crate::app::settings::read_plugin_settings(&directory, &author, &plugin_id).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+        }
         "apply_workspace_interaction" =>
         {
             let monitor_id: String = command_argument(&arguments, "monitorId", "命令参数无效").map_err(serialize_error)?; // 已解码的 monitorId。

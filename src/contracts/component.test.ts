@@ -12,6 +12,7 @@ test("parses the official component runtime snapshot", () => {
                 id: "official.local-clock",
                 name: "本地时间",
                 entry: "official:local-clock",
+                script: "",
                 requiredCapabilities: ["read-host-time"],
                 persistenceVersion: 1,
             },
@@ -40,18 +41,25 @@ test("parses the official component runtime snapshot", () => {
     assert.equal(snapshot.manifests[0].entry, "official:local-clock");
     assert.equal(snapshot.manifests[0].creatable, false);
     assert.equal(snapshot.manifests[0].removable, false);
+    assert.equal(snapshot.manifests[0].maxTiles, 0);
     assert.equal(snapshot.instances[0].authorizedCapabilities[0], "read-host-time");
     assert.equal(snapshot.instances[1].status, "failed");
 });
 
 // 清单未声明创建与移除时按不可用处理，非法声明仍拒绝。
 test("组件清单的创建与移除声明缺失按不可用处理", () => {
-    const manifest = { id: "official.collect-box", name: "收集箱", entry: "official:collect-box", requiredCapabilities: [], persistenceVersion: 1 }; // 未声明创建与移除的清单。
+    const manifest = { id: "official.collect-box", name: "收集箱", entry: "official:collect-box", script: "", requiredCapabilities: [], persistenceVersion: 1 }; // 未声明创建与移除的清单。
     const parse = (overrides: Record<string, unknown>) =>
         parseComponentRuntimeSnapshot({ revision: 1, manifests: [{ ...manifest, ...overrides }], instances: [], failures: [] }).manifests[0];
     assert.deepEqual([parse({}).creatable, parse({}).removable], [false, false]);
     assert.deepEqual([parse({ creatable: true, removable: false }).creatable, parse({ creatable: true, removable: false }).removable], [true, false]);
     for (const invalid of [null, "true", 1]) assert.throws(() => parse({ creatable: invalid }));
+    assert.equal(parse({}).maxTiles, 0);
+    assert.equal(parse({ maxTiles: 0 }).maxTiles, 0);
+    assert.equal(parse({ maxTiles: 3 }).maxTiles, 3);
+    for (const invalid of [null, -1, 1.5, "2"]) assert.throws(() => parse({ maxTiles: invalid }));
+    assert.equal(parse({ script: "演示插件/dist/main.js" }).script, "演示插件/dist/main.js");
+    for (const invalid of [undefined, null, 1]) assert.throws(() => parse({ script: invalid }));
 });
 
 // 投射边界不能误用持久尺寸底线，非有限值始终拒绝。

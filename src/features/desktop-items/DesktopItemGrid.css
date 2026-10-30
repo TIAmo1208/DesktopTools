@@ -25,13 +25,11 @@
     align-content: start;
 }
 
-/* 正式透明宿主项目名称保持壁纸可读性。 */
+/* 未进围栏的桌面项目跟随围栏文本色与投影，两处不再各说各话。 */
 .desktop-items--desktop-host .desktop-item {
-    color: #ffffff;
+    color: var(--fence-text);
     cursor: default;
-    text-shadow:
-        0 1px 2px rgb(0 0 0 / 90%),
-        0 0 3px rgb(0 0 0 / 80%);
+    text-shadow: var(--fence-item-text-shadow, 0 1px 2px rgb(0 0 0 / 90%), 0 0 3px rgb(0 0 0 / 80%));
 }
 
 /* 桌面项目标题与统计布局。 */

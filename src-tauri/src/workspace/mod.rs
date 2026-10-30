@@ -65,8 +65,8 @@ pub struct WorkspaceState
     history: Mutex<WorkspaceHistory>,
     /// 每次成功布局事务使用的原子 JSON 文件。
     persistence_path: PathBuf,
-    /// 当前已注册官方清单声明的创建与移除能力。
-    capability_declarations: Vec<ComponentCapabilityDeclaration>,
+    /// 当前已注册清单声明的创建与移除能力。热刷新只换这一份。
+    capability_declarations: Mutex<Vec<ComponentCapabilityDeclaration>>,
     /// 等待 2 秒空闲合并写入的完整工作区自动快照发送端。
     auto_snapshot_sender: Option<Sender<PersistedWorkspaceStore>>,
     /// 应用退出前刷新待处理快照的后台线程。
@@ -154,7 +154,7 @@ impl WorkspaceState
         crate::log_info!("工作区：统一布局恢复完成，修订={}，围栏={}，组件={}，路径={}", snapshot.revision, snapshot.fences.len(), snapshot.components.len(), persistence_path.display());
         let auto_snapshot_directory = persistence_path.with_extension("snapshots"); // 当前工作区快照目录。
         let (auto_snapshot_sender, auto_snapshot_worker) = start_auto_snapshot_worker(auto_snapshot_directory.clone()).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 空闲合并线程。
-        Ok(Self { grid_preferences: Mutex::new(GridPreferences::default()), item_names: Mutex::new(HashMap::new()), snapshot: Mutex::new(snapshot), explorer_layout_imported: Mutex::new(explorer_layout_imported), history: Mutex::new(WorkspaceHistory::default()), persistence_path, capability_declarations: capability_declarations.to_vec(), auto_snapshot_sender: Some(auto_snapshot_sender), auto_snapshot_worker: Some(auto_snapshot_worker), auto_snapshot_directory })
+        Ok(Self { grid_preferences: Mutex::new(GridPreferences::default()), item_names: Mutex::new(HashMap::new()), snapshot: Mutex::new(snapshot), explorer_layout_imported: Mutex::new(explorer_layout_imported), history: Mutex::new(WorkspaceHistory::default()), persistence_path, capability_declarations: Mutex::new(capability_declarations.to_vec()), auto_snapshot_sender: Some(auto_snapshot_sender), auto_snapshot_worker: Some(auto_snapshot_worker), auto_snapshot_directory })
     }
 
     /// 更新 Shell 权威显示名称供后续布局事务排序。
@@ -288,7 +288,8 @@ impl WorkspaceState
     fn component_declares_capability(&self, component_id: &str, operation: ComponentOperation) -> bool
     {
         // 当前操作对应的清单声明字段。
-        let declared = self.capability_declarations.iter().find(|declaration| declaration.component_id == component_id).map(|declaration| match operation
+        let declarations = self.capability_declarations.lock().unwrap_or_else(|error| error.into_inner()); // 热刷新可能正在换声明。
+        let declared = declarations.iter().find(|declaration| declaration.component_id == component_id).map(|declaration| match operation
         {
             ComponentOperation::Create => declaration.creatable,
             ComponentOperation::Remove => declaration.removable,
@@ -296,6 +297,9 @@ impl WorkspaceState
         // 清单缺失的实例无法创建，但允许用户移除，避免留下无法清理的僵尸实例。
         declared.unwrap_or(matches!(operation, ComponentOperation::Remove))
     }
+
+    /// 用当前插件清单替换创建与移除声明。不改实例、布局和撤销历史。
+    pub fn refresh_capability_declarations(&self, declarations: &[ComponentCapabilityDeclaration]) { *self.capability_declarations.lock().unwrap_or_else(|error| error.into_inner()) = declarations.to_vec(); }
 
     /// 按清单声明校验创建与移除命令的可操作范围，其他命令不做组件能力校验。
     fn validate_component_capability(&self, layout: &WorkspaceSnapshot, command: &WorkspaceCommand) -> Result<(), WorkspaceError>

@@ -204,9 +204,31 @@
     background: transparent;
     font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
 }
-/* 二级菜单返回入口。 */
+/* 返回和功能标题同一行。 */
+.feature-settings__heading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+/* 标题行里的名称不再另起一行。 */
+.feature-settings__heading h2 {
+    margin: 0;
+}
+
+/* 二级菜单返回入口。单独出现时才往下留空。 */
 .feature-settings__back {
     margin-bottom: 12px;
+}
+
+/* 标题行里的返回和标题垂直居中。 */
+.feature-settings__heading .feature-settings__back {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 0;
+    padding: 0;
 }
 /* 指针悬停反馈。 */
 .feature-settings__back:hover {

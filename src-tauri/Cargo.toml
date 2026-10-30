@@ -1,6 +1,6 @@
 [package]
 name = "desktop-tools"
-version = "0.3.2"
+version = "0.4.0"
 description = "Windows desktop content workspace"
 edition = "2024"
 build = "build.rs"
@@ -33,6 +33,7 @@ chrono-tz = "0.10"
 jsonwebtoken = "9.3"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "native-tls", "gzip", "query"] }
 zeroize = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 png = "0.17"
 pulldown-cmark = { version = "0.13", default-features = false }
 resvg = { version = "0.45", default-features = false }

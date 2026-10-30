@@ -5,6 +5,7 @@ pub(crate) mod refresh_policy;
 pub(crate) use desktop_host::cache_host_hit_regions;
 pub(crate) use desktop_host::drag_payload_limit;
 pub(crate) use desktop_host::install_host_events;
+pub(crate) use desktop_host::{SETTINGS_PROTOCOL, dispatch_settings_protocol, settings_page_url};
 mod desktop_sources;
 pub(crate) mod drop_content;
 pub mod drop_target;

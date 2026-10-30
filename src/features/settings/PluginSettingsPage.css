@@ -4,20 +4,254 @@
     padding: 1px;
 }
 
-/* 一级页说明。 */
-.plugin-settings__lead {
-    margin: 0 0 16px;
+/* 一级页借用外壳 h1，添加按钮排到同一行右侧。行高只跟标题和按钮走，多余空间不摊进行里。 */
+.settings__content:has(> .plugin-settings:not(.plugin-settings--detail)) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    align-content: start;
+    row-gap: 22px;
+}
+
+/* 二级页不再露出一级标题。 */
+.settings__content:has(> .plugin-settings--detail) > h1 {
+    display: none;
+}
+
+/* 列表页的外壳拆开，按钮才能和标题同一行。 */
+.plugin-settings:not(.plugin-settings--detail) {
+    display: contents;
+}
+
+/* 标题那一行：字号仍是设置页 h1，下边距不进这一行。 */
+.settings__content:has(> .plugin-settings:not(.plugin-settings--detail)) > h1 {
+    grid-column: 1;
+    grid-row: 1;
+    margin: 0;
+    align-self: end;
+}
+
+/* 标题以下的目录和列表紧挨标题行。 */
+.plugin-settings__body {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    max-width: 900px;
+}
+
+/* 读取提示不占标题和目录之间的空档，也不压在二级页头上。 */
+.settings__content:has(> .plugin-settings) > .settings__status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+}
+
+/* 目录标签与配置目录同一字号和正文色。路径单独用次要色。 */
+.plugin-settings__body .settings__row-title {
+    color: var(--color-text);
+    font-size: calc(var(--interface-font-size) + 1px);
+}
+
+/* 路径行。 */
+.plugin-settings__body .settings__directory-path {
     color: var(--color-muted);
     font-size: 12px;
 }
 
-/* 插件名与返回按钮同一行的起点。 */
+/* 安装和目录命令的键盘焦点。 */
+.plugin-settings__install:focus-visible,
+.plugin-settings__directory-button:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
+/* 添加插件双段按钮，主段和下拉连在一起。 */
+.plugin-settings__add {
+    position: relative;
+    display: flex;
+    grid-column: 2;
+    grid-row: 1;
+    margin: 0;
+    justify-self: end;
+}
+
+/* 主段：从文件夹安装。 */
+.plugin-settings__add-main,
+.plugin-settings__add-more {
+    height: 38px;
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    background: var(--color-subtle);
+    font: inherit;
+    cursor: pointer;
+}
+
+/* 主段圆角只在左侧。 */
+.plugin-settings__add-main {
+    padding: 0 12px;
+    border-radius: 4px 0 0 4px;
+}
+
+/* 下拉段。 */
+.plugin-settings__add-more {
+    width: 32px;
+    border-left: 0;
+    border-radius: 0 4px 4px 0;
+}
+
+/* 下拉三角，复用已有的向右箭头并转到向下。 */
+.plugin-settings__add-chevron {
+    display: grid;
+    place-items: center;
+}
+
+/* 箭头尺寸和朝向。 */
+.plugin-settings__add-chevron svg {
+    width: 16px;
+    height: 16px;
+    transform: rotate(90deg);
+}
+
+/* 任务菜单样式在 PluginTaskMenu.css，避免后加载的页面样式盖掉条目分隔。 */
+
+/* 目录行和已安装列表拉开。表面仍用配置目录那一套。 */
+.plugin-settings__body > .settings__directory {
+    margin-bottom: 16px;
+}
+
+/* 添加按钮禁用。 */
+.plugin-settings__add-main:disabled,
+.plugin-settings__add-more:disabled {
+    color: var(--color-muted);
+    cursor: default;
+}
+
+/* 二级页头：返回、名称、创建命令同一行。 */
+.plugin-settings__detail-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    min-height: 38px;
+    margin-bottom: 16px;
+}
+
+/* 页头里的名称不再独占一行。 */
+.plugin-settings--detail .plugin-settings__detail-head h2 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 38px;
+}
+
+/* 标题和它下面的两行说明。 */
+.plugin-settings__identity {
+    flex: 1;
+    min-width: 0;
+}
+
+/* 名称和标识，右侧是仓库按钮。 */
+.plugin-settings__meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    color: var(--color-muted);
+    font-size: 12px;
+    line-height: 18px;
+}
+
+/* 标识太长时裁掉，不把仓库图标挤出这一行。 */
+.plugin-settings__meta > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 仓库图标贴右，尺寸跟这一行文字一样高。 */
+.plugin-settings__repo {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 18px;
+    height: 18px;
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    color: var(--color-muted);
+    background: transparent;
+    cursor: pointer;
+}
+
+/* 卸载图标用现成的危险色。 */
+.plugin-settings__trash {
+    color: var(--color-error);
+}
+
+/* 头部开关只留轨道。开/关二字不占位，无障碍名仍在输入上。 */
+.plugin-settings__commands .settings-switch {
+    flex-basis: 40px;
+    width: 40px;
+    gap: 0;
+}
+
+.plugin-settings__commands .settings-switch > span:not(.settings-switch__track) {
+    display: none;
+}
+
+/* 简介默认一行。展开后恢复换行。 */
+.plugin-settings__about {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 4px 0 0;
+    color: var(--color-muted);
+    font-size: 12px;
+    line-height: 18px;
+}
+
+/* 收起时只留一行。 */
+.plugin-settings__about-text {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* 展开后显示全文。 */
+.plugin-settings__about-text--open {
+    white-space: normal;
+}
+
+/* 展开和收起不另做一档颜色。 */
+.plugin-settings__about-toggle {
+    flex: none;
+    padding: 0;
+    border: 0;
+    color: var(--color-text);
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
+}
+
+/* 头部三个命令贴右，和标题同一行高。 */
+.plugin-settings__commands {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 38px;
+    margin-left: auto;
+}
+
+/* 返回按钮。 */
 .plugin-settings__back {
     display: grid;
     place-items: center;
+    flex: none;
     width: 38px;
     height: 38px;
-    margin-bottom: 12px;
     padding: 0;
     border: 0;
     border-radius: 4px;
@@ -64,6 +298,34 @@
     font-weight: 600;
 }
 
+/* 创建到桌面。尺寸和颜色沿用设置页次级命令，不另定 token。 */
+.plugin-settings__create {
+    width: 100px;
+    margin-left: auto;
+    margin-right: 20px;
+    height: 38px;
+    min-height: 38px;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text);
+    background: var(--color-subtle);
+    font: inherit;
+    cursor: pointer;
+}
+
+/* 停用时不能点。 */
+.plugin-settings__create:disabled {
+    color: var(--color-muted);
+    cursor: default;
+}
+
+/* 创建按钮的键盘焦点。 */
+.plugin-settings__create:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
 /* 插件行与启用行。 */
 .plugin-settings__row {
     display: flex;
@@ -87,12 +349,20 @@
     color: var(--color-muted);
 }
 
-/* 名称、徽标和条目数。 */
+/* 名称占满左侧，后面的控件整体贴右。 */
 .plugin-settings__copy {
     display: block;
+    flex: 1;
     min-width: 0;
     color: var(--color-text);
     font-size: 14px;
+}
+
+/* 开/关和开关是一个整体，间距 8，一起贴右。 */
+.plugin-settings__row > .settings-switch {
+    flex: 0 0 auto;
+    width: auto;
+    gap: 8px;
 }
 
 /* 条目数或停用说明。 */
@@ -104,8 +374,9 @@
     font-weight: 400;
 }
 
-/* 名称按钮本身不占满行，覆盖层才是进入命中面。 */
+/* 名称按钮占满左侧，卸载和开关贴右。 */
 .plugin-settings__open {
+    flex: 1;
     min-width: 0;
     padding: 0;
     border: 0;
@@ -237,9 +508,10 @@
     cursor: default;
 }
 
-/* 作者内容区。宿主不规定内部版式。 */
+/* 作者内容区。宿主不规定内部版式。这里的文字和控件可以选中。 */
 .plugin-settings__entry-body {
     padding: 12px 16px 16px;
+    user-select: text;
 }
 
 /* 空态的第二句说明。 */
@@ -356,6 +628,12 @@
     background: var(--color-surface);
     color: var(--color-text);
     box-shadow: none;
+    user-select: none;
+}
+
+/* 弹窗在顶层，不继承设置根的禁选。输入仍可编辑。 */
+.plugin-settings__dialog :is(input, textarea, [contenteditable="true"]) {
+    user-select: text;
 }
 
 /* 卸载确认的固定高度。 */
@@ -366,6 +644,18 @@
 /* 失效移除确认的固定高度。 */
 .plugin-settings__dialog--remove {
     height: 194px;
+}
+
+/* 添加插件弹窗按内容增高。 */
+.plugin-settings__dialog--add {
+    height: auto;
+    min-height: 194px;
+}
+
+/* 已选来源。 */
+.plugin-settings__picks {
+    margin: 8px 0 0;
+    padding-left: 18px;
 }
 
 /* 20% 遮罩。 */
@@ -400,6 +690,11 @@
     margin: 0 0 8px;
     color: var(--color-muted);
     font-size: 12px;
+}
+
+/* 覆盖确认里的插件名用正文色，字号仍跟说明一样。 */
+.plugin-settings__dialog-name {
+    color: var(--color-text);
 }
 
 /* 命令贴底，和正文之间一条分隔线。 */

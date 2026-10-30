@@ -512,6 +512,29 @@ fn missing_manifest_component_can_be_removed_without_opening_creation()
     std::fs::remove_file(path).unwrap();
 }
 
+/// 热刷新只换能力声明。creatable 从假变真后可以创建，声明拿掉后不能再创建，已有格子还在。
+#[test]
+fn refreshed_declaration_allows_creation_without_touching_layout()
+{
+    let path = snapshot_path("refresh-plugin-creatable"); // 独立测试工作区。
+    let blocked = ComponentCapabilityDeclaration { component_id: "plugin.clock".to_string(), creatable: false, removable: true }; // 启动时看到的旧声明。
+    let state = WorkspaceState::load_with_components(path.clone(), &[], &[blocked]).unwrap();
+    state.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0)], &[], &[], &[]).unwrap();
+    let bounds = WorkspaceRect { left: 400.0, top: 24.0, width: 220.0, height: 116.0 }; // 不和已有格子重叠。
+    let create = WorkspaceCommand::CreateComponent { component_id: "plugin.clock".to_string(), bounds, state: serde_json::json!({}) };
+    assert_eq!(state.apply_on_monitor(Some("DISPLAY1"), create.clone()).expect_err("旧声明仍不可创建").message, "不支持创建该组件");
+    let before = state.snapshot().unwrap(); // 刷新前的布局。
+    state.refresh_capability_declarations(&[ComponentCapabilityDeclaration { component_id: "plugin.clock".to_string(), creatable: true, removable: true }]);
+    assert_eq!(state.snapshot().unwrap().components, before.components);
+    let created = state.apply_on_monitor(Some("DISPLAY1"), create.clone()).unwrap();
+    assert_eq!(created.components.len(), 1);
+    state.refresh_capability_declarations(&[]);
+    assert_eq!(state.snapshot().unwrap().components.len(), 1);
+    assert_eq!(state.apply_on_monitor(Some("DISPLAY1"), create).expect_err("卸载后不再可创建").message, "不支持创建该组件");
+    drop(state);
+    std::fs::remove_file(path).unwrap();
+}
+
 /// 备份还原按布局原样带回未声明创建/移除能力的实例，后续命令仍按未声明能力拒绝。
 #[test]
 fn backup_restore_does_not_validate_component_capabilities()

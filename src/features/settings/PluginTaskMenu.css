@@ -1,0 +1,128 @@
+/* 任务进度菜单。右边缘对齐按钮，不越出内容区。 */
+.plugin-settings__task-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 2;
+    width: max-content;
+    min-width: 100%;
+    max-height: min(320px, 40vh);
+    overflow: auto;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    background: var(--color-surface);
+}
+
+/* 下方空间不够时改到按钮上方。 */
+.plugin-settings__task-menu--up {
+    top: auto;
+    bottom: calc(100% + 4px);
+}
+
+/* 空态两句。 */
+.plugin-settings__tasks-empty {
+    margin: 0;
+    padding: 8px 16px 16px;
+    color: var(--color-text);
+    font-size: 13px;
+}
+
+/* 空态第二句。 */
+.plugin-settings__tasks-empty small,
+.plugin-settings__task small {
+    display: block;
+    margin-top: 2px;
+    color: var(--color-muted);
+    font-size: 12px;
+}
+
+/* 进行中的说明和任务行。 */
+.plugin-settings__tasks-body {
+    padding: 0;
+}
+
+/* 正在安装、取消和进度条是一块。 */
+.plugin-settings__task-block {
+    padding: 8px 16px 12px;
+}
+
+/* 正在安装和取消同一行。 */
+.plugin-settings__task-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 38px;
+}
+
+/* 头部说明不另起外边距。 */
+.plugin-settings__task-head p {
+    margin: 0;
+}
+
+/* 取消与设置页按钮同高。 */
+.plugin-settings__task-cancel {
+    height: 38px;
+    padding: 0 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text);
+    background: var(--color-subtle);
+    font: inherit;
+    cursor: pointer;
+}
+
+/* 悬停换一层底。 */
+.plugin-settings__task-cancel:hover:not(:disabled) {
+    background: var(--color-background);
+}
+
+/* 按下再压一档。 */
+.plugin-settings__task-cancel:active:not(:disabled) {
+    background: var(--color-border);
+}
+
+/* 不能取消时变淡。 */
+.plugin-settings__task-cancel:disabled {
+    color: var(--color-muted);
+    cursor: default;
+}
+
+/* 总进度条。 */
+.plugin-settings__progress {
+    height: 4px;
+    margin: 8px 0 0;
+    overflow: hidden;
+    border-radius: 2px;
+    background: var(--color-border);
+}
+
+/* 已完成的比例。 */
+.plugin-settings__progress > span {
+    display: block;
+    height: 100%;
+    background: var(--color-accent);
+}
+
+/* 一条安装任务。上下左右内边距对所有条目一致。 */
+.plugin-settings__task {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 16px;
+}
+
+/* 条目之间的分割线单独成元素，不挂在条目自身上。 */
+.plugin-settings__task-divider {
+    display: block;
+    height: 1px;
+    margin: 0 16px;
+    background: var(--color-border);
+}
+
+/* 调试页把菜单放回文档流，方便并排看状态。正式页不用这个类。 */
+.plugin-task-menu-slot .plugin-settings__task-menu {
+    position: static;
+    max-height: none;
+}

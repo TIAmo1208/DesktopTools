@@ -1127,6 +1127,70 @@ fn protocol_response(status: StatusCode, content_type: &str, csp: Option<&str>, 
     builder.body(body).expect("FATAL 正式宿主协议响应构造失败")
 }
 
+/// 按路径段做百分号解码。段内的 `%2F`、`%5C` 不会变成分隔符。
+fn decode_plugin_relative(relative: &str) -> Option<String>
+{
+    if relative.is_empty() || relative.contains(['\\', '\0'])
+    {
+        return None;
+    }
+    let mut decoded = String::new(); // 解码后的相对路径，仍用 `/` 分段。
+    for (index, segment) in relative.split('/').enumerate()
+    {
+        if index > 0
+        {
+            decoded.push('/');
+        }
+        let segment = percent_decode_segment(segment)?; // 非法 %xx 或非 UTF-8 直接拒绝。
+        if segment.is_empty() || segment == "." || segment == ".." || segment.contains(['/', '\\', ':', '\0'])
+        {
+            return None;
+        }
+        decoded.push_str(&segment);
+    }
+    Some(decoded)
+}
+
+/// 把单个路径段从百分号编码还原成 UTF-8。`+` 保持原样。
+fn percent_decode_segment(segment: &str) -> Option<String>
+{
+    let bytes = segment.as_bytes(); // 百分号序列按字节解释。
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len()
+    {
+        if bytes[index] == b'%'
+        {
+            if index + 2 >= bytes.len()
+            {
+                return None;
+            }
+            let high = hex_value(bytes[index + 1])?;
+            let low = hex_value(bytes[index + 2])?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        }
+        else
+        {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+/// 十六进制数字，大小写均可。
+fn hex_value(byte: u8) -> Option<u8>
+{
+    match byte
+    {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// 只读取插件根目录内的 JS/CSS，任何链接、重解析点或非普通路径均拒绝。
 fn read_plugin_asset(directory: &std::path::Path, relative: &str) -> Option<(&'static str, Vec<u8>)>
 {
@@ -1135,8 +1199,9 @@ fn read_plugin_asset(directory: &std::path::Path, relative: &str) -> Option<(&'s
         os::windows::fs::MetadataExt,
         path::{Component, Path},
     };
-    let relative_path = Path::new(relative); // 请求路径不解码，避免编码后的分隔符改变文件身份。
-    if relative.is_empty() || relative.contains([':', '%', '\\', '\0']) || relative_path.components().any(|part| !matches!(part, Component::Normal(_)))
+    let relative = decode_plugin_relative(relative)?; // 先按段解码，再做穿越校验。
+    let relative_path = Path::new(&relative);
+    if relative_path.components().any(|part| !matches!(part, Component::Normal(_)))
     {
         return None;
     }
@@ -1210,6 +1275,47 @@ fn handle_protocol_request(request: Request<Vec<u8>>, app: &AppHandle, command_h
     }
 
     protocol_response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", None, Cow::Borrowed(b"not found"))
+}
+
+/// 设置窗口自定义协议名。Windows 上页面来源为 `http://desktop-tools-settings.localhost`。
+pub(crate) const SETTINGS_PROTOCOL: &str = "desktop-tools-settings";
+
+/// 设置窗口页面地址，与协议名对应，供同源 `import("/plugins/...")`。
+pub(crate) fn settings_page_url() -> tauri::Url { tauri::Url::parse(&format!("http://{SETTINGS_PROTOCOL}.localhost/")).expect("设置窗口协议地址无效") }
+
+/// 设置窗口协议入口。页面、插件资产和原生命令都交给现有处理函数。
+pub(crate) fn handle_settings_protocol_request(request: Request<Vec<u8>>, app: &AppHandle) -> Response<Cow<'static, [u8]>>
+{
+    // 请求到达时再取宿主运行时；设置窗口打开时运行时已经放进应用状态。
+    let handler: NativeCommandHandler = Arc::new({
+        let app = app.clone(); // 命令闭包独立持有应用句柄。
+        move |command, arguments| {
+            let Some(runtime) = app.try_state::<Arc<crate::host::DesktopHostRuntime>>()
+            else
+            {
+                return Err(json!({ "code": "desktop-host-starting", "message": "桌面宿主正在启动" }));
+            }; // 与逐屏宿主同一条命令边界。
+            crate::commands::dispatch_native_command(&app, &runtime, command, arguments)
+        }
+    });
+    handle_protocol_request(request, app, &handler)
+}
+
+/// 静态资产在协议线程直接返回；原生命令改到阻塞池，避免占用 WebView UI 线程。
+pub(crate) fn dispatch_settings_protocol<F>(request: Request<Vec<u8>>, app: AppHandle, respond: F)
+where
+    F: FnOnce(Response<Cow<'static, [u8]>>) + Send + 'static,
+{
+    let invoke = request.uri().path().starts_with("/__desktop_tools_invoke/"); // 只有命令可能等待 Shell STA。
+    let run = move || respond(handle_settings_protocol_request(request, &app));
+    if invoke
+    {
+        tauri::async_runtime::spawn_blocking(run);
+    }
+    else
+    {
+        run();
+    }
 }
 
 /// 保留开发 URL 的路径与查询字段，并设置宿主身份；正式模式使用内嵌资源。
@@ -1292,6 +1398,29 @@ mod desktop_dev_tests
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// 中文目录名按百分号解码后能读到脚本；穿越和非法编码仍是 404。
+    #[test]
+    fn percent_encoded_plugin_paths_decode_and_stay_inside()
+    {
+        let root = std::env::temp_dir().join(format!("desktop-tools-plugin-encoded-{}", std::process::id())); // 独占资产目录。
+        let directory = root.join("plugin"); // 插件来源根。
+        let folder = directory.join("演示插件-正常"); // 与实机请求同一文件夹名。
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("main.js"), "encoded").unwrap();
+        let encoded = "%E6%BC%94%E7%A4%BA%E6%8F%92%E4%BB%B6-%E6%AD%A3%E5%B8%B8/main.js"; // 浏览器对非 ASCII 段的编码。
+        assert_eq!(super::read_plugin_asset(&directory, encoded).unwrap().1, b"encoded");
+        assert_eq!(super::read_plugin_asset(&directory, "演示插件-正常/main.js").unwrap().1, b"encoded");
+        for path in ["%2e%2e/main.js", "ok/%2e%2e/main.js", "%2e%2e%2fmain.js", "%2E/main.js", "%5cmain.js", "%00main.js"]
+        {
+            assert!(super::read_plugin_asset(&directory, path).is_none(), "解码后仍应拒绝: {path}");
+        }
+        for path in ["%ZZ/main.js", "%E6/main.js", "%FF/main.js", "main%2Ejs%"]
+        {
+            assert!(super::read_plugin_asset(&directory, path).is_none(), "非法编码应 404: {path}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// 完整围栏图像超过普通消息上限时，两层必须接受相同的有界载荷。
     #[test]
     fn tile_drag_payload_uses_shared_budget()
@@ -1320,6 +1449,15 @@ mod desktop_dev_tests
             assert!(!allowed_desktop_origin(origin, native, None));
         }
         assert!(!allowed_desktop_origin("http://127.0.0.1:14200", native, Some("http://127.0.0.1:1420")));
+    }
+
+    /// 设置窗口来源必须等于协议名加 `.localhost`，否则 Tauri 不把它当本地 IPC 来源。
+    #[test]
+    fn settings_page_url_matches_protocol_name()
+    {
+        let url = super::settings_page_url(); // 设置窗口实际导航地址。
+        assert_eq!(url.as_str(), "http://desktop-tools-settings.localhost/");
+        assert_eq!(url.host_str().and_then(|host| host.strip_suffix(".localhost")), Some(super::SETTINGS_PROTOCOL));
     }
 }
 

@@ -47,8 +47,9 @@ pub(crate) fn set_settings_visible(app: &AppHandle, visible: bool) -> tauri::Res
         }
         else
         {
-            let config = app.config().app.windows.iter().find(|window| window.label == "main").ok_or(tauri::Error::WindowNotFound)?; // 原配置仍是尺寸和权限的唯一来源。
-            let window = tauri::WebviewWindowBuilder::from_config(app, config)?.build()?; // 仅在打开入口创建页面。
+            let mut config = app.config().app.windows.iter().find(|window| window.label == "main").cloned().ok_or(tauri::Error::WindowNotFound)?; // 尺寸、装饰和权限仍以原配置为准。
+            config.url = tauri::WebviewUrl::CustomProtocol(crate::platform::windows::settings_page_url()); // 页面与 /plugins/ 同源，不再走 Tauri 默认资产协议。
+            let window = tauri::WebviewWindowBuilder::from_config(app, &config)?.build()?; // 仅在打开入口创建页面。
             window.set_icon(app.state::<TrayState>().icon.clone())?;
             if let Ok(preferences) = app.state::<SettingsState>().preferences()
             {

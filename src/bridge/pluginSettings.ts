@@ -11,21 +11,32 @@ interface PluginSettingsListener {
 }
 
 const desktopListeners = new Set<PluginSettingsListener>(); // 逐屏页面上的设置订阅。
-let desktopDispatchWrapped = false; // 初始化脚本的 dispatch 只包一层。
+const dispatchMark = Symbol("pluginSettingsDispatch"); // 只包当前这份 dispatch，桥被换掉后还能再包。
 
-/** 从事件载荷取出插件标识。 */
+/** 从事件载荷取出插件标识。字符串载荷先解析，正文仍要重新读。 */
 const readPluginId = (payload: unknown): string | undefined => {
-    if (typeof payload !== "object" || payload === null || !("pluginId" in payload)) return undefined;
-    const pluginId = (payload as { pluginId: unknown }).pluginId; // 等待类型确认的标识。
+    const record = typeof payload === "string" ? parseSettingsPayload(payload) : payload; // 宿主脚本偶尔会把 JSON 当成字符串。
+    if (typeof record !== "object" || record === null || !("pluginId" in record)) return undefined;
+    const pluginId = (record as { pluginId: unknown }).pluginId; // 等待类型确认的标识。
     return typeof pluginId === "string" && pluginId.length > 0 ? pluginId : undefined;
+};
+
+/** 字符串载荷解析失败就当无效事件。 */
+const parseSettingsPayload = (payload: string): unknown => {
+    try {
+        return JSON.parse(payload);
+    } catch {
+        return undefined;
+    }
 };
 
 /** 逐屏 listen 只登记带快照命令或固定名单的事件，此事件只能挂在已转发的 dispatch 上。 */
 const ensureDesktopSettingsDispatch = () => {
     const native = globalThis.window?.__DESKTOP_TOOLS_NATIVE__; // 正式逐屏宿主桥。
-    if (!native?.dispatch || desktopDispatchWrapped) return;
-    const dispatch = native.dispatch; // 初始化脚本原来的投递。
-    native.dispatch = (eventName, payload) => {
+    const current = native?.dispatch as (((eventName: string, payload: unknown) => void) & { [dispatchMark]?: boolean }) | undefined;
+    if (!current || current[dispatchMark]) return;
+    const dispatch = current; // 初始化脚本原来的投递。
+    const wrapped = (eventName: string, payload: unknown) => {
         dispatch(eventName, payload);
         if (eventName !== PLUGIN_SETTINGS_CHANGED_EVENT) return;
         const pluginId = readPluginId(payload); // 只带标识，设置正文要重新读取。
@@ -38,7 +49,8 @@ const ensureDesktopSettingsDispatch = () => {
             }
         }
     };
-    desktopDispatchWrapped = true;
+    wrapped[dispatchMark] = true;
+    native!.dispatch = wrapped;
 };
 
 /** 读取一份插件设置；没有文件时为 null。 */

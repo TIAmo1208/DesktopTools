@@ -9,11 +9,17 @@ export interface ComponentManifest {
     id: string;
     name: string;
     entry: string;
+    script: string; // 插件根内的脚本相对路径。官方清单为空串。
     requiredCapabilities: ComponentCapability[];
     // 用户是否可从工作区入口创建该组件的新实例。
     creatable: boolean;
     // 用户是否可移除该组件的实例。
     removable: boolean;
+    maxTiles: number; // 可创建的格子上限。0 表示不限。
+    version?: string; // 插件版本。缺省不展示。
+    description?: string; // 插件简介。缺省不展示。
+    author?: string; // 插件作者。缺省时信息行不拼 @。
+    repository?: string; // 仓库地址。只表示有没有，页面不拿它打开。
     persistenceVersion: number;
 }
 
@@ -122,6 +128,20 @@ const parseCapability = (value: unknown): ComponentCapability => {
     return value;
 };
 
+/** 可缺省的短文本。空串当没写，别的类型拒绝。 */
+const parseOptionalText = (value: unknown): string | undefined => {
+    if (value === undefined || value === "") return undefined;
+    if (typeof value !== "string") throw new ComponentContractError();
+    return value;
+};
+
+/** 格子上限。缺省和 0 都是不限，负数与非整数拒绝。 */
+const parseMaxTiles = (value: unknown): number => {
+    if (value === undefined || value === 0) return 0;
+    if (!Number.isSafeInteger(value) || (value as number) < 0) throw new ComponentContractError();
+    return value as number;
+};
+
 /** 校验可缺省的创建或移除声明，缺失按不可用处理。 */
 const parseDeclarationFlag = (value: unknown): boolean => {
     if (value === undefined) return false;
@@ -138,16 +158,23 @@ export const parseComponentRuntimeSnapshot = (value: unknown): ComponentRuntimeS
     const manifests = candidate.manifests.map((manifest) => {
         if (typeof manifest !== "object" || manifest === null) throw new ComponentContractError();
         const item = manifest as Record<string, unknown>; // 等待字段校验的官方组件清单。
-        if (typeof item.id !== "string" || typeof item.name !== "string" || typeof item.entry !== "string") throw new ComponentContractError();
+        if (typeof item.id !== "string" || typeof item.name !== "string" || typeof item.entry !== "string" || typeof item.script !== "string")
+            throw new ComponentContractError();
         if (!Array.isArray(item.requiredCapabilities) || !Number.isSafeInteger(item.persistenceVersion) || (item.persistenceVersion as number) <= 0)
             throw new ComponentContractError();
         return {
             id: item.id,
             name: item.name,
             entry: item.entry,
+            script: item.script,
             requiredCapabilities: item.requiredCapabilities.map(parseCapability),
             creatable: parseDeclarationFlag(item.creatable),
             removable: parseDeclarationFlag(item.removable),
+            maxTiles: parseMaxTiles(item.maxTiles),
+            version: parseOptionalText(item.version),
+            description: parseOptionalText(item.description),
+            author: parseOptionalText(item.author),
+            repository: parseOptionalText(item.repository),
             persistenceVersion: item.persistenceVersion as number,
         };
     });

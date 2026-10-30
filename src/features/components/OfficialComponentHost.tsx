@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../bridge/components";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../bridge/pluginSettings";
-import { adoptPluginManifests, publishPluginShell, readPluginApi, subscribePluginShell, type PluginShellContext } from "../../bridge/pluginScripts";
+import {
+    adoptPluginManifests,
+    commandErrorMessage,
+    loadPluginScript,
+    pluginScriptFailure,
+    readPluginApi,
+    subscribePluginShell,
+    type PluginShellContext,
+} from "../../bridge/pluginScripts";
 import type { ComponentInstanceSnapshot, ComponentManifest, ComponentRuntimeSnapshot } from "../../contracts/component";
 import type { DesktopHostMonitor } from "../../contracts/desktopHost";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspaceSnapshot, WorkspaceFocusTarget } from "../../contracts/workspace";
@@ -9,12 +17,37 @@ import type { TileAppearance } from "../../contracts/tile";
 import type { ApplicationPreferences } from "../../contracts/settings";
 import { usePreferences } from "../settings/PreferencesProvider";
 import { ComponentTile, type ComponentTileProps } from "./ComponentTile";
+import { tileRemoveMenuItem } from "../tiles/DesktopTileBase";
+import { publishMessage } from "../notifications/messageNotification";
 import { CollectBoxTile } from "../tile-content/collect-box/CollectBoxTile";
 import { MusicTile } from "../tile-content/music/MusicTile";
 import { ClockTile } from "../tile-content/clock/LocalClock";
 import { DebugTile } from "../tile-content/debug/DebugTest";
 import { WeatherTile } from "../tile-content/weather/WeatherTile";
-import "./OfficialComponentHost.css";
+
+const reportedRuntimeFailures = new Set<string>(); // 已经提示过的标识和原因。
+
+/** 把运行时失败交给消息和日志。同一条还在时不再重复。 */
+export const reportRuntimeFailures = (
+    commandFailure: string | undefined,
+    failures: readonly { componentId: string; message: string }[] | undefined,
+    notify: (content: string) => void = notifyRuntimeFailure,
+) => {
+    const live = new Set<string>(); // 这一轮仍然存在的失败。
+    if (commandFailure) live.add(commandFailure);
+    for (const item of failures ?? []) live.add(`${item.componentId}：${item.message}`);
+    for (const line of live) {
+        if (reportedRuntimeFailures.has(line)) continue;
+        reportedRuntimeFailures.add(line);
+        notify(line);
+    }
+    for (const line of reportedRuntimeFailures) if (!live.has(line)) reportedRuntimeFailures.delete(line);
+};
+
+const notifyRuntimeFailure = (content: string) => {
+    console.warn(content); // WARN：标识和原因原样留下。
+    publishMessage({ type: "error", content, source: "component-runtime" });
+};
 
 /** 官方组件宿主接收的工作区实例和命令边界。 */
 interface OfficialComponentHostProps {
@@ -39,7 +72,7 @@ interface PluginHostContext {
 }
 
 const attempted = new Set<string>(); // 已尝试插入脚本的标识，失败也不重试。
-const scriptFailed = new Set<string>(); // 脚本 onerror 或标识无效。
+
 const renderFailed = new Set<string>(); // renderTile 抛错的实例。
 const tileCleanups = new Map<string, () => void>(); // 每个实例最近一次 renderTile 的清理函数。
 const revisions = new Map<string, number>(); // 该插件外壳变化后的重绘代数。
@@ -63,7 +96,7 @@ const subscribePluginHost = (onChange: (pluginId: string) => void) => {
 const pluginRevision = (pluginId: string) => revisions.get(pluginId) ?? 0;
 
 /** 脚本加载失败。 */
-const pluginScriptFailed = (pluginId: string) => scriptFailed.has(pluginId);
+const pluginScriptFailed = (pluginId: string) => Boolean(pluginScriptFailure(pluginId));
 
 /** 已注册但没有可用的 renderTile。 */
 const pluginMissingRenderTile = (pluginId: string) => {
@@ -81,15 +114,21 @@ const markPluginRenderFailed = (pluginId: string, instanceId: string) => {
     emitPluginHost(pluginId);
 };
 
-/** 标识可以安全成为单一脚本路径段。 */
-const pluginScriptName = (pluginId: string) =>
-    pluginId.startsWith("plugin.") && !pluginId.includes("/") && !pluginId.includes("\\") && !pluginId.includes("%") && !pluginId.includes("..");
-
 /** 调用最近一次 renderTile 留下的清理函数。 */
 const releasePluginTile = (instanceId: string) => {
     const cleanup = tileCleanups.get(instanceId); // 上一轮作者返回的清理函数。
     tileCleanups.delete(instanceId);
     cleanup?.();
+};
+
+/** 重读插件设置再交给格子。读失败时按空设置重绘。 */
+const syncPluginTileSettings = async (pluginId: string, paint: (settings: unknown) => void) => {
+    try {
+        paint((await getPluginSettings(pluginId)) ?? null);
+    } catch (error) {
+        console.warn(`插件设置读取失败：${pluginId}`, error);
+        paint(null);
+    }
 };
 
 /** 先清理该实例上一轮内容，再把作者内容挂进容器。 */
@@ -101,35 +140,21 @@ const mountPluginTile = (container: HTMLElement, context: PluginShellContext) =>
     if (typeof cleanup === "function") tileCleanups.set(context.instanceId, cleanup);
 };
 
-/** 有实例的插件按标识插一次脚本。 */
-const ensurePluginScript = (pluginId: string) => {
-    if (attempted.has(pluginId)) return;
+/** 有实例的插件按标识导入一次模块。 */
+const ensurePluginScript = (pluginId: string, script: string) => {
+    if (attempted.has(pluginId)) return Promise.resolve();
     attempted.add(pluginId);
-    const owner = globalThis.document; // 测试与页面共用这一个入口。
-    if (!owner || !pluginScriptName(pluginId)) {
-        scriptFailed.add(pluginId);
-        console.warn(`插件脚本无法加载：${pluginId}`);
-        emitPluginHost(pluginId);
-        return;
-    }
-    const script = owner.createElement("script"); // 只插入外部脚本，不放宽 CSP。
-    script.src = `/plugins/${pluginId}.js`;
-    script.async = true;
-    script.onerror = () => {
-        scriptFailed.add(pluginId);
-        console.warn(`插件脚本加载失败：${pluginId}`);
-        emitPluginHost(pluginId);
-    };
-    (owner.head ?? owner.documentElement).appendChild(script);
+    return loadPluginScript(pluginId, script).then((failure) => {
+        if (failure) emitPluginHost(pluginId);
+    });
 };
 
 /** 从清单里取出当前屏幕真正出现的插件，去重后按标识顺序加载。 */
-const syncPluginScripts = (manifests: readonly { id: string }[], instanceComponentIds: readonly string[]) => {
-    publishPluginShell();
+const syncPluginScripts = (manifests: readonly { id: string; script?: string }[], instanceComponentIds: readonly string[]) => {
     const live = new Set(instanceComponentIds); // 当前屏幕的实例所属标识。
-    const ids = new Set<string>(); // 要加载的插件标识。
-    for (const manifest of manifests) if (manifest.id.startsWith("plugin.") && live.has(manifest.id)) ids.add(manifest.id);
-    for (const pluginId of [...ids].sort()) ensurePluginScript(pluginId);
+    const pending = new Map<string, string>(); // 要加载的插件和它的脚本路径。
+    for (const manifest of manifests) if (manifest.id.startsWith("plugin.") && live.has(manifest.id)) pending.set(manifest.id, manifest.script ?? "");
+    return Promise.all([...pending.keys()].sort().map((pluginId) => ensurePluginScript(pluginId, pending.get(pluginId) ?? "")));
 };
 
 /** 把一个插件实例的作者内容挂到外框给出的容器上。 */
@@ -162,12 +187,7 @@ const PluginTileBody = ({ pluginId, instanceId, collapsed, revision }: { pluginI
         };
         const read = () => {
             const mine = ++ticket; // 这一次读取的代号。
-            void getPluginSettings(pluginId)
-                .then((settings) => paint(settings ?? null, mine))
-                .catch((error: unknown) => {
-                    console.warn(`插件设置读取失败：${pluginId}`, error);
-                    paint(null, mine);
-                });
+            void syncPluginTileSettings(pluginId, (settings) => paint(settings, mine));
         };
         read();
         const subscription = listenPluginSettings(
@@ -223,6 +243,14 @@ const pluginVisibility = new Map<string, (context: PluginHostContext) => boolean
     ["official.weather", ({ preferences }) => preferences?.weatherEnabled === true],
 ]);
 
+/** 官方开关和插件停用名单走同一次判定。停用的插件整格不出现。 */
+const instanceVisible = (componentId: string, context: PluginHostContext) => {
+    const listed = pluginVisibility.get(componentId); // 官方组件的显隐开关。
+    if (listed) return listed(context);
+    if (componentId.startsWith("plugin.")) return !(context.preferences?.disabledPlugins?.includes(componentId) ?? false); // 名单里的插件不渲染。
+    return true;
+};
+
 // 官方 id 仅用于注册快照尚未到达时，和对应 entry 共用同一内容入口。
 const pluginRenderers = new Map<string, (props: ComponentTileProps, context: PluginHostContext) => ReactNode>([
     ["official:collect-box", (props) => <CollectBoxTile key={props.instance.instanceId} {...props} />],
@@ -239,19 +267,26 @@ const pluginRenderers = new Map<string, (props: ComponentTileProps, context: Plu
     ],
     [
         "plugin:slot",
-        (props, { runtime, preferences }) => {
+        (props, { runtime }) => {
             const pluginId = props.instance.componentId; // 格子所属插件，不按槽入口合并。
-            const turnedOff = preferences?.disabledPlugins.includes(pluginId) ?? false; // 停用不是渲染失败。
-            const broken = !turnedOff && (pluginScriptFailed(pluginId) || pluginMissingRenderTile(pluginId) || pluginRenderFailed(props.instance.instanceId)); // 脚本、注册或作者渲染失败。
+            const broken = pluginScriptFailed(pluginId) || pluginMissingRenderTile(pluginId) || pluginRenderFailed(props.instance.instanceId); // 脚本、注册或作者渲染失败。
+            const removable = runtime?.manifests.find((manifest) => manifest.id === pluginId)?.removable === true; // 清单缺失时不可移除。
             return (
                 <ComponentTile
                     key={props.instance.instanceId}
                     {...props}
                     title={runtime?.manifests.find((manifest) => manifest.id === pluginId)?.name ?? pluginId}
+                    menuItems={[
+                        tileRemoveMenuItem(
+                            removable,
+                            () =>
+                                void props.onCommand({ type: "remove-component", instanceId: props.instance.instanceId }).catch((error: unknown) => {
+                                    publishMessage({ type: "error", content: commandErrorMessage(error), source: "desktop-tile" });
+                                }),
+                        ),
+                    ]}
                 >
-                    {turnedOff ? (
-                        <p className="official-component__error">插件已停用</p>
-                    ) : broken ? (
+                    {broken ? (
                         <p className="official-component__error">组件渲染失败</p>
                     ) : (
                         (collapsed) => (
@@ -291,7 +326,7 @@ export const OfficialComponentHost = ({
     const [pluginEpoch, setPluginEpoch] = useState(0); // 外壳注册或脚本状态变化。
     const registrations = useMemo(() => new Map(runtime?.instances.map((instance) => [instance.instanceId, instance]) ?? []), [runtime]);
     const pluginContext = { preferences, runtime, debugContent, pluginEpoch }; // 本次呈现的偏好、注册表与调试内容。
-    const visibleInstances = instances.filter((instance) => pluginVisibility.get(instance.componentId)?.(pluginContext) ?? true); // 插件实例没有独立开关。
+    const visibleInstances = instances.filter((instance) => instanceVisible(instance.componentId, pluginContext)); // 停用插件与关闭的官方组件都不进列表。
     const pluginLoadKey = visibleInstances
         .map((instance) => instance.componentId)
         .filter((id) => id.startsWith("plugin."))
@@ -310,7 +345,7 @@ export const OfficialComponentHost = ({
     useEffect(() => {
         let mounted = true; // 当前组件宿主挂载标记。
         const handleFailure = (error: unknown) => {
-            if (mounted) setFailure(error instanceof Error ? error.message : "组件运行时请求失败");
+            if (mounted) setFailure(commandErrorMessage(error));
         };
         const runtimeSubscription = listenComponentRuntimeSnapshots((snapshot) => mounted && setRuntime(snapshot), handleFailure);
         void runtimeSubscription.catch(handleFailure);
@@ -326,8 +361,12 @@ export const OfficialComponentHost = ({
                 setRuntime(snapshot);
                 setFailure(undefined);
             })
-            .catch((error: unknown) => setFailure(error instanceof Error ? error.message : "组件运行时请求失败"));
+            .catch((error: unknown) => setFailure(commandErrorMessage(error)));
     }, [instances]);
+
+    useEffect(() => {
+        reportRuntimeFailures(failure, runtime?.failures);
+    }, [failure, runtime]);
 
     useEffect(() => {
         const manifests: ComponentManifest[] = runtime?.manifests ?? []; // 启动时冻结的清单。
@@ -337,17 +376,6 @@ export const OfficialComponentHost = ({
 
     return (
         <>
-            {(Boolean(failure) || Boolean(runtime?.failures.length)) && (
-                <aside
-                    className="component-runtime-failure"
-                    role="alert"
-                    data-hit-id="component-runtime-failure"
-                    data-hit-kind="component-status"
-                    data-hit-priority="85"
-                >
-                    {failure ?? runtime?.failures.map((item) => `${item.componentId}：${item.message}`).join("；")}
-                </aside>
-            )}
             {visibleInstances.map((instance) => {
                 const props: ComponentTileProps = {
                     instance,

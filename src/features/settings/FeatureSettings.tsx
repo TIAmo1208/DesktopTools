@@ -100,24 +100,32 @@ export const FeatureSettings = ({
     if (detail === "weather") return <WeatherSettings onBack={() => setDetail(undefined)} leaveGuard={leaveGuard} />;
     return (
         <section className="feature-settings">
-            {detail && (
-                <button className="feature-settings__back" type="button" title="返回功能格子" aria-label="返回功能格子" onClick={() => setDetail(undefined)}>
-                    {"\uE72B"}
-                </button>
+            {detail ? (
+                <div className="feature-settings__heading">
+                    <button
+                        className="feature-settings__back"
+                        type="button"
+                        title="返回功能格子"
+                        aria-label="返回功能格子"
+                        onClick={() => setDetail(undefined)}
+                    >
+                        {"\uE72B"}
+                    </button>
+                    <h2>
+                        {detail === "clock"
+                            ? "本地时间"
+                            : detail === "music"
+                              ? "音乐控制"
+                              : detail === "collect"
+                                ? "收集箱"
+                                : detail === "folder"
+                                  ? "文件夹映射"
+                                  : "Debug 测试"}
+                    </h2>
+                </div>
+            ) : (
+                <h2>功能格子</h2>
             )}
-            <h2>
-                {detail === "clock"
-                    ? "本地时间"
-                    : detail === "music"
-                      ? "音乐控制"
-                      : detail === "collect"
-                        ? "收集箱"
-                        : detail === "folder"
-                          ? "文件夹映射"
-                          : detail === "debug"
-                            ? "Debug 测试"
-                            : "功能格子"}
-            </h2>
             {!detail ? (
                 <>
                     {(

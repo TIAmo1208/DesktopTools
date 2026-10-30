@@ -32,7 +32,19 @@ interface DesktopTileBaseProps extends Omit<ComponentPropsWithRef<"section">, "o
     onAppearanceChange?: (change: TileAppearanceChange) => void; // 单字段领域命令。
     menuItems?: DesktopTileMenuItem[]; // 内容专属菜单。
     sortItems?: DesktopTileMenuItem[]; // 排序按钮共用的菜单。
+    onRemove?: () => void; // 清单允许时移除当前格子。缺省不显示。
+    removeDisabledReason?: string; // 置灰时的原因。有这项才显示移除。
 }
+
+/** 菜单最后一组的移除。不可移除时置灰并说明原因。 */
+export const tileRemoveMenuItem = (removable: boolean, onRemove: () => void, reason = "该组件不支持移除"): DesktopTileMenuItem => ({
+    label: "移除",
+    separatorBefore: true,
+    danger: true,
+    disabled: !removable,
+    description: removable ? undefined : reason,
+    onSelect: onRemove,
+});
 
 /** 共用表面、标题显隐、菜单与缩放结构，保留内容生命周期。 */
 export const DesktopTileBase = ({
@@ -48,6 +60,8 @@ export const DesktopTileBase = ({
     onAppearanceChange,
     menuItems = [],
     sortItems,
+    onRemove,
+    removeDisabledReason,
     ref,
     onContextMenu,
     onKeyDown,
@@ -232,6 +246,11 @@ export const DesktopTileBase = ({
                       onSelect: () => onAppearanceChange({ type: "auto-expand", value: !appearance?.autoExpand }),
                   },
                   { label: appearance?.collapsed ? "展开" : "折叠", onSelect: () => onAppearanceChange({ type: "collapsed", value: !appearance?.collapsed }) },
+                  ...(onRemove
+                      ? [tileRemoveMenuItem(true, onRemove)]
+                      : removeDisabledReason !== undefined
+                        ? [tileRemoveMenuItem(false, () => undefined, removeDisabledReason)]
+                        : []),
               ]
             : []; // 无标题时不提供会失去恢复入口的命令。
 
