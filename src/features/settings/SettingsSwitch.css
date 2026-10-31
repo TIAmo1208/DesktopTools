@@ -61,9 +61,9 @@
     outline-offset: 2px;
 }
 
-/* 保存或加载期间禁止操作。 */
+/* 保存或加载期间禁止操作：沿用禁用控件的次要色文字，不做整体半透明。 */
 .settings-switch:has(input:disabled) {
-    opacity: 0.5;
+    color: var(--color-muted);
     cursor: default;
 }
 

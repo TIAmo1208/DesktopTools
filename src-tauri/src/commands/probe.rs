@@ -5,6 +5,9 @@ use serde_json::{Value, json};
 /// 宿主固定的本机服务探活地址：端口写死，不进命令入参也不进插件设置。
 const ASTRBOT_START_TIME_URL: &str = "http://127.0.0.1:6185/api/stat/start-time";
 
+/// 探活地址对应的套接字地址，用于区分「端口无人监听」与「服务卡住」。
+const ASTRBOT_ADDRESS: Option<std::net::SocketAddr> = Some(std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 6185));
+
 /// 探活专用的请求超时，登录接口才需要更长等待。
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -73,7 +76,7 @@ pub fn probe(payload: &Value) -> Value
     };
     let observation = match service
     {
-        ProbeService::AstrBot => observe(ASTRBOT_START_TIME_URL, PROBE_TIMEOUT),
+        ProbeService::AstrBot => observe(ASTRBOT_START_TIME_URL, ASTRBOT_ADDRESS, PROBE_TIMEOUT),
     }; // 单次探测的原始观察，超时已在内部重试。
     let (level, start_time) = judge(observation);
     probe_result(level, start_time)
@@ -112,7 +115,7 @@ fn probe_level_name(level: ProbeLevel) -> &'static str
 }
 
 /// 探测指定地址，超时后按规格重试一次；正式调用只用固定常量地址。
-fn observe(url: &str, timeout: Duration) -> Observation
+fn observe(url: &str, address: Option<std::net::SocketAddr>, timeout: Duration) -> Observation
 {
     // 探活专用客户端：不设 https_only、不启用 cookie jar、不带 Origin 等浏览器头，也不复用天气的客户端。
     let client = match reqwest::blocking::Client::builder().timeout(timeout).build()
@@ -127,7 +130,7 @@ fn observe(url: &str, timeout: Duration) -> Observation
     let mut observation = Observation::TransportFailed; // 最近一次观察结果。
     for attempt in 1..=PROBE_ATTEMPTS
     {
-        observation = observe_once(&client, url);
+        observation = observe_once(&client, url, address);
         if observation != Observation::TimedOut
         {
             break;
@@ -138,12 +141,12 @@ fn observe(url: &str, timeout: Duration) -> Observation
 }
 
 /// 发一次请求并根据状态码与响应体得出观察结果。
-fn observe_once(client: &reqwest::blocking::Client, url: &str) -> Observation
+fn observe_once(client: &reqwest::blocking::Client, url: &str, address: Option<std::net::SocketAddr>) -> Observation
 {
     let response = match client.get(url).send()
     {
         Ok(response) => response,
-        Err(error) => return classify_request_error(&error),
+        Err(error) => return classify_request_error(&error, address),
     };
     let status = response.status();
     if status == reqwest::StatusCode::UNAUTHORIZED
@@ -155,7 +158,12 @@ fn observe_once(client: &reqwest::blocking::Client, url: &str) -> Observation
         crate::log_debug!("AstrBot 探活返回非成功状态：{status}");
         return Observation::StatusFailed;
     }
-    let body = match response.json::<Value>()
+    let text = match response.text()
+    {
+        Ok(text) => text,
+        Err(_) => return Observation::Malformed,
+    };
+    let body = match serde_json::from_str::<Value>(&text)
     {
         Ok(body) => body,
         Err(_) => return Observation::Malformed,
@@ -172,26 +180,42 @@ fn observe_once(client: &reqwest::blocking::Client, url: &str) -> Observation
 }
 
 /// 区分连接被拒、超时和其它传输错误。
-fn classify_request_error(error: &reqwest::Error) -> Observation
+/// reqwest 0.13 在 Windows 上把「连接被拒」和真正超时都抹成 TimedOut，无法从错误本身区分，
+/// 因此超时类失败改用独立的 TCP 探针确认端口是否有人监听：连不上即未运行，连得上才算不确定。
+fn classify_request_error(error: &reqwest::Error, address: Option<std::net::SocketAddr>) -> Observation
 {
+    if has_connection_refused(&*error)
+    {
+        return Observation::Refused;
+    }
     if error.is_timeout()
     {
-        return Observation::TimedOut;
-    }
-    if error.is_connect()
-    {
-        // 连接阶段失败里，被拒才是「未运行」，其它（解析、网络不可达）仍属不确定。
-        return if has_connection_refused(error as &dyn std::error::Error) { Observation::Refused } else { Observation::TransportFailed };
+        return if port_accepts_connection(address) { Observation::TimedOut } else { Observation::Refused };
     }
     Observation::TransportFailed
 }
 
-/// 沿 source 链找连接被拒的 io 错误；reqwest 与 hyper 之间还有多层包装，不能只看第一层。
-fn has_connection_refused(error: &dyn std::error::Error) -> bool
+/// 用独立 TCP 连接确认端口是否有人监听；地址不可用时按「不确定」处理，不误判成离线。
+fn port_accepts_connection(address: Option<std::net::SocketAddr>) -> bool
 {
-    let mut current = Some(error); // 当前正在检查的错误。
+    let Some(address) = address
+    else
+    {
+        return true;
+    };
+    std::net::TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_ok()
+}
+
+/// 沿 source 链与错误文本找连接被拒；reqwest 把被拒包成 TimedOut，只能靠文本判定。
+fn has_connection_refused(error: &(dyn std::error::Error + 'static)) -> bool
+{
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error); // 当前正在检查的错误。
     while let Some(error) = current
     {
+        if error.to_string().to_ascii_lowercase().contains("refused")
+        {
+            return true;
+        }
         if error.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
         {
             return true;

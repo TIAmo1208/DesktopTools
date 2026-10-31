@@ -724,6 +724,9 @@ const AddPluginDialog = ({
                 )}
             </div>
             <footer className="plugin-settings__dialog-actions">
+                <button type="button" disabled={busy} onClick={onCancel}>
+                    取消
+                </button>
                 <button type="button" disabled={busy} onClick={() => onPick("folder")}>
                     选择文件夹
                 </button>
@@ -732,9 +735,6 @@ const AddPluginDialog = ({
                 </button>
                 <button type="button" disabled={busy || picked.length === 0} onClick={onStart}>
                     开始安装
-                </button>
-                <button type="button" disabled={busy} onClick={onCancel}>
-                    取消
                 </button>
             </footer>
         </dialog>

@@ -5,13 +5,31 @@ import type { AudioOutputDevice } from "../../contracts/audio";
 import type { ApplicationPreferences } from "../../contracts/settings";
 import type { FolderPortalInstance, WorkspaceCommand, WorkspaceSnapshot } from "../../contracts/workspace";
 import { SettingsSwitch } from "./SettingsSwitch";
+import plusIcon from "../../../resources/collect-new.svg?raw";
+import backIcon from "../../../resources/weather-back.svg?raw";
 import "../tiles/DesktopTileMenu.css";
 import "./FeatureSettings.css";
+
+/** 一级列表与二级标题行共用的功能格子开关。componentId 与后端组件清单身份一致；maxTiles 0 表示不限。 */
+const FEATURES = [
+    { id: "clock", componentId: "official.local-clock", key: "clockEnabled", label: "本地时间", maxTiles: 1 },
+    { id: "music", componentId: "official.music-control", key: "musicEnabled", label: "音乐控制", maxTiles: 1 },
+    { id: "collect", componentId: "official.collect-box", key: "collectEnabled", label: "收集箱", maxTiles: 0 },
+    { id: "folder", componentId: "", key: "folderPortalEnabled", label: "文件夹映射", maxTiles: 0 },
+    { id: "weather", componentId: "official.weather", key: "weatherEnabled", label: "天气", maxTiles: 0 },
+] as const;
+
+const DEBUG_FEATURE = { id: "debug", componentId: "official.debug-test", key: "debugEnabled", label: "Debug 测试", maxTiles: 1 } as const; // 仅调试构建出现的功能格子。
+
+const addTileIcon = plusIcon.replace("<svg ", '<svg width="18" height="18" '); // 与插件页添加按钮同一个加号图标。
 
 /** 设备列表逐项相同，避免重复通知触发无意义重渲染。 */
 const sameAudioDevices = (left: AudioOutputDevice[], right: AudioOutputDevice[]) =>
     left.length === right.length &&
     left.every((device, index) => device.id === right[index].id && device.name === right[index].name && device.isDefault === right[index].isDefault);
+
+/** 功能格子开关的一类条目。componentId 与后端组件清单身份一致；maxTiles 0 表示不限，1 表示开启时自动补建。 */
+type FeatureEntry = { readonly id: string; readonly componentId: string; readonly label: string; readonly key: string; readonly maxTiles: number };
 
 /** 功能格子开关与二级配置，隐藏不销毁工作区实例。 */
 export const FeatureSettings = ({
@@ -23,6 +41,9 @@ export const FeatureSettings = ({
     onWorkspaceCommand,
     onChooseFolder,
     onCreateCollectBox,
+    onCreateTile,
+    onEnableFeature,
+    onCreateFolderPortal,
     leaveGuard,
 }: {
     preferences?: ApplicationPreferences; // 已保存的格子偏好。
@@ -33,10 +54,16 @@ export const FeatureSettings = ({
     onWorkspaceCommand: (command: WorkspaceCommand) => Promise<void>; // 提交映射事务。
     onChooseFolder: () => Promise<string | null>; // 打开系统目录选择器。
     onCreateCollectBox: () => Promise<void>; // 调用统一收集箱创建入口。
+    onCreateTile: (componentId: string) => Promise<void>; // 调用后端创建格子到桌面。
+    onEnableFeature: (componentId: string) => Promise<boolean>; // 开启功能并在需要时补建默认格子；返回是否已开启。
+    onCreateFolderPortal: () => Promise<void>; // 选择目录并创建文件夹映射格子。
     leaveGuard: RefObject<((action: () => void) => void) | undefined>; // 天气草稿离开保护。
 }) => {
     const [detail, setDetail] = useState<"clock" | "music" | "collect" | "folder" | "debug" | "weather">(); // 当前二级菜单。
     const [audioDevices, setAudioDevices] = useState<AudioOutputDevice[]>([]); // 进入音乐面板时读取的输出设备。
+    const [weatherStatus, setWeatherStatus] = useState<string>(); // 天气页交给统一页头的来源摘要。
+    const [weatherBusy, setWeatherBusy] = useState(false); // 天气页是否有正在进行中的动作。
+    const [weatherAddKey, setWeatherAddKey] = useState(0); // 页头点击添加时自增，天气页据此只打开一次新增弹窗。
     useEffect(() => {
         if (detail !== "music") return;
         let active = true; // 离开面板后忽略迟到的结果。
@@ -69,6 +96,14 @@ export const FeatureSettings = ({
     const [portalMenu, setPortalMenu] = useState<{ portalId: string; left: number; top: number }>(); // 当前跟随鼠标的映射菜单。
     const portalMenuRef = useRef<HTMLMenuElement>(null); // 右键菜单外部点击边界。
     const unavailable = disabled || !preferences; // 加载前不允许修改。
+    /** 开关：限量为 1 的功能格子开启时走后端补建默认格子，其余仍按普通偏好保存。 */
+    const handleEnabled = (checked: boolean, entry: FeatureEntry) => {
+        if (!checked || entry.maxTiles !== 1 || !entry.componentId) {
+            onPreferences({ [entry.key]: checked } as Partial<ApplicationPreferences>);
+            return;
+        }
+        void onEnableFeature(entry.componentId).catch(() => undefined);
+    };
     const [imageWidth, setImageWidth] = useState(String(preferences?.collectImagePreviewWidth ?? 78)); // 输入草稿提交前允许暂时为空。
     useEffect(() => setImageWidth(String(preferences?.collectImagePreviewWidth ?? 78)), [preferences?.collectImagePreviewWidth, disabled]);
     const portals = workspace?.folderPortals ?? []; // 当前已创建的文件夹映射。
@@ -97,73 +132,100 @@ export const FeatureSettings = ({
             window.removeEventListener("blur", closeOnBlur);
         };
     }, [portalMenu]);
-    if (detail === "weather") return <WeatherSettings onBack={() => setDetail(undefined)} leaveGuard={leaveGuard} />;
-    return (
-        <section className="feature-settings">
-            {detail ? (
-                <div className="feature-settings__heading">
+    const features = debugBuild ? [...FEATURES, DEBUG_FEATURE] : FEATURES; // 当前构建可见的功能格子。
+    const feature = features.find((entry) => entry.id === detail); // 当前二级菜单对应的功能格子开关。
+    const enabled = feature ? Boolean(preferences?.[feature.key]) : false; // 当前功能格子的启用状态。
+    const addLimit = feature?.maxTiles ?? 0; // 当前功能格子的可添加数量上限；0 表示不限，1 表示开启时自动补建。
+    /** 二级页添加按钮：限量 1 的功能格子由开关负责创建；文件夹映射在自己的页面里创建。 */
+    const canAdd = feature !== undefined && feature.componentId !== "" && addLimit !== 1;
+    // 所有功能格子二级页共用同一个页头：返回、启用说明、命令区，不重复一级页标题。
+    const heading = (
+        <div className="feature-settings__heading">
+            <button
+                className="feature-settings__back"
+                type="button"
+                title="返回功能格子"
+                aria-label="返回功能格子"
+                onClick={() => (detail === "weather" ? leaveGuard.current?.(() => setDetail(undefined)) : setDetail(undefined))}
+            >
+                <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: backIcon }} />
+            </button>
+            <div className="feature-settings__identity">
+                <h2 className="feature-settings__detail-title">{feature?.label}</h2>
+                <p className="feature-settings__meta">{weatherStatus ?? (enabled ? "已启用" : "已停用")}</p>
+            </div>
+            <div className="feature-settings__commands">
+                {detail === "weather" ? (
                     <button
-                        className="feature-settings__back"
+                        className="settings__button settings__icon-button"
                         type="button"
-                        title="返回功能格子"
-                        aria-label="返回功能格子"
-                        onClick={() => setDetail(undefined)}
+                        disabled={weatherBusy}
+                        title="添加天气来源"
+                        aria-label="添加天气来源"
+                        onClick={() => setWeatherAddKey((value) => value + 1)}
                     >
-                        {"\uE72B"}
+                        <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: addTileIcon }} />
                     </button>
-                    <h2>
-                        {detail === "clock"
-                            ? "本地时间"
-                            : detail === "music"
-                              ? "音乐控制"
-                              : detail === "collect"
-                                ? "收集箱"
-                                : detail === "folder"
-                                  ? "文件夹映射"
-                                  : "Debug 测试"}
-                    </h2>
-                </div>
-            ) : (
-                <h2>功能格子</h2>
-            )}
+                ) : canAdd && feature ? (
+                    <button
+                        className="settings__button settings__icon-button"
+                        type="button"
+                        disabled={unavailable}
+                        title="添加格子到桌面"
+                        aria-label="添加格子到桌面"
+                        onClick={() => void onCreateTile(feature.componentId)}
+                    >
+                        <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: addTileIcon }} />
+                    </button>
+                ) : null}
+                {feature ? (
+                    <SettingsSwitch label={feature.label} disabled={unavailable} checked={enabled} onChange={(checked) => handleEnabled(checked, feature)} />
+                ) : null}
+            </div>
+        </div>
+    );
+    if (detail === "weather") {
+        return (
+            <section className="feature-settings feature-settings--detail">
+                {heading}
+                <WeatherSettings leaveGuard={leaveGuard} onStatus={setWeatherStatus} onBusy={setWeatherBusy} openAddKey={weatherAddKey} />
+            </section>
+        );
+    }
+    return (
+        <section className={`feature-settings${detail ? " feature-settings--detail" : ""}`}>
+            {detail ? heading : null}
             {!detail ? (
                 <>
-                    {(
-                        [
-                            { id: "clock", key: "clockEnabled", label: "本地时间" },
-                            { id: "music", key: "musicEnabled", label: "音乐控制" },
-                            { id: "collect", key: "collectEnabled", label: "收集箱" },
-                            { id: "folder", key: "folderPortalEnabled", label: "文件夹映射" },
-                            { id: "weather", key: "weatherEnabled", label: "天气" },
-                            ...(debugBuild ? [{ id: "debug", key: "debugEnabled", label: "Debug 测试" }] : []),
-                        ] as const
-                    ).map((feature) => (
-                        <div className="feature-settings__row feature-settings__row--link" key={feature.id}>
+                    <div className="feature-settings__list">
+                    {features.map((entry) => (
+                        <div className="feature-settings__row feature-settings__row--link" key={entry.id}>
                             <button
                                 className="feature-settings__open"
                                 type="button"
-                                title={`${feature.label}设置`}
-                                aria-label={`${feature.label}设置`}
-                                onClick={() => setDetail(feature.id as "clock" | "music" | "collect" | "folder" | "weather" | "debug")}
+                                title={`${entry.label}设置`}
+                                aria-label={`${entry.label}设置`}
+                                onClick={() => setDetail(entry.id as "clock" | "music" | "collect" | "folder" | "weather" | "debug")}
                             >
-                                {feature.label}
+                                {entry.label}
                             </button>
                             <SettingsSwitch
-                                label={feature.label}
+                                label={entry.label}
                                 disabled={unavailable}
                                 checked={Boolean(
                                     preferences?.[
-                                        feature.key as
+                                        entry.key as
                                             "clockEnabled" | "musicEnabled" | "collectEnabled" | "folderPortalEnabled" | "weatherEnabled" | "debugEnabled"
                                     ],
                                 )}
-                                onChange={(checked) => onPreferences({ [feature.key]: checked } as Partial<ApplicationPreferences>)}
+                                onChange={(checked) => handleEnabled(checked, entry)}
                             />
                             <span className="feature-settings__chevron" aria-hidden="true">
                                 {"\uE76C"}
                             </span>
                         </div>
                     ))}
+                    </div>
                 </>
             ) : detail === "clock" ? (
                 <>

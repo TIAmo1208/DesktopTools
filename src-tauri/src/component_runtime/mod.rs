@@ -5,7 +5,6 @@ use std::thread;
 use std::time::Duration;
 
 use chrono::Utc;
-use serde::Deserialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -291,7 +290,7 @@ impl ComponentRuntimeState
 /// 提取已注册清单声明的创建与移除能力，并按插件身份稳定排序。
 fn capability_declarations(manifests: &HashMap<String, ComponentManifest>) -> Vec<ComponentCapabilityDeclaration>
 {
-    let mut declarations = manifests.values().map(|manifest| ComponentCapabilityDeclaration { component_id: manifest.id.clone(), creatable: manifest.creatable, removable: manifest.removable }).collect::<Vec<_>>(); // 每个成功注册清单对应一项能力声明。
+    let mut declarations = manifests.values().map(|manifest| ComponentCapabilityDeclaration { component_id: manifest.id.clone(), creatable: manifest.creatable, removable: manifest.removable, max_tiles: manifest.max_tiles }).collect::<Vec<_>>(); // 每个成功注册清单对应一项能力声明。
     declarations.sort_by(|first, second| first.component_id.cmp(&second.component_id));
     declarations
 }

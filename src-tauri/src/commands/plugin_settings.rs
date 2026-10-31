@@ -77,9 +77,7 @@ pub fn create_plugin_component(app: AppHandle, plugin_id: String) -> Result<(), 
     let manifests = app.state::<ComponentRuntimeState>().snapshot(&[]).map_err(|error| error.message)?.manifests; // 当前运行时已经注册的清单。
     validate_creatable_plugin(&manifests, &plugin_id)?;
     let workspace = app.state::<crate::workspace::WorkspaceState>(); // 统一布局事务。
-    let existing = workspace.snapshot().map_err(|error| error.message)?.components.into_iter().filter(|instance| instance.component_id == plugin_id).count(); // 所有显示器上的该插件格子。
-    let max_tiles = manifests.iter().find(|manifest| manifest.id == plugin_id).map(|manifest| manifest.max_tiles).unwrap_or(0);
-    crate::component_runtime::enforce_plugin_tile_limit(max_tiles, existing)?;
+    super::enforce_tile_limit(&workspace, &plugin_id)?;
     let runtime = app.state::<std::sync::Arc<crate::host::DesktopHostRuntime>>(); // 用来取主显示器。
     let monitor_id = super::primary_monitor_id(&runtime)?; // 与收集箱创建入口同一台主显示器。
     let bounds = workspace.next_component_bounds(&monitor_id, super::DEFAULT_TILE_WIDTH, super::DEFAULT_TILE_HEIGHT).map_err(|error| error.message)?; // 现有避让算法算出的位置。

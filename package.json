@@ -19,7 +19,7 @@
         "format": "prettier --write index.html package.json tsconfig.json src && npm run format:rust",
         "format:rust": "cargo +nightly-2026-09-08 fmt --manifest-path src-tauri/Cargo.toml",
         "format:rust:check": "cargo +nightly-2026-09-08 fmt --manifest-path src-tauri/Cargo.toml -- --check",
-        "tauri:dev": "tauri dev",
+        "tauri:dev": "cargo build --manifest-path src-tauri/Cargo.toml --bins && tauri dev",
         "tauri:build": "tauri build --no-bundle",
         "pretauri:installer": "node scripts/prepare-licenses.mjs",
         "tauri:installer": "tauri build --config src-tauri/tauri.installer.conf.json --bundles nsis --no-sign"

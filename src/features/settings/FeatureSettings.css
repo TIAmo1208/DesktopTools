@@ -4,11 +4,60 @@
     max-width: 900px;
     padding: 1px;
 }
+/* 一级页内容区按两行编排：外壳标题、功能列表。 */
+.settings__content:has(> .feature-settings:not(.feature-settings--detail)) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+}
 /* 紧凑分区标题。 */
 .feature-settings h2 {
     margin: 0 0 16px;
     font-size: 18px;
 }
+/* 二级页标题在页头行内，不带任何外边距；提高选择器权重，不受上面的分区标题规则影响。 */
+.feature-settings h2.feature-settings__detail-title {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 38px;
+}
+
+/* 一级页与插件一级页一致：借用外壳 h1，列表紧接在标题行下方。 */
+.settings__content:has(> .feature-settings:not(.feature-settings--detail)) > h1 {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    margin-bottom: 16px;
+}
+/* 一级页内容区拆开，标题行和列表都直接排进内容区。 */
+.feature-settings:not(.feature-settings--detail) {
+    display: contents;
+}
+/* 一级列表横跨内容区。 */
+.feature-settings__list {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    max-width: 900px;
+    padding: 1px;
+}
+/* 二级菜单自己渲染二级标题，外壳一级标题按视觉隐藏但保留可访问名。 */
+.settings__content:has(> .feature-settings--detail) > h1 {
+    display: none;
+}
+
+/* 天气二级页去除自身标题行后，与功能格子二级页内容同一起点。 */
+.feature-settings--detail .weather-settings {
+    max-width: none;
+    padding: 0;
+}
+/* 功能说明或提示，排在设置行之前。 */
+.feature-settings__hint {
+    margin: 0 0 12px;
+    color: var(--color-muted);
+    font-size: 12px;
+    line-height: 18px;
+}
+
 /* 功能设置行的名称和控件。 */
 .feature-settings__row {
     user-select: none;
@@ -193,43 +242,78 @@
     color: var(--color-text);
     background: var(--color-subtle);
 }
-/* 原生字体图标式前进和返回命令。 */
+/* 原生字体图标式返回命令，只在二级页标题行里出现。 */
 .feature-settings__back {
+    display: inline-flex;
     flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
     width: 38px;
     height: 38px;
+    padding: 0;
     border: 0;
     border-radius: 4px;
     color: var(--color-text);
     background: transparent;
     font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+    cursor: pointer;
 }
-/* 返回和功能标题同一行。 */
+/* 返回、说明与命令同一行，尺寸和间距沿用插件二级页头。 */
 .feature-settings__heading {
     display: flex;
     align-items: center;
     gap: 12px;
+    min-height: 38px;
     margin-bottom: 16px;
 }
 
-/* 标题行里的名称不再另起一行。 */
-.feature-settings__heading h2 {
+/* 说明区占满中间，命令区贴右。 */
+.feature-settings__identity {
+    flex: 1;
+    min-width: 0;
+}
+
+/* 启用状态与插件页信息行同一样式。 */
+.feature-settings__meta {
     margin: 0;
+    color: var(--color-muted);
+    font-size: 12px;
+    line-height: 18px;
 }
 
-/* 二级菜单返回入口。单独出现时才往下留空。 */
-.feature-settings__back {
-    margin-bottom: 12px;
-}
-
-/* 标题行里的返回和标题垂直居中。 */
-.feature-settings__heading .feature-settings__back {
-    display: inline-flex;
+/* 标题行的功能命令按添加格子、开关顺序排列。 */
+.feature-settings__commands {
+    display: flex;
     align-items: center;
-    justify-content: center;
-    margin-bottom: 0;
+    gap: 8px;
+    margin-left: auto;
+}
+
+/* 添加格子按钮与插件页图标命令同一尺寸。 */
+.feature-settings__commands > .settings__icon-button {
+    width: 32px;
+    min-height: 32px;
+    height: 32px;
     padding: 0;
 }
+
+/* 图标居箱体正中。 */
+.feature-settings__commands > .settings__icon-button svg {
+    display: block;
+}
+
+/* 头部开关只留轨道，开/关二字不占位，无障碍名仍在输入上。 */
+.feature-settings__commands .settings-switch {
+    flex-basis: 40px;
+    width: 40px;
+    gap: 0;
+}
+
+/* 隐藏开关的可见文字。 */
+.feature-settings__commands .settings-switch > span:not(.settings-switch__track) {
+    display: none;
+}
+
 /* 指针悬停反馈。 */
 .feature-settings__back:hover {
     background: var(--color-subtle);

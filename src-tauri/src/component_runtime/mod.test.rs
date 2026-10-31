@@ -149,9 +149,10 @@ fn registered_manifests_publish_creation_and_removal_declarations()
     let runtime = ComponentRuntimeState::new(&std::env::temp_dir().join(format!("desktop-tools-no-plugins-{}", std::process::id()))); // 当前构建注册表。
     let declaration = |component_id: &str| runtime.capability_declarations().iter().find(|declaration| declaration.component_id == component_id).cloned(); // 当前构建的单项能力声明。
 
-    assert_eq!(declaration("official.collect-box"), Some(ComponentCapabilityDeclaration { component_id: "official.collect-box".to_string(), creatable: true, removable: true }));
-    assert_eq!(declaration("official.weather"), Some(ComponentCapabilityDeclaration { component_id: "official.weather".to_string(), creatable: true, removable: true }));
-    assert_eq!(declaration("official.local-clock"), Some(ComponentCapabilityDeclaration { component_id: "official.local-clock".to_string(), creatable: false, removable: false }));
+    assert_eq!(declaration("official.collect-box"), Some(ComponentCapabilityDeclaration { component_id: "official.collect-box".to_string(), creatable: true, removable: true, max_tiles: 0 }));
+    assert_eq!(declaration("official.weather"), Some(ComponentCapabilityDeclaration { component_id: "official.weather".to_string(), creatable: true, removable: true, max_tiles: 0 }));
+    assert_eq!(declaration("official.local-clock"), Some(ComponentCapabilityDeclaration { component_id: "official.local-clock".to_string(), creatable: true, removable: true, max_tiles: 1 }));
+    assert_eq!(declaration("official.music-control"), Some(ComponentCapabilityDeclaration { component_id: "official.music-control".to_string(), creatable: true, removable: true, max_tiles: 1 }));
     assert_eq!(runtime.capability_declarations().len(), runtime.snapshot(&[]).unwrap().manifests.len());
 }
 

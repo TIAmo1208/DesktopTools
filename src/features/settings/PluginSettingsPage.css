@@ -128,10 +128,10 @@
     cursor: default;
 }
 
-/* 二级页头：返回、名称、创建命令同一行。 */
+/* 二级页头：返回、名称、创建命令同一行并垂直居中。 */
 .plugin-settings__detail-head {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 12px;
     min-height: 38px;
     margin-bottom: 16px;
@@ -188,6 +188,19 @@
 /* 卸载图标用现成的危险色。 */
 .plugin-settings__trash {
     color: var(--color-error);
+}
+
+/* 页头里的图标命令与 16px 箭头、22px 开关同高，保持同一中线。 */
+.plugin-settings__commands > .settings__icon-button {
+    width: 32px;
+    min-height: 32px;
+    height: 32px;
+    padding: 0;
+}
+
+/* 图标居箱体正中。 */
+.plugin-settings__commands > .settings__icon-button svg {
+    display: block;
 }
 
 /* 头部开关只留轨道。开/关二字不占位，无障碍名仍在输入上。 */
@@ -401,11 +414,13 @@
     z-index: 1;
 }
 
-/* 卸载按钮：32 的命中区，点击后打开确认。 */
+/* 卸载按钮：32 的命中区，点击后打开确认；图标与开关同一中线居中。 */
 .plugin-settings__uninstall {
-    display: grid;
+    display: flex;
     flex: 0 0 32px;
-    place-items: center;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
     width: 32px;
     height: 32px;
     margin-left: auto;
@@ -418,6 +433,7 @@
 
 /* 卸载图标。 */
 .plugin-settings__uninstall svg {
+    display: block;
     width: 16px;
     height: 16px;
 }

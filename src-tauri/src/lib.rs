@@ -129,6 +129,8 @@ pub fn run()
             commands::collect::delete_collect_item,
             commands::collect::restore_collect_item,
             commands::create_collect_box,
+            commands::create_tile_to_desktop,
+            commands::enable_feature,
             open_settings_window,
             get_component_runtime_snapshot,
             invoke_component_capability,

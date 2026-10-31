@@ -286,11 +286,28 @@
     cursor: pointer;
 }
 
+/* 二级菜单标题行：返回与标题垂直居中，间距 12。 */
+.settings__heading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 22px;
+}
+
+/* 标题行内的间距由标题行负责，标题不再自带下边距。 */
+.settings__heading h1 {
+    margin: 0;
+}
+
 /* 二级菜单返回命令沿用系统图标与点击尺寸。 */
 .settings__back {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
     width: 38px;
     height: 38px;
-    margin-bottom: 12px;
+    padding: 0;
     border: 0;
     border-radius: 4px;
     color: var(--color-text);
@@ -305,13 +322,23 @@
     background: var(--color-subtle);
 }
 
-/* 设置名称允许换行，控制区域不遮挡名称。 */
+/* 设置名称允许换行，控制区域不遮挡名称；单行文字与行内控件按行盒居中对齐。 */
 .settings__row-title {
     user-select: none;
+    display: flex;
     flex: 1;
+    flex-direction: column;
+    justify-content: center;
     min-width: 0;
     overflow-wrap: anywhere;
     font-size: calc(var(--interface-font-size) + 1px);
+}
+
+/* 文本与补充说明按钮同处一行。 */
+.settings__row-title--inline {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
 }
 
 /* 状态值与诊断详情。 */
@@ -405,10 +432,10 @@
     background: var(--color-background);
 }
 
-/* 保存期间的禁用控件。 */
+/* 保存期间的禁用控件：与“添加插件”按钮一致，用次要色文字而不是整体半透明。 */
 .settings__button:disabled,
 .settings__select:disabled {
-    opacity: 0.5;
+    color: var(--color-muted);
     cursor: default;
 }
 

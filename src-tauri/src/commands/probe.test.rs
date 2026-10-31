@@ -64,7 +64,7 @@ fn invalid_service_reports_unknown_without_start_time()
 fn real_response_reports_ok()
 {
     let (url, handle) = serve_once("200 OK", r#"{"status":"ok","message":null,"data":{"start_time":1793365017}}"#, Duration::ZERO);
-    assert_eq!(observe(&url, Duration::from_secs(2)), Observation::Running(1_793_365_017));
+    assert_eq!(observe(&url, None, Duration::from_secs(2)), Observation::Running(1_793_365_017));
     handle.join().unwrap();
 }
 
@@ -73,7 +73,7 @@ fn real_response_reports_ok()
 fn real_response_accepts_float_start_time()
 {
     let (url, handle) = serve_once("200 OK", r#"{"status":"ok","message":null,"data":{"start_time":1793365017.123}}"#, Duration::ZERO);
-    assert_eq!(observe(&url, Duration::from_secs(2)), Observation::Running(1_793_365_017));
+    assert_eq!(observe(&url, None, Duration::from_secs(2)), Observation::Running(1_793_365_017));
     handle.join().unwrap();
 }
 
@@ -82,7 +82,7 @@ fn real_response_accepts_float_start_time()
 fn real_response_with_string_start_time_is_malformed()
 {
     let (url, handle) = serve_once("200 OK", r#"{"status":"ok","data":{"start_time":"1793365017"}}"#, Duration::ZERO);
-    let observation = observe(&url, Duration::from_secs(2)); // 协议异常的观察结果。
+    let observation = observe(&url, None, Duration::from_secs(2)); // 协议异常的观察结果。
     assert_eq!(observation, Observation::Malformed);
     assert_eq!(judge(observation).0, ProbeLevel::Warn);
     handle.join().unwrap();
@@ -93,7 +93,7 @@ fn real_response_with_string_start_time_is_malformed()
 fn real_response_401_is_unauthorized()
 {
     let (url, handle) = serve_once("401 Unauthorized", r#"{"status":"error","message":"未授权"}"#, Duration::ZERO);
-    let observation = observe(&url, Duration::from_secs(2)); // 被拒的观察结果。
+    let observation = observe(&url, None, Duration::from_secs(2)); // 被拒的观察结果。
     assert_eq!(observation, Observation::Unauthorized);
     assert_eq!(judge(observation).0, ProbeLevel::Warn);
     handle.join().unwrap();
@@ -104,7 +104,7 @@ fn real_response_401_is_unauthorized()
 fn real_response_500_is_status_failed()
 {
     let (url, handle) = serve_once("500 Internal Server Error", "{}", Duration::ZERO);
-    assert_eq!(observe(&url, Duration::from_secs(2)), Observation::StatusFailed);
+    assert_eq!(observe(&url, None, Duration::from_secs(2)), Observation::StatusFailed);
     handle.join().unwrap();
 }
 
@@ -115,7 +115,7 @@ fn closed_port_reports_off()
     let listener = TcpListener::bind("127.0.0.1:0").expect("测试应能占用临时端口"); // 先占位拿到一个空闲端口。
     let address = listener.local_addr().expect("测试端口应有地址");
     drop(listener); // 立刻释放，端口上不再有进程监听。
-    let observation = observe(&format!("http://{address}/api/stat/start-time"), Duration::from_secs(2)); // 无人监听时的观察结果。
+    let observation = observe(&format!("http://{address}/api/stat/start-time"), Some(address), Duration::from_secs(2)); // 无人监听时的观察结果。
     assert_eq!(observation, Observation::Refused);
     assert_eq!(judge(observation).0, ProbeLevel::Off);
 }
@@ -146,8 +146,7 @@ fn refused_error_is_found_through_wrapped_sources()
 fn timeout_reports_unknown_not_off()
 {
     let (url, handle) = serve_once("200 OK", r#"{"status":"ok","data":{"start_time":1793365017}}"#, Duration::from_millis(600));
-    let observation = observe(&url, Duration::from_millis(100)); // 短超时下的观察结果。
-    assert_eq!(observation, Observation::TimedOut);
+    let observation = observe(&url, None, Duration::from_millis(100)); // 短超时下的观察结果。    assert_eq!(observation, Observation::TimedOut);
     assert_eq!(judge(observation).0, ProbeLevel::Unknown);
     handle.join().unwrap();
 }

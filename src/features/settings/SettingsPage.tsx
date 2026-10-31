@@ -184,6 +184,33 @@ export const SettingsPage = () => {
         });
     };
 
+    /** 开启限量为 1 的功能格子：后端写开关并在桌面没有格子时补建一个，成功后重读偏好与工作区。 */
+    const handleEnableFeature = async (componentId: string) => {
+        try {
+            await invokeRuntime("enable_feature", { componentId });
+        } catch (error: unknown) {
+            publishMessage({ type: "error", content: settingsErrorMessage(error), source: "settings-workspace" });
+            return false;
+        }
+        await handleRefresh();
+        return true;
+    };
+
+    /** 文件夹映射的添加按钮：选目录后在桌面创建映射格子。 */
+    const handleCreateFolderPortal = async () => {
+        const rootPath = await chooseFolderPortalDirectory();
+        if (!rootPath) return;
+        await handleWorkspaceCommand({ type: "create-folder-portal", rootPath, bounds: { left: 24, top: 24, width: 360, height: 280 } });
+    };
+
+    /** 功能格子二级标题行的“添加格子到桌面”；复用后端统一创建入口与既有格子开关。 */
+    const handleCreateTile = async (componentId: string) => {
+        await handleCommand(async () => {
+            await invokeRuntime("create_tile_to_desktop", { componentId });
+            publishMessage({ type: "success", content: "格子已添加到桌面", source: "settings-workspace" });
+        });
+    };
+
     const chooseFolderPortalDirectory = async () => {
         try {
             const selected = await invokeRuntime<unknown>("choose_folder_portal_directory");
@@ -257,7 +284,11 @@ export const SettingsPage = () => {
                             aria-label={entry.label}
                             onClick={() => handlePageChange(entry.id)}
                         >
-                            <span className={`settings__icon${entry.id === "plugins" ? " settings__icon--svg" : ""}`} aria-hidden="true" dangerouslySetInnerHTML={entry.id === "plugins" ? { __html: pluginNavIcon } : undefined}>
+                            <span
+                                className={`settings__icon${entry.id === "plugins" ? " settings__icon--svg" : ""}`}
+                                aria-hidden="true"
+                                dangerouslySetInnerHTML={entry.id === "plugins" ? { __html: pluginNavIcon } : undefined}
+                            >
                                 {entry.id === "plugins" ? null : entry.icon}
                             </span>
                             <span className="settings__navigation-label">{entry.label}</span>
@@ -266,12 +297,17 @@ export const SettingsPage = () => {
                 </nav>
             </aside>
             <main className="settings__content" aria-labelledby="settings-title" aria-busy={busy}>
-                {page === "appearance" && gridDetail && (
-                    <button className="settings__back" type="button" title="返回外观" aria-label="返回外观" onClick={() => setGridDetail(undefined)}>
-                        {"\uE72B"}
-                    </button>
+                {page === "appearance" && gridDetail ? (
+                    <div className="settings__heading">
+                        <button className="settings__back" type="button" title="返回外观" aria-label="返回外观" onClick={() => setGridDetail(undefined)}>
+                            {"\uE72B"}
+                        </button>
+                        <h1 id="settings-title">{gridDetail === "desktopGrid" ? "桌面网格" : "围栏内网格"}</h1>
+                    </div>
+                ) : (
+                    // 功能格子二级页自己渲染二级标题，外壳标题由 FeatureSettings 的样式按视觉隐藏但保留可访问名。
+                    <h1 id="settings-title">{title}</h1>
                 )}
-                <h1 id="settings-title">{page === "appearance" && gridDetail ? (gridDetail === "desktopGrid" ? "桌面网格" : "围栏内网格") : title}</h1>
                 {!snapshot && (
                     <p className="settings__status" role="status">
                         正在读取设置…
@@ -399,6 +435,9 @@ export const SettingsPage = () => {
                         onWorkspaceCommand={handleWorkspaceCommand}
                         onChooseFolder={chooseFolderPortalDirectory}
                         onCreateCollectBox={handleCreateCollectBox}
+                        onCreateTile={handleCreateTile}
+                        onEnableFeature={handleEnableFeature}
+                        onCreateFolderPortal={handleCreateFolderPortal}
                         leaveGuard={leaveGuard}
                     />
                 )}
@@ -412,7 +451,7 @@ export const SettingsPage = () => {
                             ] as const
                         ).map(([key, label, description]) => (
                             <div className="settings__row" key={key}>
-                                <span className="settings__row-title">
+                                <span className="settings__row-title settings__row-title--inline">
                                     <label htmlFor={key}>{label}</label>
                                     <SettingsInfo label={label} description={description} />
                                 </span>
@@ -426,7 +465,7 @@ export const SettingsPage = () => {
                             </div>
                         ))}
                         <div className="settings__row">
-                            <span className="settings__row-title">
+                            <span className="settings__row-title settings__row-title--inline">
                                 <label htmlFor="follow-system-reduced-motion">跟随系统减少动态效果控制</label>
                                 <SettingsInfo label="跟随系统减少动态效果控制" description="开启时由 Windows 动态效果设置控制实际动画，并保留界面动画开关值" />
                             </span>

@@ -3,5 +3,8 @@
   "name": "音乐控制",
   "entry": "official:music-control",
   "requiredCapabilities": ["read-current-media"],
+  "creatable": true,
+  "removable": true,
+  "maxTiles": 1,
   "persistenceVersion": 1
 }
