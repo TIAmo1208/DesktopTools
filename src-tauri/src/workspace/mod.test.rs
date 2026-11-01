@@ -122,6 +122,19 @@ fn workspace_state(path: std::path::PathBuf) -> WorkspaceState { WorkspaceState:
 /// 按当前官方注册表返回本测试使用的创建与移除能力声明。
 fn registered_capability_declarations() -> Vec<ComponentCapabilityDeclaration> { crate::component_runtime::ComponentRuntimeState::new(&snapshot_path("no-plugins")).capability_declarations().to_vec() }
 
+/// 构造一份「不可创建且不可移除」的合成声明；夹具不依赖真实清单字段取值。
+fn undeclared_capability(component_id: &str) -> ComponentCapabilityDeclaration { ComponentCapabilityDeclaration { component_id: component_id.to_string(), creatable: false, removable: false, max_tiles: 0 } }
+
+/// 在真实注册表声明上覆盖指定组件身份，其余组件保持当前清单取值。
+fn declarations_with_override(overrides: &[ComponentCapabilityDeclaration]) -> Vec<ComponentCapabilityDeclaration>
+{
+    // 先取全部真实声明，再剔除被覆盖的身份。
+    let mut declarations = registered_capability_declarations();
+    declarations.retain(|declaration| !overrides.iter().any(|over| over.component_id == declaration.component_id));
+    declarations.extend(overrides.iter().cloned());
+    declarations
+}
+
 /// 按清单声明与组件身份返回本测试使用的组件实例。
 fn component_instance(instance_id: &str, component_id: &str) -> ComponentInstanceSnapshot { ComponentInstanceSnapshot { instance_id: instance_id.to_string(), component_id: component_id.to_string(), monitor_id: "DISPLAY1".to_string(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 24.0, top: 24.0, width: 360.0, height: 280.0 }, state_version: 1, state: serde_json::json!({}) } }
 
@@ -349,7 +362,7 @@ fn remove_collect_box_preserves_other_tiles_and_restores_layout()
     let collect = ComponentInstanceSnapshot { state: serde_json::json!({"test": "保留私有状态"}), ..component_instance("official.collect-box.default", "official.collect-box") }; // 清单声明可移除的默认收集箱。
     let music = ComponentInstanceSnapshot { instance_id: "official.music-control.default".into(), component_id: "official.music-control".into(), ..collect.clone() }; // 未声明移除能力的默认音乐格子。
     let defaults = [collect.clone(), music.clone()]; // 重启时仍传入原有默认实例。
-    let declarations = registered_capability_declarations(); // 当前官方注册表声明的创建与移除范围。
+    let declarations = declarations_with_override(&[undeclared_capability("official.music-control")]); // 用合成声明固定音乐格子不可移除，不依赖真实清单取值。
     let state = WorkspaceState::load_with_components(path.clone(), &defaults, &declarations).unwrap(); // 实际事务与持久化入口。
     state.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0)], &[], &[], &[]).unwrap();
     let created = state.apply_on_monitor(Some("DISPLAY1"), WorkspaceCommand::CreateComponent { component_id: collect.component_id.clone(), bounds, state: serde_json::json!({}) }).unwrap(); // 共享内容的第二个格子。
@@ -395,7 +408,7 @@ fn create_component_requires_a_declared_creation_capability()
 {
     let path = snapshot_path("create-declared-component"); // 独立测试工作区。
     let bounds = WorkspaceRect { left: 24.0, top: 24.0, width: 360.0, height: 280.0 }; // 新格子提交边界。
-    let state = WorkspaceState::load_with_components(path.clone(), &[], &registered_capability_declarations()).unwrap(); // 使用当前官方注册表声明的创建范围。
+    let state = WorkspaceState::load_with_components(path.clone(), &[], &declarations_with_override(&[undeclared_capability("official.local-clock")])).unwrap(); // 用合成声明固定「不可创建」，不依赖真实清单取值。
     state.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0)], &[], &[], &[]).unwrap();
     let before = state.snapshot().unwrap(); // 被拒绝的创建必须保持整个快照。
 
@@ -473,7 +486,7 @@ fn remove_component_requires_a_declared_removal_capability()
     let path = snapshot_path("remove-declared-component"); // 独立测试工作区。
     let collect = component_instance("official.collect-box.default", "official.collect-box"); // 清单声明可移除的收集箱。
     let music = component_instance("official.music-control.default", "official.music-control"); // 未声明移除能力的音乐格子。
-    let declarations = registered_capability_declarations(); // 当前官方注册表声明的创建与移除范围。
+    let declarations = declarations_with_override(&[undeclared_capability("official.music-control")]); // 用合成声明固定音乐格子不可移除，不依赖真实清单取值。
     let state = WorkspaceState::load_with_components(path.clone(), &[collect.clone(), music.clone()], &declarations).unwrap();
     state.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0)], &[], &[], &[]).unwrap();
     let before = state.snapshot().unwrap(); // 被拒绝的移除必须保持整个快照。
@@ -495,7 +508,7 @@ fn missing_manifest_component_can_be_removed_without_opening_creation()
     let path = snapshot_path("missing-manifest-component"); // 独立测试工作区。
     let ghost = component_instance("plugin.missing.default", "plugin.missing"); // 运行时快照中没有对应清单的实例。
     let music = component_instance("official.music-control.default", "official.music-control"); // 清单存在但未声明可移除。
-    let declarations = registered_capability_declarations(); // 当前运行时快照的清单声明，不含 plugin.missing。
+    let declarations = declarations_with_override(&[undeclared_capability("official.music-control")]); // 合成声明让音乐格子不可创建也不可移除，其余保持真实清单。
     let state = WorkspaceState::load_with_components(path.clone(), &[ghost.clone(), music.clone()], &declarations).unwrap();
     state.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0)], &[], &[], &[]).unwrap();
 
@@ -543,7 +556,7 @@ fn backup_restore_does_not_validate_component_capabilities()
     let backup = snapshot_path("restore-undeclared-backup"); // 包含未声明能力实例的手动备份。
     let target_path = snapshot_path("restore-undeclared-target"); // 接收还原的空工作区。
     let clock = component_instance("official.local-clock.default", "official.local-clock"); // 清单未声明创建或移除能力。
-    let declarations = registered_capability_declarations(); // 当前官方注册表声明。
+    let declarations = declarations_with_override(&[undeclared_capability("official.local-clock")]); // 用合成声明固定时钟不可创建也不可移除，不依赖真实清单取值。
     let source = WorkspaceState::load_with_components(path.clone(), &[clock.clone()], &declarations).unwrap();
     source.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0)], &[], &[], &[]).unwrap(); // 写入含该实例的完整布局。
     source.write_manual_backup(&backup).unwrap();
