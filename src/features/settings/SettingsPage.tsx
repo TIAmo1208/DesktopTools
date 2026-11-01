@@ -478,7 +478,7 @@ export const SettingsPage = () => {
                             />
                         </div>
                         <div className="settings__row">
-                            <span className="settings__row-title">
+                            <span className="settings__row-title settings__row-title--inline">
                                 <label htmlFor="interface-animations">界面动画</label>
                                 <SettingsInfo label="界面动画" description="未跟随系统减少动态效果时，启用布局切换与状态过渡动画" />
                             </span>

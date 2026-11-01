@@ -334,10 +334,11 @@
     font-size: calc(var(--interface-font-size) + 1px);
 }
 
-/* 文本与补充说明按钮同处一行。 */
+/* 文本与补充说明按钮同处一行；行内对齐从左排起，不继承纵向基线时的居中。 */
 .settings__row-title--inline {
     flex-direction: row;
     align-items: center;
+    justify-content: flex-start;
     gap: 6px;
 }
 
