@@ -9,8 +9,8 @@ pub use desktop_item::get_desktop_item_image;
 pub use desktop_item::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
 pub mod music;
 mod notifications;
-pub mod probe;
 pub mod plugin_settings;
+pub mod probe;
 pub mod settings;
 pub use plugin_settings::{apply_plugin_install, apply_plugin_installs, cancel_plugin_install, choose_plugin_directory, create_plugin_component, get_plugin_settings, open_plugin_directory, open_plugin_repository, prepare_plugin_install_from_archive, prepare_plugin_install_from_folder, resolved_plugin_directory, save_plugin_settings, uninstall_plugin};
 pub mod weather;
@@ -74,10 +74,7 @@ pub fn create_tile_to_desktop(app: tauri::AppHandle, component_id: String) -> Re
             execute_create_collect_box(&app, monitor_id)?;
             Ok(None)
         }
-        WEATHER_COMPONENT_ID =>
-        {
-            execute_create_weather_tile(&app, None, monitor_id).map(Some)
-        }
+        WEATHER_COMPONENT_ID => execute_create_weather_tile(&app, None, monitor_id).map(Some),
         _ =>
         {
             let bounds = workspace.next_component_bounds(&monitor_id, DEFAULT_TILE_WIDTH, DEFAULT_TILE_HEIGHT).map_err(|error| error.message)?;

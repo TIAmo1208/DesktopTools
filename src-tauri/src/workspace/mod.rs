@@ -248,22 +248,10 @@ impl WorkspaceState
     }
 
     /// 校验指定组件再创建一个格子是否超出清单数量上限；0 表示不限。
-    pub(crate) fn enforce_component_tile_limit(&self, component_id: &str, count: usize) -> Result<(), WorkspaceError>
-    {
-        crate::component_runtime::enforce_plugin_tile_limit(self.component_tile_limit(component_id), count).map_err(|message| WorkspaceError::invalid_command(&message))
-    }
+    pub(crate) fn enforce_component_tile_limit(&self, component_id: &str, count: usize) -> Result<(), WorkspaceError> { crate::component_runtime::enforce_plugin_tile_limit(self.component_tile_limit(component_id), count).map_err(|message| WorkspaceError::invalid_command(&message)) }
 
     /// 返回指定组件清单声明的格子数量上限，任意显示器上的实例都计入；0 或清单缺失表示不限。
-    fn component_tile_limit(&self, component_id: &str) -> u32
-    {
-        self.capability_declarations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .iter()
-            .find(|declaration| declaration.component_id == component_id)
-            .map(|declaration| declaration.max_tiles)
-            .unwrap_or(0)
-    }
+    fn component_tile_limit(&self, component_id: &str) -> u32 { self.capability_declarations.lock().unwrap_or_else(|error| error.into_inner()).iter().find(|declaration| declaration.component_id == component_id).map(|declaration| declaration.max_tiles).unwrap_or(0) }
 
     /// 当前布局里是否已有该组件的实例，任意显示器均算。
     pub fn has_component(&self, component_id: &str) -> bool

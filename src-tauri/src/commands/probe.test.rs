@@ -3,7 +3,7 @@ use std::net::TcpListener;
 use std::thread;
 use std::time::Duration;
 
-use super::{judge, observe, parse_probe_service, probe, Observation, ProbeLevel, ProbeService};
+use super::{Observation, ProbeLevel, ProbeService, judge, observe, parse_probe_service, probe};
 
 /// 起一个只应答一次的本地服务，返回其地址与应答线程。
 fn serve_once(status: &str, body: &str, delay: Duration) -> (String, thread::JoinHandle<()>)
