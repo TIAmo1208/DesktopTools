@@ -10,6 +10,7 @@ pub use desktop_item::{cancel_desktop_item_drag_preparation, prepare_desktop_ite
 pub mod music;
 mod notifications;
 pub mod plugin_settings;
+pub mod probe;
 pub mod settings;
 pub use plugin_settings::{apply_plugin_install, apply_plugin_installs, cancel_plugin_install, choose_plugin_directory, create_plugin_component, get_plugin_settings, open_plugin_directory, open_plugin_repository, prepare_plugin_install_from_archive, prepare_plugin_install_from_folder, resolved_plugin_directory, save_plugin_settings, uninstall_plugin};
 pub mod weather;
@@ -26,6 +27,9 @@ const DEFAULT_TILE_HEIGHT: f64 = 280.0;
 /// 天气格子的官方组件包身份。
 const WEATHER_COMPONENT_ID: &str = "official.weather";
 
+/// 收集箱的官方组件包身份。
+const COLLECT_COMPONENT_ID: &str = "official.collect-box";
+
 /// 统一创建一个收集箱格子，设置页、桌面菜单和其他入口共用此逻辑。
 pub(crate) fn execute_create_collect_box(app: &tauri::AppHandle, monitor_id: String) -> Result<(), String>
 {
@@ -34,7 +38,7 @@ pub(crate) fn execute_create_collect_box(app: &tauri::AppHandle, monitor_id: Str
     let workspace = app.state::<WorkspaceState>();
     let items = app.state::<DesktopItemState>();
     let bounds = workspace.next_component_bounds(&monitor_id, DEFAULT_TILE_WIDTH, DEFAULT_TILE_HEIGHT).map_err(|error| error.message)?;
-    workspace::execute_apply_workspace_command(app, &workspace, &items, &runtime, monitor_id.clone(), WorkspaceCommand::CreateComponent { component_id: "official.collect-box".to_string(), bounds, state: json!({}) }).map_err(|error| error.message)?;
+    workspace::execute_apply_workspace_command(app, &workspace, &items, &runtime, monitor_id.clone(), WorkspaceCommand::CreateComponent { component_id: COLLECT_COMPONENT_ID.to_string(), bounds, state: json!({}) }).map_err(|error| error.message)?;
     crate::log_info!("收集箱：已创建格子，显示器={monitor_id}");
     Ok(())
 }
@@ -53,6 +57,92 @@ pub fn create_collect_box(app: tauri::AppHandle) -> Result<(), String>
     use tauri::Manager;
     let monitor_id = primary_monitor_id(&app.state::<std::sync::Arc<DesktopHostRuntime>>())?;
     execute_create_collect_box(&app, monitor_id)
+}
+
+/// 设置页功能格子二级标题行的“添加格子到桌面”：官方格子沿用各自既有创建入口，插件格子沿用组件创建门禁。
+/// 清单声明的格子数量上限对所有入口统一生效；返回本次新建的实例身份。
+#[tauri::command]
+pub fn create_tile_to_desktop(app: tauri::AppHandle, component_id: String) -> Result<Option<String>, String>
+{
+    use tauri::Manager;
+    let workspace = app.state::<WorkspaceState>();
+    let monitor_id = primary_monitor_id(&app.state::<std::sync::Arc<DesktopHostRuntime>>())?;
+    match component_id.as_str()
+    {
+        COLLECT_COMPONENT_ID =>
+        {
+            execute_create_collect_box(&app, monitor_id)?;
+            Ok(None)
+        }
+        WEATHER_COMPONENT_ID => execute_create_weather_tile(&app, None, monitor_id).map(Some),
+        _ =>
+        {
+            let bounds = workspace.next_component_bounds(&monitor_id, DEFAULT_TILE_WIDTH, DEFAULT_TILE_HEIGHT).map_err(|error| error.message)?;
+            let runtime = app.state::<std::sync::Arc<DesktopHostRuntime>>();
+            let existing = workspace.snapshot().map_err(|error| error.message)?.components.into_iter().filter(|component| component.component_id == component_id).map(|component| component.instance_id).collect::<Vec<_>>(); // 创建前的实例身份。
+            let snapshot = workspace::execute_apply_workspace_command(&app, &workspace, &app.state::<DesktopItemState>(), &runtime, monitor_id.clone(), WorkspaceCommand::CreateComponent { component_id: component_id.clone(), bounds, state: json!({}) }).map_err(|error| error.message)?;
+            // 本次事务新提交的实例身份。
+            let instance_id = snapshot.components.iter().find(|component| component.component_id == component_id && !existing.contains(&component.instance_id)).map(|component| component.instance_id.clone());
+            crate::log_info!("设置：已创建格子，组件={component_id}，实例={instance_id:?}，显示器={monitor_id}");
+            Ok(instance_id)
+        }
+    }
+}
+
+/// 组件清单声明的桌面格子数量上限；0 或缺省表示不限，官方与插件清单共用同一约束。
+/// 与工作区创建命令共用同一实现，所有应用内创建入口都不会绕过。
+pub(crate) fn enforce_tile_limit(workspace: &WorkspaceState, component_id: &str) -> Result<(), String>
+{
+    let count = workspace.snapshot().map_err(|error| error.message)?.components.iter().filter(|component| component.component_id == component_id).count(); // 所有显示器上的该组件格子。
+    workspace.enforce_component_tile_limit(component_id, count).map_err(|error| error.message)
+}
+
+/// 开启限量为 1 的功能格子：先把开关写成开启并广播，再在桌面没有该格子时补建一个。
+/// 先做数量校验再写开关，避免拒绝时留下“开关已开但格子没建”的状态。
+/// 只负责“开启”，关闭走普通偏好保存，不删除布局，和官方格子的隐藏语义一致。
+#[tauri::command]
+pub fn enable_feature(app: tauri::AppHandle, component_id: String) -> Result<(), String>
+{
+    use tauri::Manager;
+    let workspace = app.state::<WorkspaceState>();
+    if !workspace.has_component(&component_id)
+    {
+        enforce_tile_limit(&workspace, &component_id)?;
+    }
+    enable_feature_preferences(&app, &component_id)?;
+    if workspace.has_component(&component_id)
+    {
+        crate::log_info!("设置：功能已开启，桌面已有格子，组件={component_id}");
+        return Ok(());
+    }
+    let monitor_id = primary_monitor_id(&app.state::<std::sync::Arc<DesktopHostRuntime>>())?;
+    let bounds = workspace.next_component_bounds(&monitor_id, DEFAULT_TILE_WIDTH, DEFAULT_TILE_HEIGHT).map_err(|error| error.message)?;
+    let runtime = app.state::<std::sync::Arc<DesktopHostRuntime>>();
+    workspace::execute_apply_workspace_command(&app, &workspace, &app.state::<DesktopItemState>(), &runtime, monitor_id.clone(), WorkspaceCommand::CreateComponent { component_id: component_id.clone(), bounds, state: json!({}) }).map_err(|error| error.message)?;
+    crate::log_info!("设置：功能已开启并补齐默认格子，组件={component_id}，显示器={monitor_id}");
+    Ok(())
+}
+
+/// 把指定功能格子的开关写成开启；没有官方开关的功能格子（例如 Debug 测试，显隐由清单决定）视为已开启。
+fn enable_feature_preferences(app: &tauri::AppHandle, component_id: &str) -> Result<(), String>
+{
+    use tauri::Manager;
+    let current = app.state::<crate::app::settings::SettingsState>().preferences()?; // 当前偏好，作为写入基底。
+    // 指定功能格子已经在开启状态或没有开关时不再写入。
+    let mut enabled = current.clone();
+    match component_id
+    {
+        "official.local-clock" => enabled.clock_enabled = true,
+        "official.music-control" => enabled.music_enabled = true,
+        "official.debug-test" => enabled.debug_enabled = true,
+        WEATHER_COMPONENT_ID => enabled.weather_enabled = true,
+        _ => return Ok(()),
+    }
+    if enabled == current
+    {
+        return Ok(());
+    }
+    crate::commands::settings::execute_apply_preferences(app, &app.state::<crate::app::settings::SettingsState>(), enabled).map(|_| ())
 }
 
 /// 请求显示设置窗口：复用托盘同一显隐入口，不承载凭据或设置语义。
@@ -694,6 +784,16 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             workspace::execute_apply_workspace_command(app, &app.state::<WorkspaceState>(), &app.state::<DesktopItemState>(), runtime, monitor_id, command).map_err(serialize_error).and_then(serialize_result)
         }
         "create_collect_box" => create_collect_box(app.clone()).map_err(serialize_error).and_then(serialize_result),
+        "create_tile_to_desktop" =>
+        {
+            let component_id: String = command_argument(&arguments, "componentId", "命令参数无效").map_err(serialize_error)?; // 已解码的 componentId。
+            create_tile_to_desktop(app.clone(), component_id).map_err(serialize_error).and_then(serialize_result)
+        }
+        "enable_feature" =>
+        {
+            let component_id: String = command_argument(&arguments, "componentId", "命令参数无效").map_err(serialize_error)?; // 已解码的 componentId。
+            enable_feature(app.clone(), component_id).map_err(serialize_error).and_then(serialize_result)
+        }
         "open_settings_window" => open_settings_window(app.clone()).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result), // 天气格子在原生宿主中请求显示设置窗口。
         "get_plugin_settings" =>
         {

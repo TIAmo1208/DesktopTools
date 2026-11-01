@@ -3,5 +3,8 @@
   "name": "Debug 测试",
   "entry": "official:debug-test",
   "requiredCapabilities": [],
+  "creatable": true,
+  "removable": true,
+  "maxTiles": 1,
   "persistenceVersion": 1
 }

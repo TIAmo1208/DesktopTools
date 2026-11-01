@@ -40,7 +40,7 @@ src-tauri/
 - `app/settings.rs` 维护配置目录与插件目录的生命周期。启动定位目录（`%APPDATA%\<bundle identifier>`，当前 `%APPDATA%\io.github.tiamo1208.desktop-tools`）下的 `plugin-location.json` 记录当前生效插件目录的标准绝对路径（指针缺失时按偏好解析，偏好为空回退至 `%APPDATA%\TIAmo\plugins`，并自动补写基线）。插件目录在运行期冻结，用户更改偏好后在下次启动由 `prepare_plugin_directory` 执行整目录迁移，目标非空或包含链接时拒绝迁移并降级继续使用原目录。
 - `installer/` 包含 NSIS 自定义重装页与生命周期钩子，`hooks.nsh` 分派预设插件的安装与受控清理，`tauri.installer.conf.json` 通过 `bundle.resources` 将仓库根 `plugin/` 映射为安装包内部资源。
 
-- `commands/` 负责跨边界校验与调度，不持有长期领域状态。
+- `commands/` 负责跨边界校验与调度，不持有长期领域状态。`commands/probe.rs` 是插件能力 `probe-service-status` 的唯一探活实现：探测地址与 2 秒超时在宿主内固定，不进入命令入参或插件设置；它新开独立的 HTTP 客户端，不启用 cookie jar，也不带浏览器来源头，把观察结果判成在线、探测被拒、未运行或未知四档，只回传判定时刻与该服务的启动时间，不透传服务端返回原文。该文件不注册成平铺原生命令，只由能力通道按实例授权后调用。
 - `workspace/` 负责自有布局、围栏归属、门户和组件布局事务，不执行文件操作。各类格子的持久展开边界统一使用工作区契约中的公共尺寸底线，临时投射单独校验；内容可读性和标题占位由前端负责。
 - `shell/` 负责 Shell 项目身份、真实文件操作、菜单、剪贴板和 Shell OLE 数据对象。
 - `shell/images.rs` 持有独立图像 STA、去重队列和有界 LRU；`platform/windows/shell_image.rs` 在所属线程提取 Shell 缩略图、转换 PNG 及原生拖动位图。`get_desktop_item_image` 校验当前项目身份后请求图像，Shell 变化使缓存和在途结果失效，原生拖动只读取已完成缓存。

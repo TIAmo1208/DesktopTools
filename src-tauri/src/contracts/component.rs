@@ -21,6 +21,8 @@ pub enum ComponentCapability
     ReadHostTime,
     /// 读取系统当前媒体会话。
     ReadCurrentMedia,
+    /// 探活宿主固定的本机服务地址（当前只有 AstrBot）。
+    ProbeServiceStatus,
 }
 
 /// 一个官方组件的版本化清单。
@@ -71,6 +73,8 @@ pub struct ComponentCapabilityDeclaration
     pub creatable: bool,
     /// 用户是否可移除该组件的实例。
     pub removable: bool,
+    /// 该组件允许的桌面格子数量上限。0 表示不限。
+    pub max_tiles: u32,
 }
 
 /// 工作区持久化的一个组件实例。

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tauri::{AppHandle, Listener, Manager};
-use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS, ICoreWebView2Controller3};
+use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS, ICoreWebView2Controller3, ICoreWebView2Settings3};
 use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{BI_RGB, BITMAPINFO, BITMAPINFOHEADER, ClientToScreen, CombineRgn, CreateCompatibleDC, CreateDIBSection, CreateRectRgn, DIB_RGB_COLORS, DeleteDC, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC, HGDIOBJ, HMONITOR, MONITORINFO, MONITORINFOEXW, RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW, RGN_OR, RedrawWindow, ScreenToClient, SelectObject, SetWindowRgn};
 use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
@@ -1102,7 +1102,7 @@ fn attach_host(hwnd: isize, shell: ShellDesktopState, monitor: &DesktopHostMonit
     Ok(())
 }
 
-/// 为目标显示器固定 WebView2 raw-pixel Bounds 与栅格化比例。
+/// 为目标显示器固定 WebView2 raw-pixel Bounds 与栅格化比例，并关闭浏览器级导航快捷键。
 fn configure_controller(controller: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller, monitor: &DesktopHostMonitor) -> Result<(), String>
 {
     // 支持显式 BoundsMode 与 RasterizationScale 的 Controller3。
@@ -1112,6 +1112,13 @@ fn configure_controller(controller: &webview2_com::Microsoft::Web::WebView2::Win
         controller3.SetShouldDetectMonitorScaleChanges(false).map_err(|error| format!("关闭 WebView2 自动显示器缩放失败: {error}"))?;
         controller3.SetRasterizationScale(monitor.scale_factor).map_err(|error| format!("设置 WebView2 栅格化比例失败: {error}"))?;
     }
+    // 桌面宿主不是浏览器页面：关闭浏览器快捷键后，鼠标侧键不再触发前进/后退导航，页面自身快捷键不受影响。
+    let settings = unsafe {
+        let webview = controller.CoreWebView2().map_err(|error| format!("读取 WebView2 失败: {error}"))?;
+        webview.Settings().map_err(|error| format!("读取 WebView2 设置失败: {error}"))?
+    };
+    let settings3 = settings.cast::<ICoreWebView2Settings3>().map_err(|error| format!("读取 WebView2 设置3 失败: {error}"))?;
+    unsafe { settings3.SetAreBrowserAcceleratorKeysEnabled(false) }.map_err(|error| format!("关闭 WebView2 浏览器快捷键失败: {error}"))?;
     Ok(())
 }
 

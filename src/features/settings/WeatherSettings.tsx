@@ -13,7 +13,6 @@ import { WeatherCityDialog } from "../weather/WeatherCityDialog";
 import { DesktopTileMenu, type DesktopTileMenuItem } from "../tiles/DesktopTileMenu";
 import { SettingsCityList } from "./SettingsCityList";
 import { SettingsInfo } from "./SettingsInfo";
-import backIcon from "../../../resources/weather-back.svg?raw";
 import chevronRightIcon from "../../../resources/weather-chevron-right.svg?raw";
 import closeIcon from "../../../resources/weather-close.svg?raw";
 import eyeIcon from "../../../resources/weather-eye.svg?raw";
@@ -93,8 +92,18 @@ interface CityPicker {
 /** 待确认的删除对象：来源凭据与城市项共用同一个确认框，未保存离开复用同一状态位。 */
 type WeatherPendingRemoval = { kind: "source"; source: WeatherSource } | { kind: "city"; source: WeatherSource; city: WeatherCity } | { kind: "discard" };
 
-/** 天气来源列表、右键菜单与添加/编辑弹窗；凭据不进入普通偏好保存。 */
-export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; leaveGuard: RefObject<((action: () => void) => void) | undefined> }) => {
+/** 天气来源列表、右键菜单与添加/编辑弹窗；凭据不进入普通偏好保存。二级页头由功能格子页统一渲染。 */
+export const WeatherSettings = ({
+    leaveGuard,
+    onStatus,
+    onBusy,
+    openAddKey,
+}: {
+    leaveGuard: RefObject<((action: () => void) => void) | undefined>; // 天气草稿离开保护。
+    onStatus?: (text: string) => void; // 页头展示的来源摘要。
+    onBusy?: (busy: boolean) => void; // 报告当前是否忙碌，供页头添加入口决定是否可用。
+    openAddKey?: number; // 页头点击添加时自增；每次变化只打开一次新增弹窗。
+}) => {
     const [sources, setSources] = useState<WeatherSourceStatus[]>([]); // 已配置来源列表。
     const [busy, setBusy] = useState(""); // 当前动作名称。
     const [cityBusy, setCityBusy] = useState(false); // 城市弹窗是否正在执行动作。
@@ -120,6 +129,8 @@ export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; le
     const opened = useRef(""); // 打开弹窗时的草稿快照，用于判断是否有修改。
     const live = useRef({ dirty: false, busy: "", mounted: true }); // 长生命周期回调读取最新状态。
     const pendingLeave = useRef<() => void>(() => undefined); // 确认后执行的导航。
+    // 统一页头展示当前已配置的来源数量；来源列表变化时同步。
+    useEffect(() => onStatus?.(sources.length ? `${sources.length} 个已配置来源` : "未配置来源"), [sources.length, onStatus]);
     const formRequired = form ? WEATHER_SOURCES[form.source].fields.filter((key) => form.adding || !FIELDS[key].keepBlankOnEdit) : []; // 可留空的字段只在编辑态放宽，新增时仍必须填写。
     const formReady = formRequired.every((key) => draft[key].trim().length > 0); // 保存只要求必填字段非空，不以能力验证为门槛。
     /** 该来源是否已有保存的凭据；城市弹窗的搜索、验证与写入都只走已保存凭据。 */
@@ -189,6 +200,17 @@ export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; le
         setPicker(undefined);
         setForm({ source, adding });
     };
+
+    /** 报告忙碌状态；只上报布尔值，不把打开弹窗的函数交给外部执行，避免刷新时误弹。 */
+    useEffect(() => onBusy?.(!!busy), [!!busy, onBusy]);
+
+    /** 页头添加：只在 openAddKey 变化时打开一次新增弹窗，挂载和父级刷新都不触发。 */
+    const addRequests = useRef(0); // 已经处理过的页头添加请求数。
+    useEffect(() => {
+        if (!openAddKey || openAddKey === addRequests.current) return;
+        addRequests.current = openAddKey;
+        openForm((Object.keys(WEATHER_SOURCES) as WeatherSource[])[0], true);
+    }, [openAddKey]);
 
     /** 关闭弹窗并释放后端草稿；有未保存修改时先确认。 */
     const closeForm = (discard = false) => {
@@ -604,18 +626,6 @@ export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; le
 
     return (
         <section className="weather-settings">
-            <div className="weather-settings__heading">
-                <button
-                    type="button"
-                    className="weather-settings__icon"
-                    title="返回功能格子"
-                    aria-label="返回功能格子"
-                    onClick={() => leaveGuard.current?.(onBack)}
-                >
-                    <Glyph source={backIcon} />
-                </button>
-                <h2>天气</h2>
-            </div>
             <h3>已配置的天气来源</h3>
             {sources.length ? (
                 <ul className="weather-settings__list">
@@ -693,14 +703,6 @@ export const WeatherSettings = ({ onBack, leaveGuard }: { onBack: () => void; le
             ) : (
                 <p className="weather-settings__empty">尚未添加任何天气来源</p>
             )}
-            <button
-                type="button"
-                className="weather-settings__add"
-                disabled={!!busy}
-                onClick={() => openForm((Object.keys(WEATHER_SOURCES) as WeatherSource[])[0], true)}
-            >
-                + 添加 API
-            </button>
             {!form && (
                 <p className={failure ? "weather-settings__error" : "weather-settings__status"} role="status">
                     {status}

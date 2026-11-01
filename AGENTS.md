@@ -29,6 +29,15 @@ Desktop Tools 是 Windows 桌面内容工作区（Tauri + React）：前端负�
 - 修改 Rust 或 Cargo 配置前，先结束本项目的开发监听；集中完成改动后，依次执行检查、受影响测试、阶段完整测试及最终构建，再启动程序。检查、测试和开发启动共用构建目录，Cargo 操作必须串行执行。
 - 日常 Rust 反馈优先使用 `cargo check` 和受影响测试；最终验收仍需实际构建（`npm run build` 或 `npm run tauri:build`）。评估构建提速时记录 `--timings` 与墙钟耗时，区分首次缓存准备、无改动构建和源码改动后的构建，不将 Cargo 编译单元耗时直接解释为纯链接耗时。
 - `npm run tauri:installer` 依赖 `scripts/prepare-licenses.mjs` 生成的许可文件，普通开发与纯程序构建不依赖它。
+- 本机执行任何 Rust 编译、测试或开发启动前，先在当前命令行会话设置 `TMP` 到工作树内的 `build\tmp`（需先创建目录，仅设 `TEMP` 无效），否则 `ring` 等 C 依赖会报 `cl.exe D8050`，整条 Rust 侧构建无法进行：
+
+    ```cmd
+    New-Item -ItemType Directory -Force "E:\Project\DesktopTools\build\tmp" | Out-Null
+    $env:TMP = "E:\Project\DesktopTools\build\tmp"
+    npm run tauri:dev
+    ```
+
+    换为 `npm run tauri:build` 即最终构建。现象、已排除方向与未定根因见 `docs/validation/MSVC构建阻塞与绕行.md`，不要重复尝试更换 MSVC 版本、调整 `_CL_`、`/Z7`、`/Brepro` 或排查安全软件。
 
 ## 安全边界
 
