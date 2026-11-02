@@ -52,15 +52,8 @@
   !insertmacro DESKTOP_TOOLS_STOP
 !macroend
 
-; 文件就位后先写入预设插件，再沿用应用的菜单注册入口。
+; 插件资源已随程序写入安装目录，只需注册桌面菜单。
 !macro NSIS_HOOK_POSTINSTALL
-  nsExec::ExecToStack /TIMEOUT=60000 '"$INSTDIR\desktop-tools.exe" --install-preset-plugins "$INSTDIR\plugin" "$APPDATA\${BUNDLEID}"'
-  Pop $R0
-  Pop $R1
-  ${If} $R0 != 0
-    SetErrorLevel 1
-    Abort "程序已安装，但预设插件安装失败。请重新运行安装程序。"
-  ${EndIf}
   nsExec::ExecToStack /TIMEOUT=15000 '"$INSTDIR\desktop-tools.exe" --register-desktop-menu'
   Pop $R0
   Pop $R1
@@ -70,7 +63,7 @@
   ${EndIf}
 !macroend
 
-; 先等待正常退出，再清理菜单；用户勾选时一并移除随程序安装的预设插件。
+; 先等待正常退出，再清理菜单；插件由卸载器随安装目录删除。
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro DESKTOP_TOOLS_STOP
   StrCpy $DeleteAppDataCheckboxState 0
@@ -80,15 +73,5 @@
   ${If} $R0 != 0
     SetErrorLevel 1
     Abort "桌面菜单移除失败，已保留程序文件。请重试卸载。"
-  ${EndIf}
-  ${If} $DeletePresetPluginsCheckboxState = 1
-  ${AndIf} $UpdateMode <> 1
-    nsExec::ExecToStack /TIMEOUT=60000 '"$INSTDIR\desktop-tools.exe" --uninstall-preset-plugins "$INSTDIR\plugin" "$APPDATA\${BUNDLEID}"'
-    Pop $R0
-    Pop $R1
-    ${If} $R0 != 0
-      ; 预设插件清理失败不阻塞卸载，用户可在插件目录手动删除。
-      MessageBox MB_ICONEXCLAMATION "随程序安装的预设插件未能全部移除，可稍后在插件目录手动删除。程序将继续卸载。"
-    ${EndIf}
   ${EndIf}
 !macroend

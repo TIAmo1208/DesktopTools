@@ -25,9 +25,9 @@
     align-content: start;
 }
 
-/* 未进围栏的桌面项目跟随围栏文本色与投影，两处不再各说各话。 */
-.desktop-items--desktop-host .desktop-item {
-    color: var(--fence-text);
+/* 桌面项目在桌面宿主里属于桌面主题作用域。未归类项落在 .fence-workspace 下，不在 .desktop-items--desktop-host 里。 */
+.fence-workspace .desktop-item--unclassified {
+    color: var(--fence-text, var(--color-text));
     cursor: default;
     text-shadow: var(--fence-item-text-shadow, 0 1px 2px rgb(0 0 0 / 90%), 0 0 3px rgb(0 0 0 / 80%));
 }

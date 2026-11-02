@@ -34,14 +34,15 @@ fn directory_outside_boundary(value: &str, path: &Path) -> bool
     !path.is_absolute() || value.contains(['%', '\0', '*', '?', '"', '<', '>', '|']) || value.starts_with(r"\\.\") || value.starts_with(r"\\?\") || path.components().any(|part| matches!(part, Component::ParentDir) || matches!(part, Component::Normal(value) if value.to_string_lossy().contains(':')))
 }
 
-/// 空偏好使用 `%APPDATA%\TIAmo\plugins`，不跟随配置目录。显式路径沿用配置目录安全边界。
+/// 空偏好使用可执行文件所在目录下的 plugin；显式路径沿用配置目录安全边界。
 pub fn resolve_plugin_directory(value: &str, config_directory: &std::path::Path) -> Result<PathBuf, String>
 {
     let _ = config_directory; // 显式路径不相对配置目录解析。
     if value.trim().is_empty()
     {
-        let root = std::env::var("APPDATA").map_err(|_| "无法读取 APPDATA 目录")?; // 当前用户漫游目录。
-        return Ok(PathBuf::from(root).join("TIAmo").join("plugins"));
+        let executable = std::env::current_exe().map_err(|error| format!("无法定位程序以解析插件目录：{error}"))?; // 安装与开发运行均以实际可执行文件为准。
+        let directory = executable.parent().ok_or("无法读取程序所在目录")?;
+        return Ok(directory.join("plugin"));
     }
     resolve_config_directory(value).map_err(|error| error.replace("配置目录", "插件目录"))
 }
@@ -83,89 +84,9 @@ pub fn prepare_config_directory(bootstrap: &std::path::Path) -> std::io::Result<
 }
 
 const CONFIG_LOCATION_FILE: &str = "config-location.json"; // 启动定位目录里的配置目录指针。
-const PLUGIN_LOCATION_FILE: &str = "plugin-location.json"; // 启动定位目录里的插件目录指针。
 
 /// 当前配置目录：启动定位文件优先，缺失时仍使用启动定位目录本身。
 fn current_config_directory(bootstrap: &std::path::Path) -> std::io::Result<PathBuf> { Ok(load_json(&bootstrap.join(CONFIG_LOCATION_FILE))?.unwrap_or_else(|| bootstrap.to_path_buf())) }
-
-/// 读取并校验插件目录指针；文件缺失、损坏或路径非法时都按缺失处理。
-fn stored_plugin_directory(pointer: &std::path::Path) -> Option<PathBuf>
-{
-    let stored: Option<PathBuf> = match load_json(pointer)
-    {
-        Ok(stored) => stored,
-        Err(error) =>
-        {
-            crate::log_warn!("设置：插件目录指针损坏，按缺失处理，路径={}，错误={error}", pointer.display());
-            return None;
-        }
-    }; // 损坏的指针不阻止启动。
-    if let Some(directory) = &stored
-    {
-        if directory_outside_boundary(&directory.to_string_lossy(), directory)
-        {
-            crate::log_warn!("设置：插件目录指针非法，按缺失处理，路径={}", directory.display());
-            return None;
-        }
-    }
-    stored
-}
-
-/// 有效插件目录取指针值；指针缺失时按偏好解析，第二项表示指针是否已经存在。
-pub(crate) fn effective_plugin_directory(pointer: &std::path::Path, preferences: &ApplicationPreferences, config_directory: &Path) -> std::io::Result<(PathBuf, bool)>
-{
-    if let Some(directory) = stored_plugin_directory(pointer)
-    {
-        return Ok((directory, true));
-    }
-    let fallback = resolve_plugin_directory(&preferences.plugin_directory, config_directory).map_err(std::io::Error::other)?; // 用偏好重新定位。
-    Ok((fallback, false))
-}
-
-/// 安装器命令的只读定位：指针优先；缺失、损坏或非法时按当前配置目录的偏好解析，不写指针、不触发迁移。
-pub fn locate_plugin_directory(bootstrap: &std::path::Path) -> Result<PathBuf, String>
-{
-    let config_directory = current_config_directory(bootstrap).map_err(|error| format!("读取配置目录指针失败：{error}"))?; // 当前生效配置目录。
-    let preferences: ApplicationPreferences = load_json(&config_directory.join("settings.json")).map_err(|error| format!("读取用户偏好失败：{error}"))?.unwrap_or_default(); // 尚未保存偏好时用当前默认值。
-    effective_plugin_directory(&bootstrap.join(PLUGIN_LOCATION_FILE), &preferences, &config_directory).map(|(directory, _)| directory).map_err(|error| error.to_string())
-}
-
-/// 重启时按偏好迁移插件目录；指针缺失只写基线，迁移失败继续使用原目录并下次重试。
-pub fn prepare_plugin_directory(bootstrap: &std::path::Path, config_directory: &std::path::Path, preferences: &ApplicationPreferences) -> std::io::Result<PathBuf>
-{
-    let pointer = bootstrap.join(PLUGIN_LOCATION_FILE); // 与 config-location.json 同级的启动定位文件。
-    let (source, located) = effective_plugin_directory(&pointer, preferences, config_directory)?; // 本次运行生效的插件目录。
-    if !located
-    {
-        if let Err(error) = save_json_atomic(&pointer, &source)
-        {
-            crate::log_warn!("设置：插件目录基线写入失败，继续使用当前目录={}，错误={error}", source.display());
-        }
-        else
-        {
-            crate::log_info!("设置：插件目录基线已记录，目录={}", source.display());
-        }
-        return Ok(source);
-    }
-    let target = resolve_plugin_directory(&preferences.plugin_directory, config_directory).map_err(std::io::Error::other)?; // 下次启动目标。
-    if source == target
-    {
-        return Ok(source);
-    }
-    match migrate_config_directory(&source, &target, &pointer)
-    {
-        Ok(()) =>
-        {
-            crate::log_info!("设置：插件目录已迁移，原目录={}，当前目录={}，原文件保留", source.display(), target.display());
-            Ok(target)
-        }
-        Err(error) =>
-        {
-            crate::log_error!("设置：插件目录迁移失败，继续使用原目录={}，目标={}，错误={error}", source.display(), target.display());
-            Ok(source)
-        }
-    }
-}
 
 /// 复制数据并最后提交启动位置；拒绝非空目标，失败不删除或覆盖原数据。
 fn migrate_config_directory(source: &std::path::Path, target: &std::path::Path, pointer: &std::path::Path) -> std::io::Result<()>

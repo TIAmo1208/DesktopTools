@@ -110,7 +110,7 @@ pub fn uninstall_plugin(app: AppHandle, plugin_id: String, remove_settings: bool
 /// 选中默认插件目录时返回空串，前端据此把偏好写成跟随默认。
 pub(crate) fn plugin_directory_preference(chosen: &str, config_directory: &std::path::Path) -> String
 {
-    let follows_default = crate::app::settings::resolve_plugin_directory("", config_directory).is_ok_and(|default| same_directory(std::path::Path::new(chosen), &default)); // 空偏好解析出的同级 plugin。
+    let follows_default = crate::app::settings::resolve_plugin_directory("", config_directory).is_ok_and(|default| same_directory(std::path::Path::new(chosen), &default)); // 空偏好解析出的可执行文件同级 plugin。
     if follows_default { String::new() } else { chosen.to_string() }
 }
 

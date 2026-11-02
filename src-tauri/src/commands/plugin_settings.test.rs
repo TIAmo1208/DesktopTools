@@ -2,7 +2,7 @@ use super::validate_creatable_plugin;
 use crate::contracts::ComponentManifest;
 
 /// 造一份只用于门禁判断的插件清单。
-fn manifest(id: &str, entry: &str, creatable: bool) -> ComponentManifest { ComponentManifest { id: id.to_string(), name: id.to_string(), entry: entry.to_string(), script: String::new(), required_capabilities: Vec::new(), creatable, removable: false, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() } }
+fn manifest(id: &str, entry: &str, creatable: bool) -> ComponentManifest { ComponentManifest { id: id.to_string(), name: id.to_string(), entry: entry.to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, required_capabilities: Vec::new(), creatable, removable: false, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() } }
 
 /// 非插件标识、缺失清单和未声明可创建都不能进入创建事务。
 #[test]
@@ -21,7 +21,7 @@ fn create_plugin_component_rejects_ineligible_plugins()
 fn plugin_directory_preference_uses_empty_string_for_the_default()
 {
     let config = std::env::temp_dir().join(format!("desktop-tools-plugin-pref-{}", std::process::id())); // 本测试独占配置目录。
-    let default = std::path::PathBuf::from(std::env::var_os("APPDATA").unwrap()).join("TIAmo").join("plugins"); // 空偏好解析出的位置。
+    let default = std::env::current_exe().unwrap().parent().unwrap().join("plugin"); // 空偏好解析出的可执行文件同级 plugin。
     assert_eq!(super::plugin_directory_preference(&default.to_string_lossy(), &config), "");
     assert_eq!(super::plugin_directory_preference(r"D:\plugins", &config), r"D:\plugins");
 }

@@ -2,6 +2,84 @@ use super::{ComponentRuntimeState, validate_manifest};
 use crate::contracts::{ComponentCapability, ComponentCapabilityDeclaration, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, WorkspaceRect};
 use serde_json::json;
 
+/// 主题清单与数据经过真实目录扫描，错误均进入隔离失败集合。
+#[test]
+fn theme_manifest_validates_assets_and_appearance()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-theme-{}", std::process::id())); // 本测试独占来源。
+    let folder = directory.join("theme"); // 主题与普通格子复用同一清单。
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("main.js"), "").unwrap();
+    std::fs::write(folder.join("theme.css"), ":root {}").unwrap();
+    let base = "[plugin]\nid=plugin.theme\nname=theme\nversion=1.0.0\nentry=main.js\ncreatable=true\nmaxTiles=5\n"; // 保留原有 entry 校验。
+    let theme = format!("{base}role=theme\nstylesheet=theme.css\n"); // 合法主题声明。
+    std::fs::write(folder.join("theme.json"), r##"{"appearance":{"accentColor":"#Ab12Cd","desktopAccentColor":"#123456","cornerRadius":12,"fontFamily":"Arial","fontSize":18}}"##).unwrap();
+    std::fs::write(folder.join("manifest.ini"), &theme).unwrap();
+    let runtime = ComponentRuntimeState::new(&directory); // 检查运行时下发载荷。
+    assert!(runtime.catalog().failures.is_empty());
+    let manifest = runtime.catalog().manifests["plugin.theme"].clone();
+    assert_eq!(manifest.role, crate::contracts::ComponentRole::Theme);
+    assert_eq!(manifest.stylesheet, "theme/theme.css");
+    assert!(manifest.script.is_empty());
+    assert!(!manifest.creatable);
+    assert_eq!(manifest.max_tiles, 0);
+    assert_eq!(serde_json::to_value(manifest.theme_appearance).unwrap()["accentColor"], "#Ab12Cd");
+    for body in [base.to_string(), format!("{base}role=tile\n")]
+    {
+        std::fs::write(folder.join("manifest.ini"), body).unwrap();
+        let runtime = ComponentRuntimeState::new(&directory); // 缺省与显式 tile 保持既有结果。
+        let manifest = runtime.catalog().manifests["plugin.theme"].clone();
+        assert_eq!(manifest.role, crate::contracts::ComponentRole::Tile);
+        assert_eq!(manifest.script, "theme/main.js");
+        assert!(manifest.creatable);
+        assert_eq!(manifest.max_tiles, 5);
+        assert!(manifest.stylesheet.is_empty() && manifest.theme_appearance.is_none());
+    }
+    for suffix in ["role=unknown\n", "role=theme\n", "role=theme\nstylesheet=../theme.css\n", "role=theme\nstylesheet=/theme.css\n", "role=theme\nstylesheet=C:/theme.css\n", "role=theme\nstylesheet=sub\\theme.css\n", "role=theme\nstylesheet=main.js\n", "role=theme\nstylesheet=missing.css\n"]
+    {
+        std::fs::write(folder.join("manifest.ini"), format!("{base}{suffix}")).unwrap();
+        assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1, "{suffix}");
+    }
+    std::fs::write(folder.join("manifest.ini"), theme.replace("entry=main.js", "entry=../main.js")).unwrap();
+    assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1);
+    std::fs::write(folder.join("manifest.ini"), &theme).unwrap();
+    for body in [r##"{"appearance":{"accentColor":"red"}}"##, r##"{"appearance":{"desktopAccentColor":"#12345g"}}"##, r#"{"appearance":{"fontFamily":"Unknown"}}"#, r#"{"appearance":{"fontSize":19}}"#, r#"{"appearance":{"fontSize":11}}"#, r#"{"appearance":{"fontSize":12.5}}"#, r#"{"appearance":{"cornerRadius":13}}"#, r#"{"appearance":{"cornerRadius":-1}}"#, "{}", "not-json"]
+    {
+        std::fs::write(folder.join("theme.json"), body).unwrap();
+        assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1, "{body}");
+    }
+    std::fs::write(folder.join("theme.json"), " ".repeat(65537)).unwrap();
+    assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1);
+    std::fs::remove_file(folder.join("theme.json")).unwrap();
+    assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1);
+    std::fs::write(folder.join("theme.json"), r#"{"appearance":{}}"#).unwrap();
+    let runtime = ComponentRuntimeState::new(&directory); // 缺省覆盖字段序列化为 null。
+    assert_eq!(serde_json::to_value(&runtime.catalog().manifests["plugin.theme"].theme_appearance).unwrap(), json!({"accentColor":null,"desktopAccentColor":null,"cornerRadius":null,"fontFamily":null,"fontSize":null}));
+    let linked = folder.join("linked"); // 无需管理员权限的目录联接，用于覆盖重解析点路径。
+    let output = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&linked).arg(&folder).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    std::fs::write(folder.join("manifest.ini"), theme.replace("stylesheet=theme.css", "stylesheet=linked/theme.css")).unwrap();
+    assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1);
+    std::fs::remove_dir(&linked).unwrap();
+    std::fs::write(folder.join("manifest.ini"), &theme).unwrap();
+    std::fs::remove_file(folder.join("theme.json")).unwrap();
+    let output = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(folder.join("theme.json")).arg(&folder).output().unwrap(); // 数据文件名同样拒绝重解析点。
+    assert!(output.status.success());
+    assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1);
+    std::fs::remove_dir(folder.join("theme.json")).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// 两端字体白名单逐项相等，防止只修改一侧导致有效主题无法保存。
+#[test]
+fn theme_font_allowlist_matches_preferences_contract()
+{
+    let source = include_str!("../../../src/contracts/settings.ts"); // 前端偏好契约原文。
+    let declaration = source.split("export const APPLICATION_FONTS = ").nth(1).unwrap().split(" as const;").next().unwrap(); // 只读取白名单数组。
+    let fonts: Vec<String> = serde_json::from_str(declaration).unwrap();
+    assert_eq!(fonts, super::APPLICATION_FONTS);
+}
+
 /// 插件槽只接受二选一能力，且不能冒用官方入口。
 #[test]
 fn plugin_slot_validates_identity_entry_and_single_capability()
@@ -125,7 +203,7 @@ fn time_subscriptions_are_scoped_and_do_not_reuse_identity()
 #[test]
 fn manifest_rejects_an_unauthorized_capability_set()
 {
-    let manifest = ComponentManifest { id: "official.local-clock".to_string(), name: "本地时间".to_string(), entry: "official:local-clock".to_string(), script: String::new(), required_capabilities: Vec::new(), creatable: true, removable: true, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
+    let manifest = ComponentManifest { id: "official.local-clock".to_string(), name: "本地时间".to_string(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, required_capabilities: Vec::new(), creatable: true, removable: true, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
 
     assert_eq!(validate_manifest(&manifest).expect_err("空能力集合应被拒绝").code, "invalid-component-manifest");
 }

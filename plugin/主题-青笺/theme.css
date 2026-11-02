@@ -1,0 +1,73 @@
+/* 青笺主题的界面调色板。只改契约令牌，不选公用标签。 */
+
+:root {
+    --color-background: #f4f1ea;
+    --color-surface: #fffdf8;
+    --color-subtle: #efeae2;
+    --color-border: #d9d1c5;
+    --color-text: #2a241c;
+    --color-muted: #6f675c;
+    --color-ready: #3d6b4f;
+    --color-active: #2f7d4a;
+    --color-action: #3f4a3a;
+    --color-action-hover: #2c3428;
+    --color-action-text: #f7f4ee;
+    --color-error: #9c3b2e;
+    --color-error-surface: #f8ece8;
+}
+
+/* 界面深色调色板。 */
+:root[data-theme="dark"] {
+    --color-background: #1c1915;
+    --color-surface: #28241e;
+    --color-subtle: #322c24;
+    --color-border: #4a4338;
+    --color-text: #f3ecdf;
+    --color-muted: #b3a898;
+    --color-ready: #8fbe9a;
+    --color-active: #7dcea0;
+    --color-action: #e7dfd2;
+    --color-action-hover: #fffdf8;
+    --color-action-text: #2a241c;
+    --color-error: #f0b2a6;
+    --color-error-surface: #3c2822;
+}
+
+/* 桌面网格深色表面，选择器与宿主深色规则同级，不复用菜单颜色。 */
+:root[data-desktop-theme="dark"] .fence-workspace,
+.fence-workspace {
+    --fence-border: rgb(186 168 140 / 42%);
+    --fence-surface: rgb(48 42 34 / 58%);
+    --fence-text: #f3ecdf;
+    --fence-focus-border: var(--desktop-accent, #8a5a2b);
+    --fence-item-text-shadow: 0 1px 2px rgb(0 0 0 / 90%);
+}
+
+/* 桌面网格浅色表面。 */
+:root[data-desktop-theme="light"] .fence-workspace {
+    --fence-border: rgb(90 72 48 / 28%);
+    --fence-surface: rgb(214 196 168 / 58%);
+    --fence-text: #2a241c;
+    --fence-focus-border: var(--desktop-accent, #8a5a2b);
+    --fence-item-text-shadow: none;
+}
+
+/* 自绘菜单的深色表面，含格子菜单和门户面包屑菜单。 */
+.desktop-tile-menu,
+.folder-portal__breadcrumb-menu {
+    --menu-border: rgb(150 168 154 / 40%);
+    --menu-text: #e7f0e6;
+    --menu-surface: rgb(28 40 32 / 96%);
+    --menu-hover: rgb(78 110 86 / 72%);
+    --menu-shadow: 2px 3px 8px rgb(0 0 0 / 42%);
+}
+
+/* 自绘菜单的浅色表面。 */
+:root[data-theme="light"] .desktop-tile-menu,
+:root[data-theme="light"] .folder-portal__breadcrumb-menu {
+    --menu-border: rgb(63 90 70 / 24%);
+    --menu-text: #1d2a22;
+    --menu-surface: rgb(236 244 237 / 96%);
+    --menu-hover: rgb(63 90 70 / 10%);
+    --menu-shadow: 2px 3px 8px rgb(0 0 0 / 14%);
+}

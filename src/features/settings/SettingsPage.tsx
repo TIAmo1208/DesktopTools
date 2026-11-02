@@ -10,6 +10,8 @@ import type { ApplicationPreferences, SettingsSnapshot } from "../../contracts/s
 import type { WorkspaceCommand, WorkspaceSnapshot } from "../../contracts/workspace";
 import { usePreferences } from "./PreferencesProvider";
 import { AppearanceSettings } from "./AppearanceSettings";
+import { applyThemeSelection } from "./applyThemeSelection";
+import type { ComponentManifest } from "../../contracts/component";
 import { GridSettings } from "./GridSettings";
 import { FeatureSettings } from "./FeatureSettings";
 import { PluginSettingsPage } from "./PluginSettingsPage";
@@ -151,6 +153,14 @@ export const SettingsPage = () => {
         if (!preferences) return;
         void handleCommand(async () => {
             onPreferences(await savePreferences({ ...preferences, ...patch }));
+        });
+    };
+
+    /** 主题选择沿用同一 busy、错误提示与权威偏好回写链。 */
+    const handleThemeSelection = (manifest: ComponentManifest | null) => {
+        if (!preferences) return;
+        void handleCommand(async () => {
+            onPreferences(await applyThemeSelection(preferences, manifest, savePreferences));
         });
     };
 
@@ -406,7 +416,12 @@ export const SettingsPage = () => {
                 )}
                 {page === "appearance" && !gridDetail && (
                     <div className="settings__rows">
-                        <AppearanceSettings preferences={preferences} disabled={busy} onPreferences={handlePreferences} />
+                        <AppearanceSettings
+                            preferences={preferences}
+                            disabled={busy}
+                            onPreferences={handlePreferences}
+                            onThemeSelection={handleThemeSelection}
+                        />
                         {(
                             [
                                 ["desktopGrid", "桌面网格"],

@@ -8,7 +8,7 @@ use chrono::Utc;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRuntimeError, ComponentRuntimeSnapshot, WorkspaceRect};
+use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRole, ComponentRuntimeError, ComponentRuntimeSnapshot, ThemeAppearance, WorkspaceRect};
 
 /// 官方插件前端注册表当前支持的入口。
 const LOCAL_CLOCK_ENTRY: &str = "official:local-clock";
@@ -392,8 +392,24 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     {
         return Err("插件标识无效".to_string());
     }
+    let role = match values.get("role").map(String::as_str).unwrap_or("tile")
+    {
+        "tile" => ComponentRole::Tile,
+        "theme" => ComponentRole::Theme,
+        _ => return Err("插件角色无效".to_string()),
+    }; // 未声明角色继续按格子处理。
     let entry = required_ini(&values, "entry")?;
     confirm_plugin_entry(folder, &entry)?;
+    let (stylesheet, theme_appearance) = if role == ComponentRole::Theme
+    {
+        let stylesheet = required_ini(&values, "stylesheet")?; // 主题资产必须存在并通过相同路径规则。
+        confirm_plugin_asset(folder, &stylesheet, "css", false)?;
+        (format!("{folder_name}/{stylesheet}"), Some(read_theme_appearance(folder)?))
+    }
+    else
+    {
+        (String::new(), None)
+    };
     let app_version = parse_plugin_version(env!("CARGO_PKG_VERSION")).ok_or_else(|| "程序版本无效".to_string())?; // 与 package_info 使用同一份 Cargo 版本。
     if let Some(minimum) = optional_version(&values, "minAppVersion")?
     {
@@ -417,7 +433,10 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     let description = plugin_description(values.get("description").map(String::as_str)); // ini 按行切，换行写成 \n。
     let author = values.get("author").map(|value| value.trim().to_string()).unwrap_or_default(); // 缺省没有作者。
     let required_capabilities = plugin_capabilities(values.get("required_capabilities").map(String::as_str))?; // 缺省不声明任何能力。
-    let manifest = ComponentManifest { id, name, entry: PLUGIN_SLOT_ENTRY.to_string(), script, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
+    let script = if role == ComponentRole::Theme { String::new() } else { script }; // 主题不下发可导入脚本。
+    let creatable = role == ComponentRole::Tile && creatable; // 主题没有格子创建能力。
+    let max_tiles = if role == ComponentRole::Theme { 0 } else { max_tiles }; // 主题忽略格子上限。
+    let manifest = ComponentManifest { id, name, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, theme_appearance, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
     validate_manifest(&manifest).map_err(|error| error.message)?;
     Ok(manifest)
 }
@@ -531,14 +550,17 @@ fn validate_plugin_folder_name(name: &str) -> Result<(), String>
 }
 
 /// 入口必须是文件夹内的普通脚本，拒绝绝对路径、父级跳转、链接和重解析点。
-fn confirm_plugin_entry(folder: &std::path::Path, entry: &str) -> Result<(), String>
+fn confirm_plugin_entry(folder: &std::path::Path, entry: &str) -> Result<(), String> { confirm_plugin_asset(folder, entry, "js", true) }
+
+/// 脚本、样式表和主题数据共用路径边界，仅脚本允许缺失。
+fn confirm_plugin_asset(folder: &std::path::Path, entry: &str, extension: &str, allow_missing: bool) -> Result<(), String>
 {
     use std::os::windows::fs::MetadataExt;
     use std::path::Component;
     let relative = std::path::Path::new(entry); // 不把反斜杠或盘符当成文件夹内路径。
-    if entry.is_empty() || entry.contains(['\\', ':', '%', '\0']) || relative.is_absolute() || relative.components().any(|part| !matches!(part, Component::Normal(_))) || relative.extension().and_then(|value| value.to_str()) != Some("js")
+    if entry.is_empty() || entry.contains(['\\', ':', '%', '\0']) || relative.is_absolute() || relative.components().any(|part| !matches!(part, Component::Normal(_))) || relative.extension().and_then(|value| value.to_str()) != Some(extension)
     {
-        return Err("插件入口脚本无效".to_string());
+        return Err("插件资产无效".to_string());
     }
     let candidate = folder.join(relative); // 尚未跟随链接的脚本。
     let mut missing = false; // 脚本文件可以先不存在，加载失败交给前端。
@@ -547,16 +569,16 @@ fn confirm_plugin_entry(folder: &std::path::Path, entry: &str) -> Result<(), Str
         let metadata = match std::fs::symlink_metadata(ancestor)
         {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && ancestor == candidate =>
+            Err(error) if allow_missing && error.kind() == std::io::ErrorKind::NotFound && ancestor == candidate =>
             {
                 missing = true;
                 continue;
             }
-            Err(error) => return Err(format!("读取插件入口脚本失败：{error}")),
+            Err(error) => return Err(format!("读取插件资产失败：{error}")),
         };
         if metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
         {
-            return Err("插件入口脚本不能是链接或重解析点".to_string());
+            return Err("插件资产不能是链接或重解析点".to_string());
         }
     }
     if missing
@@ -564,13 +586,58 @@ fn confirm_plugin_entry(folder: &std::path::Path, entry: &str) -> Result<(), Str
         crate::log_warn!("插件：入口脚本不存在，仍注册清单，入口={entry}");
         return Ok(());
     }
-    let root = std::fs::canonicalize(folder).map_err(|error| format!("读取插件入口脚本失败：{error}"))?;
-    let path = std::fs::canonicalize(&candidate).map_err(|error| format!("读取插件入口脚本失败：{error}"))?;
+    let root = std::fs::canonicalize(folder).map_err(|error| format!("读取插件资产失败：{error}"))?;
+    let path = std::fs::canonicalize(&candidate).map_err(|error| format!("读取插件资产失败：{error}"))?;
     if !path.starts_with(&root) || !path.is_file()
     {
-        return Err("插件入口脚本必须位于插件文件夹内".to_string());
+        return Err("插件资产必须位于插件文件夹内".to_string());
     }
     Ok(())
+}
+
+/// 与前端 APPLICATION_FONTS 保持相同的系统字体白名单。
+const APPLICATION_FONTS: [&str; 6] = ["Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "Arial"];
+
+/// 有界读取主题外观，所有覆盖值必须满足现有偏好校验。
+fn read_theme_appearance(folder: &std::path::Path) -> Result<ThemeAppearance, String>
+{
+    use std::io::Read;
+    /// 主题数据只承载外观覆盖，不接受未知顶层字段。
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ThemeDocument
+    {
+        appearance: ThemeAppearance, // 外观对象必填，内部各项可以缺省。
+    }
+    confirm_plugin_asset(folder, "theme.json", "json", false)?;
+    let mut bytes = Vec::new(); // 64 KiB 加溢出哨兵，与清单读取上限一致。
+    std::fs::File::open(folder.join("theme.json")).and_then(|file| file.take(65537).read_to_end(&mut bytes)).map_err(|error| format!("读取主题数据失败：{error}"))?;
+    if bytes.len() > 65536
+    {
+        return Err("主题数据超过 64 KiB".to_string());
+    }
+    let document: ThemeDocument = serde_json::from_slice(&bytes).map_err(|error| format!("主题数据无效：{error}"))?; // JSON 类型错误也拒绝注册。
+    let appearance = document.appearance; // 缺省字段保留 None，序列化为 null。
+    for color in [&appearance.accent_color, &appearance.desktop_accent_color].into_iter().flatten()
+    {
+        if color.len() != 7 || !color.starts_with('#') || !color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+        {
+            return Err("主题强调色无效".to_string());
+        }
+    }
+    if appearance.corner_radius.is_some_and(|value| value > 12)
+    {
+        return Err("主题圆角超出范围".to_string());
+    }
+    if appearance.font_size.is_some_and(|value| !(12..=18).contains(&value))
+    {
+        return Err("主题字号超出范围".to_string());
+    }
+    if appearance.font_family.as_deref().is_some_and(|value| !APPLICATION_FONTS.contains(&value))
+    {
+        return Err("主题字体不在白名单内".to_string());
+    }
+    Ok(appearance)
 }
 
 /// 解析三段数字版本。空文本表示没有这条边界。

@@ -25,6 +25,28 @@ pub enum ComponentCapability
     ProbeServiceStatus,
 }
 
+/// 插件呈现角色，未声明时保持格子行为。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentRole
+{
+    #[default]
+    Tile,
+    Theme,
+}
+
+/// 主题经偏好写入的外观覆盖，缺省项不覆盖用户值。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeAppearance
+{
+    pub accent_color: Option<String>,         // 界面强调色。
+    pub desktop_accent_color: Option<String>, // 桌面强调色。
+    pub corner_radius: Option<u32>,           // 共用圆角。
+    pub font_family: Option<String>,          // 系统字体白名单成员。
+    pub font_size: Option<u32>,               // 正文字号。
+}
+
 /// 一个官方组件的版本化清单。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +61,15 @@ pub struct ComponentManifest
     /// 插件根内的脚本相对路径，形如 `<文件夹>/<入口脚本>`。官方清单为空。
     #[serde(default)]
     pub script: String,
+    /// 插件角色，官方及未声明角色的插件为格子。
+    #[serde(default)]
+    pub role: ComponentRole,
+    /// 插件根内的主题样式表相对路径，非主题为空。
+    #[serde(default)]
+    pub stylesheet: String,
+    /// 主题外观覆盖，非主题为空。
+    #[serde(default)]
+    pub theme_appearance: Option<ThemeAppearance>,
     /// 组件明确请求的全部宿主能力。
     pub required_capabilities: Vec<ComponentCapability>,
     /// 用户是否可从工作区入口创建该组件的新实例。JSON 缺省为 false。

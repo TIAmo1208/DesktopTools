@@ -1,15 +1,31 @@
 import type { WorkspaceRect } from "./workspace";
+import { APPLICATION_FONTS } from "./settings.ts";
 import { TILE_MIN_HEIGHT, TILE_MIN_WIDTH } from "./tile.ts";
 
 /** 官方组件可以声明并由宿主授权的能力。 */
 export type ComponentCapability = "read-host-time" | "read-current-media" | "probe-service-status";
+
+/** 插件呈现角色，缺省为格子。 */
+export type ComponentRole = "tile" | "theme";
+
+/** 通过偏好校验的主题外观覆盖，null 表示不覆盖。 */
+export interface ThemeAppearance {
+    accentColor: string | null;
+    desktopAccentColor: string | null;
+    cornerRadius: number | null;
+    fontFamily: string | null;
+    fontSize: number | null;
+}
 
 /** 一个官方组件的版本化清单。 */
 export interface ComponentManifest {
     id: string;
     name: string;
     entry: string;
-    script: string; // 插件根内的脚本相对路径。官方清单为空串。
+    script: string; // 插件根内的脚本相对路径。官方清单和主题为空串。
+    role?: ComponentRole; // 缺省为 tile。
+    stylesheet?: string; // 插件根内的主题样式表路径。
+    themeAppearance?: ThemeAppearance | null; // 非主题为 null。
     requiredCapabilities: ComponentCapability[];
     // 用户是否可从工作区入口创建该组件的新实例。
     creatable: boolean;
@@ -159,20 +175,49 @@ const parseDeclarationFlag = (value: unknown): boolean => {
     return value;
 };
 
+/** 校验主题外观覆盖，沿用偏好值域，不把缺省项变成覆盖值。 */
+const parseThemeAppearance = (value: unknown): ThemeAppearance | null => {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "object" || Array.isArray(value)) throw new ComponentContractError();
+    const item = value as Record<string, unknown>; // 待校验的覆盖字段。
+    for (const key of ["accentColor", "desktopAccentColor"]) {
+        if (item[key] != null && (typeof item[key] !== "string" || !/^#[0-9a-f]{6}$/i.test(item[key]))) throw new ComponentContractError();
+    }
+    for (const [key, min, max] of [["cornerRadius", 0, 12], ["fontSize", 12, 18]] as const) {
+        const field = item[key]; // 待校验的整数范围。
+        if (field != null && (typeof field !== "number" || !Number.isInteger(field) || field < min || field > max)) throw new ComponentContractError();
+    }
+    if (item.fontFamily != null && !APPLICATION_FONTS.some((font) => font === item.fontFamily)) throw new ComponentContractError();
+    return {
+        accentColor: (item.accentColor ?? null) as string | null,
+        desktopAccentColor: (item.desktopAccentColor ?? null) as string | null,
+        cornerRadius: (item.cornerRadius ?? null) as number | null,
+        fontFamily: (item.fontFamily ?? null) as string | null,
+        fontSize: (item.fontSize ?? null) as number | null,
+    };
+};
+
 /** 校验组件运行时快照。 */
 export const parseComponentRuntimeSnapshot = (value: unknown): ComponentRuntimeSnapshot => {
     if (typeof value !== "object" || value === null) throw new ComponentContractError();
     const candidate = value as Record<string, unknown>; // 等待字段校验的组件运行时快照。
     if (!Number.isSafeInteger(candidate.revision) || (candidate.revision as number) < 0) throw new ComponentContractError();
     if (!Array.isArray(candidate.manifests) || !Array.isArray(candidate.instances) || !Array.isArray(candidate.failures)) throw new ComponentContractError();
-    const manifests = candidate.manifests.map((manifest) => {
+    const manifests = candidate.manifests.map((manifest): ComponentManifest => {
         if (typeof manifest !== "object" || manifest === null) throw new ComponentContractError();
         const item = manifest as Record<string, unknown>; // 等待字段校验的官方组件清单。
         if (typeof item.id !== "string" || typeof item.name !== "string" || typeof item.entry !== "string" || typeof item.script !== "string")
             throw new ComponentContractError();
         if (!Array.isArray(item.requiredCapabilities) || !Number.isSafeInteger(item.persistenceVersion) || (item.persistenceVersion as number) <= 0)
             throw new ComponentContractError();
+        const role = item.role ?? "tile"; // 缺省保持格子角色。
+        if (role !== "tile" && role !== "theme") throw new ComponentContractError();
+        const stylesheet = item.stylesheet ?? ""; // 非主题没有样式表。
+        if (typeof stylesheet !== "string" || (role === "theme" && !stylesheet)) throw new ComponentContractError();
         return {
+            role,
+            stylesheet,
+            themeAppearance: parseThemeAppearance(item.themeAppearance),
             id: item.id,
             name: item.name,
             entry: item.entry,

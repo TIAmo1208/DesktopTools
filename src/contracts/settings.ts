@@ -38,11 +38,35 @@ export const parseGridPreferences = (value: unknown): GridPreferences => {
 // Windows 界面字体选项与后端白名单保持一致。
 export const APPLICATION_FONTS = ["Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "Arial"] as const;
 
+/** 选择主题之前的用户外观快照，不包含系统强调色开关。 */
+export interface ThemeBaseline {
+    accentColor: string;
+    desktopAccentColor: string;
+    cornerRadius: number;
+    fontFamily: string;
+    fontSize: number;
+}
+
+/** 校验完整外观基线，不读取插件目录。 */
+export const parseThemeBaseline = (value: unknown): ThemeBaseline => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("主题基线无效");
+    const item = value as Record<string, unknown>; // 基线所有字段均必填。
+    for (const key of ["accentColor", "desktopAccentColor"]) {
+        if (typeof item[key] !== "string" || !/^#[0-9a-f]{6}$/i.test(item[key])) throw new Error("主题基线颜色无效");
+    }
+    if (typeof item.cornerRadius !== "number" || !Number.isInteger(item.cornerRadius) || item.cornerRadius < 0 || item.cornerRadius > 12) throw new Error("主题基线圆角无效");
+    if (typeof item.fontSize !== "number" || !Number.isInteger(item.fontSize) || item.fontSize < 12 || item.fontSize > 18) throw new Error("主题基线字号无效");
+    if (typeof item.fontFamily !== "string" || !APPLICATION_FONTS.some((font) => font === item.fontFamily)) throw new Error("主题基线字体无效");
+    return { accentColor: item.accentColor as string, desktopAccentColor: item.desktopAccentColor as string, cornerRadius: item.cornerRadius, fontFamily: item.fontFamily, fontSize: item.fontSize };
+};
+
 /** 已由 Rust 保存的应用偏好。 */
 export interface ApplicationPreferences {
     configDirectory: string; // 下次启动使用的配置目录。
-    pluginDirectory: string; // 空串由 Rust 解析为当前配置目录同级的 plugin 目录。
+    pluginDirectory: string; // 空串由 Rust 解析为可执行文件同级的 plugin 目录。
     theme: ApplicationTheme; // 应用界面与自绘菜单的深浅模式。
+    themePluginId: string | null; // 当前主题插件，null 为内置主题。
+    themeBaseline: ThemeBaseline | null; // 未应用主题覆盖时的用户原值。
     desktopAppearance: DesktopAppearance; // 独立于界面与菜单的桌面主题。
     doubleClickToOpen: boolean; // 是否通过双击打开桌面项目。
     accentColor: string; // 应用界面与自绘菜单的强调色。
@@ -162,8 +186,13 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     if (typeof musicSpectrumFps !== "number" || !Number.isInteger(musicSpectrumFps) || musicSpectrumFps < 15 || musicSpectrumFps > 60)
         throw new Error("频谱帧率必须为 15 到 60 的整数");
     const disabledPlugins = parseDisabledPlugins(candidate.disabledPlugins); // 缺失、非数组和非法条目都按空或丢弃处理。
+    const themePluginId = candidate.themePluginId ?? null; // 缺省不选择外部主题，不检查目录存在性。
+    if (themePluginId !== null && (typeof themePluginId !== "string" || !themePluginId.trim())) throw new Error("主题插件标识无效");
+    const themeBaseline = candidate.themeBaseline == null ? null : parseThemeBaseline(candidate.themeBaseline); // 仅校验保存值。
     return {
         theme: candidate.theme,
+        themePluginId,
+        themeBaseline,
         desktopAppearance: {
             theme: desktopAppearance.theme,
             accentColor: desktopAppearance.accentColor,

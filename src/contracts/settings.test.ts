@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+test("主题字段缺省为 null，基线完整校验且不检查插件目录", () => {
+    const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 无主题的当前缺省配置。
+    assert.equal(defaults.themePluginId, null);
+    assert.equal(defaults.themeBaseline, null);
+    const baseline = { accentColor: "#AABBCC", desktopAccentColor: "#123456", cornerRadius: 0, fontFamily: "Arial", fontSize: 18 };
+    const selected = parsePreferences({ ...defaults, themePluginId: "plugin.not-installed", themeBaseline: baseline });
+    assert.deepEqual(selected.themeBaseline, baseline);
+    assert.equal(selected.themePluginId, "plugin.not-installed");
+    for (const themePluginId of [1, false, "", " "]) assert.throws(() => parsePreferences({ ...defaults, themePluginId }));
+    for (const patch of [{ accentColor: "red" }, { desktopAccentColor: "#12345g" }, { cornerRadius: 13 }, { cornerRadius: -1 }, { fontFamily: "Unknown" }, { fontSize: 11 }, { fontSize: 19 }, { fontSize: 14.5 }])
+        assert.throws(() => parsePreferences({ ...defaults, themeBaseline: { ...baseline, ...patch } }));
+    for (const themeBaseline of [{}, [], "bad", 1]) assert.throws(() => parsePreferences({ ...defaults, themeBaseline }));
+});
+
 test("图片预览宽度使用默认值并验证整数边界", () => {
     const base = { theme: "light", doubleClickToOpen: true };
     assert.equal(parsePreferences(base).collectImagePreviewWidth, 78);

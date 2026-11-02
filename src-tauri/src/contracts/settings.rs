@@ -60,14 +60,28 @@ impl Default for DesktopAppearance
     fn default() -> Self { Self { theme: ApplicationTheme::System, accent_color: "#2563eb".to_string(), use_windows_accent_color: false } }
 }
 
+/// 选择主题前保存的用户外观值，系统强调色开关不参与覆盖。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeBaseline
+{
+    pub accent_color: String,         // 界面自定义强调色。
+    pub desktop_accent_color: String, // 桌面自定义强调色。
+    pub corner_radius: u8,            // 表面圆角。
+    pub font_family: String,          // 白名单字体。
+    pub font_size: u8,                // 正文字号。
+}
+
 /// 原子保存的用户界面与项目打开偏好。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ApplicationPreferences
 {
     pub config_directory: String,              // 下次启动使用的配置目录，支持 %APPDATA% 前缀。
-    pub plugin_directory: String,              // 非空时固定插件目录；空值使用当前配置目录同级 plugin。
+    pub plugin_directory: String,              // 非空时固定插件目录；空值使用可执行文件同级 plugin。
     pub theme: ApplicationTheme,               // 当前用户选择的应用主题。
+    pub theme_plugin_id: Option<String>,       // 当前主题插件，缺省使用内置主题。
+    pub theme_baseline: Option<ThemeBaseline>, // 主题覆盖前的用户外观原值。
     pub desktop_appearance: DesktopAppearance, // 桌面独立主题，缺失时使用默认值。
     pub double_click_to_open: bool,            // 是否要求双击打开桌面项目。
     pub accent_color: String,                  // 应用界面与自绘菜单的十六进制主题色。
@@ -111,6 +125,8 @@ impl Default for ApplicationPreferences
     {
         Self {
             theme: ApplicationTheme::System,
+            theme_plugin_id: None,
+            theme_baseline: None,
             desktop_appearance: DesktopAppearance::default(),
             config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(),
             plugin_directory: String::new(),
@@ -180,6 +196,31 @@ where
     Ok(normalize_disabled_plugins(Vec::<String>::deserialize(deserializer)?))
 }
 
+/// 当前外观与基线使用相同的颜色、字体和尺寸边界。
+fn validate_appearance(accent: &str, desktop_accent: &str, radius: u8, font: &str, size: u8) -> Result<(), String>
+{
+    for color in [accent, desktop_accent]
+    {
+        if color.len() != 7 || !color.starts_with('#') || !color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+        {
+            return Err("主题色必须为 #RRGGBB 格式".to_string());
+        }
+    }
+    if radius > 12
+    {
+        return Err("圆角必须介于 0 和 12 之间".to_string());
+    }
+    if !(12..=18).contains(&size)
+    {
+        return Err("字号必须介于 12 和 18 之间".to_string());
+    }
+    if !["Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "Arial"].contains(&font)
+    {
+        return Err("不支持的界面字体".to_string());
+    }
+    Ok(())
+}
+
 /// 校验配置文件和命令输入共用的外观边界。
 impl ApplicationPreferences
 {
@@ -216,24 +257,14 @@ impl ApplicationPreferences
             return Err("图片预览宽度必须为 48 到 156 DIP 的整数".into());
         }
         self.fence_grid.validate()?;
-        for color in [&self.accent_color, &self.desktop_appearance.accent_color]
+        validate_appearance(&self.accent_color, &self.desktop_appearance.accent_color, self.corner_radius, &self.font_family, self.font_size)?;
+        if self.theme_plugin_id.as_ref().is_some_and(|id| id.trim().is_empty())
         {
-            if color.len() != 7 || !color.starts_with('#') || !color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
-            {
-                return Err("主题色必须为 #RRGGBB 格式".to_string());
-            }
+            return Err("主题插件标识无效".to_string());
         }
-        if self.corner_radius > 12
+        if let Some(baseline) = &self.theme_baseline
         {
-            return Err("圆角必须介于 0 和 12 之间".to_string());
-        }
-        if !(12..=18).contains(&self.font_size)
-        {
-            return Err("字号必须介于 12 和 18 之间".to_string());
-        }
-        if !["Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "Arial"].contains(&self.font_family.as_str())
-        {
-            return Err("不支持的界面字体".to_string());
+            validate_appearance(&baseline.accent_color, &baseline.desktop_accent_color, baseline.corner_radius, &baseline.font_family, baseline.font_size)?;
         }
         if !(16..=64).contains(&self.music_spectrum_bars)
         {
@@ -262,6 +293,27 @@ pub struct SettingsSnapshot
 mod music_tests
 {
     use super::ApplicationPreferences;
+
+    /// 主题字段缺省为空，基线通过保存值域校验且往返不丢字段。
+    #[test]
+    fn theme_preferences_roundtrip_and_validation()
+    {
+        let defaults: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 旧配置直接使用当前缺省值。
+        assert!(defaults.theme_plugin_id.is_none() && defaults.theme_baseline.is_none());
+        let mut value = serde_json::to_value(&defaults).unwrap(); // 持久化边界的实际 camelCase 载荷。
+        assert!(value["themePluginId"].is_null() && value["themeBaseline"].is_null());
+        value["themePluginId"] = serde_json::json!("plugin.missing");
+        value["themeBaseline"] = serde_json::json!({"accentColor":"#AABBCC","desktopAccentColor":"#123456","cornerRadius":4,"fontFamily":"Arial","fontSize":14});
+        let selected: ApplicationPreferences = serde_json::from_value(value.clone()).unwrap();
+        assert!(selected.validate().is_ok());
+        assert_eq!(serde_json::to_value(selected).unwrap(), value);
+        for (key, invalid) in [("accentColor", serde_json::json!("red")), ("desktopAccentColor", serde_json::json!("#12345g")), ("cornerRadius", serde_json::json!(13)), ("fontFamily", serde_json::json!("Unknown")), ("fontSize", serde_json::json!(19))]
+        {
+            let mut invalid_value = value.clone(); // 每个字段单独验证。
+            invalid_value["themeBaseline"][key] = invalid;
+            assert!(serde_json::from_value::<ApplicationPreferences>(invalid_value).unwrap().validate().is_err());
+        }
+    }
 
     /// 默认尺寸和保存边界与前端一致，缺失字段不需要迁移。
     #[test]

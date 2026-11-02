@@ -2,7 +2,6 @@ use std::sync::Mutex;
 
 pub(crate) mod desktop_drop;
 pub mod desktop_menu;
-pub(crate) mod preset_plugins;
 pub mod settings;
 pub mod tray;
 
