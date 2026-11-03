@@ -136,6 +136,7 @@ const mountPluginTile = (container: HTMLElement, context: PluginShellContext) =>
     const renderTile = readPluginApi(context.pluginId)?.renderTile; // 多个实例共用这一份。
     if (typeof renderTile !== "function") return;
     releasePluginTile(context.instanceId);
+    container.replaceChildren(); // 重挂前清掉上一轮的 DOM，否则作者用 append 就会叠出两份内容。
     const cleanup = renderTile(container, context); // 作者自行决定容器里的 DOM。
     if (typeof cleanup === "function") tileCleanups.set(context.instanceId, cleanup);
 };

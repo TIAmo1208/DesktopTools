@@ -13,7 +13,8 @@ import {
 import type { ComponentRuntimeSnapshot } from "../../contracts/component";
 import { resolveAnimationsEnabled, type ApplicationPreferences } from "../../contracts/settings";
 import { publishMessage } from "../notifications/messageNotification";
-import { activeThemeStylesheet, applyThemeStylesheet, readThemePluginId, startThemeRecovery } from "./themePlugin";
+import { activeThemeScript, activeThemeStylesheet, applyThemeStylesheet, readThemePluginId, startThemeRecovery } from "./themePlugin";
+import { activateThemeScript, stopThemeScript } from "./themeRuntime";
 import { interfaceFontStack, registerThemeFonts } from "./themeFonts";
 
 /** 当前窗口内共享的偏好加载状态。 */
@@ -185,6 +186,12 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
             publishMessage({ type: "error", content: message, source: "settings-preferences" }),
         );
     }, [preferences, runtimeSnapshot]);
+
+    // 主题入口脚本按当前主题激活一次；主题切换、停用和窗口销毁时执行清理函数。
+    useEffect(() => {
+        void activateThemeScript(activeThemeScript(runtimeSnapshot, preferences));
+    }, [preferences, runtimeSnapshot]);
+    useEffect(() => () => stopThemeScript(), []);
 
     const recoveryLifetime = useRef(0); // 独立于偏好广播的挂载代次，禁止销毁后更新。
     useEffect(() => {

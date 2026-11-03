@@ -11,6 +11,7 @@
         "resources": {
             "../plugin/主题-青笺/": "plugin/主题-青笺/",
             "../plugin/主题-宋律/": "plugin/主题-宋律/",
+            "../plugin/主题-夜之城/": "plugin/主题-夜之城/",
             "../plugin/AstrBot 状态/": "plugin/AstrBot 状态/",
             "../resources/许可证/": "许可证/",
             "../resources/Lucide许可证.txt": "许可证/Lucide许可证.txt",

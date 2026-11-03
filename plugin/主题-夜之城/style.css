@@ -1,0 +1,109 @@
+/* 夜之城插件的样式：时钟取桌面网格令牌，设置条目取界面令牌。 */
+
+/* ---------- 时钟格子 ---------- */
+
+/* 格子落在桌面工作区，颜色跟随桌面网格主题而不是界面主题。 */
+.nightcity-clock {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    color: var(--fence-text, var(--color-text));
+    font-family: var(--interface-font);
+    user-select: none;
+    overflow: hidden;
+}
+
+/* 十六进制数据流：等宽栈让走秒时不抖动，弱化到次要层次。 */
+.nightcity-clock .nightcity-clock__hex {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", "JetBrains Mono", monospace;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.08em;
+    opacity: 0.62;
+}
+
+/* 主读出：固定字号与等宽数字，不跟随正文字号缩放。 */
+.nightcity-clock .nightcity-clock__time {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", "JetBrains Mono", monospace;
+    font-size: 20px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+}
+
+/* 时区标记：与主读出同基线，不参与命中区。 */
+.nightcity-clock .nightcity-clock__zone {
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    opacity: 0.62;
+}
+
+/* 折叠态只保留主读出，数据流与时区标记整行不占位。 */
+.nightcity-clock[data-collapsed] .nightcity-clock__hex,
+.nightcity-clock[data-collapsed] .nightcity-clock__zone {
+    display: none;
+}
+
+/* ---------- 主题设置条目 ---------- */
+
+/* 条目容器：与设置页其它行同样的上下间距。 */
+.nightcity-options {
+    display: grid;
+    gap: 4px;
+    padding: 4px 0;
+}
+
+/* 单个开关行：文本在左、开关贴右，与其他设置行一致。 */
+.nightcity-options .nightcity-options__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 16px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    cursor: pointer;
+}
+
+/* 悬停时只换底色，不改尺寸。 */
+.nightcity-options .nightcity-options__row:hover {
+    background: var(--color-subtle);
+}
+
+/* 文本列：标题与说明两行。 */
+.nightcity-options .nightcity-options__text {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+/* 开关标题。 */
+.nightcity-options .nightcity-options__label {
+    color: var(--color-text);
+    font-size: 13px;
+}
+
+/* 开关说明，次要层级，超宽省略。 */
+.nightcity-options .nightcity-options__hint {
+    color: var(--color-muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 复选本体交给浏览器绘制，只统一强调色与尺寸。 */
+.nightcity-options .nightcity-options__input {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--color-focus);
+    cursor: pointer;
+}

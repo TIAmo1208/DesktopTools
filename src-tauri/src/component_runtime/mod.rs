@@ -448,9 +448,11 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     let description = plugin_description(values.get("description").map(String::as_str)); // ini 按行切，换行写成 \n。
     let author = values.get("author").map(|value| value.trim().to_string()).unwrap_or_default(); // 缺省没有作者。
     let required_capabilities = plugin_capabilities(values.get("required_capabilities").map(String::as_str))?; // 缺省不声明任何能力。
-    let script = if role == ComponentRole::Theme { String::new() } else { script }; // 主题不下发可导入脚本。
-    let creatable = role == ComponentRole::Tile && creatable; // 主题没有格子创建能力。
-    let max_tiles = if role == ComponentRole::Theme { 0 } else { max_tiles }; // 主题忽略格子上限。
+    // 主题与格子共用入口脚本通道；只有入口文件真的不存在时才清空，免得现有无脚本主题收到一份假的加载失败。
+    let script = if role == ComponentRole::Theme && !folder.join(&entry).is_file() { String::new() } else { script };
+    // 主题默认没有格子；带入口脚本时按清单声明放行，供主题自带的格子使用（同一插件里既能换肤又能添格子）。
+    let creatable = creatable && (role == ComponentRole::Tile || !script.is_empty());
+    let max_tiles = if role == ComponentRole::Theme && !creatable { 0 } else { max_tiles }; // 不能创建的主题忽略格子上限。
     let manifest = ComponentManifest { id, name, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, theme_appearance, theme_fonts, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
     validate_manifest(&manifest).map_err(|error| error.message)?;
     Ok(manifest)

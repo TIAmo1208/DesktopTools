@@ -206,10 +206,10 @@ test("条目数说明区分停用、失败、加载中、没有条目和条目�
         };
         assert.equal(await scripts.loadPluginScript("plugin.fail-summary", "fail/main.js"), "插件模块加载失败：插件脚本执行失败");
         assert.equal(page.entrySummary("plugin.fail-summary", false, false), "设置条目加载失败");
-        const themeCalls: string[] = []; // 主题不得进入加载函数。
+        const themeCalls: string[] = []; // 没有入口脚本的主题不加载，带脚本的主题照常加载。
         page.requestPluginScript({ id: "plugin.theme", role: "theme", script: "" }, (id) => themeCalls.push(id));
-        page.requestPluginScript({ id: "plugin.theme", role: "theme", script: "示例-主题/main.js" }, (id) => themeCalls.push(id), true);
-        assert.deepEqual(themeCalls, []);
+        page.requestPluginScript({ id: "plugin.theme", role: "theme", script: "主题-示例/main.js" }, (id) => themeCalls.push(id), true);
+        assert.deepEqual(themeCalls, ["plugin.theme"]);
         const tileCalls: string[] = []; // 空脚本不能靠“没路径”被放过。
         page.requestPluginScript({ id: "plugin.tile", role: "tile", script: "" }, (id) => tileCalls.push(id));
         page.requestPluginScript({ id: "plugin.tile", script: "" }, (id) => tileCalls.push(id));

@@ -30,6 +30,7 @@ export interface PluginSettingsEntry {
 export interface PluginShellApi {
     renderTile?: (container: HTMLElement, context: PluginShellContext) => void | (() => void); // 格子内容，可返回清理函数。
     settingsEntries?: PluginSettingsEntry[]; // 没有该字段表示没有设置条目。
+    activateTheme?: (context: PluginShellContext) => void | (() => void); // 主题被选中时执行一次，返回停用或切换主题时的清理函数。
 }
 
 const accepted = new Map<string, PluginShellApi>(); // 每个清单标识保留的首份外壳。

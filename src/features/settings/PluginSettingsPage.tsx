@@ -51,7 +51,7 @@ interface PluginRow {
     author?: string; // 作者。没有就不拼 @。
     repository?: string; // 有仓库才显示入口，不拿来拼地址。
     script: string; // 插件根内的脚本相对路径。
-    role?: ComponentManifest["role"]; // 主题不加载脚本。缺省按格子。
+    role?: ComponentManifest["role"]; // 主题只在带入口脚本时加载脚本。缺省按格子。
 }
 
 /** 设置页「插件」：一行一个插件，条目在本页展开。卸载确认、右键菜单和失效节不在这里。 */
@@ -438,9 +438,9 @@ export const PluginSettingsPage = ({
         const pluginDisabled = disabledIds.includes(selected.id); // 当前插件是否停用。
         const entries = entriesFor(selected.id); // 已注册的设置条目；脚本未到时为 undefined。
         const shape = pluginSettingsShape(selected.id); // 导出了条目但不是数组。
-        const themePlugin = selected.role === "theme"; // 主题没有脚本，不展示加载失败。
-        const failure = themePlugin ? undefined : scriptFailure(selected.id, reloaded); // 脚本失败说明；重新加载成功后不再沿用旧失败。
-        const pending = !themePlugin && !pluginDisabled && entries === undefined && !failure && !pluginScriptLoaded(selected.id); // 只有还没加载完才显示加载态。
+        const scriptlessTheme = selected.role === "theme" && !selected.script; // 没有入口脚本的主题不加载，也不展示加载失败。
+        const failure = scriptlessTheme ? undefined : scriptFailure(selected.id, reloaded); // 脚本失败说明；重新加载成功后不再沿用旧失败。
+        const pending = !scriptlessTheme && !pluginDisabled && entries === undefined && !failure && !pluginScriptLoaded(selected.id); // 只有还没加载完才显示加载态。
         const usedTiles = pluginTileCount(components, selected.id); // 已在桌面上的格子数。
         const tileRoom = pluginTileRoom(selected.maxTiles, usedTiles); // 上限满了就不能再加。
         return (
@@ -668,7 +668,7 @@ export const PluginSettingsPage = ({
                                                     {entrySummary(
                                                         plugin.id,
                                                         pluginDisabled,
-                                                        plugin.role === "theme" ||
+                                                        (plugin.role === "theme" && !plugin.script) ||
                                                             loadedIds.has(plugin.id) ||
                                                             pluginScriptLoaded(plugin.id) ||
                                                             reloaded[plugin.id] === "ok",
@@ -1181,17 +1181,17 @@ export const entriesFor = (pluginId: string) => {
     return api.settingsEntries ?? [];
 };
 
-/** 主题不加载脚本。格子即使 script 为空也交给加载函数，由它报路径无效。 */
+/** 主题只有带入口脚本时才加载脚本。格子即使 script 为空也交给加载函数，由它报路径无效。 */
 export const requestPluginScript = (
     plugin: { id: string; role?: string; script?: string },
     load: (id: string, script: string, reload?: boolean) => void,
     reload = false,
 ) => {
-    if (plugin.role === "theme") return;
+    if (plugin.role === "theme" && !plugin.script) return;
     load(plugin.id, plugin.script ?? "", reload);
 };
 
-/** 重新加载清掉旧失败，再导入一次插件模块。主题没有这一步。 */
+/** 重新加载清掉旧失败，再导入一次插件模块。没有入口脚本的主题不提供这一步。 */
 const handleReload = (
     pluginId: string,
     script: string,

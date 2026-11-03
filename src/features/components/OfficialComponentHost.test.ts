@@ -18,6 +18,9 @@ const server = await createServer({
 }); // 不启动监听端口，沿用生产入口及依赖。
 const host = await server.ssrLoadModule("/src/features/components/OfficialComponentHost.tsx");
 const bridge = await server.ssrLoadModule("/src/bridge/pluginSettings.ts");
+/** 插件容器只需提供 replaceChildren：重挂前宿主会清空它。 */
+const fakeContainer = () => ({ replaceChildren: () => undefined });
+
 const scripts = await server.ssrLoadModule("/src/bridge/pluginScripts.ts");
 test.after(async () => {
     await server.close();
@@ -29,7 +32,7 @@ test("插件宿主保留官方显隐、入口别名和未知入口兜底", async
     const { pluginVisibility, instanceVisible, pluginRenderers } = host;
     for (const value of [undefined, false, true]) {
         for (const debugRegistered of [false, true]) {
-            const context = {
+const context = {
                 preferences: { clockEnabled: value, debugEnabled: value, musicEnabled: value, collectEnabled: value, weatherEnabled: value },
                 runtime: { manifests: debugRegistered ? [{ id: "official.debug-test" }] : [] },
             }; // 每个开关与 Debug 注册是独立条件。
@@ -139,8 +142,8 @@ test("实例移除时调用最近一次 renderTile 的清理函数", () => {
         },
     };
     const context = (instanceId) => ({ pluginId: "plugin.shared", instanceId, collapsed: true, settings: { on: true }, saveSettings: async () => undefined });
-    host.mountPluginTile({}, context("inst-1"));
-    host.mountPluginTile({}, context("inst-2"));
+    host.mountPluginTile(fakeContainer(), context("inst-1"));
+    host.mountPluginTile(fakeContainer(), context("inst-2"));
     assert.equal(seen.instanceId, "inst-2");
     assert.equal(seen.collapsed, true);
     assert.deepEqual(seen.settings, { on: true });
@@ -161,8 +164,8 @@ test("实例移除时调用最近一次 renderTile 的清理函数", () => {
         },
     };
     const redraw = { pluginId: "plugin.redraw", instanceId: "redraw-1", collapsed: false, settings: null, saveSettings: async () => undefined };
-    host.mountPluginTile({}, redraw);
-    host.mountPluginTile({}, redraw);
+    host.mountPluginTile(fakeContainer(), redraw);
+    host.mountPluginTile(fakeContainer(), redraw);
     assert.deepEqual(order, [1]);
     host.releasePluginTile("redraw-1");
     assert.deepEqual(order, [1, 2]);
@@ -213,7 +216,9 @@ test("收到 plugin-settings-changed 后用新设置重绘，并先执行上一�
         },
     };
     const context = (settings) => ({ pluginId: "plugin.greet", instanceId: "tile-1", collapsed: false, settings, saveSettings: async () => undefined });
-    host.mountPluginTile({}, context(null));
+    const cleared: number[] = []; // 每次重挂前是否清掉上一轮 DOM。
+    const container = { replaceChildren: () => cleared.push(seen.length) };
+    host.mountPluginTile(container, context(null));
     const native = {
         invoke: async (command, args) => {
             assert.equal(command, "get_plugin_settings");
@@ -230,7 +235,7 @@ test("收到 plugin-settings-changed 后用新设置重绘，并先执行上一�
     try {
         const stop = await bridge.listenPluginSettings(
             (pluginId) => {
-                void host.syncPluginTileSettings(pluginId, (settings) => host.mountPluginTile({}, context(settings)));
+                void host.syncPluginTileSettings(pluginId, (settings) => host.mountPluginTile(container, context(settings)));
             },
             () => {},
         );
@@ -242,6 +247,7 @@ test("收到 plugin-settings-changed 后用新设置重绘，并先执行上一�
     }
     assert.deepEqual(seen, [null, { greeting: "TEST" }]);
     assert.deepEqual(order, [1]);
+    assert.deepEqual(cleared, [0, 1]); // 重挂前先清容器，避免作者 append 叠出两份内容。
 });
 
 test("插件格子菜单最后一项是可按清单置灰的移除", async () => {

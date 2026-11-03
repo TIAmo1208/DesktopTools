@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { activeThemeStylesheet, applyThemeStylesheet, canSavePreferences, readThemePluginId, recoverUnavailableTheme, resolveTheme, startThemeRecovery } from "./themePlugin.ts";
+import { activeThemeScript, activeThemeStylesheet, applyThemeStylesheet, canSavePreferences, readThemePluginId, recoverUnavailableTheme, resolveTheme, startThemeRecovery } from "./themePlugin.ts";
 import { parsePreferences } from "../../contracts/settings.ts";
 import { clearTheme } from "./applyThemeSelection.ts";
 
@@ -145,6 +145,23 @@ test("未停用的主题清单才提供样式表", () => {
     assert.doesNotMatch(themeSource, /loadPluginScript|import\(/);
     assert.match(themeSource, /disabledPlugins/);
     assert.match(themeSource, /role === "theme"/);
+});
+
+test("主题入口脚本只取已选中的主题角色", () => {
+    const snapshot = {
+        manifests: [
+            { id: "plugin.theme", role: "theme", script: "主题-夜之城/main.js" },
+            { id: "plugin.plains", role: "theme" },
+            { id: "plugin.tile", role: "tile", script: "示例-格子/index.js" },
+        ],
+    };
+    const prefs = (themePluginId: string | null, disabledPlugins: string[] = []) => ({ themePluginId, disabledPlugins });
+    assert.deepEqual(activeThemeScript(snapshot, prefs("plugin.theme")), { id: "plugin.theme", script: "主题-夜之城/main.js" });
+    assert.equal(activeThemeScript(snapshot, prefs("plugin.plains")), undefined); // 没有入口文件。
+    assert.equal(activeThemeScript(snapshot, prefs("plugin.tile")), undefined); // 非主题角色。
+    assert.equal(activeThemeScript(snapshot, prefs("plugin.theme", ["plugin.theme"])), undefined); // 已停用。
+    assert.equal(activeThemeScript(snapshot, prefs(null)), undefined); // 内置主题。
+    assert.equal(activeThemeScript(undefined, prefs("plugin.theme")), undefined); // 清单还没到。
 });
 
 test("主题样式挂在偏好变量副作用之后", () => {

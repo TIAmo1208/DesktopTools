@@ -30,7 +30,7 @@ export interface ComponentManifest {
     id: string;
     name: string;
     entry: string;
-    script: string; // 插件根内的脚本相对路径。官方清单和主题为空串。
+    script: string; // 插件根内的脚本相对路径。官方清单为空串；主题没有入口文件时同样为空串。
     role?: ComponentRole; // 缺省为 tile。
     stylesheet?: string; // 插件根内的主题样式表路径。
     themeAppearance?: ThemeAppearance | null; // 非主题为 null。

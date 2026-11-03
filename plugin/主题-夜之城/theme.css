@@ -1,0 +1,179 @@
+/* 夜之城主题：NC 黄 × 霓虹青 × 近黑夜蓝。特效开关由插件写入文档根的 data-nightcity-* 属性。 */
+
+/* ---------- 界面调色板：浅色为日间变体 ---------- */
+
+:root {
+    --color-background: #e9edf4;
+    --color-surface: #ffffff;
+    --color-subtle: #f1f4f9;
+    --color-border: #c8d2e2;
+    --color-text: #0b1220;
+    --color-muted: #586680;
+    --color-ready: #007d8f;
+    --color-active: #067a58;
+    --color-action: #0b1220;
+    --color-action-hover: #16223a;
+    --color-action-text: #fce300;
+    --color-error: #c01238;
+    --color-error-surface: #fdeef1;
+}
+
+/* 界面深色调色板：主形态，夜之城的底色在这里。 */
+:root[data-theme="dark"] {
+    --color-background: #05070d;
+    --color-surface: #0d1322;
+    --color-subtle: #121a2c;
+    --color-border: #1f2c47;
+    --color-text: #e8f1ff;
+    --color-muted: #8fa3c8;
+    --color-ready: #00f0ff;
+    --color-active: #00f5a0;
+    --color-action: #fce300;
+    --color-action-hover: #ffee33;
+    --color-action-text: #0a0a05;
+    --color-error: #ff3b69;
+    --color-error-surface: #2b0e1a;
+}
+
+/* ---------- 桌面网格表面 ---------- */
+
+/* 深色围栏：青色描边、近黑半透明底，壁纸仍然透出。 */
+:root[data-desktop-theme="dark"] .fence-workspace,
+.fence-workspace {
+    --fence-border: rgb(0 240 255 / 30%);
+    --fence-surface: rgb(5 7 13 / 58%);
+    --fence-text: #e8f1ff;
+    --fence-focus-border: var(--desktop-accent, #fce300);
+    --fence-item-text-shadow: 0 1px 2px rgb(0 0 0 / 90%);
+}
+
+/* 日间版围栏：边框走深蓝低透明，文字回到近黑。 */
+:root[data-desktop-theme="light"] .fence-workspace {
+    --fence-border: rgb(11 18 32 / 24%);
+    --fence-surface: rgb(233 237 244 / 62%);
+    --fence-text: #0b1220;
+    --fence-focus-border: var(--desktop-accent, #fce300);
+    --fence-item-text-shadow: none;
+}
+
+/* ---------- 自绘菜单 ---------- */
+
+/* 自绘菜单的深色表面，含格子菜单和门户面包屑菜单。 */
+.desktop-tile-menu,
+.folder-portal__breadcrumb-menu {
+    --menu-border: rgb(0 240 255 / 26%);
+    --menu-text: #e8f1ff;
+    --menu-surface: rgb(13 19 34 / 96%);
+    --menu-hover: rgb(0 240 255 / 14%);
+    --menu-shadow: 2px 3px 8px rgb(0 0 0 / 45%);
+}
+
+/* 自绘菜单的浅色表面。 */
+:root[data-theme="light"] .desktop-tile-menu,
+:root[data-theme="light"] .folder-portal__breadcrumb-menu {
+    --menu-border: rgb(11 18 32 / 18%);
+    --menu-text: #0b1220;
+    --menu-surface: rgb(255 255 255 / 96%);
+    --menu-hover: rgb(11 18 32 / 8%);
+    --menu-shadow: 2px 3px 8px rgb(0 0 0 / 14%);
+}
+
+/* ---------- 字面效果 ---------- */
+
+/* 等宽数字：数字列在走秒与读数时不抖动。 */
+:root {
+    font-variant-numeric: tabular-nums;
+}
+
+/* 关闭等宽数字时回到默认字形。 */
+:root[data-nightcity-mono="off"] {
+    font-variant-numeric: normal;
+}
+
+/* 时钟读出走本地等宽栈。 */
+.local-clock {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", "JetBrains Mono", monospace;
+}
+
+/* 页面标题拉成终端标题的字距。 */
+h1 {
+    letter-spacing: 0.12em;
+}
+
+/* 悬停时给按钮文字叠一层冷光，不改尺寸也不触发重排。 */
+button:hover {
+    text-shadow: 0 0 6px rgb(0 240 255 / 45%);
+}
+
+/* 浅色下冷光收敛，避免白底发糊。 */
+:root[data-theme="light"] button:hover {
+    text-shadow: 0 0 5px rgb(0 120 160 / 35%);
+}
+
+/* 关闭悬停冷光。 */
+:root[data-nightcity-glow="off"] button:hover {
+    text-shadow: none;
+}
+
+/* ---------- 45° 切角 ---------- */
+
+/* 用 corner-shape 削角：只改绘制形状，不裁文字也不产生点击死区；不支持时退化成圆角。 */
+button {
+    corner-shape: bevel;
+}
+
+/* 开关本体是胶囊形，不参与削角。 */
+button[role="switch"] {
+    corner-shape: round;
+}
+
+/* 关闭切角时回到应用原有圆角。 */
+:root[data-nightcity-bevel="off"] button {
+    corner-shape: round;
+}
+
+/* ---------- CRT 叠加 ---------- */
+
+/* 叠加层只画线不铺底，鼠标穿透，壁纸照旧透出。 */
+#root::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    pointer-events: none;
+    background: var(--nightcity-crt, none);
+}
+
+/* 深色：扫描线配城市网格，CRT 的存在感主要来自这一套。 */
+:root[data-theme="dark"] {
+    --nightcity-crt:
+        repeating-linear-gradient(0deg, rgb(0 0 0 / 20%) 0 1px, transparent 1px 3px),
+        repeating-linear-gradient(90deg, rgb(0 240 255 / 5%) 0 1px, transparent 1px 84px),
+        repeating-linear-gradient(0deg, rgb(0 240 255 / 4%) 0 1px, transparent 1px 84px);
+}
+
+/* 浅色：只留稀疏青色网格，不叠黑色扫描线，白底不发灰也不刺眼。 */
+:root[data-theme="light"] {
+    --nightcity-crt:
+        repeating-linear-gradient(90deg, rgb(0 120 160 / 4%) 0 1px, transparent 1px 96px),
+        repeating-linear-gradient(0deg, rgb(0 120 160 / 3%) 0 1px, transparent 1px 96px);
+}
+
+/* 桌面窗口跟随桌面网格的深浅，而不是界面主题。 */
+html[data-desktop-host="true"][data-desktop-theme="light"] {
+    --nightcity-crt:
+        repeating-linear-gradient(90deg, rgb(0 120 160 / 4%) 0 1px, transparent 1px 96px),
+        repeating-linear-gradient(0deg, rgb(0 120 160 / 3%) 0 1px, transparent 1px 96px);
+}
+
+/* 关闭扫描线。 */
+:root[data-nightcity-scan="off"] #root::after {
+    display: none;
+}
+
+/* 窄屏收敛：网格在手机上只是噪点。 */
+@media (max-width: 768px) {
+    #root::after {
+        display: none;
+    }
+}

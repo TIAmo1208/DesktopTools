@@ -20,10 +20,16 @@ fn theme_manifest_validates_assets_and_appearance()
     let manifest = runtime.catalog().manifests["plugin.theme"].clone();
     assert_eq!(manifest.role, crate::contracts::ComponentRole::Theme);
     assert_eq!(manifest.stylesheet, "theme/theme.css");
-    assert!(manifest.script.is_empty());
-    assert!(!manifest.creatable);
-    assert_eq!(manifest.max_tiles, 0);
+    assert_eq!(manifest.script, "theme/main.js"); // 主题和格子一样可以带入口脚本。
+    assert!(manifest.creatable); // 带入口脚本的主题可以声明创建格子。
+    assert_eq!(manifest.max_tiles, 5);
     assert_eq!(serde_json::to_value(manifest.theme_appearance).unwrap()["accentColor"], "#Ab12Cd");
+    std::fs::remove_file(folder.join("main.js")).unwrap();
+    let scriptless = ComponentRuntimeState::new(&directory).catalog().manifests["plugin.theme"].clone();
+    assert!(scriptless.script.is_empty()); // 入口脚本缺失时不下发，无脚本主题不产生加载失败。
+    assert!(!scriptless.creatable); // 没有格子入口的主题不能创建，也不读格子上限。
+    assert_eq!(scriptless.max_tiles, 0);
+    std::fs::write(folder.join("main.js"), "").unwrap();
     for body in [base.to_string(), format!("{base}role=tile\n")]
     {
         std::fs::write(folder.join("manifest.ini"), body).unwrap();
@@ -122,6 +128,11 @@ fn repo_preset_plugins_register()
     assert_eq!(theme.stylesheet, "主题-宋律/theme.css");
     assert!(catalog.manifests.contains_key("plugin.theme-qingjian"));
     assert!(catalog.manifests.contains_key("plugin.astrbot-status"));
+    let night_city = catalog.manifests.get("plugin.theme-nightcity").unwrap(); // 换肤和自带格子放在同一个插件里。
+    assert_eq!(night_city.role, crate::contracts::ComponentRole::Theme);
+    assert_eq!(night_city.script, "主题-夜之城/index.js");
+    assert!(night_city.creatable); // 带入口脚本的主题可以创建格子。
+    assert_eq!(night_city.max_tiles, 2);
 }
 
 /// 点开头的目录不注册，作者@名称 的文件夹按同一份清单校验。

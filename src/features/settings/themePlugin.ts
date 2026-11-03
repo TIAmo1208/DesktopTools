@@ -15,6 +15,18 @@ export const readThemePluginId = (preferences: Pick<ApplicationPreferences, "the
 /** 样式装配与失效回退共用的清单投影。 */
 type ThemeSnapshot = { manifests: readonly { id: string; role?: string; stylesheet?: string; version?: string }[] };
 
+/** 当前生效主题的入口脚本；内置主题、已停用、清单未到、非主题角色或没有入口文件时为空。 */
+export const activeThemeScript = (
+    snapshot: { manifests: readonly { id: string; role?: string; script?: string }[] } | undefined,
+    preferences: Pick<ApplicationPreferences, "themePluginId" | "disabledPlugins"> | undefined,
+): { id: string; script: string } | undefined => {
+    const id = readThemePluginId(preferences); // 空标识表示内置主题。
+    if (!id) return undefined;
+    if (preferences?.disabledPlugins.includes(id)) return undefined; // 停用中的主题不执行脚本，与样式表同一判定。
+    const manifest = snapshot?.manifests.find((item) => item.id === id && item.role === "theme"); // 只有主题角色带入口脚本。
+    return manifest?.script ? { id: manifest.id, script: manifest.script } : undefined;
+};
+
 /** 区分未就绪、内置主题与三类失效，不读取 entry 或加载脚本。 */
 export const resolveTheme = (
     snapshot: ThemeSnapshot | undefined,
