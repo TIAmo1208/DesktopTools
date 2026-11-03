@@ -353,6 +353,30 @@ fn uninstall_plugin_remove_settings_is_optional_and_confined()
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// 主题没有入口脚本，卸载只删除自己的文件夹，插件根与其他插件保留。
+#[test]
+fn uninstall_theme_removes_only_its_folder()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-uninstall-theme-{}", std::process::id())); // 本测试独占目录。
+    let plugin_directory = root.join("plugins");
+    let config_directory = root.join("config");
+    let theme = plugin_directory.join("主题-宋律");
+    let other = plugin_directory.join("时钟");
+    std::fs::create_dir_all(theme.join("fonts")).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::create_dir_all(&config_directory).unwrap();
+    std::fs::write(theme.join("manifest.ini"), "[plugin]\nid = plugin.theme\nname = 主题-宋律\nversion = 1.0.0\nentry = index.js\nrole = theme\nstylesheet = theme.css\n").unwrap();
+    std::fs::write(theme.join("theme.css"), ":root {}").unwrap();
+    std::fs::write(theme.join("theme.json"), "{\"appearance\":{}}").unwrap();
+    std::fs::write(other.join("manifest.ini"), "[plugin]\nid = plugin.clock\nname = 时钟\nversion = 1.0.0\nentry = main.js\n").unwrap();
+    std::fs::write(other.join("main.js"), "").unwrap();
+    assert_eq!(uninstall_plugin_files(&plugin_directory, &config_directory, "plugin.theme", false, "").unwrap(), vec!["主题-宋律".to_string()]);
+    assert!(!theme.exists());
+    assert!(other.join("manifest.ini").exists(), "其他插件必须保留");
+    assert!(plugin_directory.exists(), "插件根必须保留");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn sample_manifest(id: &str, name: &str, version: &str) -> String { format!("[plugin]\nid = {id}\nname = {name}\nversion = {version}\nentry = main.js\n") }
 
 fn write_package(directory: &std::path::Path, name: &str, manifest: &str)
@@ -363,26 +387,36 @@ fn write_package(directory: &std::path::Path, name: &str, manifest: &str)
     std::fs::write(package.join("manifest.ini"), manifest).unwrap();
 }
 
-/// 计划带上待装作者；已经装过时带上那份清单里的插件标识。
+/// 计划带上待装作者；同一作者的同一标识才算同一个插件，文件夹按作者@名称落盘。
 #[test]
-fn install_plan_carries_author_and_installed_id()
+fn install_plan_carries_author_and_identity()
 {
     let root = std::env::temp_dir().join(format!("desktop-tools-plugin-plan-author-{}", std::process::id())); // 本测试独占目录。
     let plugin_root = root.join("plugins");
     let source = root.join("source");
-    write_package(&source, "Clock", "[plugin]\nname = Clock\nversion = 1.0.0\nentry = main.js\nauthor = 张三\n");
+    write_package(&source, "Clock", "[plugin]\nid = plugin.clock\nname = Clock\nversion = 1.0.0\nentry = main.js\nauthor = 张三\n");
     let fresh = inspect_plugin_folder(&source, &plugin_root).unwrap();
     assert_eq!(fresh.author, "张三");
     assert!(fresh.conflict.is_none());
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let plugin_id = install_prepared_plugin(&plugin_root, &fresh, false, &cancel, |_| panic!("新安装不应卸载"), |_, _| ()).unwrap();
+    assert_eq!(plugin_id, "plugin.clock");
+    assert!(plugin_root.join("张三@Clock/manifest.ini").is_file(), "装到 作者@名称 文件夹");
     let again = root.join("again");
-    write_package(&again, "Clock", "[plugin]\nname = Clock\nversion = 1.1.0\nentry = main.js\nauthor = 李四\n");
-    let upgrade = inspect_plugin_folder(&again, &plugin_root).unwrap();
-    assert_eq!(upgrade.author, "李四");
-    let conflict = upgrade.conflict.expect("已安装同名插件应带上冲突");
-    assert_eq!(conflict.installed_id, plugin_id);
+    write_package(&again, "Clock", "[plugin]\nid = plugin.clock\nname = Clock\nversion = 1.1.0\nentry = main.js\nauthor = 李四\n");
+    assert!(inspect_plugin_folder(&again, &plugin_root).unwrap().conflict.is_none(), "作者不同不是同一个插件");
+    let upgraded = root.join("upgraded");
+    write_package(&upgraded, "Clock", "[plugin]\nid = plugin.clock\nname = Clock\nversion = 1.1.0\nentry = main.js\nauthor = 张三\n");
+    let upgrade = inspect_plugin_folder(&upgraded, &plugin_root).unwrap();
+    let conflict = upgrade.conflict.expect("同一作者的同一标识应带上冲突");
+    assert_eq!(conflict.installed_folder, "张三@Clock");
     assert!(!conflict.downgrade);
+    let renamed = root.join("renamed");
+    write_package(&renamed, "Clock2", "[plugin]\nid = plugin.clock\nname = Clock2\nversion = 1.2.0\nentry = main.js\nauthor = 张三\n");
+    let renamed = inspect_plugin_folder(&renamed, &plugin_root).unwrap();
+    assert_eq!(install_prepared_plugin(&plugin_root, &renamed, false, &cancel, |_| Ok(()), |_, _| ()).unwrap(), "plugin.clock");
+    assert!(!plugin_root.join("张三@Clock").exists(), "改名后旧文件夹不留下");
+    assert!(plugin_root.join("张三@Clock2/manifest.ini").is_file());
     std::fs::remove_dir_all(root).unwrap();
 }
 #[test]
@@ -397,14 +431,14 @@ fn plugin_install_plans_versions_and_cancellation()
     assert!(prepared.conflict.is_none());
     assert!(prepared.author.is_empty());
     let plugin_id = install_prepared_plugin(&plugin_root, &prepared, false, &cancel, |_| panic!("新安装不应卸载"), |_, _| ()).unwrap();
-    assert_eq!(plugin_id, "plugin.clock");
-    assert!(std::fs::read_to_string(plugin_root.join("Clock/manifest.ini")).unwrap().contains("id = plugin.clock"));
+    assert_eq!(plugin_id, "author.bad"); // 清单标识原样保留，不重新命名。
+    assert!(std::fs::read_to_string(plugin_root.join("Clock/manifest.ini")).unwrap().contains("id = author.bad")); // 清单不被改写。
     assert!(std::fs::read_dir(&plugin_root).unwrap().all(|entry| !entry.unwrap().file_name().to_string_lossy().starts_with(".install-")));
     let newer = root.join("newer");
     write_package(&newer, "Clock", &sample_manifest("author.bad", "Clock", "1.1.0"));
     let upgrade = inspect_plugin_folder(&newer, &plugin_root).unwrap();
     assert!(!upgrade.conflict.as_ref().unwrap().downgrade);
-    assert_eq!(upgrade.conflict.as_ref().unwrap().installed_id, plugin_id);
+    assert_eq!(upgrade.conflict.as_ref().unwrap().installed_folder, "Clock"); // 作者为空时文件夹就是名称。
     let older = root.join("older");
     write_package(&older, "Clock", &sample_manifest("author.bad", "Clock", "0.9.0"));
     let downgrade = inspect_plugin_folder(&older, &plugin_root).unwrap();
@@ -425,7 +459,7 @@ fn plugin_install_plans_versions_and_cancellation()
         |_, _| (),
     )
     .unwrap();
-    assert_eq!(removed, "plugin.clock");
+    assert_eq!(removed, "author.bad"); // 降级卸载用的是清单标识。
     assert!(std::fs::read_to_string(plugin_root.join("Clock/manifest.ini")).unwrap().contains("version = 0.9.0"));
     let nested = root.join("nested-source");
     std::fs::create_dir_all(nested.join("Inner")).unwrap();
@@ -453,7 +487,7 @@ fn plugin_install_plans_versions_and_cancellation()
     zip.finish().unwrap();
     let from_zip = inspect_plugin_archive(&archive, &plugin_root).unwrap();
     cancel.store(false, std::sync::atomic::Ordering::Relaxed);
-    assert_eq!(install_prepared_plugin(&plugin_root, &from_zip, false, &cancel, |_| Ok(()), |_, _| ()).unwrap(), "plugin.wrapped");
+    assert_eq!(install_prepared_plugin(&plugin_root, &from_zip, false, &cancel, |_| Ok(()), |_, _| ()).unwrap(), "author.bad"); // 同一标识换名称仍按同一插件替换。
     let escape = root.join("escape.zip");
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&escape).unwrap());
     zip.start_file("../evil.js", options).unwrap();
@@ -500,8 +534,14 @@ fn plugin_install_rejections_name_the_reason()
     assert!(outside.contains("../main.js"), "{outside}");
     let absent = root.join("absent");
     std::fs::create_dir_all(absent.join("Gone")).unwrap();
-    std::fs::write(absent.join("Gone/manifest.ini"), "[plugin]\nname = Gone\nversion = 1.0.0\nentry = missing.js\n").unwrap();
+    std::fs::write(absent.join("Gone/manifest.ini"), "[plugin]\nid = plugin.gone\nname = Gone\nversion = 1.0.0\nentry = missing.js\n").unwrap();
     assert!(inspect_plugin_folder(&absent, &plugin_root).is_ok(), "入口脚本缺失不再拒绝安装");
+    let no_id = root.join("no-id");
+    write_package(&no_id, "NoId", "[plugin]\nname = NoId\nversion = 1.0.0\nentry = main.js\n");
+    assert!(inspect_plugin_folder(&no_id, &plugin_root).unwrap_err().contains("缺少 id"), "标识由作者声明，安装只要求存在");
+    let free_id = root.join("free-id");
+    write_package(&free_id, "FreeId", "[plugin]\nid = 任意标识\nname = FreeId\nversion = 1.0.0\nentry = main.js\n");
+    assert_eq!(inspect_plugin_folder(&free_id, &plugin_root).unwrap().id, "任意标识", "安装不校验标识内容");
     let archive = root.join("escape.zip");
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
     zip.start_file("../evil.js", zip::write::SimpleFileOptions::default()).unwrap();
@@ -522,7 +562,7 @@ fn missing_entry_script_can_still_be_prepared()
     std::fs::create_dir_all(&plugin_root).unwrap();
     let source = root.join("NoEntry"); // 只有清单，没有 main.js。
     std::fs::create_dir_all(&source).unwrap();
-    std::fs::write(source.join("manifest.ini"), "[plugin]\nname = NoEntry\nversion = 1.0.0\nentry = main.js\n").unwrap();
+    std::fs::write(source.join("manifest.ini"), "[plugin]\nid = plugin.noentry\nname = NoEntry\nversion = 1.0.0\nentry = main.js\n").unwrap();
     let prepared = inspect_plugin_folder(&source, &plugin_root).expect("缺入口脚本仍应得到安装计划");
     assert_eq!(prepared.name, "NoEntry");
     std::fs::remove_dir_all(root).unwrap();

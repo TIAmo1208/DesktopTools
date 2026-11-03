@@ -48,6 +48,13 @@ export const setAutostart = async (enabled: boolean) => {
 /** 打开后端确定的当前日志目录。 */
 export const openLogs = () => invokeRuntime<void>("open_logs");
 
+/** 当前生效的配置目录绝对路径，空偏好由后端按当前用户目录解析。 */
+export const resolvedConfigDirectory = async () => {
+    const result = await invokeRuntime<unknown>("resolved_config_directory");
+    if (typeof result !== "string" || !result.trim()) throw new Error("配置目录无效");
+    return result;
+};
+
 /** 订阅并校验当前运行时的偏好变化。 */
 export const listenPreferences = (onPreferences: (preferences: ApplicationPreferences) => void, onError: (error: unknown) => void) =>
     listenRuntime<unknown>("preferences-changed", (payload) => {

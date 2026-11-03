@@ -43,8 +43,23 @@ pub struct ThemeAppearance
     pub accent_color: Option<String>,         // 界面强调色。
     pub desktop_accent_color: Option<String>, // 桌面强调色。
     pub corner_radius: Option<u32>,           // 共用圆角。
-    pub font_family: Option<String>,          // 系统字体白名单成员。
+    pub font_family: Option<String>,          // 系统字体或本主题自带字体的族名。
     pub font_size: Option<u32>,               // 正文字号。
+}
+
+/// 主题自带的字体文件，由宿主注册到文档字体集。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeFont
+{
+    /// 用户可见的字体族名，也是偏好里保存的值。
+    pub family: String,
+    /// 插件根内的字体文件相对路径，形如 `<文件夹>/fonts/x.woff2`。
+    pub file: String,
+    /// 字重，100–900。
+    pub weight: u16,
+    /// 字形，`normal` 或 `italic`。
+    pub style: String,
 }
 
 /// 一个官方组件的版本化清单。
@@ -70,6 +85,9 @@ pub struct ComponentManifest
     /// 主题外观覆盖，非主题为空。
     #[serde(default)]
     pub theme_appearance: Option<ThemeAppearance>,
+    /// 主题自带的字体，非主题为空。
+    #[serde(default)]
+    pub theme_fonts: Vec<ThemeFont>,
     /// 组件明确请求的全部宿主能力。
     pub required_capabilities: Vec<ComponentCapability>,
     /// 用户是否可从工作区入口创建该组件的新实例。JSON 缺省为 false。

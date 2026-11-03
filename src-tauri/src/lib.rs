@@ -98,6 +98,7 @@ pub fn run()
             commands::settings::set_autostart,
             commands::settings::open_logs,
             commands::settings::choose_config_directory,
+            commands::settings::resolved_config_directory,
             commands::settings::choose_folder_portal_directory,
             get_application_snapshot,
             get_desktop_host_snapshot,

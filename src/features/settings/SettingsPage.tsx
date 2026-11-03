@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import applicationIcon from "../../../resources/application.png";
 import pluginNavIcon from "../../../resources/settings-plugin.svg?raw";
 import { getDesktopHostSnapshot } from "../../bridge/desktopHost";
-import { getSettings, openLogs, savePreferences, setAutostart, settingsErrorMessage } from "../../bridge/settings";
+import { getSettings, openLogs, resolvedConfigDirectory, savePreferences, setAutostart, settingsErrorMessage } from "../../bridge/settings";
 import { applyWorkspaceCommand, getWorkspaceSnapshot, listenWorkspaceSnapshots } from "../../bridge/workspace";
 import type { DesktopHostSnapshot, TakeoverPhase } from "../../contracts/desktopHost";
 import type { ApplicationPreferences, SettingsSnapshot } from "../../contracts/settings";
@@ -54,6 +54,7 @@ export const SettingsPage = () => {
     const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(); // 当前工作区映射快照。
     const [busy, setBusy] = useState(false); // 配置变更的控件禁用状态。
     const [directoryDraft, setDirectoryDraft] = useState<string>(); // 尚未保存的配置目录输入。
+    const [resolvedDirectory, setResolvedDirectory] = useState<string>(); // 本次启动实际使用的配置目录。
     const pending = useRef(false); // 阻止同一事件循环中的重复命令。
     const leaveGuard = useRef<((action: () => void) => void) | undefined>(undefined); // 子页未保存草稿的导航保护。
     const requestRevision = useRef(0); // 防止较早的加载结果覆盖更新后的设置。
@@ -127,6 +128,28 @@ export const SettingsPage = () => {
             window.removeEventListener("focus", handleFocus);
         };
     }, [handleRefresh]);
+
+    useEffect(() => {
+        let alive = true; // 卸载后忽略迟到结果。
+        void resolvedConfigDirectory()
+            .then((path) => alive && setResolvedDirectory(path))
+            .catch(() => undefined);
+        return () => {
+            alive = false;
+        };
+    }, []);
+
+    /** 复制当前配置目录；剪贴板不可用时提示手动复制。 */
+    const handleCopyConfigDirectory = () => {
+        const path = directoryDraft?.trim() || resolvedDirectory || preferences?.configDirectory || ""; // 草稿优先，其次是本次生效路径。
+        const clipboard = navigator.clipboard; // 只有安全上下文才提供。
+        const failed = () => publishMessage({ type: "error", content: "复制失败，请手动选择路径", source: "settings" });
+        if (!clipboard) {
+            failed();
+            return;
+        }
+        void clipboard.writeText(path).then(() => publishMessage({ type: "success", content: "已复制配置目录", source: "settings" }), failed);
+    };
 
     useEffect(() => {
         if (preferencesFailure) publishMessage({ type: "error", content: preferencesFailure, source: "settings-preferences" });
@@ -358,6 +381,16 @@ export const SettingsPage = () => {
                                 }
                             >
                                 <span className="settings__directory-icon settings__directory-icon--folder" aria-hidden="true" />
+                            </button>
+                            <button
+                                type="button"
+                                className="settings__button settings__icon-button"
+                                title="复制配置目录"
+                                aria-label="复制配置目录"
+                                disabled={busy || !preferences}
+                                onClick={handleCopyConfigDirectory}
+                            >
+                                <span className="settings__directory-icon settings__directory-icon--copy" aria-hidden="true" />
                             </button>
                             <button
                                 type="button"

@@ -34,8 +34,43 @@
 /* 标题以下的目录和列表紧挨标题行。 */
 .plugin-settings__body {
     grid-column: 1 / -1;
-    grid-row: 2;
+    grid-row: 3;
     max-width: 900px;
+}
+
+/* 安装按钮下方的来源提示：整行分隔线，不并入按钮行高度。 */
+.plugin-settings__notice {
+    display: flex;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    align-items: flex-start;
+    gap: 8px;
+    padding-top: 12px;
+    border-top: 1px solid var(--color-border);
+    color: var(--color-muted);
+    font-size: 12px;
+}
+
+/* 提示里的信息图标固定尺寸，不随文字换行拉伸。 */
+.plugin-settings__notice-icon {
+    display: inline-flex;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    margin-top: 1px;
+    color: var(--color-muted);
+}
+
+/* Lucide 图标按盒子铺满，描边随文字色。 */
+.plugin-settings__notice-icon svg {
+    width: 100%;
+    height: 100%;
+}
+
+/* 提示正文与图标同一基线，超宽时自然换行。 */
+.plugin-settings__notice p {
+    margin: 0;
+    line-height: 18px;
 }
 
 /* 读取提示不占标题和目录之间的空档，也不压在二级页头上。 */
@@ -52,12 +87,6 @@
 .plugin-settings__body .settings__row-title {
     color: var(--color-text);
     font-size: calc(var(--interface-font-size) + 1px);
-}
-
-/* 路径行。 */
-.plugin-settings__body .settings__directory-path {
-    color: var(--color-muted);
-    font-size: 12px;
 }
 
 /* 安装和目录命令的键盘焦点。 */

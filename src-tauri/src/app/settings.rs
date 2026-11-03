@@ -326,17 +326,19 @@ pub(crate) fn plugin_manifest_file(directory: &Path, plugin_id: &str) -> Result<
     std::fs::canonicalize(folder.join("manifest.ini")).map_err(|error| format!("读取插件清单失败：{error}"))
 }
 
-/// 找到该插件的一层子文件夹。链接和重解析点不能当插件包删除。
+/// 找到该插件在插件根下的第一层文件夹。链接和重解析点不能当插件包删除。
 fn plugin_folder(directory: &Path, plugin_id: &str) -> Result<Option<PathBuf>, String>
 {
     use std::os::windows::fs::MetadataExt;
-    let Some(manifest) = crate::component_runtime::find_plugin_package(directory, plugin_id)?
+    let Some(folder) = crate::component_runtime::find_plugin_folder(directory, plugin_id)?
     else
     {
         return Ok(None);
     };
-    let folder_name = manifest.script.split('/').next().unwrap_or(""); // script 的第一段就是文件夹名。
-    let folder = directory.join(folder_name); // 只删除插件根下这一层。
+    if folder.parent() != Some(directory)
+    {
+        return Err("插件文件夹不在插件根下".to_string()); // 只删除插件根的第一层，绝不退到插件根自己。
+    }
     let metadata = std::fs::symlink_metadata(&folder).map_err(|error| format!("读取插件文件夹失败：{error}"))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
     {
@@ -399,20 +401,21 @@ pub(crate) struct PluginInstallConflict
     pub installed_version: String, // 已安装版本。
     pub incoming_version: String,  // 待安装版本。
     pub downgrade: bool,           // 待安装版本更低。
-    pub installed_id: String,      // 已写入的标识，覆盖时保留。
+    pub installed_folder: String,  // 已安装那份的文件夹名，覆盖时删掉。
 }
 
 /// 校验通过、尚未落盘的安装来源。
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedPlugin
 {
-    pub name: String,                            // 清单名称，也是目标文件夹名。
+    pub id: String,                              // 清单声明的标识，安装时原样保留。
+    pub name: String,                            // 清单名称；目标文件夹是 作者@名称。
     pub author: String,                          // 待安装清单里的作者，没有就是空。
     pub version: String,                         // 待安装版本。
     pub source_name: String,                     // 进度里显示的来源名。
     pub package_dir: PathBuf,                    // 文件夹来源中含 manifest.ini 的目录。
     pub archive: Option<(PathBuf, String)>,      // zip 路径，以及包内前缀（空或 `文件夹/`）。
-    pub conflict: Option<PluginInstallConflict>, // 目标文件夹已有插件时才有。
+    pub conflict: Option<PluginInstallConflict>, // 同一作者同一标识已装过时才有。
 }
 
 /// 阶段变化、间隔至少 100 毫秒，或进度至少前进 2%，才发送一次。
@@ -474,19 +477,26 @@ pub(crate) fn install_prepared_plugin(plugin_root: &Path, prepared: &PreparedPlu
         {
             return Err("安装已取消".to_string());
         }
-        let plugin_id = match &prepared.conflict
-        {
-            Some(conflict) => conflict.installed_id.clone(),
-            None => allocate_plugin_id(plugin_root, &prepared.name)?,
-        }; // 覆盖和降级沿用原标识，新安装才生成。
-        write_plugin_identity(&temp.join("manifest.ini"), &plugin_id, &prepared.name)?;
-        let target = plugin_root.join(&prepared.name); // 最终文件夹。
+        let target_name = crate::component_runtime::plugin_folder_name(&prepared.author, &prepared.name); // 作者@名称。
+        let target = plugin_root.join(&target_name); // 最终文件夹。
         if let Some(conflict) = &prepared.conflict
         {
             if conflict.downgrade
             {
-                uninstall(&conflict.installed_id)?;
+                uninstall(&prepared.id)?;
             }
+            if conflict.installed_folder != target_name
+            {
+                let replaced = plugin_root.join(&conflict.installed_folder); // 同一插件改过名称时先删旧文件夹。
+                if replaced.exists()
+                {
+                    std::fs::remove_dir_all(&replaced).map_err(|error| format!("安装插件失败：{error}"))?;
+                }
+            }
+        }
+        else if target.exists()
+        {
+            return Err(format!("插件目录已有同名文件夹：{target_name}"));
         }
         if target.exists()
         {
@@ -495,7 +505,7 @@ pub(crate) fn install_prepared_plugin(plugin_root: &Path, prepared: &PreparedPlu
         progress("copy", 98);
         std::fs::rename(&temp, &target).map_err(|error| format!("安装插件失败：{error}"))?;
         progress("done", 100);
-        Ok(plugin_id)
+        Ok(prepared.id.clone())
     })();
     if install.is_err()
     {
@@ -577,23 +587,44 @@ fn validate_plugin_source(values: &std::collections::HashMap<String, String>, pl
             return Err(format!("插件不支持当前程序版本，最高 {maximum}，当前 {}", env!("CARGO_PKG_VERSION")));
         }
     }
-    let conflict = installed_conflict(plugin_root, &name, version, incoming)?;
-    let author = values.get("author").map(|value| value.trim().to_string()).unwrap_or_default(); // 覆盖弹窗要显示作者。
-    Ok(PreparedPlugin { name, author, version: version.to_string(), source_name: source_name.to_string(), package_dir: PathBuf::new(), archive: None, conflict })
+    let id = values.get("id").map(|value| value.trim()).filter(|value| !value.is_empty()).ok_or_else(|| "插件清单缺少 id".to_string())?.to_string(); // 内容不校验，也不改写。
+    let author = values.get("author").map(|value| value.trim().to_string()).unwrap_or_default(); // 覆盖弹窗要显示作者，也参与同一插件判定。
+    let conflict = installed_conflict(plugin_root, &author, &id, version, incoming)?;
+    Ok(PreparedPlugin { id, name, author, version: version.to_string(), source_name: source_name.to_string(), package_dir: PathBuf::new(), archive: None, conflict })
 }
 
-fn installed_conflict(plugin_root: &Path, name: &str, version: &str, incoming: (u64, u64, u64)) -> Result<Option<PluginInstallConflict>, String>
+/// 同一作者的同一标识就是同一个插件，与文件夹名无关。
+fn installed_conflict(plugin_root: &Path, author: &str, plugin_id: &str, version: &str, incoming: (u64, u64, u64)) -> Result<Option<PluginInstallConflict>, String>
 {
-    let manifest = plugin_root.join(name).join("manifest.ini"); // 同名文件夹就是已安装的那一份。
-    if !manifest.is_file()
+    let Ok(entries) = std::fs::read_dir(plugin_root)
+    else
     {
-        return Ok(None);
+        return Ok(None); // 插件根还不存在，视为新安装。
+    };
+    for entry in entries.flatten()
+    {
+        let folder = entry.path();
+        let folder_name = folder.file_name().and_then(|value| value.to_str()).unwrap_or("").to_string();
+        if folder_name.starts_with('.')
+        {
+            continue; // 安装临时目录不算已装。
+        }
+        let Ok(values) = read_plugin_ini(&folder.join("manifest.ini"))
+        else
+        {
+            continue; // 没有清单或清单损坏的文件夹不参与冲突判定。
+        };
+        let same_author = values.get("author").map(|value| value.trim()).unwrap_or("") == author; // 作者缺省为空。
+        let same_id = values.get("id").map(|value| value.trim()).unwrap_or("") == plugin_id;
+        if !same_author || !same_id
+        {
+            continue;
+        }
+        let installed = values.get("version").map(|value| value.trim()).filter(|value| !value.is_empty()).ok_or_else(|| "已安装插件版本无效".to_string())?;
+        let installed_version = parse_version(installed).ok_or_else(|| "已安装插件版本无效".to_string())?;
+        return Ok(Some(PluginInstallConflict { installed_version: installed.to_string(), incoming_version: version.to_string(), downgrade: incoming < installed_version, installed_folder: folder_name }));
     }
-    let values = read_plugin_ini(&manifest)?;
-    let installed = values.get("version").map(|value| value.trim()).filter(|value| !value.is_empty()).ok_or_else(|| "已安装插件版本无效".to_string())?;
-    let installed_version = parse_version(installed).ok_or_else(|| "已安装插件版本无效".to_string())?;
-    let installed_id = values.get("id").map(|value| value.trim().to_string()).filter(|value| value.starts_with("plugin.")).ok_or_else(|| "已安装插件标识无效".to_string())?;
-    Ok(Some(PluginInstallConflict { installed_version: installed.to_string(), incoming_version: version.to_string(), downgrade: incoming < installed_version, installed_id }))
+    Ok(None)
 }
 
 fn confirm_entry_file(package_dir: &Path, entry: &str) -> Result<(), String>
@@ -662,106 +693,6 @@ fn parse_plugin_ini(text: &str) -> Result<std::collections::HashMap<String, Stri
         return Err("插件清单缺少 [plugin]".to_string());
     }
     Ok(values)
-}
-
-fn allocate_plugin_id(plugin_root: &Path, name: &str) -> Result<String, String>
-{
-    let slug: String = name.chars().filter(|character| character.is_ascii_alphanumeric()).flat_map(|character| character.to_lowercase()).collect();
-    let base = if slug.is_empty() { "item" } else { slug.as_str() }; // 没有 ASCII 时用固定词干。
-    let used = installed_plugin_ids(plugin_root);
-    let mut candidate = format!("plugin.{base}");
-    let mut suffix = 2u32; // 冲突时从 2 开始加在词干后面。
-    while used.iter().any(|id| id == &candidate)
-    {
-        candidate = format!("plugin.{base}{suffix}");
-        suffix += 1;
-        if suffix > 1000
-        {
-            return Err("插件标识冲突过多".to_string());
-        }
-    }
-    Ok(candidate)
-}
-
-fn installed_plugin_ids(plugin_root: &Path) -> Vec<String>
-{
-    let mut ids = Vec::new(); // 已经写在各文件夹清单里的标识。
-    let Ok(entries) = std::fs::read_dir(plugin_root)
-    else
-    {
-        return ids;
-    };
-    for entry in entries.flatten()
-    {
-        if let Ok(values) = read_plugin_ini(&entry.path().join("manifest.ini"))
-        {
-            if let Some(id) = values.get("id")
-            {
-                ids.push(id.trim().to_string());
-            }
-        }
-    }
-    ids
-}
-
-fn write_plugin_identity(path: &Path, plugin_id: &str, name: &str) -> Result<(), String>
-{
-    let text = std::fs::read_to_string(path).map_err(|error| format!("读取插件清单失败：{error}"))?;
-    let mut section = false; // 只改 [plugin] 节。
-    let mut saw_id = false; // 作者没写 id 时补上。
-    let mut saw_name = false;
-    let mut lines = Vec::new(); // 写回的全文。
-    for line in text.lines()
-    {
-        let trimmed = line.trim();
-        if let Some(title) = trimmed.strip_prefix('[').and_then(|value| value.strip_suffix(']'))
-        {
-            if section && (!saw_id || !saw_name)
-            {
-                if !saw_id
-                {
-                    lines.push(format!("id = {plugin_id}"));
-                }
-                if !saw_name
-                {
-                    lines.push(format!("name = {name}"));
-                }
-            }
-            section = title.trim().eq_ignore_ascii_case("plugin");
-            lines.push(line.to_string());
-            continue;
-        }
-        if section && let Some((key, _)) = trimmed.split_once('=')
-        {
-            match key.trim()
-            {
-                "id" =>
-                {
-                    lines.push(format!("id = {plugin_id}"));
-                    saw_id = true;
-                    continue;
-                }
-                "name" =>
-                {
-                    lines.push(format!("name = {name}"));
-                    saw_name = true;
-                    continue;
-                }
-                _ =>
-                {}
-            }
-        }
-        lines.push(line.to_string());
-    }
-    if section && !saw_id
-    {
-        lines.push(format!("id = {plugin_id}"));
-    }
-    if section && !saw_name
-    {
-        lines.push(format!("name = {name}"));
-    }
-    std::fs::write(path, lines.join("\n")).map_err(|error| format!("写入插件清单失败：{error}"))
 }
 
 fn copy_package(source: &Path, temp: &Path, cancel: &std::sync::atomic::AtomicBool, progress: &mut impl FnMut(&str, u8)) -> Result<(), String>

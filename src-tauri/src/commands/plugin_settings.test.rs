@@ -2,7 +2,7 @@ use super::validate_creatable_plugin;
 use crate::contracts::ComponentManifest;
 
 /// 造一份只用于门禁判断的插件清单。
-fn manifest(id: &str, entry: &str, creatable: bool) -> ComponentManifest { ComponentManifest { id: id.to_string(), name: id.to_string(), entry: entry.to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, required_capabilities: Vec::new(), creatable, removable: false, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() } }
+fn manifest(id: &str, entry: &str, creatable: bool) -> ComponentManifest { ComponentManifest { id: id.to_string(), name: id.to_string(), entry: entry.to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable, removable: false, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() } }
 
 /// 非插件标识、缺失清单和未声明可创建都不能进入创建事务。
 #[test]
@@ -34,7 +34,7 @@ fn one_bad_install_source_keeps_the_other_plan()
     let good = root.join("good");
     std::fs::create_dir_all(good.join("Clock")).unwrap();
     std::fs::write(good.join("Clock/main.js"), "var ok = 1;").unwrap();
-    std::fs::write(good.join("Clock/manifest.ini"), "[plugin]\nname = Clock\nversion = 1.0.0\nentry = main.js\n").unwrap();
+    std::fs::write(good.join("Clock/manifest.ini"), "[plugin]\nid = plugin.clock\nname = Clock\nversion = 1.0.0\nentry = main.js\n").unwrap();
     let bad = root.join("bad");
     std::fs::create_dir_all(&bad).unwrap();
     let prepared = super::prepare_sources(vec![good.to_string_lossy().into_owned(), bad.to_string_lossy().into_owned()], &root.join("plugins"), crate::app::settings::inspect_plugin_folder);

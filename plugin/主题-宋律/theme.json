@@ -1,0 +1,10 @@
+{
+    "appearance": {
+        "accentColor": "#3a7284",
+        "desktopAccentColor": "#9a6b50",
+        "cornerRadius": 4,
+        "fontFamily": "宋律宋体",
+        "fontSize": 14
+    },
+    "fonts": [{ "family": "宋律宋体", "file": "fonts/songti.woff2", "weight": 400, "style": "normal" }]
+}

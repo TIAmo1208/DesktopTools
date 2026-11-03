@@ -123,6 +123,10 @@ pub(crate) fn execute_apply_preferences(app: &AppHandle, state: &SettingsState, 
 #[tauri::command]
 pub fn set_autostart(enabled: bool) -> Result<bool, String> { settings::set_autostart(enabled).inspect_err(|error| crate::log_error!("设置：{error}")) }
 
+/// 当前生效的配置目录绝对路径；空偏好按当前用户目录解析，供设置页复制。
+#[tauri::command]
+pub fn resolved_config_directory(state: State<'_, SettingsState>) -> Result<String, String> { crate::app::settings::resolve_config_directory(&state.preferences()?.config_directory).map(|path| path.to_string_lossy().into_owned()) }
+
 /// 打开与当前日志初始化配置一致的目录。
 #[tauri::command]
 pub fn open_logs() -> Result<(), String>

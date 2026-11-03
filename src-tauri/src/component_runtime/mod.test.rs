@@ -45,7 +45,7 @@ fn theme_manifest_validates_assets_and_appearance()
     std::fs::write(folder.join("manifest.ini"), &theme).unwrap();
     for body in [r##"{"appearance":{"accentColor":"red"}}"##, r##"{"appearance":{"desktopAccentColor":"#12345g"}}"##, r#"{"appearance":{"fontFamily":"Unknown"}}"#, r#"{"appearance":{"fontSize":19}}"#, r#"{"appearance":{"fontSize":11}}"#, r#"{"appearance":{"fontSize":12.5}}"#, r#"{"appearance":{"cornerRadius":13}}"#, r#"{"appearance":{"cornerRadius":-1}}"#, "{}", "not-json"]
     {
-        std::fs::write(folder.join("theme.json"), body).unwrap();
+        std::fs::write(folder.join("theme.json"), &body).unwrap();
         assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1, "{body}");
     }
     std::fs::write(folder.join("theme.json"), " ".repeat(65537)).unwrap();
@@ -67,6 +67,80 @@ fn theme_manifest_validates_assets_and_appearance()
     assert!(output.status.success());
     assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1);
     std::fs::remove_dir(folder.join("theme.json")).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// 主题自带字体按清单校验并在快照里给出插件根相对路径。
+#[test]
+fn theme_fonts_are_validated_and_published()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-theme-fonts-{}", std::process::id())); // 本测试独占来源。
+    let folder = directory.join("theme");
+    std::fs::create_dir_all(folder.join("fonts")).unwrap();
+    std::fs::write(folder.join("theme.css"), ":root {}").unwrap();
+    std::fs::write(folder.join("fonts/songti.woff2"), vec![0u8; 128]).unwrap();
+    std::fs::write(folder.join("manifest.ini"), "[plugin]\nid=plugin.theme\nname=theme\nversion=1.0.0\nentry=main.js\nrole=theme\nstylesheet=theme.css\n").unwrap();
+    let theme = |fonts: &str, appearance: &str| format!("{{\"appearance\":{appearance},\"fonts\":{fonts}}}");
+    let valid = r#"[{"family":"宋律宋体","file":"fonts/songti.woff2"}]"#; // 缺省字重与字形。
+    let declared = r#"{"fontFamily":"宋律宋体"}"#;
+    std::fs::write(folder.join("theme.json"), theme(valid, declared)).unwrap();
+    let runtime = ComponentRuntimeState::new(&directory);
+    assert!(runtime.catalog().failures.is_empty());
+    let font = &runtime.catalog().manifests["plugin.theme"].theme_fonts[0];
+    assert_eq!((font.family.as_str(), font.file.as_str(), font.weight, font.style.as_str()), ("宋律宋体", "theme/fonts/songti.woff2", 400, "normal"));
+    for body in [
+        theme(r#"[{"family":"宋律宋体","file":"fonts/songti.ttf"}]"#, declared),           // 文件不存在。
+        theme(r#"[{"family":"宋律宋体","file":"../songti.woff2"}]"#, declared),            // 跳出插件文件夹。
+        theme(r#"[{"family":"宋律宋体","file":"fonts/songti.png"}]"#, declared),           // 扩展名不支持。
+        theme(r#"[{"family":"Arial; color:red","file":"fonts/songti.woff2"}]"#, declared), // 族名带注入字符。
+        theme(r#"[{"family":"宋律宋体","file":"fonts/songti.woff2","weight":99}]"#, declared),
+        theme(r#"[{"family":"宋律宋体","file":"fonts/songti.woff2","style":"oblique"}]"#, declared),
+        theme(r#"[{"family":"宋律宋体","file":"fonts/songti.woff2"},{"family":"宋律宋体","file":"fonts/songti.woff2"}]"#, declared),                               // 族名重复。
+        theme(&format!("[{}]", (0..5).map(|index| format!(r#"{{"family":"字体{index}","file":"fonts/songti.woff2"}}"#)).collect::<Vec<_>>().join(",")), declared), // 超过数量上限。
+        theme(valid, r#"{"fontFamily":"没有声明的字体"}"#),                                                                                                        // 外观字体既不在系统名单也不在本主题。
+    ]
+    {
+        std::fs::write(folder.join("theme.json"), &body).unwrap();
+        assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1, "{body}");
+    }
+    std::fs::write(folder.join("fonts/big.woff2"), vec![0u8; 16 * 1024 * 1024 + 1]).unwrap();
+    std::fs::write(folder.join("theme.json"), theme(r#"[{"family":"宋律宋体","file":"fonts/big.woff2"}]"#, declared)).unwrap();
+    assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1); // 单文件超过 16 MiB。
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// 仓库里的预设插件都能经真实扫描注册：清单、样式表或主题数据写错会在这里失败。
+#[test]
+fn repo_preset_plugins_register()
+{
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugin"); // 仓库预设插件根。
+    let runtime = ComponentRuntimeState::new(&root);
+    let catalog = runtime.catalog();
+    assert!(catalog.failures.is_empty(), "{:?}", catalog.failures);
+    let theme = catalog.manifests.get("plugin.theme-songlv").unwrap(); // 主题预设必须注册为主题角色。
+    assert_eq!(theme.role, crate::contracts::ComponentRole::Theme);
+    assert_eq!(theme.stylesheet, "主题-宋律/theme.css");
+    assert!(catalog.manifests.contains_key("plugin.theme-qingjian"));
+    assert!(catalog.manifests.contains_key("plugin.astrbot-status"));
+}
+
+/// 点开头的目录不注册，作者@名称 的文件夹按同一份清单校验。
+#[test]
+fn plugin_scan_skips_dot_folders_and_accepts_author_prefix()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-plugin-folders-{}", std::process::id())); // 本测试独占目录。
+    let _ = std::fs::remove_dir_all(&directory);
+    let installed = directory.join("张三@时钟");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::write(installed.join("manifest.ini"), "[plugin]\nid = plugin.clock\nname = 时钟\nversion = 1.0.0\nentry = main.js\nauthor = 张三\n").unwrap();
+    let hidden = directory.join(".install-1"); // 安装临时目录。
+    std::fs::create_dir_all(&hidden).unwrap();
+    std::fs::write(hidden.join("manifest.ini"), "[plugin]\nid = plugin.hidden\nname = hidden\nversion = 1.0.0\nentry = main.js\n").unwrap();
+    let runtime = ComponentRuntimeState::new(&directory);
+    let catalog = runtime.catalog();
+    assert!(catalog.failures.is_empty(), "{:?}", catalog.failures);
+    assert_eq!(catalog.manifests["plugin.clock"].script, "张三@时钟/main.js");
+    assert!(!catalog.manifests.contains_key("plugin.hidden"), "点开头的目录不注册");
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
@@ -203,7 +277,7 @@ fn time_subscriptions_are_scoped_and_do_not_reuse_identity()
 #[test]
 fn manifest_rejects_an_unauthorized_capability_set()
 {
-    let manifest = ComponentManifest { id: "official.local-clock".to_string(), name: "本地时间".to_string(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, required_capabilities: Vec::new(), creatable: true, removable: true, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
+    let manifest = ComponentManifest { id: "official.local-clock".to_string(), name: "本地时间".to_string(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable: true, removable: true, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
 
     assert_eq!(validate_manifest(&manifest).expect_err("空能力集合应被拒绝").code, "invalid-component-manifest");
 }

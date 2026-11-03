@@ -7,8 +7,11 @@ Desktop Tools 支持通过本地插件扩展桌面格子与设置页选项。插
 每个插件是一个独立的文件夹，结构扁平清晰：
 - 插件文件夹必须直接放置于**插件根目录**的第一层子级中（不支持多层嵌套子文件夹）。
 - 文件夹内必须包含 UTF-8 编码的清单文件 `manifest.ini`。
-- 文件夹内包含入口脚本（例如 `index.js`）及关联的静态样式文件（例如 `style.css`）。主题插件不放入口脚本，改为 `theme.css` 与 `theme.json`。
+- 文件夹内包含入口脚本（例如 `index.js`）及关联的静态样式文件（例如 `style.css`）。主题插件不放入口脚本，改为 `theme.css` 与 `theme.json`；需要自带字体时把字体文件一起放进该文件夹，在 `theme.json` 的 `fonts` 里声明。
+- 文件夹名是清单 `name`，或设置页安装写入的 `作者@名称`。手工放入的插件用 `名称` 即可；同一个作者名加同一个 `id` 才算同一个插件。
+- 以 `.` 开头的文件夹不注册，安装用的 `.install-*` 临时目录因此不会被当成插件。
 - 主题插件文件夹按 `主题-<主题名>` 命名，以便与格子插件区分，例如 `主题-青笺`。这是仓库与分发约定，宿主不强制前缀；清单 `name` 仍须与文件夹名一致。
+- `id` 由作者在清单里声明，安装时原样保留，不重新生成也不改写；内容不在安装阶段校验，格式错误由运行时扫描报出。
 
 ## 默认插件根目录与生效目录
 
@@ -26,19 +29,20 @@ Desktop Tools 支持通过本地插件扩展桌面格子与设置页选项。插
 
 ## 预设示例索引与开发方向
 
-仓库根目录下的 `plugin/` 目录提供主题插件、功能插件和开发示例。安装包通过 `src-tauri/tauri.installer.conf.json` 显式映射分发 `主题-青笺/`、`AstrBot 状态/`、`docs/` 与 `README.md`；`示例/` 下的三个格子/设置示例仅保留在仓库，不进入安装包。运行时只扫描插件根下一层含 `manifest.ini` 的文件夹，不递归扫描 `示例/`，文档目录不注册为插件。
+仓库根目录下的 `plugin/` 目录提供主题插件、功能插件和开发示例。安装包通过 `src-tauri/tauri.installer.conf.json` 显式映射分发 `主题-青笺/`、`主题-宋律/`、`AstrBot 状态/`、`docs/` 与 `README.md`；`示例/` 下的三个格子/设置示例仅保留在仓库，不进入安装包。运行时只扫描插件根下一层含 `manifest.ini` 的文件夹，不递归扫描 `示例/`，文档目录不注册为插件。
 
 | 示例目录 | 插件 ID | 适用场景 / 开发方向 |
 |---|---|---|
 | [示例-最小格子](./示例/示例-最小格子) | `plugin.example.minimal` | **纯桌面格子组件**：演示 `renderTile` 挂载静态 DOM、开启定时器及返回注销清理函数。 |
 | [示例-设置条目](./示例/示例-设置条目) | `plugin.example.settings` | **纯设置扩展条目**：`creatable=0`，不导出 `renderTile`，仅导出 `settingsEntries` 演示读取与保存插件自定义设置。 |
 | [示例-格子与设置](./示例/示例-格子与设置) | `plugin.example.combined` | **复合型插件**：同时具备桌面格子与独立设置页条目。演示设置变更驱动格子重新渲染、多实例限制（`maxTiles=2`）及通过 `import.meta.url` 加载独立样式表 `style.css`。 |
-| [主题-青笺](./主题-青笺) | `plugin.example.theme` | **主题插件**：`role=theme`，不含入口脚本。宿主挂载 `theme.css` 覆盖配色令牌，`theme.json` 写入字体、字号、圆角和两组强调色。 |
+| [主题-青笺](./主题-青笺) | `plugin.theme-qingjian` | **主题插件**：`role=theme`，不含入口脚本。宿主挂载 `theme.css` 覆盖配色令牌，`theme.json` 写入字体、字号、圆角和两组强调色。 |
+| [主题-宋律](./主题-宋律) | `plugin.theme-songlv` | **主题插件**：宣纸浅色与夜墨深色两套宋制配色，青绿承担交互强调色、窑铜用于桌面与菜单边框；自带裁剪过的思源宋体（SIL OFL 1.1），安装后进入外观字体列表。 |
 | [AstrBot 状态](./AstrBot%20状态) | `plugin.astrbot-status` | **声明宿主能力的功能插件**：清单声明 `required_capabilities = probe-service-status`，通过 `invoke_component_capability` 探活本机 AstrBot，按四档状态轮询并在格子不可见时暂停刷新。 |
 
 ## 快速开始
 
-1. 在 `plugin/` 目录下参考上述示例创建一个新文件夹（文件夹名称必须与 `manifest.ini` 中的 `name` 严格一致）。
+1. 在 `plugin/` 目录下参考上述示例创建一个新文件夹（文件夹名称必须与 `manifest.ini` 中的 `name` 严格一致；经设置页安装时宿主会装到 `作者@名称` 文件夹）。
 2. 在该文件夹中创建 `manifest.ini`，声明插件基本元数据（名称、版本、入口脚本、创建上限等）。
 3. 编写 `index.js` 入口文件，默认导出一个符合外壳契约的对象：
    ```javascript
@@ -67,5 +71,5 @@ Desktop Tools 支持通过本地插件扩展桌面格子与设置页选项。插
 - **CSP 策略**：
   - 宿主严格执行内容安全策略 `script-src 'self'`，**严禁使用 `eval`、`new Function` 或内联脚本 `<script>`**。
   - 宿主执行 `style-src 'self'`（未放开 `unsafe-inline`），**内联 `<style>` 标签与 DOM 元素的内联 `style="..."` 属性均会被 CSP 拦截**。插件样式只能来自独立 `.css` 静态资产或通过 JS CSSOM 属性赋值操作。
-- **静态资产路由限制**：宿主本地协议仅对插件目录提供 `.js` 与 `.css` 两种静态资源文件的路由，其他类型资源不支持通过 `/plugins/` 协议直接加载（`img-src` 允许 `data:` 图片，但自定义字体 data URL 不可依赖）。
+- **静态资产路由限制**：宿主本地协议对插件目录提供 `.js`、`.css` 与 `.woff2`/`.woff`/`.ttf`/`.otf` 字体文件的路由，其他类型资源不支持通过 `/plugins/` 协议直接加载（`img-src` 允许 `data:` 图片，但字体 data URL 不可依赖；字体走 `theme.json` 的 `fonts` 声明）。
 - **声明宿主能力**：插件在清单中用 `required_capabilities = probe-service-status` 声明宿主能力（逗号分隔，可用值见[开发指南](./docs/开发指南.md)），运行时只能通过 `invoke_component_capability` 按实例调用；插件无法调用未声明的能力。

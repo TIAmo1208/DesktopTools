@@ -1,13 +1,20 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
-// 插件根目录：与宿主一致，默认 %APPDATA%\TIAmo\plugins，可用设置为其他目录时由宿主重定向。
-const pluginRoot = () => process.env.DESKTOP_TOOLS_PLUGIN_DIR ?? path.join(process.env.APPDATA ?? os.homedir(), "TIAmo", "plugins");
+// 插件根目录与宿主一致：默认是可执行文件同级的 plugin，Cargo target-dir 为 build/target，开发构建即 build/target/debug。
+const pluginRoot = () => process.env.DESKTOP_TOOLS_PLUGIN_DIR ?? path.join(fileURLToPath(new URL(".", import.meta.url)), "build", "target", "debug", "plugin");
 
-// 只放行 JS/CSS，与宿主 read_plugin_asset 的白名单一致。
-const contentTypes = { ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
+// 只放行 JS/CSS 与主题字体，与宿主 read_plugin_asset 的白名单一致。
+const contentTypes = {
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+};
 
 /**
  * 开发服务器把 /plugins/<相对路径> 映射到插件根。

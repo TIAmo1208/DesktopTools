@@ -201,8 +201,9 @@ pub struct PluginInstallConflictView
 fn remember_install(prepared: crate::app::settings::PreparedPlugin) -> PluginInstallPlanView
 {
     let plan_id = format!("install-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|value| value.as_nanos()).unwrap_or(0));
-    let plugin_id = prepared.conflict.as_ref().map(|conflict| conflict.installed_id.clone()).unwrap_or_default(); // 新安装的 id 要等执行时才生成。
-    let view = PluginInstallPlanView { plan_id: plan_id.clone(), name: prepared.name.clone(), author: prepared.author.clone(), plugin_id, version: prepared.version.clone(), target_folder: prepared.name.clone(), source_name: prepared.source_name.clone(), conflict: prepared.conflict.as_ref().map(|conflict| PluginInstallConflictView { installed_version: conflict.installed_version.clone(), incoming_version: conflict.incoming_version.clone(), downgrade: conflict.downgrade }) };
+    let plugin_id = prepared.id.clone(); // 标识来自清单，安装时原样保留。
+    let target_folder = crate::component_runtime::plugin_folder_name(&prepared.author, &prepared.name); // 作者@名称。
+    let view = PluginInstallPlanView { plan_id: plan_id.clone(), name: prepared.name.clone(), author: prepared.author.clone(), plugin_id, version: prepared.version.clone(), target_folder, source_name: prepared.source_name.clone(), conflict: prepared.conflict.as_ref().map(|conflict| PluginInstallConflictView { installed_version: conflict.installed_version.clone(), incoming_version: conflict.incoming_version.clone(), downgrade: conflict.downgrade }) };
     install_tasks().lock().unwrap_or_else(|error| error.into_inner()).insert(plan_id, PluginInstallTask { prepared, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), running: std::sync::atomic::AtomicBool::new(false) });
     view
 }

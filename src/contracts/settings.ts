@@ -38,6 +38,15 @@ export const parseGridPreferences = (value: unknown): GridPreferences => {
 // Windows 界面字体选项与后端白名单保持一致。
 export const APPLICATION_FONTS = ["Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "Arial"] as const;
 
+/** 字体族名只做字形名边界校验：内置系统字体和插件自带字体共用这条规则。 */
+export const isFontFamilyName = (value: unknown): value is string =>
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 64 &&
+    value.trim() === value &&
+    !/[;{}()'"\\]/.test(value) &&
+    !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+
 /** 选择主题之前的用户外观快照，不包含系统强调色开关。 */
 export interface ThemeBaseline {
     accentColor: string;
@@ -54,10 +63,17 @@ export const parseThemeBaseline = (value: unknown): ThemeBaseline => {
     for (const key of ["accentColor", "desktopAccentColor"]) {
         if (typeof item[key] !== "string" || !/^#[0-9a-f]{6}$/i.test(item[key])) throw new Error("主题基线颜色无效");
     }
-    if (typeof item.cornerRadius !== "number" || !Number.isInteger(item.cornerRadius) || item.cornerRadius < 0 || item.cornerRadius > 12) throw new Error("主题基线圆角无效");
+    if (typeof item.cornerRadius !== "number" || !Number.isInteger(item.cornerRadius) || item.cornerRadius < 0 || item.cornerRadius > 12)
+        throw new Error("主题基线圆角无效");
     if (typeof item.fontSize !== "number" || !Number.isInteger(item.fontSize) || item.fontSize < 12 || item.fontSize > 18) throw new Error("主题基线字号无效");
-    if (typeof item.fontFamily !== "string" || !APPLICATION_FONTS.some((font) => font === item.fontFamily)) throw new Error("主题基线字体无效");
-    return { accentColor: item.accentColor as string, desktopAccentColor: item.desktopAccentColor as string, cornerRadius: item.cornerRadius, fontFamily: item.fontFamily, fontSize: item.fontSize };
+    if (typeof item.fontFamily !== "string" || !isFontFamilyName(item.fontFamily)) throw new Error("主题基线字体无效");
+    return {
+        accentColor: item.accentColor as string,
+        desktopAccentColor: item.desktopAccentColor as string,
+        cornerRadius: item.cornerRadius,
+        fontFamily: item.fontFamily,
+        fontSize: item.fontSize,
+    };
 };
 
 /** 已由 Rust 保存的应用偏好。 */
@@ -136,7 +152,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     if (typeof desktopAppearance.useWindowsAccentColor !== "boolean") throw new Error("桌面网格 Windows 主题色开关无效");
     if (typeof cornerRadius !== "number" || !Number.isInteger(cornerRadius) || cornerRadius < 0 || cornerRadius > 12) throw new Error("圆角数据无效");
     if (typeof fontSize !== "number" || !Number.isInteger(fontSize) || fontSize < 12 || fontSize > 18) throw new Error("字号数据无效");
-    if (typeof fontFamily !== "string" || !APPLICATION_FONTS.some((font) => font === fontFamily)) throw new Error("字体数据无效");
+    if (typeof fontFamily !== "string" || !isFontFamilyName(fontFamily)) throw new Error("字体数据无效");
     const features = {
         clockEnabled: true,
         weatherEnabled: false,

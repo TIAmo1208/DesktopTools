@@ -1216,6 +1216,10 @@ fn read_plugin_asset(directory: &std::path::Path, relative: &str) -> Option<(&'s
     {
         "js" => "text/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
         _ => return None,
     }; // 其他格式不能通过插件协议读取。
     let candidate = directory.join(relative_path); // 尚未跟随链接的请求目标。

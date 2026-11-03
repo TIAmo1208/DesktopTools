@@ -12,6 +12,7 @@ import {
     openPluginDirectory,
     preparePluginInstallsFromArchive,
     preparePluginInstallsFromFolder,
+    resolvedPluginDirectory,
     listenPluginScripts,
     loadPluginScript,
     pluginScriptLoaded,
@@ -34,6 +35,7 @@ import chevronIcon from "../../../resources/weather-chevron-right.svg?raw";
 import trashIcon from "../../../resources/weather-trash.svg?raw";
 import plusIcon from "../../../resources/collect-new.svg?raw";
 import linkIcon from "../../../resources/plugin-repository.svg?raw";
+import infoIcon from "../../../resources/info.svg?raw";
 import { SettingsSwitch } from "./SettingsSwitch";
 import { PluginTaskMenu } from "./PluginTaskMenu";
 import "./PluginSettingsPage.css";
@@ -82,6 +84,8 @@ export const PluginSettingsPage = ({
     const [tasks, setTasks] = useState<InstallTask[]>([]); // 本次打开设置页期间的安装任务，最多 20 条。
     const installRest = useRef<PluginInstallPlan[]>([]); // 冲突确认之后还要继续的计划。
     const [directoryDraft, setDirectoryDraft] = useState<string>(); // 尚未保存的插件目录。
+    const [resolvedDirectory, setResolvedDirectory] = useState<string>(); // 本次启动实际使用的目录。
+    const shownDirectory = (directoryDraft ?? "") || resolvedDirectory || pluginDirectoryShown(undefined, preferences?.pluginDirectory); // 草稿优先，其次是已生效路径。
     const plugins = manifests === undefined ? undefined : pluginRows(manifests).filter((plugin) => !removedIds.has(plugin.id)); // 仍显示的插件行。
     const selected = plugins?.find((plugin) => plugin.id === selectedId); // 仍在清单里的当前插件。
     const stale = manifests && components ? components.filter((item) => !manifests.some((manifest) => manifest.id === item.componentId)) : []; // 清单里已经没有的实例。
@@ -108,6 +112,16 @@ export const PluginSettingsPage = ({
             stopShell();
             stopScripts();
             void subscription.then((unlisten) => unlisten()).catch(() => undefined);
+        };
+    }, []);
+
+    useEffect(() => {
+        let alive = true; // 卸载后忽略迟到结果。
+        void resolvedPluginDirectory()
+            .then((path) => alive && setResolvedDirectory(path))
+            .catch(() => undefined);
+        return () => {
+            alive = false;
         };
     }, []);
 
@@ -289,6 +303,18 @@ export const PluginSettingsPage = ({
                 setDirectoryDraft(path);
             })
             .catch((error: unknown) => publishMessage({ type: "error", content: commandErrorMessage(error), source: "plugin-settings" }));
+    };
+
+    /** 复制当前插件目录；剪贴板不可用时提示手动复制。 */
+    const handleCopyDirectory = () => {
+        const path = shownDirectory; // 复制正在显示的这一份。
+        const clipboard = navigator.clipboard; // 只有安全上下文才提供。
+        const failed = () => publishMessage({ type: "error", content: "复制失败，请手动选择路径", source: "plugin-settings" });
+        if (!clipboard) {
+            failed();
+            return;
+        }
+        void clipboard.writeText(path).then(() => publishMessage({ type: "success", content: "已复制插件目录", source: "plugin-settings" }), failed);
     };
 
     /** 在桌面创建一个该插件的格子。失败把错误说出来。 */
@@ -483,7 +509,10 @@ export const PluginSettingsPage = ({
                     ) : failure ? (
                         <div className="plugin-settings__error" role="alert">
                             <p>{failure}</p>
-                            <button type="button" onClick={() => handleReload(selected.id, selected.script, selected.role, setReloaded, setLoadedIds, setShellEpoch)}>
+                            <button
+                                type="button"
+                                onClick={() => handleReload(selected.id, selected.script, selected.role, setReloaded, setLoadedIds, setShellEpoch)}
+                            >
                                 重新加载
                             </button>
                         </div>
@@ -552,6 +581,10 @@ export const PluginSettingsPage = ({
                         }}
                     />
                 </div>
+                <div className="plugin-settings__notice" role="note">
+                    <span className="plugin-settings__notice-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: infoIcon }} />
+                    <p>请确认插件来源可信。插件在本机以你的权限运行，来源不明的插件可能损坏程序，或读取和泄露你的数据。</p>
+                </div>
                 <div className="plugin-settings__body">
                     <form
                         className="settings__row settings__directory"
@@ -562,10 +595,20 @@ export const PluginSettingsPage = ({
                             setDirectoryDraft(undefined);
                         }}
                     >
-                        <span className="settings__row-title" title={pluginDirectoryShown(directoryDraft, preferences?.pluginDirectory)}>
+                        <span className="settings__row-title" title={shownDirectory}>
                             插件目录（下次启动生效）
-                            <span className="settings__directory-path">{pluginDirectoryShown(directoryDraft, preferences?.pluginDirectory)}</span>
+                            <span className="settings__directory-path">{shownDirectory}</span>
                         </span>
+                        <button
+                            className="settings__button settings__icon-button"
+                            type="button"
+                            title="复制插件目录"
+                            aria-label="复制插件目录"
+                            disabled={disabled || !preferences}
+                            onClick={handleCopyDirectory}
+                        >
+                            <span className="settings__directory-icon settings__directory-icon--copy" aria-hidden="true" />
+                        </button>
                         <button
                             className="settings__button settings__icon-button"
                             type="button"
@@ -625,7 +668,10 @@ export const PluginSettingsPage = ({
                                                     {entrySummary(
                                                         plugin.id,
                                                         pluginDisabled,
-                                                        plugin.role === "theme" || loadedIds.has(plugin.id) || pluginScriptLoaded(plugin.id) || reloaded[plugin.id] === "ok",
+                                                        plugin.role === "theme" ||
+                                                            loadedIds.has(plugin.id) ||
+                                                            pluginScriptLoaded(plugin.id) ||
+                                                            reloaded[plugin.id] === "ok",
                                                         reloaded[plugin.id] === "ok",
                                                     )}
                                                 </small>
@@ -1154,18 +1200,22 @@ const handleReload = (
     setLoadedIds: (update: (current: ReadonlySet<string>) => ReadonlySet<string>) => void,
     setShellEpoch: (update: (value: number) => number) => void,
 ) => {
-    requestPluginScript({ id: pluginId, role, script }, (id, next, reload) => {
-        setReloaded((current) => ({ ...current, [pluginId]: "" }));
-        void loadPluginScript(id, next, reload).then((failure) => {
-            if (failure) {
-                setReloaded((current) => ({ ...current, [pluginId]: failure }));
-                return;
-            }
-            setLoadedIds((current) => new Set(current).add(pluginId));
-            setReloaded((current) => ({ ...current, [pluginId]: "ok" }));
-            setShellEpoch((value) => value + 1);
-        });
-    }, true);
+    requestPluginScript(
+        { id: pluginId, role, script },
+        (id, next, reload) => {
+            setReloaded((current) => ({ ...current, [pluginId]: "" }));
+            void loadPluginScript(id, next, reload).then((failure) => {
+                if (failure) {
+                    setReloaded((current) => ({ ...current, [pluginId]: failure }));
+                    return;
+                }
+                setLoadedIds((current) => new Set(current).add(pluginId));
+                setReloaded((current) => ({ ...current, [pluginId]: "ok" }));
+                setShellEpoch((value) => value + 1);
+            });
+        },
+        true,
+    );
 };
 
 /** 脚本失败说明。重新加载成功后忽略模块里留下的旧失败。 */

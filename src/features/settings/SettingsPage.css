@@ -419,6 +419,11 @@
     --settings-icon: url("../../../resources/settings-reset.svg");
 }
 
+/* 复制当前目录路径命令图标。 */
+.settings__directory-icon--copy {
+    --settings-icon: url("../../../resources/settings-copy.svg");
+}
+
 /* 带系统图标的明确操作命令。 */
 .settings__button {
     display: inline-flex;

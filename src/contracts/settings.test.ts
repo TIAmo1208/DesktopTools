@@ -10,7 +10,16 @@ test("主题字段缺省为 null，基线完整校验且不检查插件目录", 
     assert.deepEqual(selected.themeBaseline, baseline);
     assert.equal(selected.themePluginId, "plugin.not-installed");
     for (const themePluginId of [1, false, "", " "]) assert.throws(() => parsePreferences({ ...defaults, themePluginId }));
-    for (const patch of [{ accentColor: "red" }, { desktopAccentColor: "#12345g" }, { cornerRadius: 13 }, { cornerRadius: -1 }, { fontFamily: "Unknown" }, { fontSize: 11 }, { fontSize: 19 }, { fontSize: 14.5 }])
+    for (const patch of [
+        { accentColor: "red" },
+        { desktopAccentColor: "#12345g" },
+        { cornerRadius: 13 },
+        { cornerRadius: -1 },
+        { fontFamily: "Arial; color:red" },
+        { fontSize: 11 },
+        { fontSize: 19 },
+        { fontSize: 14.5 },
+    ])
         assert.throws(() => parsePreferences({ ...defaults, themeBaseline: { ...baseline, ...patch } }));
     for (const themeBaseline of [{}, [], "bad", 1]) assert.throws(() => parsePreferences({ ...defaults, themeBaseline }));
 });

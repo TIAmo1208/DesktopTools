@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { APPLICATION_FONTS, type ApplicationPreferences, type ApplicationTheme, type DesktopAppearance } from "../../contracts/settings";
+import { type ApplicationPreferences, type ApplicationTheme, type DesktopAppearance } from "../../contracts/settings";
 import "./AppearanceSettings.css";
 import { SettingsSwitch } from "./SettingsSwitch";
 import { SettingsInfo } from "./SettingsInfo";
@@ -8,6 +8,7 @@ import type { ComponentManifest, ComponentRuntimeSnapshot } from "../../contract
 import { settingsErrorMessage } from "../../bridge/settings";
 import { publishMessage } from "../notifications/messageNotification";
 import { appearanceThemeOptions } from "./appearanceThemeOptions";
+import { themeFontOptions } from "./themeFonts";
 
 /** 外观控件仅提交已完成编辑的配置，不在输入过程中持久化半成品。 */
 interface AppearanceSettingsProps {
@@ -56,6 +57,35 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
 
     return (
         <fieldset className="appearance-settings" disabled={unavailable} aria-label="外观偏好">
+            <section className="appearance-settings__group" aria-labelledby="global-theme-title">
+                <div className="appearance-settings__row">
+                    <span className="appearance-settings__label appearance-settings__label--inline">
+                        <label htmlFor="interface-theme-plugin">主题</label>
+                        <SettingsInfo
+                            label="主题"
+                            description="主题对整个应用生效：桌面网格、设置界面与自绘菜单。可设置字体、字号、圆角与两组强调色。切回默认主题会还原原有外观。"
+                        />
+                    </span>
+                    <select
+                        id="interface-theme-plugin"
+                        className="appearance-settings__theme"
+                        value={selectedTheme.id}
+                        title={selectedTheme.name}
+                        onChange={(event) => {
+                            const id = event.currentTarget.value; // 空值表示恢复内置主题。
+                            const manifest = manifests?.find((item) => item.id === id && item.role === "theme");
+                            if (!id) onThemeSelection(null);
+                            else if (manifest) onThemeSelection(manifest);
+                        }}
+                    >
+                        {themeOptions.map((option) => (
+                            <option key={option.id} value={option.id} title={option.name}>
+                                {option.name}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+            </section>
             {(
                 [
                     ["desktop", "桌面网格主题"],
@@ -73,35 +103,6 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                         <h2 className="appearance-settings__heading" id={`${scope}-appearance-title`}>
                             {title}
                         </h2>
-                        {scope === "interface" && (
-                            <div className="appearance-settings__row">
-                                <span className="appearance-settings__label appearance-settings__label--inline">
-                                    <label htmlFor="interface-theme-plugin">主题</label>
-                                    <SettingsInfo
-                                        label="主题"
-                                        description="主题作用于桌面网格、界面与菜单，可设置字体、字号、圆角与两组强调色。切回默认主题会还原原有外观。"
-                                    />
-                                </span>
-                                <select
-                                    id="interface-theme-plugin"
-                                    className="appearance-settings__theme"
-                                    value={selectedTheme.id}
-                                    title={selectedTheme.name}
-                                    onChange={(event) => {
-                                        const id = event.currentTarget.value; // 空值表示恢复内置主题。
-                                        const manifest = manifests?.find((item) => item.id === id && item.role === "theme");
-                                        if (!id) onThemeSelection(null);
-                                        else if (manifest) onThemeSelection(manifest);
-                                    }}
-                                >
-                                    {themeOptions.map((option) => (
-                                        <option key={option.id} value={option.id} title={option.name}>
-                                            {option.name}
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
-                        )}
                         <div className="appearance-settings__row">
                             <label className="appearance-settings__label" htmlFor={`${scope}-theme`}>
                                 深浅模式
@@ -191,7 +192,7 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                     value={preferences?.fontFamily ?? "Segoe UI Variable"}
                     onChange={(event) => onPreferences({ fontFamily: event.currentTarget.value })}
                 >
-                    {APPLICATION_FONTS.map((font) => (
+                    {themeFontOptions(manifests).map((font) => (
                         <option key={font} value={font}>
                             {font}
                         </option>

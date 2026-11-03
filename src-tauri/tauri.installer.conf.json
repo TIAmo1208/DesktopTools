@@ -10,9 +10,8 @@
         "licenseFile": "../resources/许可证/GPL-3.0.txt",
         "resources": {
             "../plugin/主题-青笺/": "plugin/主题-青笺/",
+            "../plugin/主题-宋律/": "plugin/主题-宋律/",
             "../plugin/AstrBot 状态/": "plugin/AstrBot 状态/",
-            "../plugin/docs/": "plugin/docs/",
-            "../plugin/README.md": "plugin/README.md",
             "../resources/许可证/": "许可证/",
             "../resources/Lucide许可证.txt": "许可证/Lucide许可证.txt",
             "../build/licenses/第三方许可证.txt": "许可证/第三方许可证.txt"

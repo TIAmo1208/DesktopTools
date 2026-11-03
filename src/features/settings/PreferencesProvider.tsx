@@ -14,6 +14,7 @@ import type { ComponentRuntimeSnapshot } from "../../contracts/component";
 import { resolveAnimationsEnabled, type ApplicationPreferences } from "../../contracts/settings";
 import { publishMessage } from "../notifications/messageNotification";
 import { activeThemeStylesheet, applyThemeStylesheet, readThemePluginId, startThemeRecovery } from "./themePlugin";
+import { interfaceFontStack, registerThemeFonts } from "./themeFonts";
 
 /** 当前窗口内共享的偏好加载状态。 */
 interface PreferencesContextValue {
@@ -140,7 +141,7 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
         const desktop = preferences.desktopAppearance; // 桌面主题保持独立，系统读取失败时保留该组自定义色。
         root.style.setProperty("--desktop-accent", desktop.useWindowsAccentColor ? (windowsAccentColor ?? desktop.accentColor) : desktop.accentColor);
         root.style.setProperty("--surface-radius", `${preferences.cornerRadius}px`);
-        root.style.setProperty("--interface-font", `"${preferences.fontFamily}", "Segoe UI", sans-serif`);
+        root.style.setProperty("--interface-font", interfaceFontStack(preferences.fontFamily));
         root.style.setProperty("--interface-font-size", `${preferences.fontSize}px`);
         for (const [scope, grid] of [
             ["desktop", preferences.desktopGrid],
@@ -171,6 +172,11 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
             void subscription.then((unlisten) => unlisten()).catch(() => undefined);
         };
     }, []);
+
+    // 主题自带字体按快照注册进当前文档，字体列表与正文排版共用这份注册结果。
+    useEffect(() => {
+        registerThemeFonts(runtimeSnapshot?.manifests);
+    }, [runtimeSnapshot]);
 
     // 样式装配必须位于偏好变量副作用之后，逐屏和设置窗使用相同路径。
     useEffect(() => {

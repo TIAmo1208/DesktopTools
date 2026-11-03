@@ -1,5 +1,5 @@
 import type { WorkspaceRect } from "./workspace";
-import { APPLICATION_FONTS } from "./settings.ts";
+import { isFontFamilyName } from "./settings.ts";
 import { TILE_MIN_HEIGHT, TILE_MIN_WIDTH } from "./tile.ts";
 
 /** 官方组件可以声明并由宿主授权的能力。 */
@@ -7,6 +7,14 @@ export type ComponentCapability = "read-host-time" | "read-current-media" | "pro
 
 /** 插件呈现角色，缺省为格子。 */
 export type ComponentRole = "tile" | "theme";
+
+/** 主题自带的字体，由宿主注册进当前文档的字体集。 */
+export interface ThemeFont {
+    family: string; // 用户可见的字体族名，也是偏好里保存的值。
+    file: string; // 插件根内的字体文件相对路径。
+    weight: number; // 字重，100–900。
+    style: "normal" | "italic"; // 字形。
+}
 
 /** 通过偏好校验的主题外观覆盖，null 表示不覆盖。 */
 export interface ThemeAppearance {
@@ -26,6 +34,7 @@ export interface ComponentManifest {
     role?: ComponentRole; // 缺省为 tile。
     stylesheet?: string; // 插件根内的主题样式表路径。
     themeAppearance?: ThemeAppearance | null; // 非主题为 null。
+    themeFonts?: ThemeFont[]; // 主题自带的字体，非主题缺省为空。
     requiredCapabilities: ComponentCapability[];
     // 用户是否可从工作区入口创建该组件的新实例。
     creatable: boolean;
@@ -183,11 +192,14 @@ const parseThemeAppearance = (value: unknown): ThemeAppearance | null => {
     for (const key of ["accentColor", "desktopAccentColor"]) {
         if (item[key] != null && (typeof item[key] !== "string" || !/^#[0-9a-f]{6}$/i.test(item[key]))) throw new ComponentContractError();
     }
-    for (const [key, min, max] of [["cornerRadius", 0, 12], ["fontSize", 12, 18]] as const) {
+    for (const [key, min, max] of [
+        ["cornerRadius", 0, 12],
+        ["fontSize", 12, 18],
+    ] as const) {
         const field = item[key]; // 待校验的整数范围。
         if (field != null && (typeof field !== "number" || !Number.isInteger(field) || field < min || field > max)) throw new ComponentContractError();
     }
-    if (item.fontFamily != null && !APPLICATION_FONTS.some((font) => font === item.fontFamily)) throw new ComponentContractError();
+    if (item.fontFamily != null && !isFontFamilyName(item.fontFamily)) throw new ComponentContractError();
     return {
         accentColor: (item.accentColor ?? null) as string | null,
         desktopAccentColor: (item.desktopAccentColor ?? null) as string | null,
@@ -195,6 +207,23 @@ const parseThemeAppearance = (value: unknown): ThemeAppearance | null => {
         fontFamily: (item.fontFamily ?? null) as string | null,
         fontSize: (item.fontSize ?? null) as number | null,
     };
+};
+
+/** 校验主题自带字体：族名走公共规则，文件只认插件根内的字体扩展名。 */
+const parseThemeFonts = (value: unknown): ThemeFont[] => {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) throw new ComponentContractError();
+    if (value.length > 4) throw new ComponentContractError();
+    return value.map((font): ThemeFont => {
+        if (typeof font !== "object" || font === null) throw new ComponentContractError();
+        const item = font as Record<string, unknown>; // 待校验的字体声明。
+        if (!isFontFamilyName(item.family)) throw new ComponentContractError();
+        if (typeof item.file !== "string" || item.file.startsWith("/") || item.file.includes("..") || !/\.(woff2|woff|ttf|otf)$/.test(item.file))
+            throw new ComponentContractError();
+        if (!Number.isInteger(item.weight) || (item.weight as number) < 100 || (item.weight as number) > 900) throw new ComponentContractError();
+        if (item.style !== "normal" && item.style !== "italic") throw new ComponentContractError();
+        return { family: item.family, file: item.file, weight: item.weight as number, style: item.style };
+    });
 };
 
 /** 校验组件运行时快照。 */
@@ -218,6 +247,7 @@ export const parseComponentRuntimeSnapshot = (value: unknown): ComponentRuntimeS
             role,
             stylesheet,
             themeAppearance: parseThemeAppearance(item.themeAppearance),
+            themeFonts: parseThemeFonts(item.themeFonts),
             id: item.id,
             name: item.name,
             entry: item.entry,

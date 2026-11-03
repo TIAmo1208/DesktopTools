@@ -196,6 +196,9 @@ where
     Ok(normalize_disabled_plugins(Vec::<String>::deserialize(deserializer)?))
 }
 
+/// 字体族名只做字形名边界校验：内置系统字体和插件自带字体共用这条规则。
+pub fn is_font_family_name(value: &str) -> bool { !value.is_empty() && value.len() <= 64 && value.trim() == value && !value.chars().any(|character| character.is_control() || matches!(character, ';' | '{' | '}' | '(' | ')' | '\'' | '"' | '\\')) }
+
 /// 当前外观与基线使用相同的颜色、字体和尺寸边界。
 fn validate_appearance(accent: &str, desktop_accent: &str, radius: u8, font: &str, size: u8) -> Result<(), String>
 {
@@ -214,7 +217,7 @@ fn validate_appearance(accent: &str, desktop_accent: &str, radius: u8, font: &st
     {
         return Err("字号必须介于 12 和 18 之间".to_string());
     }
-    if !["Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "Arial"].contains(&font)
+    if !is_font_family_name(font)
     {
         return Err("不支持的界面字体".to_string());
     }
@@ -307,7 +310,7 @@ mod music_tests
         let selected: ApplicationPreferences = serde_json::from_value(value.clone()).unwrap();
         assert!(selected.validate().is_ok());
         assert_eq!(serde_json::to_value(selected).unwrap(), value);
-        for (key, invalid) in [("accentColor", serde_json::json!("red")), ("desktopAccentColor", serde_json::json!("#12345g")), ("cornerRadius", serde_json::json!(13)), ("fontFamily", serde_json::json!("Unknown")), ("fontSize", serde_json::json!(19))]
+        for (key, invalid) in [("accentColor", serde_json::json!("red")), ("desktopAccentColor", serde_json::json!("#12345g")), ("cornerRadius", serde_json::json!(13)), ("fontFamily", serde_json::json!("Arial; color:red")), ("fontSize", serde_json::json!(19))]
         {
             let mut invalid_value = value.clone(); // 每个字段单独验证。
             invalid_value["themeBaseline"][key] = invalid;

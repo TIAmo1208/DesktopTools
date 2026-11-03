@@ -8,7 +8,7 @@ use chrono::Utc;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRole, ComponentRuntimeError, ComponentRuntimeSnapshot, ThemeAppearance, WorkspaceRect};
+use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRole, ComponentRuntimeError, ComponentRuntimeSnapshot, ThemeAppearance, ThemeFont, WorkspaceRect};
 
 /// 官方插件前端注册表当前支持的入口。
 const LOCAL_CLOCK_ENTRY: &str = "official:local-clock";
@@ -295,16 +295,25 @@ fn capability_declarations(manifests: &HashMap<String, ComponentManifest>) -> Ve
     declarations
 }
 
-/// 按插件标识找到已通过校验的文件夹清单。目录不存在时没有插件。
-pub(crate) fn find_plugin_package(directory: &std::path::Path, plugin_id: &str) -> Result<Option<ComponentManifest>, String>
+/// 按插件标识找到插件根下的第一层文件夹。主题没有入口脚本，不能从 script 推导目录。
+pub(crate) fn find_plugin_folder(directory: &std::path::Path, plugin_id: &str) -> Result<Option<std::path::PathBuf>, String>
 {
     let mut failures = Vec::new(); // 查找单个插件时不把别人的错误变成这次的失败。
-    let plugins = load_plugin_folders(directory, &mut failures);
-    Ok(plugins.into_iter().find(|manifest| manifest.id == plugin_id))
+    Ok(load_plugin_packages(directory, &mut failures).into_iter().find(|package| package.manifest.id == plugin_id).map(|package| package.folder))
 }
 
+/// 一个通过校验的插件包：插件根下的第一层文件夹与它的清单。
+struct PluginPackage
+{
+    folder: std::path::PathBuf,  // 插件根下的实际文件夹，卸载与定位清单都以它为准。
+    manifest: ComponentManifest, // 该文件夹通过校验的清单。
+}
+
+/// 读取插件根下一层子目录中的 manifest.ini，只保留清单。
+fn load_plugin_folders(directory: &std::path::Path, failures: &mut Vec<ComponentRegistrationFailure>) -> Vec<ComponentManifest> { load_plugin_packages(directory, failures).into_iter().map(|package| package.manifest).collect() }
+
 /// 读取插件根下一层子目录中的 manifest.ini。根上的文件直接忽略。
-fn load_plugin_folders(directory: &std::path::Path, failures: &mut Vec<ComponentRegistrationFailure>) -> Vec<ComponentManifest>
+fn load_plugin_packages(directory: &std::path::Path, failures: &mut Vec<ComponentRegistrationFailure>) -> Vec<PluginPackage>
 {
     use std::{fs, io::Read, os::windows::fs::MetadataExt};
     let mut folders = Vec::new(); // 按文件夹名稳定排序后再注册。
@@ -329,10 +338,14 @@ fn load_plugin_folders(directory: &std::path::Path, failures: &mut Vec<Component
         }
     }
     folders.sort();
-    let mut plugins = Vec::new(); // 通过校验的插件清单。
+    let mut plugins = Vec::new(); // 通过校验的插件包。
     for folder in folders
     {
         let folder_name = folder.file_name().and_then(|name| name.to_str()).unwrap_or("").to_string(); // 失败记录用的文件夹名。
+        if folder_name.starts_with('.')
+        {
+            continue; // 安装临时目录与隐藏目录不参与注册。
+        }
         let metadata = match fs::symlink_metadata(&folder)
         {
             Ok(metadata) => metadata,
@@ -368,7 +381,7 @@ fn load_plugin_folders(directory: &std::path::Path, failures: &mut Vec<Component
         let manifest = source.map_err(|error| error.to_string()).and_then(|text| plugin_manifest_from_ini(&folder_name, &folder, &text));
         match manifest
         {
-            Ok(manifest) => plugins.push(manifest),
+            Ok(manifest) => plugins.push(PluginPackage { folder, manifest }),
             Err(error) => failures.push(ComponentRegistrationFailure { component_id: folder_name, message: error }),
         }
     }
@@ -380,7 +393,8 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
 {
     let values = parse_plugin_ini(text)?; // 只读取 [plugin] 节。
     let name = required_ini(&values, "name")?;
-    if name != folder_name
+    let author_prefix = values.get("author").map(|value| value.trim()).unwrap_or(""); // 与安装落盘使用同一份作者前缀。
+    if folder_name != name && folder_name != plugin_folder_name(author_prefix, &name)
     {
         return Err("插件文件夹名与名称不一致".to_string());
     }
@@ -400,15 +414,16 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     }; // 未声明角色继续按格子处理。
     let entry = required_ini(&values, "entry")?;
     confirm_plugin_entry(folder, &entry)?;
-    let (stylesheet, theme_appearance) = if role == ComponentRole::Theme
+    let (stylesheet, theme_appearance, theme_fonts) = if role == ComponentRole::Theme
     {
         let stylesheet = required_ini(&values, "stylesheet")?; // 主题资产必须存在并通过相同路径规则。
         confirm_plugin_asset(folder, &stylesheet, "css", false)?;
-        (format!("{folder_name}/{stylesheet}"), Some(read_theme_appearance(folder)?))
+        let (appearance, fonts) = read_theme_data(folder, folder_name)?;
+        (format!("{folder_name}/{stylesheet}"), Some(appearance), fonts)
     }
     else
     {
-        (String::new(), None)
+        (String::new(), None, Vec::new())
     };
     let app_version = parse_plugin_version(env!("CARGO_PKG_VERSION")).ok_or_else(|| "程序版本无效".to_string())?; // 与 package_info 使用同一份 Cargo 版本。
     if let Some(minimum) = optional_version(&values, "minAppVersion")?
@@ -436,7 +451,7 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     let script = if role == ComponentRole::Theme { String::new() } else { script }; // 主题不下发可导入脚本。
     let creatable = role == ComponentRole::Tile && creatable; // 主题没有格子创建能力。
     let max_tiles = if role == ComponentRole::Theme { 0 } else { max_tiles }; // 主题忽略格子上限。
-    let manifest = ComponentManifest { id, name, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, theme_appearance, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
+    let manifest = ComponentManifest { id, name, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, theme_appearance, theme_fonts, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
     validate_manifest(&manifest).map_err(|error| error.message)?;
     Ok(manifest)
 }
@@ -549,6 +564,14 @@ fn validate_plugin_folder_name(name: &str) -> Result<(), String>
     Ok(())
 }
 
+/// 安装目标文件夹名：作者@名称。作者为空时只用名称，非法字符与 @ 换成下划线。
+pub(crate) fn plugin_folder_name(author: &str, name: &str) -> String
+{
+    let prefix: String = author.trim().chars().filter(|character| !character.is_control() && !matches!(character, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|')).map(|character| if character == '@' { '_' } else { character }).take(40).collect(); // 作者只作为可读前缀，不参与身份。
+    let prefix = prefix.trim();
+    if prefix.is_empty() { name.to_string() } else { format!("{prefix}@{name}") }
+}
+
 /// 入口必须是文件夹内的普通脚本，拒绝绝对路径、父级跳转、链接和重解析点。
 fn confirm_plugin_entry(folder: &std::path::Path, entry: &str) -> Result<(), String> { confirm_plugin_asset(folder, entry, "js", true) }
 
@@ -598,16 +621,44 @@ fn confirm_plugin_asset(folder: &std::path::Path, entry: &str, extension: &str, 
 /// 与前端 APPLICATION_FONTS 保持相同的系统字体白名单。
 const APPLICATION_FONTS: [&str; 6] = ["Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "Arial"];
 
-/// 有界读取主题外观，所有覆盖值必须满足现有偏好校验。
-fn read_theme_appearance(folder: &std::path::Path) -> Result<ThemeAppearance, String>
+/// 单个主题字体文件的上限。
+const THEME_FONT_FILE_LIMIT: u64 = 16 * 1024 * 1024;
+/// 单个主题可声明的字体数量上限。
+const THEME_FONT_COUNT_LIMIT: usize = 4;
+/// 允许的主题字体扩展名。
+const THEME_FONT_EXTENSIONS: [&str; 4] = ["woff2", "woff", "ttf", "otf"];
+
+/// 字体项缺省字重。
+fn default_font_weight() -> u16 { 400 }
+
+/// 字体项缺省字形。
+fn default_font_style() -> String { "normal".to_string() }
+
+/// 主题数据里的一条字体声明，校验后转成运行时清单。
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ThemeFontDocument
+{
+    family: String, // 用户可见的字体族名。
+    file: String,   // 插件文件夹内的字体文件相对路径。
+    #[serde(default = "default_font_weight")]
+    weight: u16, // 字重，缺省 400。
+    #[serde(default = "default_font_style")]
+    style: String, // 字形，缺省 normal。
+}
+
+/// 有界读取主题外观与自带字体，所有覆盖值必须满足现有偏好校验。
+fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(ThemeAppearance, Vec<ThemeFont>), String>
 {
     use std::io::Read;
-    /// 主题数据只承载外观覆盖，不接受未知顶层字段。
+    /// 主题数据承载外观覆盖与自带字体，不接受未知顶层字段。
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct ThemeDocument
     {
         appearance: ThemeAppearance, // 外观对象必填，内部各项可以缺省。
+        #[serde(default)]
+        fonts: Vec<ThemeFontDocument>, // 字体声明，缺省没有自带字体。
     }
     confirm_plugin_asset(folder, "theme.json", "json", false)?;
     let mut bytes = Vec::new(); // 64 KiB 加溢出哨兵，与清单读取上限一致。
@@ -618,6 +669,7 @@ fn read_theme_appearance(folder: &std::path::Path) -> Result<ThemeAppearance, St
     }
     let document: ThemeDocument = serde_json::from_slice(&bytes).map_err(|error| format!("主题数据无效：{error}"))?; // JSON 类型错误也拒绝注册。
     let appearance = document.appearance; // 缺省字段保留 None，序列化为 null。
+    let fonts = read_theme_fonts(folder, folder_name, document.fonts)?; // 字体文件缺失或越界同样拒绝注册。
     for color in [&appearance.accent_color, &appearance.desktop_accent_color].into_iter().flatten()
     {
         if color.len() != 7 || !color.starts_with('#') || !color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
@@ -633,11 +685,53 @@ fn read_theme_appearance(folder: &std::path::Path) -> Result<ThemeAppearance, St
     {
         return Err("主题字号超出范围".to_string());
     }
-    if appearance.font_family.as_deref().is_some_and(|value| !APPLICATION_FONTS.contains(&value))
+    if appearance.font_family.as_deref().is_some_and(|value| !APPLICATION_FONTS.contains(&value) && !fonts.iter().any(|font| font.family == value))
     {
-        return Err("主题字体不在白名单内".to_string());
+        return Err("主题字体必须是系统字体或本主题声明的字体".to_string());
     }
-    Ok(appearance)
+    Ok((appearance, fonts))
+}
+
+/// 校验字体声明并转成插件根相对路径。文件必须存在，数量、体积和扩展名都有上限。
+fn read_theme_fonts(folder: &std::path::Path, folder_name: &str, declarations: Vec<ThemeFontDocument>) -> Result<Vec<ThemeFont>, String>
+{
+    if declarations.len() > THEME_FONT_COUNT_LIMIT
+    {
+        return Err(format!("主题自带字体最多 {THEME_FONT_COUNT_LIMIT} 个"));
+    }
+    let mut fonts: Vec<ThemeFont> = Vec::new(); // 通过校验的字体项。
+    for ThemeFontDocument { family, file, weight, style } in declarations
+    {
+        if !crate::contracts::settings::is_font_family_name(&family)
+        {
+            return Err("主题字体族名无效".to_string());
+        }
+        if fonts.iter().any(|font| font.family == family)
+        {
+            return Err("主题字体族名重复".to_string());
+        }
+        let extension = std::path::Path::new(&file).extension().and_then(|value| value.to_str()).unwrap_or_default(); // 声明里的扩展名按原样比较。
+        if !THEME_FONT_EXTENSIONS.contains(&extension)
+        {
+            return Err("主题字体文件类型不支持".to_string());
+        }
+        confirm_plugin_asset(folder, &file, extension, false)?;
+        let size = std::fs::metadata(folder.join(&file)).map_err(|error| format!("读取主题字体失败：{error}"))?.len();
+        if size > THEME_FONT_FILE_LIMIT
+        {
+            return Err("主题字体文件超过 16 MiB".to_string());
+        }
+        if !(100..=900).contains(&weight)
+        {
+            return Err("主题字体字重超出范围".to_string());
+        }
+        if !matches!(style.as_str(), "normal" | "italic")
+        {
+            return Err("主题字体字形无效".to_string());
+        }
+        fonts.push(ThemeFont { family, file: format!("{folder_name}/{file}"), weight, style });
+    }
+    Ok(fonts)
 }
 
 /// 解析三段数字版本。空文本表示没有这条边界。
