@@ -20,6 +20,25 @@ test("settings switches submit independently of submenu navigation", async () =>
         assert.equal(input.props.checked, true);
         assert.equal(SettingsSwitch({ ...props, disabled: true }).props.children[1].props.disabled, true);
 
+        // 画板 G8 改为切角方滑块；断言轨道尺寸、四态与强制色，避免回退胶囊或禁用态冷光。
+        const switchCss = readFileSync(new URL("./SettingsSwitch.css", import.meta.url), "utf8"); // 共用开关的实际样式。
+        assert.match(switchCss, /\.settings-switch__track\s*\{[^}]*width: 40px;[^}]*height: 22px;[^}]*border-radius: 2px;[^}]*background: var\(--color-surface\);/s);
+        assert.match(switchCss, /\.settings-switch__track::after\s*\{[^}]*width: 16px;[^}]*height: 18px;[^}]*clip-path: polygon\(3px 0,[^}]*background: color-mix\(in oklch, var\(--color-muted\) 55%, transparent\);/s);
+        assert.match(switchCss, /input:checked \+ \.settings-switch__track::after,[^{]*input:focus-visible \+ \.settings-switch__track::after\s*\{[^}]*inset-inline-start: 21px;[^}]*var\(--color-ready\)[^}]*drop-shadow\(0 0 5px[^}]*28%/s);
+        assert.match(switchCss, /input:focus-visible \+ \.settings-switch__track::before\s*\{[^}]*inset: -3px;[^}]*border: 2px solid var\(--color-focus\);[^}]*border-radius: 4px;/s);
+        assert.match(switchCss, /input:disabled \+ \.settings-switch__track::after\s*\{[^}]*background: var\(--color-border\);[^}]*filter: none;/s);
+        assert.match(switchCss, /@media \(forced-colors: active\)/);
+        assert.doesNotMatch(switchCss, /border-radius: 11px|transform: translateX/);
+
+        const variantCss = readFileSync(new URL("../../styles/global.css", import.meta.url), "utf8"); // 同一 data-button 语义层。
+        assert.match(variantCss, /button\[data-button="danger"\]:not\(:disabled\)[^{]*\{[^}]*var\(--color-error\)[^}]*background: transparent;/s);
+        assert.match(variantCss, /button\[data-button="danger"\]:hover:not\(:disabled\)[^{]*\{[^}]*var\(--color-error-surface\)/s);
+        assert.match(variantCss, /button\[data-button="danger"\]:disabled\s*\{[^}]*var\(--color-border\)[^}]*var\(--color-subtle\)/s);
+        assert.match(variantCss, /button\[data-button="primary"\]:disabled\s*\{[^}]*background: var\(--color-subtle\);[^}]*border-color: var\(--color-border\);[^}]*color: var\(--color-muted\);/s); // 禁用状态按钮不留黄底。
+        const confirmCss = readFileSync(new URL("./PluginSettingsPage.css", import.meta.url), "utf8"); // 安装确认沿用主命令色。
+        assert.match(confirmCss, /\[data-button="primary"\]\s*\{[^}]*var\(--color-action\)[^}]*var\(--color-action-text\)/s);
+        assert.doesNotMatch(confirmCss, /\.plugin-settings__dialog-actions \.plugin-settings__confirm\s*\{/);
+
         const { FeatureSettings } = await server.ssrLoadModule("/src/features/settings/FeatureSettings.tsx"); // 二级菜单入口。
         const markup = renderToStaticMarkup(createElement(FeatureSettings, { disabled: false, debugBuild: true, onPreferences: () => {} })); // 未加载配置的禁用入口。
         assert.equal((markup.match(/role="switch"/g) ?? []).length, 6); // 5 个常驻功能加 Debug 测试。

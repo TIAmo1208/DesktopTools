@@ -58,7 +58,7 @@
 
 /* ---------- 自绘菜单 ---------- */
 
-/* 自绘菜单的深色表面，含格子菜单和门户面包屑菜单。 */
+/* 自绘菜单深色表面，含格子与门户面包屑菜单。 */
 .desktop-tile-menu,
 .folder-portal__breadcrumb-menu {
     --menu-border: rgb(0 240 255 / 26%);
@@ -66,6 +66,15 @@
     --menu-surface: rgb(13 19 34 / 96%);
     --menu-hover: rgb(0 240 255 / 14%);
     --menu-shadow: 2px 3px 8px rgb(0 0 0 / 45%);
+    /* 八条 12×1px 线组成四角黄 L，只随自绘菜单表面渲染。 */
+    background-image:
+        linear-gradient(#fce300, #fce300), linear-gradient(#fce300, #fce300),
+        linear-gradient(#fce300, #fce300), linear-gradient(#fce300, #fce300),
+        linear-gradient(#fce300, #fce300), linear-gradient(#fce300, #fce300),
+        linear-gradient(#fce300, #fce300), linear-gradient(#fce300, #fce300);
+    background-position: 0 0, 0 0, 100% 0, 100% 0, 0 100%, 0 100%, 100% 100%, 100% 100%;
+    background-size: 12px 1px, 1px 12px, 12px 1px, 1px 12px, 12px 1px, 1px 12px, 12px 1px, 1px 12px;
+    background-repeat: no-repeat;
 }
 
 /* 自绘菜单的浅色表面。 */
@@ -100,19 +109,21 @@ h1 {
     letter-spacing: 0.12em;
 }
 
-/* 悬停时给按钮文字叠一层冷光，不改尺寸也不触发重排；整行命中层不参与。 */
-button:not([data-button="row-hit"]):hover {
-    text-shadow: 0 0 6px rgb(0 240 255 / 45%);
-}
+/* 悬停冷光只给可用按钮，禁用与整行命中层不参与。 */
+@media (hover: hover) and (pointer: fine) {
+    button:not([data-button="row-hit"]):hover:not(:disabled) {
+        text-shadow: 0 0 6px rgb(0 240 255 / 45%);
+    }
 
-/* 浅色下冷光收敛，避免白底发糊。 */
-:root[data-theme="light"] button:not([data-button="row-hit"]):hover {
-    text-shadow: 0 0 5px rgb(0 120 160 / 35%);
-}
+    /* 浅色下冷光收敛，避免白底发糊。 */
+    :root[data-theme="light"] button:not([data-button="row-hit"]):hover:not(:disabled) {
+        text-shadow: 0 0 5px rgb(0 120 160 / 35%);
+    }
 
-/* 关闭悬停冷光。 */
-:root[data-nightcity-glow="off"] button:not([data-button="row-hit"]):hover {
-    text-shadow: none;
+    /* 关闭悬停冷光时仍保持禁用按钮无反馈。 */
+    :root[data-nightcity-glow="off"] button:not([data-button="row-hit"]):hover:not(:disabled) {
+        text-shadow: none;
+    }
 }
 
 /* ---------- 45° 切角 ---------- */
@@ -196,8 +207,8 @@ html[data-desktop-host="true"][data-desktop-theme="light"] {
 
 /* ---------- 控件 ---------- */
 
-/* 输入框、下拉与多行输入：只收紧圆角与光标色，底色沿用主题令牌，避免盖掉组件自己的表面。 */
-input,
+/* 文本输入、下拉与多行输入：不改变复选/开关几何，底色仍沿用主题令牌。 */
+input:not([type="checkbox"]):not([type="radio"]),
 select,
 textarea {
     border-radius: 2px;
@@ -205,8 +216,8 @@ textarea {
     font-family: var(--interface-font);
 }
 
-/* 聚焦时换成强调色描边加一层冷光；不改内边距与尺寸，避免布局跳动。 */
-input:focus-visible,
+/* 文本字段聚焦用强调色描边与冷光，不覆盖 G8 开关和 B1 复选焦点。 */
+input:not([type="checkbox"]):not([type="radio"]):focus-visible,
 select:focus-visible,
 textarea:focus-visible {
     outline: none;
@@ -214,7 +225,7 @@ textarea:focus-visible {
     box-shadow: 0 0 0 1px var(--color-focus), 0 0 10px color-mix(in srgb, var(--color-focus) 35%, transparent);
 }
 
-/* 勾选类控件跟随强调色。 */
+/* 原生勾选类控件仍跟随界面强调色，不接管外观几何。 */
 input[type="checkbox"],
 input[type="radio"] {
     accent-color: var(--color-focus);

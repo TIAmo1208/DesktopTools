@@ -71,9 +71,11 @@
     cursor: pointer;
 }
 
-/* 悬停时只换底色，不改尺寸。 */
-.nightcity-options .nightcity-options__row:hover {
-    background: var(--color-subtle);
+/* 悬停时只换底色，不改尺寸；禁用行不反馈。 */
+@media (hover: hover) and (pointer: fine) {
+    .nightcity-options .nightcity-options__row:hover:not(:has(.nightcity-options__input:disabled)) {
+        background: var(--color-subtle);
+    }
 }
 
 /* 文本列：标题与说明两行。 */
@@ -98,12 +100,60 @@
     white-space: nowrap;
 }
 
-/* 复选本体交给浏览器绘制，只统一强调色与尺寸。 */
+/* 复选保持原生键盘与辅助技术语义，所有普通状态共用 16×16 外观盒。 */
 .nightcity-options .nightcity-options__input {
     flex: none;
+    box-sizing: border-box;
     width: 16px;
     height: 16px;
     margin: 0;
-    accent-color: var(--color-focus);
+    appearance: none;
+    border: 1px solid var(--color-muted);
+    border-radius: 2px;
+    background: var(--color-surface);
     cursor: pointer;
+}
+
+/* 勾形由两条直线绘制，不切回系统外观或改动命中尺寸。 */
+.nightcity-options .nightcity-options__input:checked {
+    border-color: var(--color-focus);
+    background:
+        linear-gradient(45deg, transparent 42%, var(--color-background) 42% 62%, transparent 62%) 3px 7px / 4px 4px no-repeat,
+        linear-gradient(-45deg, transparent 44%, var(--color-background) 44% 60%, transparent 60%) 6px 3px / 7px 8px no-repeat,
+        var(--color-focus);
+}
+
+/* 原生复选的键盘聚焦环不被输入字段冷光规则覆盖。 */
+.nightcity-options .nightcity-options__input:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
+/* 禁用控件与说明一起弱化，边框仅使用 border 令牌。 */
+.nightcity-options .nightcity-options__row:has(.nightcity-options__input:disabled) {
+    color: var(--color-muted);
+    cursor: default;
+}
+
+/* 禁用标题不再保留高对比的正文色。 */
+.nightcity-options .nightcity-options__row:has(.nightcity-options__input:disabled) .nightcity-options__label {
+    color: var(--color-muted);
+}
+
+/* 禁用复选即便已选也恢复弱描边与表面，不改尺寸或外观源。 */
+.nightcity-options .nightcity-options__input:disabled {
+    border-color: var(--color-border);
+    background: var(--color-surface);
+    cursor: default;
+}
+
+/* 强制色模式回到系统绘制，恢复系统勾选和禁用色。 */
+@media (forced-colors: active) {
+    .nightcity-options .nightcity-options__input,
+    .nightcity-options .nightcity-options__input:checked,
+    .nightcity-options .nightcity-options__input:disabled {
+        appearance: auto;
+        border: revert;
+        background: revert;
+    }
 }

@@ -763,11 +763,18 @@
     font: inherit;
 }
 
-/* 危险主命令：错误色描边和底，卸载与清理配置共用。 */
-.plugin-settings__dialog-actions .plugin-settings__confirm {
-    border-color: var(--color-error);
-    color: var(--color-error);
-    background: var(--color-error-surface);
+/* 安装确认是非破坏性主命令，沿用主命令配色。 */
+.plugin-settings__dialog-actions [data-button="primary"] {
+    border-color: var(--color-action);
+    color: var(--color-action-text);
+    background: var(--color-action);
+}
+
+/* 安装确认悬停，不影响卸载与移除。 */
+@media (hover: hover) and (pointer: fine) {
+    .plugin-settings__dialog-actions [data-button="primary"]:hover:not(:disabled) {
+        background: var(--color-action-hover);
+    }
 }
 
 /* 弹窗按钮的键盘焦点。 */

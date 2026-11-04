@@ -12,7 +12,7 @@ const HEX_MASK = 0xffffff; // 数据流读出保留 24 位。
 /** 可独立关闭的特效；键同时决定 data-nightcity-<键> 属性名。 */
 const OPTIONS = [
     { key: "scan", label: "CRT 扫描线", hint: "深色叠扫描线与城市网格，浅色只留稀疏网格" },
-    { key: "bevel", label: "45° 切角", hint: "按钮削角；开关本体的胶囊形不参与" },
+    { key: "bevel", label: "45° 切角", hint: "按钮削角；开关轨道与滑块不参与" },
     { key: "glow", label: "悬停冷光", hint: "按钮悬停时叠一层青色光晕" },
     { key: "mono", label: "等宽数字", hint: "时间与数字改用等宽字形，读数不抖动" },
 ];

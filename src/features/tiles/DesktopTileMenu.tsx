@@ -190,7 +190,7 @@ export const DesktopTileMenu = ({
                                 if (item.closeOnSelect !== false) onClose();
                                 item.onSelect?.();
                             }}
-                         data-button="primary">
+                        >
                             <span className="desktop-tile-menu__check" aria-hidden="true">
                                 {item.checked ? (item.radio ? "●" : "✓") : ""}
                             </span>

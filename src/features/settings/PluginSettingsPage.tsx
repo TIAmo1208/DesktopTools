@@ -907,11 +907,11 @@ const PluginConfirmDialog = ({
                     取消
                 </button>
                 {uninstall && (
-                    <button type="button" className="plugin-settings__confirm" disabled={pending} onClick={onPurge} data-button="primary">
+                    <button type="button" className="plugin-settings__confirm" disabled={pending} onClick={onPurge} data-button="danger">
                         卸载并清理配置
                     </button>
                 )}
-                <button ref={confirmRef} type="button" className="plugin-settings__confirm" disabled={pending} onClick={onConfirm} data-button="primary">
+                <button ref={confirmRef} type="button" className="plugin-settings__confirm" disabled={pending} onClick={onConfirm} data-button={install ? "primary" : "danger"}>
                     {install ? installConfirmLabel(Boolean(install.conflict?.downgrade)) : uninstall ? "卸载" : "移除"}
                 </button>
             </footer>

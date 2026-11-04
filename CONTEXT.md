@@ -265,7 +265,7 @@ _避免使用_：内联脚本、热重载、按插件标识拼文件名
 `role=theme` 的插件。主题以数据为主：`theme.json` 给外观四项、原生消息配色与自带字体，`theme.css` 给配色令牌与自带表现层；入口脚本可选，只在需要运行期行为时提供。样式表由宿主在偏好变量写完之后挂到每份文档，同一时刻只保留一个 `link[data-theme-plugin]`；桌面窗口在建窗口时就把当前主题样式表地址拼进页面地址，所以首帧已是该主题。可覆盖的配色令牌见[主题变量契约](docs/design/主题变量契约.md)。原生 Toast 由 Rust 绘制，配色走 `theme.json` 的 `notification` 段而非页面样式。字体族、字号、圆角和两组强调色写入偏好；首次选中时保存用户原值到 `themeBaseline`，切换主题和切回内置主题时先还原这份基线。网格尺寸、透明宿主根表面和原生窗口外观不接受主题覆盖。桌面首屏的 `#boot-splash` 覆盖层只在本进程启动后的时间窗内、主显示器且未要求减少动效时播放一次。决策见 [ADR-0034](docs/adr/0034-主题插件角色与基线还原.md)。
 _避免使用_：主题脚本、皮肤包、全局样式插件
 
-整行可点击的行由覆盖式命中按钮提供整行命中面：按钮自身 `position: absolute; inset: 0`，其余内容统一 `position: relative; z-index: 1` 压在命中层之上；命中层带 `data-button="row-hit"`，压在上面的非交互内容（名称、箭头）用 `pointer-events: none` 让点击穿透到命中层，行内控件保持自身可点。按钮语义统一由 `data-button` 表达（`primary`、`secondary`、`icon`、`ghost`、`switch`、`row-hit`，未标注即普通按钮），主题与外部样式按语义选择而不是按元素名。
+整行可点击的行由覆盖式命中按钮提供整行命中面：按钮自身 `position: absolute; inset: 0`，其余内容统一 `position: relative; z-index: 1` 压在命中层之上；命中层带 `data-button="row-hit"`，压在上面的非交互内容（名称、箭头）用 `pointer-events: none` 让点击穿透到命中层，行内控件保持自身可点。按钮语义统一由 `data-button` 表达（`primary`、`secondary`、`danger`、`icon`、`ghost`、`switch`、`row-hit`，未标注即普通按钮）；`row-hit` 专指绝对定位覆盖式命中层，普通自绘菜单项不标成 `primary` 或 `row-hit`。禁用是原生 `:disabled` 状态，不另立取值。变体配色由组件与 `src/styles/global.css` 持有，主题只覆盖配色令牌和自身可撤销特效，不再重复声明一份变体颜色。
 
 插件事件。宿主向页面外发的插件事件，桌面宿主页用 `window.__DESKTOP_TOOLS_NATIVE__.onPluginEvent(handler)` 订阅，返回退订函数；设置窗口没有这个桥接对象。事件对象是 `{ type, at, payload }`。当前三类：`toast-shown`（原生通知入队后，`payload` 只给 `kind` 与 `source`，不含正文）、`app-started`（首批桌面宿主就绪，每个进程一次）、`app-quitting`（退出流程、窗口销毁之前）。回调抛错只记日志，不阻塞宿主与其他插件。
 

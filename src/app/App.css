@@ -167,12 +167,6 @@
     outline-offset: 2px;
 }
 
-/* 应用状态命令禁用状态。 */
-.status-action:disabled {
-    cursor: default;
-    opacity: 0.55;
-}
-
 /* 窄窗口状态布局。 */
 @media (max-width: 540px) {
     /* 窄窗口应用状态工作区。 */
