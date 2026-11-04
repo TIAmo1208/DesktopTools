@@ -8,7 +8,7 @@ use chrono::Utc;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRole, ComponentRuntimeError, ComponentRuntimeSnapshot, ThemeAppearance, ThemeFont, ThemeNotification, WorkspaceRect};
+use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRole, ComponentRuntimeError, ComponentRuntimeSnapshot, ThemeAppearance, ThemeBoot, ThemeFont, ThemeNotification, WorkspaceRect};
 
 /// 官方插件前端注册表当前支持的入口。
 const LOCAL_CLOCK_ENTRY: &str = "official:local-clock";
@@ -414,16 +414,16 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     }; // 未声明角色继续按格子处理。
     let entry = required_ini(&values, "entry")?;
     confirm_plugin_entry(folder, &entry)?;
-    let (stylesheet, theme_appearance, theme_fonts, theme_notification) = if role == ComponentRole::Theme
+    let (stylesheet, theme_appearance, theme_fonts, theme_notification, theme_boot) = if role == ComponentRole::Theme
     {
         let stylesheet = required_ini(&values, "stylesheet")?; // 主题资产必须存在并通过相同路径规则。
         confirm_plugin_asset(folder, &stylesheet, "css", false)?;
-        let (appearance, fonts, notification) = read_theme_data(folder, folder_name)?;
-        (format!("{folder_name}/{stylesheet}"), Some(appearance), fonts, notification)
+        let (appearance, fonts, notification, boot) = read_theme_data(folder, folder_name)?;
+        (format!("{folder_name}/{stylesheet}"), Some(appearance), fonts, notification, boot)
     }
     else
     {
-        (String::new(), None, Vec::new(), None)
+        (String::new(), None, Vec::new(), None, None)
     };
     let app_version = parse_plugin_version(env!("CARGO_PKG_VERSION")).ok_or_else(|| "程序版本无效".to_string())?; // 与 package_info 使用同一份 Cargo 版本。
     if let Some(minimum) = optional_version(&values, "minAppVersion")?
@@ -453,7 +453,7 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     // 主题默认没有格子；带入口脚本时按清单声明放行，供主题自带的格子使用（同一插件里既能换肤又能添格子）。
     let creatable = creatable && (role == ComponentRole::Tile || !script.is_empty());
     let max_tiles = if role == ComponentRole::Theme && !creatable { 0 } else { max_tiles }; // 不能创建的主题忽略格子上限。
-    let manifest = ComponentManifest { id, name, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, theme_appearance, theme_notification, theme_fonts, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
+    let manifest = ComponentManifest { id, name, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, theme_appearance, theme_notification, theme_boot, theme_fonts, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
     validate_manifest(&manifest).map_err(|error| error.message)?;
     Ok(manifest)
 }
@@ -650,7 +650,7 @@ struct ThemeFontDocument
 }
 
 /// 有界读取主题外观与自带字体，所有覆盖值必须满足现有偏好校验。
-fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(ThemeAppearance, Vec<ThemeFont>, Option<ThemeNotification>), String>
+fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(ThemeAppearance, Vec<ThemeFont>, Option<ThemeNotification>, Option<ThemeBoot>), String>
 {
     use std::io::Read;
     /// 主题数据承载外观覆盖与自带字体，不接受未知顶层字段。
@@ -661,6 +661,8 @@ fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(Theme
         appearance: ThemeAppearance, // 外观对象必填，内部各项可以缺省。
         #[serde(default)]
         notification: Option<ThemeNotification>, // 原生消息配色，缺省沿用内置调色板。
+        #[serde(default)]
+        boot: Option<ThemeBoot>, // 启动覆盖层时长，缺省用内置时长。
         #[serde(default)]
         fonts: Vec<ThemeFontDocument>, // 字体声明，缺省没有自带字体。
     }
@@ -696,15 +698,25 @@ fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(Theme
     let notification = document.notification; // 缺省整套落回内置调色板。
     if let Some(colors) = &notification
     {
-        for (name, color) in [("表面", &colors.surface), ("边框", &colors.border), ("正文", &colors.text), ("次要正文", &colors.muted), ("后层", &colors.subtle)]
+        for (name, color) in [("表面", &colors.surface), ("边框", &colors.border), ("正文", &colors.text), ("次要正文", &colors.muted), ("后层", &colors.subtle), ("成功", &colors.success), ("警告", &colors.warning), ("错误", &colors.error)]
         {
             if let Some(color) = color.as_deref().filter(|value| !is_theme_color(value))
             {
                 return Err(format!("主题消息{name}颜色无效：{color}"));
             }
         }
+        if colors.weight.as_deref().is_some_and(|weight| !matches!(weight, "normal" | "medium" | "semibold" | "bold"))
+        {
+            return Err("主题消息字重无效".to_string()); // 只接受四个枚举，避免传进 DirectWrite 无法识别的值。
+        }
     }
-    Ok((appearance, fonts, notification))
+    let boot = document.boot; // 缺省用内置时长。
+    if let Some(duration) = boot.as_ref().and_then(|boot| boot.duration_ms)
+        && duration > 10_000
+    {
+        return Err("主题启动覆盖层时长超过 10 秒".to_string()); // 上限挡住“永远挡着桌面”的错误配置。
+    }
+    Ok((appearance, fonts, notification, boot))
 }
 
 /// 主题配色只接受 `#` 加六位十六进制。

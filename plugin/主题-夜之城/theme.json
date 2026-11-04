@@ -11,6 +11,13 @@
         "border": "#1f2c47",
         "text": "#e8f1ff",
         "muted": "#8fa3c8",
-        "subtle": "#121a2c"
+        "subtle": "#121a2c",
+        "success": "#00f5a0",
+        "warning": "#ffb300",
+        "error": "#ff3b69",
+        "weight": "medium"
+    },
+    "boot": {
+        "durationMs": 2600
     }
 }

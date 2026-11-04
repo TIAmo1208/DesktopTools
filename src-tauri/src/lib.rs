@@ -255,6 +255,7 @@ pub fn run()
             {
                 callback_exit_code.store(code, Ordering::Relaxed);
             }
+            crate::contracts::emit_plugin_event(app, "app-quitting", serde_json::json!({})); // 关窗之前先告知插件，插件还能做收尾。
             if let Some(runtime) = app.try_state::<Arc<DesktopHostRuntime>>()
             {
                 runtime.cleanup();

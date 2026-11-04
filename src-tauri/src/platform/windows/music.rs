@@ -267,7 +267,7 @@ pub fn start_monitor(app: tauri::AppHandle)
             let mut cache = MEDIA_CACHE.lock().unwrap_or_else(|error| error.into_inner()); // 更新缓存后再广播。
             if cache.as_ref() != Some(&current)
             {
-                crate::log_info!("媒体：权威快照更新，会话存在={}，来源={}，标题长度={}，艺人长度={}，封面存在={}", !current["media"].is_null(), current["media"]["source"].as_str().unwrap_or("<无>"), current["media"]["title"].as_str().unwrap_or_default().chars().count(), current["media"]["artist"].as_str().unwrap_or_default().chars().count(), current["media"]["artworkUrl"].is_string()); // 只记录字段是否完整，不记录曲目正文或图片数据。
+                crate::log_debug!("媒体：权威快照更新，会话存在={}，来源={}，标题长度={}，艺人长度={}，封面存在={}", !current["media"].is_null(), current["media"]["source"].as_str().unwrap_or("<无>"), current["media"]["title"].as_str().unwrap_or_default().chars().count(), current["media"]["artist"].as_str().unwrap_or_default().chars().count(), current["media"]["artworkUrl"].is_string()); // 只记录字段是否完整，不记录曲目正文或图片数据。
                 if let Some(error) = current.get("error").and_then(|value| value.as_str())
                 {
                     let _ = crate::tools::log::warn(format!("媒体同步失败：{error}"));

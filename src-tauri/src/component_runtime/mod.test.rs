@@ -13,7 +13,7 @@ fn theme_manifest_validates_assets_and_appearance()
     std::fs::write(folder.join("theme.css"), ":root {}").unwrap();
     let base = "[plugin]\nid=plugin.theme\nname=theme\nversion=1.0.0\nentry=main.js\ncreatable=true\nmaxTiles=5\n"; // 保留原有 entry 校验。
     let theme = format!("{base}role=theme\nstylesheet=theme.css\n"); // 合法主题声明。
-    std::fs::write(folder.join("theme.json"), r##"{"appearance":{"accentColor":"#Ab12Cd","desktopAccentColor":"#123456","cornerRadius":12,"fontFamily":"Arial","fontSize":18},"notification":{"surface":"#0d1322","text":"#e8f1ff"}}"##).unwrap();
+    std::fs::write(folder.join("theme.json"), r##"{"appearance":{"accentColor":"#Ab12Cd","desktopAccentColor":"#123456","cornerRadius":12,"fontFamily":"Arial","fontSize":18},"notification":{"surface":"#0d1322","text":"#e8f1ff","success":"#00f5a0","weight":"semibold"},"boot":{"durationMs":2600}}"##).unwrap();
     std::fs::write(folder.join("manifest.ini"), &theme).unwrap();
     let runtime = ComponentRuntimeState::new(&directory); // 检查运行时下发载荷。
     assert!(runtime.catalog().failures.is_empty());
@@ -27,6 +27,9 @@ fn theme_manifest_validates_assets_and_appearance()
     let notification = manifest.theme_notification.clone().expect("主题可以声明消息配色"); // 未声明的字段留给内置调色板。
     assert_eq!((notification.surface.as_deref(), notification.text.as_deref()), (Some("#0d1322"), Some("#e8f1ff")));
     assert_eq!(notification.border, None);
+    assert_eq!(notification.success.as_deref(), Some("#00f5a0")); // 状态色可选，逐项覆盖内置语义色。
+    assert_eq!(notification.weight.as_deref(), Some("semibold")); // 字重只接受四个枚举。
+    assert_eq!(manifest.theme_boot.as_ref().and_then(|boot| boot.duration_ms), Some(2600)); // 启动覆盖层时长归主题数据。
     std::fs::remove_file(folder.join("main.js")).unwrap();
     let scriptless = ComponentRuntimeState::new(&directory).catalog().manifests["plugin.theme"].clone();
     assert!(scriptless.script.is_empty()); // 入口脚本缺失时不下发，无脚本主题不产生加载失败。
@@ -52,12 +55,12 @@ fn theme_manifest_validates_assets_and_appearance()
     std::fs::write(folder.join("manifest.ini"), theme.replace("entry=main.js", "entry=../main.js")).unwrap();
     assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1);
     std::fs::write(folder.join("manifest.ini"), &theme).unwrap();
-    for body in [r##"{"appearance":{"accentColor":"#123456"},"notification":{"surface":"0d1322"}}"##, r##"{"appearance":{"accentColor":"#123456"},"notification":{"text":"#12345g"}}"##, r##"{"appearance":{"accentColor":"#123456"},"notification":{"unknown":"#123456"}}"##]
+    for body in [r##"{"appearance":{"accentColor":"#123456"},"notification":{"surface":"0d1322"}}"##, r##"{"appearance":{"accentColor":"#123456"},"notification":{"text":"#12345g"}}"##, r##"{"appearance":{"accentColor":"#123456"},"notification":{"unknown":"#123456"}}"##, r##"{"appearance":{"accentColor":"#123456"},"notification":{"weight":"heavy"}}"##, r##"{"appearance":{"accentColor":"#123456"},"notification":{"warning":"#12"}}"##, r##"{"appearance":{"accentColor":"#123456"},"boot":{"durationMs":20000}}"##]
     {
         std::fs::write(folder.join("theme.json"), body).unwrap();
         assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1, "{body}"); // 消息配色非法或字段未知都拒绝注册。
     }
-    std::fs::write(folder.join("theme.json"), r##"{"appearance":{"accentColor":"#Ab12Cd","desktopAccentColor":"#123456","cornerRadius":12,"fontFamily":"Arial","fontSize":18},"notification":{"surface":"#0d1322","text":"#e8f1ff"}}"##).unwrap();
+    std::fs::write(folder.join("theme.json"), r##"{"appearance":{"accentColor":"#Ab12Cd","desktopAccentColor":"#123456","cornerRadius":12,"fontFamily":"Arial","fontSize":18},"notification":{"surface":"#0d1322","text":"#e8f1ff","success":"#00f5a0","weight":"semibold"},"boot":{"durationMs":2600}}"##).unwrap();
     for body in [r##"{"appearance":{"accentColor":"red"}}"##, r##"{"appearance":{"desktopAccentColor":"#12345g"}}"##, r#"{"appearance":{"fontFamily":"Unknown"}}"#, r#"{"appearance":{"fontSize":19}}"#, r#"{"appearance":{"fontSize":11}}"#, r#"{"appearance":{"fontSize":12.5}}"#, r#"{"appearance":{"cornerRadius":13}}"#, r#"{"appearance":{"cornerRadius":-1}}"#, "{}", "not-json"]
     {
         std::fs::write(folder.join("theme.json"), &body).unwrap();
@@ -297,7 +300,7 @@ fn time_subscriptions_are_scoped_and_do_not_reuse_identity()
 #[test]
 fn manifest_rejects_an_unauthorized_capability_set()
 {
-    let manifest = ComponentManifest { theme_notification: None, id: "official.local-clock".to_string(), name: "本地时间".to_string(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable: true, removable: true, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
+    let manifest = ComponentManifest { theme_notification: None, theme_boot: None, id: "official.local-clock".to_string(), name: "本地时间".to_string(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable: true, removable: true, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
 
     assert_eq!(validate_manifest(&manifest).expect_err("空能力集合应被拒绝").code, "invalid-component-manifest");
 }

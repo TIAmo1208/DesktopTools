@@ -110,7 +110,7 @@ pub(super) struct Surface
     layouts: HashMap<u64, (IDWriteTextLayout, f32)>, // 仅保留当前队列的文字测量。
     pub size: SIZE,                                  // 物理像素尺寸。
     pub scale: f32,                                  // 主显示器 DPI 比例。
-    font: (String, u8),                              // 格式缓存键。
+    font: (String, u8, i32),                         // 格式缓存键：字体、字号、字重。
     bitmap: Bitmap,                                  // 最后释放像素存储。
 }
 
@@ -142,20 +142,20 @@ impl Surface
             let alpha = icon.data().chunks_exact(4).map(|pixel| pixel[3]).collect::<Vec<_>>(); // 保留 SVG 每段透明度，黑色填充作为单色主题蒙版。
             let loading_mask = target.CreateBitmap(D2D_SIZE_U { width: icon_size, height: icon_size }, Some(alpha.as_ptr().cast()), icon_size, &D2D1_BITMAP_PROPERTIES { pixelFormat: D2D1_PIXEL_FORMAT { format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED }, dpiX: 96.0 * scale, dpiY: 96.0 * scale })?;
             let write: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?; // 复用系统文本工厂。
-            let format = write.CreateTextFormat(&HSTRING::from(&appearance.font), None, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, appearance.font_size as f32, w!("zh-CN"))?; // 已保存的界面字体。
-            Ok(Self { loading_mask, stroke, target, write, format, layouts: HashMap::new(), size, scale, font: (appearance.font.clone(), appearance.font_size), bitmap })
+            let format = write.CreateTextFormat(&HSTRING::from(&appearance.font), None, DWRITE_FONT_WEIGHT(appearance.weight), DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, appearance.font_size as f32, w!("zh-CN"))?; // 已保存的界面字体与主题字重。
+            Ok(Self { loading_mask, stroke, target, write, format, layouts: HashMap::new(), size, scale, font: (appearance.font.clone(), appearance.font_size, appearance.weight), bitmap })
         }
     }
 
     /// 字体变化时失效文字缓存，主题换色不重建图形设备。
     pub fn configure(&mut self, appearance: &Appearance) -> windows::core::Result<()>
     {
-        if self.font == (appearance.font.clone(), appearance.font_size)
+        if self.font == (appearance.font.clone(), appearance.font_size, appearance.weight)
         {
             return Ok(());
         }
-        self.format = unsafe { self.write.CreateTextFormat(&HSTRING::from(&appearance.font), None, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, appearance.font_size as f32, w!("zh-CN"))? };
-        self.font = (appearance.font.clone(), appearance.font_size);
+        self.format = unsafe { self.write.CreateTextFormat(&HSTRING::from(&appearance.font), None, DWRITE_FONT_WEIGHT(appearance.weight), DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, appearance.font_size as f32, w!("zh-CN"))? };
+        self.font = (appearance.font.clone(), appearance.font_size, appearance.weight);
         self.layouts.clear();
         Ok(())
     }
@@ -242,32 +242,7 @@ impl Surface
                 self.target.DrawEllipse(&D2D1_ELLIPSE { point: center, radiusX: 7.5, radiusY: 7.5 }, &brush, 1.5, &self.stroke);
                 self.target.DrawLine(point(center.X - 2.25, center.Y - 2.25), point(center.X + 2.25, center.Y + 2.25), &brush, 1.5, &self.stroke);
                 self.target.DrawLine(point(center.X + 2.25, center.Y - 2.25), point(center.X - 2.25, center.Y + 2.25), &brush, 1.5, &self.stroke);
-                let status_color = match frame.kind.as_str()
-                {
-                    "success" =>
-                    {
-                        if appearance.dark
-                        {
-                            0x34D399
-                        }
-                        else
-                        {
-                            0x059669
-                        }
-                    }
-                    "error" =>
-                    {
-                        if appearance.dark
-                        {
-                            0xFDA29B
-                        }
-                        else
-                        {
-                            0xB42318
-                        }
-                    }
-                    _ => muted,
-                }; // 状态配色沿用现有语义色。
+                let status_color = appearance.status_color(frame.kind.as_str(), muted); // 主题声明了状态色时覆盖内置语义色。
                 brush.SetColor(&Self::color(status_color, content_alpha));
                 let center = point(rect.left + 20.0, rect.top + 32.0); // 左侧 16px 状态图标。
                 if frame.loading

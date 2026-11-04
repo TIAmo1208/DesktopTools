@@ -417,28 +417,27 @@
 }
 
 /* 名称按钮占满左侧，卸载和开关贴右。 */
-.plugin-settings__open {
+/* 名称列占满剩余宽度，把卸载、开关与箭头推到右侧。 */
+.plugin-settings__copy {
     flex: 1;
     min-width: 0;
+}
+
+/* 整行命中层：按钮自身的盒子铺满整行，不再靠伪元素拉伸。 */
+.plugin-settings__row--link > .plugin-settings__hit {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    margin: 0;
     padding: 0;
     border: 0;
-    color: inherit;
     background: transparent;
-    font: inherit;
-    text-align: left;
+    border-radius: var(--surface-radius);
     cursor: pointer;
 }
 
-/* 命中面盖住整行，但低于卸载按钮和开关。 */
-.plugin-settings__open::after {
-    position: absolute;
-    inset: 0;
-    border-radius: var(--surface-radius);
-    content: "";
-}
-
-/* 卸载占位和开关在命中面之上，点击不会进入插件页。 */
-.plugin-settings__row--link > :is(.plugin-settings__uninstall, .settings-switch) {
+/* 名称、卸载、开关与箭头统一压在命中层之上，点它们不会进入插件页。 */
+.plugin-settings__row--link > :not(.plugin-settings__hit) {
     position: relative;
     z-index: 1;
 }
@@ -506,12 +505,12 @@
 }
 
 /* 整行悬停。 */
-.plugin-settings__row--link:has(.plugin-settings__open:hover) {
+.plugin-settings__row--link:has(.plugin-settings__hit:hover) {
     background: var(--color-subtle);
 }
 
 /* 进入按钮的键盘焦点沿整行。 */
-.plugin-settings__open:focus-visible::after {
+.plugin-settings__row--link:has(.plugin-settings__hit:focus-visible) {
     outline: 2px solid var(--color-focus);
     outline-offset: 2px;
 }

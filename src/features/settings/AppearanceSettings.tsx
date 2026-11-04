@@ -141,7 +141,7 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                                         aria-label={`${title}：主题色 ${color}`}
                                         aria-pressed={appearance?.accentColor.toLowerCase() === color}
                                         onClick={() => handleAppearance({ accentColor: color })}
-                                    />
+                                     data-button="icon" />
                                 ))}
                                 <input
                                     className="appearance-settings__color"

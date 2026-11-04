@@ -261,7 +261,14 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
   };
 
   const eventSubscriptions = new Map(); // 已迁移事件的本页订阅，不保留历史消息。
+  const pluginEventListeners = new Set(); // 插件作者注册的宿主事件回调。
   const dispatch = (name, payload) => {
+    if (name === "plugin-event") {
+      for (const handler of [...pluginEventListeners]) {
+        try { handler(payload); } catch (error) { reportFailure("插件事件处理失败", error); } // 一个回调失败不影响其他插件。
+      }
+      return;
+    }
     if (name === "desktop-refresh-policy-changed") acceptForeground(payload);
     if (name === "desktop-host-snapshot-changed") requestRefresh();
     if (name === "desktop-refresh-policy-changed" || name === "preferences-changed") {
@@ -319,7 +326,14 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
     }
   };
 
-  window.__DESKTOP_TOOLS_NATIVE__ = { invoke, listen, dispatch, isRefreshPaused: () => refreshPaused };
+  // 插件订阅宿主事件：通知显示、程序启动与退出等，返回退订函数。
+  const onPluginEvent = (handler) => {
+    if (typeof handler !== "function") return () => {};
+    pluginEventListeners.add(handler);
+    return () => pluginEventListeners.delete(handler);
+  };
+
+  window.__DESKTOP_TOOLS_NATIVE__ = { invoke, listen, dispatch, onPluginEvent, isRefreshPaused: () => refreshPaused };
 })();
 "#;
 
@@ -330,7 +344,7 @@ fn raw_hwnd(raw: isize) -> HWND { HWND(raw as *mut c_void) }
 pub(crate) fn install_host_events(app: &AppHandle)
 {
     super::refresh_policy::start_events(app);
-    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT]
+    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, crate::contracts::PLUGIN_EVENT_CHANNEL]
     {
         let handle = app.clone(); // 原生窗口所属的 UI 调度器。
         app.listen(name, move |event| {
@@ -1330,15 +1344,19 @@ where
 }
 
 /// 保留开发 URL 的路径与查询字段，并设置宿主身份、启动时刻与首帧主题；正式模式使用内嵌资源。
-fn desktop_page_url(native_origin: &str, dev_url: Option<&tauri::Url>, index: usize, boot: u64, theme_css: Option<&str>) -> tauri::Url
+fn desktop_page_url(native_origin: &str, dev_url: Option<&tauri::Url>, index: usize, boot: u64, theme_css: Option<&str>, boot_ms: Option<u32>) -> tauri::Url
 {
     let mut url = dev_url.cloned().unwrap_or_else(|| tauri::Url::parse(&format!("{native_origin}/index.html")).expect("宿主协议地址无效")); // 当前模式的页面来源。
-    let pairs: Vec<(String, String)> = url.query_pairs().filter(|(key, _)| key != "desktop-host" && key != "monitor" && key != "boot" && key != "theme-css").map(|(key, value)| (key.into_owned(), value.into_owned())).collect(); // 保留非宿主查询字段。
+    let pairs: Vec<(String, String)> = url.query_pairs().filter(|(key, _)| key != "desktop-host" && key != "monitor" && key != "boot" && key != "theme-css" && key != "theme-boot-ms").map(|(key, value)| (key.into_owned(), value.into_owned())).collect(); // 保留非宿主查询字段。
     url.set_query(None);
     url.query_pairs_mut().extend_pairs(pairs).append_pair("desktop-host", "1").append_pair("monitor", &index.to_string()).append_pair("boot", &boot.to_string());
     if let Some(stylesheet) = theme_css
     {
         url.query_pairs_mut().append_pair("theme-css", stylesheet); // 首帧就挂主题样式表，不让它等偏好 IPC。
+    }
+    if let Some(duration) = boot_ms
+    {
+        url.query_pairs_mut().append_pair("theme-boot-ms", &duration.to_string()); // 主题自定的启动覆盖层时长。
     }
     url
 }
@@ -1366,6 +1384,19 @@ fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
         return None;
     }
     Some(format!("/plugins/{}?v=", manifest.stylesheet)) // 与前端 themeStylesheetHref 同一格式。
+}
+
+/// 当前生效主题声明的启动覆盖层时长；没声明时为空，前端用内置时长。
+fn active_theme_boot(app: &AppHandle) -> Option<u32>
+{
+    let preferences = app.state::<crate::app::settings::SettingsState>().preferences().ok()?;
+    let id = preferences.theme_plugin_id.clone()?;
+    if preferences.disabled_plugins.contains(&id)
+    {
+        return None;
+    }
+    let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).ok()?.manifests;
+    manifests.iter().find(|manifest| manifest.id == id)?.theme_boot.as_ref()?.duration_ms // 0 也照原样传，表示不播。
 }
 
 /// 检查命令来源；开发来源只由调用方在 Tauri 开发模式下注入。
@@ -1472,19 +1503,28 @@ mod desktop_dev_tests
         assert_eq!(super::drag_payload_limit(&serde_json::json!({"phase": "ole-preview"})), 1048576);
     }
 
+    /// 插件事件通道必须同时出现在注入脚本与转发白名单里。
+    #[test]
+    fn plugin_events_are_exposed_to_pages()
+    {
+        assert!(super::NATIVE_BRIDGE_SCRIPT.contains("onPluginEvent")); // 页面侧注册入口。
+        assert!(super::NATIVE_BRIDGE_SCRIPT.contains("plugin-event")); // 分派分支按同一名字匹配。
+    }
+
     /// 开发路径与原生命令来源独立，正式模式不接收开发来源。
     #[test]
     fn development_url_and_origin_are_scoped()
     {
         let native = "http://desktop-tools-host-2.localhost"; // 第二个显示器的协议来源。
         let dev = tauri::Url::parse("http://127.0.0.1:1420/app/?theme=dark&monitor=9").unwrap(); // 带路径和已有查询的开发入口。
-        let page = desktop_page_url(native, Some(&dev), 2, 1700000000000, None); // 开发页面保留原路径，替换显示器字段。
+        let page = desktop_page_url(native, Some(&dev), 2, 1700000000000, None, None); // 开发页面保留原路径，替换显示器字段。
         assert_eq!(page.path(), "/app/");
         assert_eq!(page.query(), Some("theme=dark&desktop-host=1&monitor=2&boot=1700000000000"));
-        assert_eq!(desktop_page_url(native, None, 2, 7, None).as_str(), "http://desktop-tools-host-2.localhost/index.html?desktop-host=1&monitor=2&boot=7");
-        let themed = desktop_page_url(native, None, 0, 7, Some("/plugins/主题-夜之城/theme.css?v=")); // 首帧主题表带查询字段，必须原样转义。
+        assert_eq!(desktop_page_url(native, None, 2, 7, None, None).as_str(), "http://desktop-tools-host-2.localhost/index.html?desktop-host=1&monitor=2&boot=7");
+        let themed = desktop_page_url(native, None, 0, 7, Some("/plugins/主题-夜之城/theme.css?v="), Some(2600)); // 首帧主题表带查询字段，必须原样转义。
         assert_eq!(themed.query_pairs().find(|(key, _)| key == "theme-css").map(|(_, value)| value.into_owned()), Some("/plugins/主题-夜之城/theme.css?v=".to_string()));
-        assert_eq!(desktop_page_url(native, None, 0, 8, None).query_pairs().any(|(key, _)| key == "theme-css"), false);
+        assert_eq!(desktop_page_url(native, None, 0, 8, None, None).query_pairs().any(|(key, _)| key == "theme-css"), false);
+        assert_eq!(themed.query_pairs().find(|(key, _)| key == "theme-boot-ms").map(|(_, value)| value.into_owned()), Some("2600".to_string()));
         assert!(allowed_desktop_origin(native, native, None));
         assert!(allowed_desktop_origin("http://127.0.0.1:1420", native, Some("http://127.0.0.1:1420")));
         for origin in ["http://127.0.0.1:1420", "http://desktop-tools-host-1.localhost", "null", ""]
@@ -1524,7 +1564,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     let native_origin = format!("http://{protocol}.localhost"); // 本屏桥接始终使用自己的协议。
     let dev_url = if tauri::is_dev() { app.config().build.dev_url.as_ref() } else { None }; // Debug 构建不等同于 Tauri 开发模式。
     let dev_origin = dev_url.map(|url| url.origin().ascii_serialization()); // 正式模式不会放行开发 Origin。
-    let page_url = desktop_page_url(&native_origin, dev_url, index, boot_epoch(), active_theme_stylesheet(app).as_deref()).to_string(); // 页面与刷新共享当前模式地址。
+    let page_url = desktop_page_url(&native_origin, dev_url, index, boot_epoch(), active_theme_stylesheet(app).as_deref(), active_theme_boot(app)).to_string(); // 页面与刷新共享当前模式地址。
     let initialization_script = NATIVE_BRIDGE_SCRIPT.replace("__DESKTOP_NATIVE_ORIGIN__", &serde_json::to_string(&native_origin).expect("宿主地址序列化失败")).replace("__REFRESH_POLICY_FALLBACK__", if super::refresh_policy::fallback_enabled() { "true" } else { "false" }); // JSON 编码避免脚本字符串转义错误，Hook 状态在宿主创建前确定。
     super::refresh_policy::set_paused(&monitor.id, false);
     crate::log_info!("宿主：页面来源={}，原生命令来源={}", page_url, native_origin);

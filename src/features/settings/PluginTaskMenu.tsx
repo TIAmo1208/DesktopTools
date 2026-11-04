@@ -52,7 +52,7 @@ export const PluginTaskMenu = ({
                         <div className="plugin-settings__task-block">
                             <div className="plugin-settings__task-head">
                                 <p>{`正在安装 ${Math.min(done + 1, total)}/${total}`}</p>
-                                <button className="plugin-settings__task-cancel" type="button" onClick={() => onCancel(running[0].id)}>
+                                <button className="plugin-settings__task-cancel" type="button" onClick={() => onCancel(running[0].id)} data-button="ghost">
                                     取消
                                 </button>
                             </div>

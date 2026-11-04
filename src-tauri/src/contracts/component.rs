@@ -47,6 +47,14 @@ pub struct ThemeAppearance
     pub font_size: Option<u32>,               // 正文字号。
 }
 
+/// 主题声明的启动覆盖层时长；缺省用内置时长，0 表示不播。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeBoot
+{
+    pub duration_ms: Option<u32>, // 覆盖层从出现到消失的总时长，上限 10 秒。
+}
+
 /// 主题声明的原生消息配色。整套只有一套色值，不随深浅模式变化；缺省字段回落到当前模式的内置色。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -57,6 +65,10 @@ pub struct ThemeNotification
     pub text: Option<String>,    // 正文。
     pub muted: Option<String>,   // 次要正文。
     pub subtle: Option<String>,  // 后层消息与悬停表面。
+    pub success: Option<String>, // 成功状态图标。
+    pub warning: Option<String>, // 警告状态图标；未声明时沿用次要正文色。
+    pub error: Option<String>,   // 错误状态图标。
+    pub weight: Option<String>,  // 正文字重：normal、medium、semibold 或 bold。
 }
 
 /// 主题自带的字体文件，由宿主注册到文档字体集。
@@ -100,6 +112,9 @@ pub struct ComponentManifest
     /// 主题声明的原生消息配色，非主题或未声明时为空。
     #[serde(default)]
     pub theme_notification: Option<ThemeNotification>,
+    /// 主题声明的启动覆盖层时长，非主题或未声明时为空。
+    #[serde(default)]
+    pub theme_boot: Option<ThemeBoot>,
     /// 主题自带的字体，非主题为空。
     #[serde(default)]
     pub theme_fonts: Vec<ThemeFont>,

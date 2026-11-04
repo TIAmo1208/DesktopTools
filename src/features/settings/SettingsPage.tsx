@@ -301,7 +301,7 @@ export const SettingsPage = () => {
                     aria-label={collapsed ? "展开导航" : "收起导航"}
                     aria-expanded={!collapsed}
                     onClick={() => setCollapsed(!collapsed)}
-                >
+                 data-button="secondary">
                     <span className="settings__icon" aria-hidden="true">
                         {"\uE700"}
                     </span>
@@ -316,7 +316,7 @@ export const SettingsPage = () => {
                             title={entry.label}
                             aria-label={entry.label}
                             onClick={() => handlePageChange(entry.id)}
-                        >
+                         data-button="row-hit">
                             <span
                                 className={`settings__icon${entry.id === "plugins" ? " settings__icon--svg" : ""}`}
                                 aria-hidden="true"
@@ -332,7 +332,7 @@ export const SettingsPage = () => {
             <main className="settings__content" aria-labelledby="settings-title" aria-busy={busy}>
                 {page === "appearance" && gridDetail ? (
                     <div className="settings__heading">
-                        <button className="settings__back" type="button" title="返回外观" aria-label="返回外观" onClick={() => setGridDetail(undefined)}>
+                        <button className="settings__back" type="button" title="返回外观" aria-label="返回外观" onClick={() => setGridDetail(undefined)} data-button="icon">
                             {"\uE72B"}
                         </button>
                         <h1 id="settings-title">{gridDetail === "desktopGrid" ? "桌面网格" : "围栏内网格"}</h1>
@@ -368,6 +368,16 @@ export const SettingsPage = () => {
                             <button
                                 type="button"
                                 className="settings__button settings__icon-button"
+                                title="复制配置目录"
+                                aria-label="复制配置目录"
+                                disabled={busy || !preferences}
+                                onClick={handleCopyConfigDirectory}
+                             data-button="icon">
+                                <span className="settings__directory-icon settings__directory-icon--copy" aria-hidden="true" />
+                            </button>
+                            <button
+                                type="button"
+                                className="settings__button settings__icon-button"
                                 title="选择配置目录"
                                 aria-label="选择配置目录"
                                 disabled={busy || !preferences}
@@ -379,18 +389,8 @@ export const SettingsPage = () => {
                                         setDirectoryDraft(selected);
                                     })
                                 }
-                            >
+                             data-button="icon">
                                 <span className="settings__directory-icon settings__directory-icon--folder" aria-hidden="true" />
-                            </button>
-                            <button
-                                type="button"
-                                className="settings__button settings__icon-button"
-                                title="复制配置目录"
-                                aria-label="复制配置目录"
-                                disabled={busy || !preferences}
-                                onClick={handleCopyConfigDirectory}
-                            >
-                                <span className="settings__directory-icon settings__directory-icon--copy" aria-hidden="true" />
                             </button>
                             <button
                                 type="button"
@@ -399,14 +399,14 @@ export const SettingsPage = () => {
                                 aria-label="恢复默认目录"
                                 disabled={busy || !preferences}
                                 onClick={() => setDirectoryDraft("%APPDATA%\\TIAmo\\DesktopTools")}
-                            >
+                             data-button="icon">
                                 <span className="settings__directory-icon settings__directory-icon--reset" aria-hidden="true" />
                             </button>
                             <button
                                 type="submit"
                                 className="settings__button"
                                 disabled={busy || !preferences || directoryDraft === undefined || !directoryDraft.trim()}
-                            >
+                             data-button="secondary">
                                 保存
                             </button>
                         </form>
@@ -461,7 +461,7 @@ export const SettingsPage = () => {
                                 ["fenceGrid", "围栏内网格"],
                             ] as const
                         ).map(([kind, label]) => (
-                            <button key={kind} className="settings__row settings__row--link" type="button" onClick={() => setGridDetail(kind)}>
+                            <button key={kind} className="settings__row settings__row--link" type="button" onClick={() => setGridDetail(kind)} data-button="row-hit">
                                 <span className="settings__row-title">{label}</span>
                                 <span className="settings__icon" aria-hidden="true">
                                     {"\uE76C"}
@@ -577,14 +577,14 @@ export const SettingsPage = () => {
                                 {"\uE8B7"}
                             </span>
                             <span className="settings__row-title">应用日志</span>
-                            <button type="button" className="settings__button" disabled={busy} onClick={() => void handleCommand(openLogs)}>
+                            <button type="button" className="settings__button" disabled={busy} onClick={() => void handleCommand(openLogs)} data-button="secondary">
                                 <span className="settings__icon" aria-hidden="true">
                                     {"\uE8DA"}
                                 </span>
                                 打开目录
                             </button>
                         </div>
-                        <button type="button" className="settings__button settings__refresh" disabled={busy} onClick={() => void handleRefresh()}>
+                        <button type="button" className="settings__button settings__refresh" disabled={busy} onClick={() => void handleRefresh()} data-button="secondary">
                             <span className="settings__icon" aria-hidden="true">
                                 {"\uE72C"}
                             </span>

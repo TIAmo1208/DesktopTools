@@ -100,35 +100,30 @@ h1 {
     letter-spacing: 0.12em;
 }
 
-/* 悬停时给按钮文字叠一层冷光，不改尺寸也不触发重排。 */
-button:hover {
+/* 悬停时给按钮文字叠一层冷光，不改尺寸也不触发重排；整行命中层不参与。 */
+button:not([data-button="row-hit"]):hover {
     text-shadow: 0 0 6px rgb(0 240 255 / 45%);
 }
 
 /* 浅色下冷光收敛，避免白底发糊。 */
-:root[data-theme="light"] button:hover {
+:root[data-theme="light"] button:not([data-button="row-hit"]):hover {
     text-shadow: 0 0 5px rgb(0 120 160 / 35%);
 }
 
 /* 关闭悬停冷光。 */
-:root[data-nightcity-glow="off"] button:hover {
+:root[data-nightcity-glow="off"] button:not([data-button="row-hit"]):hover {
     text-shadow: none;
 }
 
 /* ---------- 45° 切角 ---------- */
 
-/* 用 corner-shape 削角：只改绘制形状，不裁文字也不产生点击死区；不支持时退化成圆角。 */
-button {
+/* 用 corner-shape 削角：只改绘制形状，不裁文字也不产生点击死区；整行命中层是结构件，不参与。 */
+button:not([data-button="row-hit"]) {
     corner-shape: bevel;
 }
 
-/* 开关本体是胶囊形，不参与削角。 */
-button[role="switch"] {
-    corner-shape: round;
-}
-
 /* 关闭切角时回到应用原有圆角。 */
-:root[data-nightcity-bevel="off"] button {
+:root[data-nightcity-bevel="off"] button:not([data-button="row-hit"]) {
     corner-shape: round;
 }
 
@@ -180,7 +175,7 @@ html[data-desktop-host="true"][data-desktop-theme="light"] {
 
 /* ---------- 启动覆盖层 ---------- */
 
-/* 夜之城的开机转场：深底取代默认底色。宿主在建帧前就挂上本表，所以第一帧就是这套。 */
+/* 夜之城的开机转场：深底取代默认底色。时长由 theme.json 的 boot.durationMs 决定。 */
 #boot-splash {
     background: #05070d;
 }
@@ -190,10 +185,47 @@ html[data-desktop-host="true"][data-desktop-theme="light"] {
     background:
         repeating-linear-gradient(0deg, rgb(0 0 0 / 28%) 0 1px, transparent 1px 3px),
         linear-gradient(180deg, transparent, rgb(0 240 255 / 18%), transparent);
+    animation-duration: 1500ms; /* 亮带扫得慢一点，配合更长的开机时长。 */
 }
 
 /* 品牌字换成 NC 黄。 */
 #boot-splash .boot-splash__mark {
     color: #fce300;
     letter-spacing: 0.42em;
+}
+
+/* ---------- 控件 ---------- */
+
+/* 输入框、下拉与多行输入：只收紧圆角与光标色，底色沿用主题令牌，避免盖掉组件自己的表面。 */
+input,
+select,
+textarea {
+    border-radius: 2px;
+    caret-color: var(--color-focus);
+    font-family: var(--interface-font);
+}
+
+/* 聚焦时换成强调色描边加一层冷光；不改内边距与尺寸，避免布局跳动。 */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+    outline: none;
+    border-color: var(--color-focus);
+    box-shadow: 0 0 0 1px var(--color-focus), 0 0 10px color-mix(in srgb, var(--color-focus) 35%, transparent);
+}
+
+/* 勾选类控件跟随强调色。 */
+input[type="checkbox"],
+input[type="radio"] {
+    accent-color: var(--color-focus);
+}
+
+/* 按钮状态：颜色过渡加按下时的亮度反馈，切角由 corner-shape 负责；整行命中层不参与。 */
+button:not([data-button="row-hit"]) {
+    transition: background-color var(--interface-transition-duration, 0ms) ease-out, border-color var(--interface-transition-duration, 0ms) ease-out, color var(--interface-transition-duration, 0ms) ease-out;
+}
+
+/* 按下只压亮度：transform 会让按钮成为绝对定位后代的包含块，命中面会随之错位。 */
+button:not([data-button="row-hit"]):active:not(:disabled) {
+    filter: brightness(0.94);
 }

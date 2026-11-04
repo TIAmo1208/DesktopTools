@@ -673,7 +673,7 @@ export const WeatherSettings = ({
                                                 event.stopPropagation(); // 展开按键只负责展开收起，不触发进入编辑。
                                                 void handleExpand(item.source);
                                             }}
-                                        >
+                                         data-button="icon">
                                             <Glyph source={chevronRightIcon} />
                                         </button>
                                     );
@@ -745,7 +745,7 @@ export const WeatherSettings = ({
                             title="关闭"
                             disabled={busy === "save"}
                             onClick={() => closeForm()}
-                        >
+                         data-button="icon">
                             <Glyph source={closeIcon} />
                         </button>
                     </header>
@@ -774,7 +774,7 @@ export const WeatherSettings = ({
                                                 setStatus("");
                                                 setFailure(false);
                                             }}
-                                        >
+                                         data-button="primary">
                                             {WEATHER_SOURCES[item].name}
                                         </button>
                                     ))}
@@ -812,7 +812,7 @@ export const WeatherSettings = ({
                                                 title={visible ? "隐藏私钥草稿" : "显示私钥草稿"}
                                                 aria-pressed={visible}
                                                 onClick={() => setVisible(!visible)}
-                                            >
+                                             data-button="icon">
                                                 {visible ? <Glyph source={eyeOffIcon} /> : <Glyph source={eyeIcon} />}
                                             </button>
                                         </div>
@@ -868,7 +868,7 @@ export const WeatherSettings = ({
                                                 title={visible ? "隐藏草稿" : "显示草稿"}
                                                 aria-pressed={visible}
                                                 onClick={() => setVisible(!visible)}
-                                            >
+                                             data-button="icon">
                                                 {visible ? <Glyph source={eyeOffIcon} /> : <Glyph source={eyeIcon} />}
                                             </button>
                                         </div>
@@ -906,7 +906,7 @@ export const WeatherSettings = ({
                         <span className={`weather-settings__dialog-status${failure ? " weather-settings__error" : ""}`} role="status">
                             {status}
                         </span>
-                        <button type="button" className="weather-settings__primary" disabled={!formReady || !!busy} onClick={() => void handleSave()}>
+                        <button type="button" className="weather-settings__primary" disabled={!formReady || !!busy} onClick={() => void handleSave()} data-button="primary">
                             {busy === "save" ? "正在保存" : "保存"}
                         </button>
                         <button type="button" disabled={busy === "save"} onClick={() => closeForm()}>
@@ -967,7 +967,7 @@ export const WeatherSettings = ({
                                 >
                                     取消关闭
                                 </button>
-                                <button type="button" className="weather-settings__primary" disabled={!formReady || !!busy} onClick={handleSave}>
+                                <button type="button" className="weather-settings__primary" disabled={!formReady || !!busy} onClick={handleSave} data-button="primary">
                                     保存
                                 </button>
                                 <button
@@ -997,7 +997,7 @@ export const WeatherSettings = ({
                                         if (removal.kind === "source") void handleRemove();
                                         else void handleRemoveCity(removal.source, removal.city);
                                     }}
-                                >
+                                 data-button="primary">
                                     {busy === "remove" ? "正在删除" : "删除"}
                                 </button>
                             </>

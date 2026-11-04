@@ -447,7 +447,7 @@ export const PluginSettingsPage = ({
             <>
                 <section className="plugin-settings plugin-settings--detail">
                     <div className="plugin-settings__detail-head">
-                        <button className="plugin-settings__back" type="button" aria-label="返回插件" onClick={() => setSelectedId(undefined)}>
+                        <button className="plugin-settings__back" type="button" aria-label="返回插件" onClick={() => setSelectedId(undefined)} data-button="icon">
                             <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: backIcon }} />
                         </button>
                         <div className="plugin-settings__identity">
@@ -460,7 +460,7 @@ export const PluginSettingsPage = ({
                                 title="卸载"
                                 aria-label="卸载"
                                 onClick={(event) => handleUninstallRequest(selected, event.currentTarget)}
-                            >
+                             data-button="icon">
                                 <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: removeIcon }} />
                             </button>
                             <button
@@ -476,7 +476,7 @@ export const PluginSettingsPage = ({
                                 }
                                 aria-label="添加到桌面"
                                 onClick={() => handleCreate(selected.id)}
-                            >
+                             data-button="icon">
                                 <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: addIcon }} />
                             </button>
                             <SettingsSwitch
@@ -496,7 +496,7 @@ export const PluginSettingsPage = ({
                                 title="打开仓库"
                                 aria-label="打开仓库"
                                 onClick={() => handleOpenRepository(selected.id)}
-                            >
+                             data-button="secondary">
                                 <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: repoIcon }} />
                             </button>
                         ) : null}
@@ -554,7 +554,7 @@ export const PluginSettingsPage = ({
         <>
             <section className="plugin-settings">
                 <div className="plugin-settings__add">
-                    <button className="plugin-settings__add-main" type="button" disabled={disabled} onClick={() => setAddOpen(true)}>
+                    <button className="plugin-settings__add-main" type="button" disabled={disabled} onClick={() => setAddOpen(true)} data-button="ghost">
                         ＋ 添加插件
                     </button>
                     <button
@@ -563,7 +563,7 @@ export const PluginSettingsPage = ({
                         aria-label="任务进度"
                         aria-expanded={taskMenu}
                         onClick={() => setTaskMenu((open) => !open)}
-                    >
+                     data-button="ghost">
                         <span className="plugin-settings__add-chevron" aria-hidden="true" dangerouslySetInnerHTML={{ __html: chevronIcon }} />
                     </button>
                     <PluginTaskMenu
@@ -606,7 +606,7 @@ export const PluginSettingsPage = ({
                             aria-label="复制插件目录"
                             disabled={disabled || !preferences}
                             onClick={handleCopyDirectory}
-                        >
+                         data-button="icon">
                             <span className="settings__directory-icon settings__directory-icon--copy" aria-hidden="true" />
                         </button>
                         <button
@@ -616,7 +616,7 @@ export const PluginSettingsPage = ({
                             aria-label="选择插件目录"
                             disabled={disabled || !preferences}
                             onClick={handleChooseDirectory}
-                        >
+                         data-button="icon">
                             <span className="settings__directory-icon settings__directory-icon--folder" aria-hidden="true" />
                         </button>
                         <button
@@ -626,14 +626,14 @@ export const PluginSettingsPage = ({
                             aria-label="恢复默认目录"
                             disabled={disabled || !preferences}
                             onClick={() => setDirectoryDraft("")}
-                        >
+                         data-button="icon">
                             <span className="settings__directory-icon settings__directory-icon--reset" aria-hidden="true" />
                         </button>
                         <button
                             className="settings__button"
                             type="submit"
                             disabled={disabled || !preferences || !pluginDirectoryDirty(directoryDraft, preferences?.pluginDirectory)}
-                        >
+                         data-button="secondary">
                             保存
                         </button>
                     </form>
@@ -656,34 +656,27 @@ export const PluginSettingsPage = ({
                                             setMenu({ pluginId: plugin.id, left: event.clientX, top: event.clientY, anchor: event.currentTarget });
                                         }}
                                     >
-                                        <button
-                                            className="plugin-settings__open"
-                                            type="button"
-                                            aria-label={`${plugin.name}设置`}
-                                            onClick={() => setSelectedId(plugin.id)}
-                                        >
-                                            <span className="plugin-settings__copy">
-                                                {plugin.name}
-                                                <small>
-                                                    {entrySummary(
-                                                        plugin.id,
-                                                        pluginDisabled,
-                                                        (plugin.role === "theme" && !plugin.script) ||
-                                                            loadedIds.has(plugin.id) ||
-                                                            pluginScriptLoaded(plugin.id) ||
-                                                            reloaded[plugin.id] === "ok",
+                                        <span className="plugin-settings__copy">
+                                            {plugin.name}
+                                            <small>
+                                                {entrySummary(
+                                                    plugin.id,
+                                                    pluginDisabled,
+                                                    (plugin.role === "theme" && !plugin.script) ||
+                                                        loadedIds.has(plugin.id) ||
+                                                        pluginScriptLoaded(plugin.id) ||
                                                         reloaded[plugin.id] === "ok",
-                                                    )}
-                                                </small>
-                                            </span>
-                                        </button>
+                                                    reloaded[plugin.id] === "ok",
+                                                )}
+                                            </small>
+                                        </span>
                                         <button
                                             className="plugin-settings__uninstall"
                                             type="button"
                                             aria-label={`卸载${plugin.name}`}
                                             title="卸载"
                                             onClick={(event) => handleUninstallRequest(plugin, event.currentTarget)}
-                                        >
+                                         data-button="icon">
                                             <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: trashIcon }} />
                                         </button>
                                         <SettingsSwitch
@@ -693,6 +686,13 @@ export const PluginSettingsPage = ({
                                             onChange={(checked) => handleEnabled(plugin.id, checked)}
                                         />
                                         <span className="plugin-settings__chevron" aria-hidden="true" dangerouslySetInnerHTML={{ __html: chevronIcon }} />
+                                        <button
+                                            className="plugin-settings__hit"
+                                            type="button"
+                                            data-button="row-hit"
+                                            aria-label={`${plugin.name}设置`}
+                                            onClick={() => setSelectedId(plugin.id)}
+                                        />
                                     </div>
                                 );
                             })
@@ -712,7 +712,7 @@ export const PluginSettingsPage = ({
                                         className="plugin-settings__remove"
                                         type="button"
                                         onClick={(event) => handleRemoveRequest(instance, event.currentTarget)}
-                                    >
+                                     data-button="primary">
                                         移除
                                     </button>
                                 </div>
@@ -907,11 +907,11 @@ const PluginConfirmDialog = ({
                     取消
                 </button>
                 {uninstall && (
-                    <button type="button" className="plugin-settings__confirm" disabled={pending} onClick={onPurge}>
+                    <button type="button" className="plugin-settings__confirm" disabled={pending} onClick={onPurge} data-button="primary">
                         卸载并清理配置
                     </button>
                 )}
-                <button ref={confirmRef} type="button" className="plugin-settings__confirm" disabled={pending} onClick={onConfirm}>
+                <button ref={confirmRef} type="button" className="plugin-settings__confirm" disabled={pending} onClick={onConfirm} data-button="primary">
                     {install ? installConfirmLabel(Boolean(install.conflict?.downgrade)) : uninstall ? "卸载" : "移除"}
                 </button>
             </footer>
@@ -934,7 +934,7 @@ const PluginEntry = ({
     onToggle: () => void;
 }) => (
     <div className={`plugin-settings__entry${locked ? " plugin-settings__entry--locked" : ""}`}>
-        <button className="plugin-settings__entry-head" type="button" aria-expanded={open && !locked} disabled={locked} onClick={onToggle}>
+        <button className="plugin-settings__entry-head" type="button" aria-expanded={open && !locked} disabled={locked} onClick={onToggle} data-button="row-hit">
             {entry.name}
             <span
                 className={`plugin-settings__chevron${open && !locked ? " plugin-settings__chevron--open" : ""}`}
@@ -1052,7 +1052,7 @@ const PluginAbout = ({ text }: { text: string }) => {
                 {text}
             </span>
             {overflow || open ? (
-                <button className="plugin-settings__about-toggle" type="button" onClick={() => setOpen((current) => !current)}>
+                <button className="plugin-settings__about-toggle" type="button" onClick={() => setOpen((current) => !current)} data-button="ghost">
                     {open ? "收起" : "展开"}
                 </button>
             ) : null}

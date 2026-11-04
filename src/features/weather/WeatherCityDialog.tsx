@@ -116,7 +116,7 @@ export const WeatherCityDialog = ({
         <>
             <header className="weather-city__head">
                 <h2>{title}</h2>
-                <button type="button" className="weather-city__close" aria-label="关闭" title="关闭" onClick={onClose}>
+                <button type="button" className="weather-city__close" aria-label="关闭" title="关闭" onClick={onClose} data-button="icon">
                     <Glyph source={closeIcon} />
                 </button>
             </header>
@@ -136,7 +136,7 @@ export const WeatherCityDialog = ({
                         disabled={busy}
                         onChange={(event) => dispatch({ type: "query", value: event.currentTarget.value })}
                     />
-                    <button type="submit" className="weather-city__icon" title="搜索城市" aria-label="搜索城市" disabled={!session.query.trim() || busy}>
+                    <button type="submit" className="weather-city__icon" title="搜索城市" aria-label="搜索城市" disabled={!session.query.trim() || busy} data-button="icon">
                         <Glyph source={searchIcon} />
                     </button>
                 </form>
@@ -150,7 +150,7 @@ export const WeatherCityDialog = ({
                                     className={result.id === latest?.id ? "is-selected" : undefined}
                                     disabled={busy}
                                     onClick={() => handleSelect(result)}
-                                >
+                                 data-button="row-hit">
                                     <span>{result.name}</span>
                                     <small>{[result.adm2, result.adm1, result.country].filter(Boolean).join("，")}</small>
                                 </button>
@@ -181,7 +181,7 @@ export const WeatherCityDialog = ({
                 <button type="button" disabled={!latest || busy} onClick={() => latest && void onValidate(latest)}>
                     {verified ? "重新验证" : "验证配置"}
                 </button>
-                <button type="button" className="weather-city__primary" disabled={!latest || busy} onClick={() => latest && void onConfirm(latest)}>
+                <button type="button" className="weather-city__primary" disabled={!latest || busy} onClick={() => latest && void onConfirm(latest)} data-button="primary">
                     {type === "add" ? "添加" : "确认"}
                 </button>
                 <button type="button" disabled={busy} onClick={onClose}>

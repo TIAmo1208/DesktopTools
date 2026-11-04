@@ -61,6 +61,7 @@ struct Appearance
     font_size: u8,  // 已保存的字号。
     radius: f32,    // 已保存的圆角。
     palette: Option<ThemeNotification>, // 主题声明的消息配色，缺省沿用内置两套。
+    weight: i32,                        // 正文字重，来自主题声明，缺省常规。
 }
 impl Appearance
 {
@@ -86,14 +87,43 @@ impl Appearance
             font_size: preferences.font_size,
             radius: preferences.corner_radius as f32,
             palette: None,
+            weight: 400,
         }
     }
 
     /// 合入当前主题声明的消息配色；None 表示沿用内置两套。
     fn with_palette(mut self, palette: Option<ThemeNotification>) -> Self
     {
+        if let Some(palette) = &palette
+        {
+            self.weight = theme_font_weight(palette.weight.as_deref()); // 字重和配色一起走主题数据。
+        }
         self.palette = palette;
         self
+    }
+
+    /// 状态图标颜色：主题声明了对应状态色时覆盖，未声明时沿用内置语义色。
+    fn status_color(&self, kind: &str, muted: u32) -> u32
+    {
+        let (success, error) = if self.dark { (0x34D399, 0xFDA29B) } else { (0x059669, 0xB42318) }; // 与 global.css 同源状态色。
+        let Some(theme) = &self.palette
+        else
+        {
+            return match kind
+            {
+                "success" => success,
+                "error" => error,
+                _ => muted,
+            };
+        };
+        let pick = |value: &Option<String>, fallback: u32| value.as_deref().and_then(parse_theme_rgb).unwrap_or(fallback);
+        match kind
+        {
+            "success" => pick(&theme.success, success),
+            "error" => pick(&theme.error, error),
+            "warning" => pick(&theme.warning, muted), // 未声明警告色时保持现状，不凭空换色。
+            _ => muted,
+        }
     }
 
     /// 内置两套色值，主题声明了消息配色时逐项覆盖；未声明的字段仍用当前深浅模式的值。
@@ -114,6 +144,18 @@ impl Appearance
         };
         let pick = |value: &Option<String>, fallback: u32| value.as_deref().and_then(parse_theme_rgb).unwrap_or(fallback);
         (pick(&theme.surface, surface), pick(&theme.border, border), pick(&theme.text, text), pick(&theme.muted, muted), pick(&theme.subtle, subtle))
+    }
+}
+
+/// 主题声明的字重转成 DirectWrite 数值；未声明或非法值按常规。
+fn theme_font_weight(weight: Option<&str>) -> i32
+{
+    match weight
+    {
+        Some("medium") => 500,
+        Some("semibold") => 600,
+        Some("bold") => 700,
+        _ => 400,
     }
 }
 

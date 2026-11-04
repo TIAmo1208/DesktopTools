@@ -18,6 +18,9 @@ mod workspace;
 mod workspace_menu;
 pub use music::{execute_music_action, get_current_music_session};
 
+/// 程序启动事件是否已外发：首批宿主就绪只发一次。
+static STARTED_EVENT_SENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// 新增格子共用的默认展开尺寸。
 const DEFAULT_TILE_WIDTH: f64 = 360.0;
 
@@ -650,7 +653,14 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         "publish_message_notification" =>
         {
             let message: crate::notifications::ToastRequest = command_argument(&arguments, "message", "消息参数无效").map_err(serialize_error)?;
-            app.state::<std::sync::Arc<crate::notifications::ToastManager>>().inner().publish(app, message).map_err(serialize_error).and_then(serialize_result)
+            let kind = message.r#type.clone(); // 事件里只放类型与来源，不把正文外发给插件。
+            let source = message.source.clone();
+            let published = app.state::<std::sync::Arc<crate::notifications::ToastManager>>().inner().publish(app, message).map_err(serialize_error);
+            if published.is_ok()
+            {
+                crate::contracts::emit_plugin_event(&app, "toast-shown", serde_json::json!({ "kind": kind, "source": source }));
+            }
+            published.and_then(serialize_result)
         }
         "open_folder_portal_path" =>
         {
@@ -813,7 +823,12 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         "publish_desktop_host_readiness" =>
         {
             let report: FrontendHostReadiness = command_argument(&arguments, "report", "宿主参数无效").map_err(serialize_error)?; // 已校验参数。
-            desktop_host::execute_publish_desktop_host_readiness(app, runtime, report).map_err(serialize_error).and_then(serialize_result)
+            let ready = desktop_host::execute_publish_desktop_host_readiness(app, runtime, report).map_err(serialize_error);
+            if ready.is_ok() && !STARTED_EVENT_SENT.swap(true, std::sync::atomic::Ordering::AcqRel)
+            {
+                crate::contracts::emit_plugin_event(&app, "app-started", serde_json::json!({})); // 首批宿主就绪即视为程序进入可用状态，只发一次。
+            }
+            ready.and_then(serialize_result)
         }
         "update_desktop_host_hit_map" =>
         {

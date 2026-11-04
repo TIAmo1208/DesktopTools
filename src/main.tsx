@@ -36,18 +36,29 @@ const mountFirstFrameTheme = () => {
     document.head.append(link);
 };
 
+/** 启动覆盖层的内置时长：主题没有声明 boot.durationMs 时用它。 */
+const DEFAULT_BOOT_MS = 900;
+/** 主题能声明的时长上限，与宿主校验保持同一个数。 */
+const MAX_BOOT_MS = 10_000;
+
 /**
  * 启动覆盖层：只在桌面宿主首屏、主显示器、本进程启动后两秒内且未要求减少动效时播放。
  * 多显示器各建一个窗口，只有 monitor=0 播；显示器拓扑变化重开窗口时 boot 已过期，不再播。
+ * 时长由宿主按主题的 boot.durationMs 拼进地址，主题写 0 表示不播。
  */
 const playBootSplash = () => {
     if (!isDesktopHost || query.get("monitor") !== "0") return;
     const boot = Number(query.get("boot") ?? "");
     if (!Number.isFinite(boot) || boot <= 0 || Date.now() - boot > 2000) return;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const declared = query.get("theme-boot-ms");
+    const parsed = declared === null ? Number.NaN : Number(declared);
+    const duration = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 0), MAX_BOOT_MS) : DEFAULT_BOOT_MS;
+    if (duration <= 0) return; // 主题显式关掉了启动覆盖层。
     const splash = document.createElement("div");
     splash.id = "boot-splash";
     splash.setAttribute("aria-hidden", "true");
+    splash.style.setProperty("--boot-splash-duration", `${duration}ms`); // CSSOM 赋值不受内联样式策略限制。
     const mark = document.createElement("span");
     mark.className = "boot-splash__mark";
     mark.textContent = "DESKTOP TOOLS";
@@ -57,7 +68,7 @@ const playBootSplash = () => {
     splash.addEventListener("animationend", (event) => {
         if (event.animationName === "boot-splash-fade") done();
     });
-    window.setTimeout(done, 1600); // 动画被系统关掉时的兜底，避免覆盖层留在屏上。
+    window.setTimeout(done, duration + 200); // 动画被系统关掉时的兜底，避免覆盖层留在屏上。
 };
 
 mountFirstFrameTheme();

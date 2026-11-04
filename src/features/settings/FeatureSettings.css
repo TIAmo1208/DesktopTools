@@ -191,28 +191,34 @@
     position: relative;
 }
 
-/* 导航按钮的透明命中面覆盖名称、留白和箭头。 */
-.feature-settings__open {
+/* 名称列占满剩余宽度，把开关和箭头推到右侧。 */
+.feature-settings__copy {
+    flex: 1;
+    min-width: 0;
+}
+
+/* 整行命中层：按钮自身的盒子铺满整行，不再靠伪元素拉伸。 */
+.feature-settings__row--link > .feature-settings__hit {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    margin: 0;
     padding: 0;
     border: 0;
-    color: inherit;
     background: transparent;
-    font: inherit;
-    text-align: left;
+    border-radius: var(--surface-radius);
     cursor: pointer;
 }
 
-/* 原生按钮负责鼠标及键盘导航，不嵌套开关控件。 */
-.feature-settings__open::after {
-    position: absolute;
-    inset: 0;
-    border-radius: var(--surface-radius);
-    content: "";
+/* 名称、开关与箭头统一压在命中层之上，点开关不会进二级页。 */
+.feature-settings__row--link > :not(.feature-settings__hit) {
+    position: relative;
+    z-index: 1;
 }
 
-/* 开关位于导航命中面之上，点击不会触发进入二级菜单。 */
-.feature-settings__row--link > .settings-switch {
-    z-index: 1;
+/* 名称与箭头只做展示，点击必须穿透到下层命中层，否则文字接住点击、看起来点了没反应；开关保持自身可点。 */
+.feature-settings__row--link > :is(.feature-settings__copy, .feature-settings__chevron) {
+    pointer-events: none;
 }
 
 /* 菜单箭头沿用系统图标和固定轨道。 */
@@ -222,13 +228,13 @@
     font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
 }
 
-/* 整行导航悬停与键盘焦点反馈。 */
-.feature-settings__row--link:has(.feature-settings__open:hover) {
+/* 整行导航悬停背景：指针落在命中层或穿透后的名称上同样高亮。 */
+.feature-settings__row--link:has(.feature-settings__hit:hover) {
     background: var(--color-subtle);
 }
 
 /* 导航焦点沿整行边框显示。 */
-.feature-settings__open:focus-visible::after {
+.feature-settings__row--link:has(.feature-settings__hit:focus-visible) {
     outline: 2px solid var(--color-focus);
     outline-offset: 2px;
 }

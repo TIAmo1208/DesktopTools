@@ -9,7 +9,8 @@
     place-items: center;
     background: var(--color-background);
     pointer-events: none;
-    animation: boot-splash-fade 900ms ease-out 260ms forwards;
+    /* 总时长由宿主按主题的 boot.durationMs 写进 --boot-splash-duration，淡出排在最后 420ms。 */
+    animation: boot-splash-fade 420ms ease-out calc(var(--boot-splash-duration, 900ms) - 420ms) forwards;
 }
 
 /* 一条亮带自上而下扫过，示意屏幕通电。 */

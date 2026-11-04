@@ -58,7 +58,7 @@ export const SettingsCityList = ({
                             event.stopPropagation(); // 删除按键单独接收点击，不触发城市项自身动作。
                             onDelete(city);
                         }}
-                    >
+                     data-button="icon">
                         <Glyph source={trashIcon} />
                     </button>
                 )}
@@ -66,7 +66,7 @@ export const SettingsCityList = ({
         ))}
         {cities.length === 0 && <p className="settings-city__empty">尚未添加城市或地区</p>}
         {onAdd && (
-            <button type="button" className="settings-city__add" disabled={busy} onClick={onAdd}>
+            <button type="button" className="settings-city__add" disabled={busy} onClick={onAdd} data-button="ghost">
                 添加城市或地区
             </button>
         )}

@@ -236,7 +236,7 @@ export const FenceTile = ({
                                     }),
                                 );
                             }}
-                        >
+                         data-button="icon">
                             <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: fenceSortIcon }} />
                         </button>
                         <button

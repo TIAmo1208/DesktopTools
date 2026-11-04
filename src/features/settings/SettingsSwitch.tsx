@@ -20,6 +20,7 @@ export const SettingsSwitch = ({
             id={id}
             type="checkbox"
             role="switch"
+            data-button="switch"
             aria-label={label}
             checked={checked}
             disabled={disabled}

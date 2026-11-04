@@ -147,7 +147,7 @@ export const FeatureSettings = ({
                 title="返回功能格子"
                 aria-label="返回功能格子"
                 onClick={() => (detail === "weather" ? leaveGuard.current?.(() => setDetail(undefined)) : setDetail(undefined))}
-            >
+             data-button="icon">
                 <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: backIcon }} />
             </button>
             <div className="feature-settings__identity">
@@ -163,7 +163,7 @@ export const FeatureSettings = ({
                         title="添加天气来源"
                         aria-label="添加天气来源"
                         onClick={() => setWeatherAddKey((value) => value + 1)}
-                    >
+                     data-button="icon">
                         <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: addTileIcon }} />
                     </button>
                 ) : canAdd && feature ? (
@@ -174,7 +174,7 @@ export const FeatureSettings = ({
                         title="添加格子到桌面"
                         aria-label="添加格子到桌面"
                         onClick={() => void onCreateTile(feature.componentId)}
-                    >
+                     data-button="icon">
                         <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: addTileIcon }} />
                     </button>
                 ) : null}
@@ -200,15 +200,7 @@ export const FeatureSettings = ({
                     <div className="feature-settings__list">
                     {features.map((entry) => (
                         <div className="feature-settings__row feature-settings__row--link" key={entry.id}>
-                            <button
-                                className="feature-settings__open"
-                                type="button"
-                                title={`${entry.label}设置`}
-                                aria-label={`${entry.label}设置`}
-                                onClick={() => setDetail(entry.id as "clock" | "music" | "collect" | "folder" | "weather" | "debug")}
-                            >
-                                {entry.label}
-                            </button>
+                            <span className="feature-settings__copy">{entry.label}</span>
                             <SettingsSwitch
                                 label={entry.label}
                                 disabled={unavailable}
@@ -223,6 +215,14 @@ export const FeatureSettings = ({
                             <span className="feature-settings__chevron" aria-hidden="true">
                                 {"\uE76C"}
                             </span>
+                            <button
+                                className="feature-settings__hit"
+                                type="button"
+                                data-button="row-hit"
+                                title={`${entry.label}设置`}
+                                aria-label={`${entry.label}设置`}
+                                onClick={() => setDetail(entry.id as "clock" | "music" | "collect" | "folder" | "weather" | "debug")}
+                            />
                         </div>
                     ))}
                     </div>
@@ -368,7 +368,7 @@ export const FeatureSettings = ({
                             添加收集箱
                             <small>在桌面创建新的收集箱格子。</small>
                         </span>
-                        <button className="feature-settings__action" type="button" disabled={unavailable} onClick={() => void onCreateCollectBox()}>
+                        <button className="feature-settings__action" type="button" disabled={unavailable} onClick={() => void onCreateCollectBox()} data-button="ghost">
                             添加
                         </button>
                     </div>
@@ -394,7 +394,7 @@ export const FeatureSettings = ({
                                         });
                                 })
                             }
-                        >
+                         data-button="ghost">
                             新建
                         </button>
                     </div>
