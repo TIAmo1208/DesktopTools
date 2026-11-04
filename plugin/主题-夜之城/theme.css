@@ -177,3 +177,23 @@ html[data-desktop-host="true"][data-desktop-theme="light"] {
         display: none;
     }
 }
+
+/* ---------- 启动覆盖层 ---------- */
+
+/* 夜之城的开机转场：深底取代默认底色。宿主在建帧前就挂上本表，所以第一帧就是这套。 */
+#boot-splash {
+    background: #05070d;
+}
+
+/* 扫描线加一道青色亮带，替换内置的白色亮带。 */
+#boot-splash::after {
+    background:
+        repeating-linear-gradient(0deg, rgb(0 0 0 / 28%) 0 1px, transparent 1px 3px),
+        linear-gradient(180deg, transparent, rgb(0 240 255 / 18%), transparent);
+}
+
+/* 品牌字换成 NC 黄。 */
+#boot-splash .boot-splash__mark {
+    color: #fce300;
+    letter-spacing: 0.42em;
+}

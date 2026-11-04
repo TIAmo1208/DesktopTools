@@ -5,5 +5,12 @@
         "cornerRadius": 2,
         "fontFamily": "Microsoft YaHei UI",
         "fontSize": 13
+    },
+    "notification": {
+        "surface": "#0d1322",
+        "border": "#1f2c47",
+        "text": "#e8f1ff",
+        "muted": "#8fa3c8",
+        "subtle": "#121a2c"
     }
 }

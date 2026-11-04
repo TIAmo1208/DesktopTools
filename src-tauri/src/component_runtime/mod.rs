@@ -8,7 +8,7 @@ use chrono::Utc;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRole, ComponentRuntimeError, ComponentRuntimeSnapshot, ThemeAppearance, ThemeFont, WorkspaceRect};
+use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRole, ComponentRuntimeError, ComponentRuntimeSnapshot, ThemeAppearance, ThemeFont, ThemeNotification, WorkspaceRect};
 
 /// 官方插件前端注册表当前支持的入口。
 const LOCAL_CLOCK_ENTRY: &str = "official:local-clock";
@@ -414,16 +414,16 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     }; // 未声明角色继续按格子处理。
     let entry = required_ini(&values, "entry")?;
     confirm_plugin_entry(folder, &entry)?;
-    let (stylesheet, theme_appearance, theme_fonts) = if role == ComponentRole::Theme
+    let (stylesheet, theme_appearance, theme_fonts, theme_notification) = if role == ComponentRole::Theme
     {
         let stylesheet = required_ini(&values, "stylesheet")?; // 主题资产必须存在并通过相同路径规则。
         confirm_plugin_asset(folder, &stylesheet, "css", false)?;
-        let (appearance, fonts) = read_theme_data(folder, folder_name)?;
-        (format!("{folder_name}/{stylesheet}"), Some(appearance), fonts)
+        let (appearance, fonts, notification) = read_theme_data(folder, folder_name)?;
+        (format!("{folder_name}/{stylesheet}"), Some(appearance), fonts, notification)
     }
     else
     {
-        (String::new(), None, Vec::new())
+        (String::new(), None, Vec::new(), None)
     };
     let app_version = parse_plugin_version(env!("CARGO_PKG_VERSION")).ok_or_else(|| "程序版本无效".to_string())?; // 与 package_info 使用同一份 Cargo 版本。
     if let Some(minimum) = optional_version(&values, "minAppVersion")?
@@ -453,7 +453,7 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     // 主题默认没有格子；带入口脚本时按清单声明放行，供主题自带的格子使用（同一插件里既能换肤又能添格子）。
     let creatable = creatable && (role == ComponentRole::Tile || !script.is_empty());
     let max_tiles = if role == ComponentRole::Theme && !creatable { 0 } else { max_tiles }; // 不能创建的主题忽略格子上限。
-    let manifest = ComponentManifest { id, name, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, theme_appearance, theme_fonts, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
+    let manifest = ComponentManifest { id, name, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, theme_appearance, theme_notification, theme_fonts, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
     validate_manifest(&manifest).map_err(|error| error.message)?;
     Ok(manifest)
 }
@@ -650,7 +650,7 @@ struct ThemeFontDocument
 }
 
 /// 有界读取主题外观与自带字体，所有覆盖值必须满足现有偏好校验。
-fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(ThemeAppearance, Vec<ThemeFont>), String>
+fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(ThemeAppearance, Vec<ThemeFont>, Option<ThemeNotification>), String>
 {
     use std::io::Read;
     /// 主题数据承载外观覆盖与自带字体，不接受未知顶层字段。
@@ -659,6 +659,8 @@ fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(Theme
     struct ThemeDocument
     {
         appearance: ThemeAppearance, // 外观对象必填，内部各项可以缺省。
+        #[serde(default)]
+        notification: Option<ThemeNotification>, // 原生消息配色，缺省沿用内置调色板。
         #[serde(default)]
         fonts: Vec<ThemeFontDocument>, // 字体声明，缺省没有自带字体。
     }
@@ -674,7 +676,7 @@ fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(Theme
     let fonts = read_theme_fonts(folder, folder_name, document.fonts)?; // 字体文件缺失或越界同样拒绝注册。
     for color in [&appearance.accent_color, &appearance.desktop_accent_color].into_iter().flatten()
     {
-        if color.len() != 7 || !color.starts_with('#') || !color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+        if !is_theme_color(color)
         {
             return Err("主题强调色无效".to_string());
         }
@@ -691,8 +693,22 @@ fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(Theme
     {
         return Err("主题字体必须是系统字体或本主题声明的字体".to_string());
     }
-    Ok((appearance, fonts))
+    let notification = document.notification; // 缺省整套落回内置调色板。
+    if let Some(colors) = &notification
+    {
+        for (name, color) in [("表面", &colors.surface), ("边框", &colors.border), ("正文", &colors.text), ("次要正文", &colors.muted), ("后层", &colors.subtle)]
+        {
+            if let Some(color) = color.as_deref().filter(|value| !is_theme_color(value))
+            {
+                return Err(format!("主题消息{name}颜色无效：{color}"));
+            }
+        }
+    }
+    Ok((appearance, fonts, notification))
 }
+
+/// 主题配色只接受 `#` 加六位十六进制。
+fn is_theme_color(value: &str) -> bool { value.len() == 7 && value.starts_with('#') && value.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit) }
 
 /// 校验字体声明并转成插件根相对路径。文件必须存在，数量、体积和扩展名都有上限。
 fn read_theme_fonts(folder: &std::path::Path, folder_name: &str, declarations: Vec<ThemeFontDocument>) -> Result<Vec<ThemeFont>, String>

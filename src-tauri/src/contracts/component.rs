@@ -47,6 +47,18 @@ pub struct ThemeAppearance
     pub font_size: Option<u32>,               // 正文字号。
 }
 
+/// 主题声明的原生消息配色。整套只有一套色值，不随深浅模式变化；缺省字段回落到当前模式的内置色。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeNotification
+{
+    pub surface: Option<String>, // 消息表面。
+    pub border: Option<String>,  // 消息边框。
+    pub text: Option<String>,    // 正文。
+    pub muted: Option<String>,   // 次要正文。
+    pub subtle: Option<String>,  // 后层消息与悬停表面。
+}
+
 /// 主题自带的字体文件，由宿主注册到文档字体集。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +97,9 @@ pub struct ComponentManifest
     /// 主题外观覆盖，非主题为空。
     #[serde(default)]
     pub theme_appearance: Option<ThemeAppearance>,
+    /// 主题声明的原生消息配色，非主题或未声明时为空。
+    #[serde(default)]
+    pub theme_notification: Option<ThemeNotification>,
     /// 主题自带的字体，非主题为空。
     #[serde(default)]
     pub theme_fonts: Vec<ThemeFont>,

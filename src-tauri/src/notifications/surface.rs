@@ -194,14 +194,7 @@ impl Surface
             position
         }; // 使用 Windows 数值类型而不增加直接依赖。
         self.layouts.retain(|id, _| frames.iter().any(|frame| frame.id == *id));
-        let (surface, border, text, muted, subtle) = if appearance.dark
-        {
-            (0x20252A, 0x394149, 0xF2F5F7, 0xA9B2BB, 0x272D33)
-        }
-        else
-        {
-            (0xFFFFFF, 0xD7DCE2, 0x17202A, 0x687481, 0xF7F8FA)
-        }; // 与 global.css 同源色值。
+        let (surface, border, text, muted, subtle) = appearance.palette_colors(); // 主题声明了消息配色时逐项覆盖内置两套。
         unsafe {
             let brush = self.target.CreateSolidColorBrush(&Self::color(text, 1.0), None)?; // 单帧复用画刷。
             self.target.BeginDraw();

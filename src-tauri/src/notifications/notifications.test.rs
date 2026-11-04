@@ -125,7 +125,7 @@ fn appearance_uses_interface_preferences_only()
 fn native_surface_theme_and_close_follow_rendered_frames()
 {
     let preferences = ApplicationPreferences { theme: ApplicationTheme::Light, follow_system_reduced_motion: false, interface_animations: false, ..Default::default() }; // 确定性原生测试。
-    let manager = ToastManager::install(preferences).unwrap(); // 真实分层窗口。
+    let manager = ToastManager::install(preferences, None).unwrap(); // 真实分层窗口。
     crate::platform::windows::refresh_policy::assume_notifications_visible_for_test();
     {
         let mut runtime = manager.runtime.lock().unwrap(); // 原生主线程入队。
@@ -139,8 +139,8 @@ fn native_surface_theme_and_close_follow_rendered_frames()
     let started = manager.runtime.lock().unwrap().queue.items[0].motion.started; // 换色前进场时间。
     manager.runtime.lock().unwrap().preferences.theme = ApplicationTheme::Dark;
     let preferences = manager.runtime.lock().unwrap().preferences.clone(); // 模拟程序现有主题解析入口。
-    manager.sync_appearance(preferences, true, false);
-    manager.sync_appearance(ApplicationPreferences::default(), false, true); // 迟到页面的旧偏好不能覆写当前主题。
+    manager.sync_appearance(preferences, true, false, None);
+    manager.sync_appearance(ApplicationPreferences::default(), false, true, None); // 迟到页面的旧偏好不能覆写当前主题。
     assert!(manager.runtime.lock().unwrap().appearance.dark);
     manager.paint().unwrap();
     assert_eq!(manager.runtime.lock().unwrap().queue.items[0].motion.started, started);

@@ -1,6 +1,7 @@
 mod state;
 mod surface;
 
+use crate::contracts::ThemeNotification;
 use crate::contracts::settings::{ApplicationPreferences, ApplicationTheme};
 use serde::{Deserialize, Serialize};
 use state::{ToastState, Visual};
@@ -59,6 +60,7 @@ struct Appearance
     font: String,   // 已保存的字体。
     font_size: u8,  // 已保存的字号。
     radius: f32,    // 已保存的圆角。
+    palette: Option<ThemeNotification>, // 主题声明的消息配色，缺省沿用内置两套。
 }
 impl Appearance
 {
@@ -83,8 +85,60 @@ impl Appearance
             font: preferences.font_family.clone(),
             font_size: preferences.font_size,
             radius: preferences.corner_radius as f32,
+            palette: None,
         }
     }
+
+    /// 合入当前主题声明的消息配色；None 表示沿用内置两套。
+    fn with_palette(mut self, palette: Option<ThemeNotification>) -> Self
+    {
+        self.palette = palette;
+        self
+    }
+
+    /// 内置两套色值，主题声明了消息配色时逐项覆盖；未声明的字段仍用当前深浅模式的值。
+    fn palette_colors(&self) -> (u32, u32, u32, u32, u32)
+    {
+        let (surface, border, text, muted, subtle) = if self.dark
+        {
+            (0x20252A, 0x394149, 0xF2F5F7, 0xA9B2BB, 0x272D33)
+        }
+        else
+        {
+            (0xFFFFFF, 0xD7DCE2, 0x17202A, 0x687481, 0xF7F8FA)
+        }; // 与 global.css 同源色值。
+        let Some(theme) = &self.palette
+        else
+        {
+            return (surface, border, text, muted, subtle);
+        };
+        let pick = |value: &Option<String>, fallback: u32| value.as_deref().and_then(parse_theme_rgb).unwrap_or(fallback);
+        (pick(&theme.surface, surface), pick(&theme.border, border), pick(&theme.text, text), pick(&theme.muted, muted), pick(&theme.subtle, subtle))
+    }
+}
+
+/// `#RRGGBB` 转 D2D 使用的 0xRRGGBB；格式已在校验阶段拦过，这里只做兜底。
+fn parse_theme_rgb(value: &str) -> Option<u32>
+{
+    let digits = value.strip_prefix('#')?;
+    if digits.len() != 6
+    {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok()
+}
+
+/// 当前生效主题声明的消息配色；没选主题、已停用或未声明时为空。
+pub fn active_palette(app: &tauri::AppHandle, preferences: &ApplicationPreferences) -> Option<ThemeNotification>
+{
+    use tauri::Manager;
+    let id = preferences.theme_plugin_id.clone()?; // 内置主题没有额外配色。
+    if preferences.disabled_plugins.contains(&id)
+    {
+        return None;
+    }
+    let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).ok()?.manifests; // 只读清单。
+    manifests.iter().find(|manifest| manifest.id == id)?.theme_notification.clone()
 }
 
 /// 最后提交到窗口的消息画面，也是鼠标命中的唯一依据。
@@ -134,9 +188,9 @@ const SETTINGS_CHANGED: u32 = WM_APP + 41; // 设置变化的异步窗口通知�
 impl ToastManager
 {
     /// 创建无激活原生窗口并应用初始偏好。
-    pub fn install(preferences: ApplicationPreferences) -> Result<Arc<Self>, String>
+    pub fn install(preferences: ApplicationPreferences, palette: Option<ThemeNotification>) -> Result<Arc<Self>, String>
     {
-        let appearance = Appearance::resolve(&preferences, false, true); // 系统值随后在窗口线程解析。
+        let appearance = Appearance::resolve(&preferences, false, true).with_palette(palette); // 系统值随后在窗口线程解析。
         let manager = Arc::new(Self { hwnd: AtomicIsize::new(0), runtime: Mutex::new(Runtime { suppressed: false, queue: ToastState::default(), preferences, appearance, frames: Vec::new(), scale: 1.0, hover_id: None }) }); // HWND 引用的稳定地址。
         let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(|error| error.to_string())?; // 当前模块。
         let class = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(window_proc), hInstance: HINSTANCE(module.0), lpszClassName: w!("DesktopToolsNativeToast"), ..Default::default() }; // 无不透明背景刷。
@@ -196,7 +250,7 @@ impl ToastManager
     }
 
     /// 接收程序现有主题入口的解析结果；过期页面偏好不能覆盖新设置。
-    pub fn sync_appearance(&self, preferences: ApplicationPreferences, dark: bool, animations_enabled: bool)
+    pub fn sync_appearance(&self, preferences: ApplicationPreferences, dark: bool, animations_enabled: bool, palette: Option<ThemeNotification>)
     {
         if let Ok(mut runtime) = self.runtime.lock()
         {
@@ -204,7 +258,7 @@ impl ToastManager
             {
                 return;
             }
-            let next = Appearance::resolve(&preferences, dark, animations_enabled); // 不读取或监听系统颜色。
+            let next = Appearance::resolve(&preferences, dark, animations_enabled).with_palette(palette); // 不读取或监听系统颜色。
             if runtime.appearance.animated && !next.animated
             {
                 for item in &mut runtime.queue.items

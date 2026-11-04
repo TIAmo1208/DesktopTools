@@ -190,7 +190,9 @@ pub fn run()
             std::fs::create_dir_all(config_directory.join("collect"))?;
             let _ = crate::platform::windows::directory_watch::start(app.handle().clone(), "collect".to_string(), config_directory.join("collect"));
             app.manage(crate::platform::windows::settings::WindowsAccentMonitor::install(app.handle().clone())?);
-            app.manage(ToastManager::install(app.state::<crate::app::settings::SettingsState>().preferences()?)?);
+            let toast_preferences = app.state::<crate::app::settings::SettingsState>().preferences()?; // 启动时已经解析好的当前偏好。
+            let toast_palette = crate::notifications::active_palette(app.handle(), &toast_preferences); // 已选主题若声明了消息配色，首条消息就用它。
+            app.manage(ToastManager::install(toast_preferences, toast_palette)?);
             crate::app::tray::install(app.handle())?;
             // 当前 Windows 用户独占的正式工作区快照路径。
             let workspace_path = config_directory.join("workspace-layout.json");

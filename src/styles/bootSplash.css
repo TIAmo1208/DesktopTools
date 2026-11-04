@@ -1,0 +1,48 @@
+/* 启动覆盖层：桌面宿主首屏铺满一屏，只做一次淡出，不接收指针。 */
+
+/* 覆盖整屏的纯色底，主题样式表可以接管 #boot-splash 换自己的表现。 */
+#boot-splash {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: grid;
+    place-items: center;
+    background: var(--color-background);
+    pointer-events: none;
+    animation: boot-splash-fade 900ms ease-out 260ms forwards;
+}
+
+/* 一条亮带自上而下扫过，示意屏幕通电。 */
+#boot-splash::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, transparent, rgb(255 255 255 / 12%), transparent);
+    animation: boot-splash-sweep 700ms ease-out;
+}
+
+/* 品牌字：跟随界面字体与次要文字色。 */
+#boot-splash .boot-splash__mark {
+    font-family: var(--interface-font);
+    font-size: 13px;
+    letter-spacing: 0.32em;
+    color: var(--color-muted);
+}
+
+/* 淡出并让出命中与绘制。 */
+@keyframes boot-splash-fade {
+    to {
+        opacity: 0;
+        visibility: hidden;
+    }
+}
+
+/* 亮带位移，不改布局。 */
+@keyframes boot-splash-sweep {
+    from {
+        transform: translateY(-100%);
+    }
+    to {
+        transform: translateY(100%);
+    }
+}
