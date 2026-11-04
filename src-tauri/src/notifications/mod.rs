@@ -270,11 +270,22 @@ impl ToastManager
         .map_err(|error| error.to_string())
     }
 
-    /// 只接受已保存偏好，异步更新现有消息。
-    pub fn update_preferences(&self, preferences: ApplicationPreferences)
+    /// 同锁写入已保存偏好与主题 palette，保留现有系统深浅与动画解析值直到页面补齐。
+    pub fn update_preferences(&self, preferences: ApplicationPreferences, palette: Option<ThemeNotification>)
     {
         if let Ok(mut runtime) = self.runtime.lock()
         {
+            let dark = runtime.appearance.dark; // 系统主题先沿用当前解析结果。
+            let animated = runtime.appearance.animated;
+            let next = Appearance::resolve(&preferences, dark, animated).with_palette(palette);
+            if runtime.appearance.animated && !next.animated
+            {
+                for item in &mut runtime.queue.items
+                {
+                    item.motion.from = item.motion.to;
+                }
+            }
+            runtime.appearance = next;
             runtime.preferences = preferences;
         }
         self.settings_changed();
@@ -291,8 +302,8 @@ impl ToastManager
         }
     }
 
-    /// 接收程序现有主题入口的解析结果；过期页面偏好不能覆盖新设置。
-    pub fn sync_appearance(&self, preferences: ApplicationPreferences, dark: bool, animations_enabled: bool, palette: Option<ThemeNotification>)
+    /// 接收页面已解析的系统深浅和动画；palette 保留 Rust 已保存偏好的权威结果。
+    pub fn sync_appearance(&self, preferences: ApplicationPreferences, dark: bool, animations_enabled: bool)
     {
         if let Ok(mut runtime) = self.runtime.lock()
         {
@@ -300,7 +311,8 @@ impl ToastManager
             {
                 return;
             }
-            let next = Appearance::resolve(&preferences, dark, animations_enabled).with_palette(palette); // 不读取或监听系统颜色。
+            let palette = runtime.appearance.palette.clone(); // 不让迟到页面覆盖权威主题配色。
+            let next = Appearance::resolve(&preferences, dark, animations_enabled).with_palette(palette);
             if runtime.appearance.animated && !next.animated
             {
                 for item in &mut runtime.queue.items

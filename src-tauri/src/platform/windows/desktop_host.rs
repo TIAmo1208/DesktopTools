@@ -20,7 +20,7 @@ use windows::Win32::System::Ole::{IDropTarget, OleInitialize, OleUninitialize, R
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Shell::{IFolderView, IShellBrowser, IShellFolder, IShellItem, IShellWindows, SHCreateItemWithParent, SHELLFLAGSTATE, SHGetSettings, SID_STopLevelBrowser, SIGDN_DESKTOPABSOLUTEPARSING, SSF_HIDEICONS, SVGIO_ALLVIEW, SWC_DESKTOP, SWFO_NEEDDISPATCH, ShellWindows};
-use windows::Win32::UI::WindowsAndMessaging::{CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GWL_STYLE, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId, HWND_TOP, IsWindow, IsWindowVisible, MONITORINFOF_PRIMARY, PW_RENDERFULLCONTENT, RegisterClassExW, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, ShowWindowAsync, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_POPUP, WS_VISIBLE};
+use windows::Win32::UI::WindowsAndMessaging::{CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GWL_STYLE, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId, HWND_TOP, IsWindow, IsWindowVisible, MONITORINFOF_PRIMARY, PW_RENDERFULLCONTENT, RegisterClassExW, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, ShowWindowAsync, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_POPUP};
 use windows::core::{BOOL, Interface, PCWSTR, w};
 use wry::http::{Request, Response, StatusCode};
 use wry::raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle};
@@ -116,8 +116,8 @@ static PAGE_LOAD_FINISHED: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock:
 /// 返回逐屏页面加载完成记录表，首次使用时创建。
 fn page_load_records() -> &'static Mutex<HashMap<String, Instant>> { PAGE_LOAD_FINISHED.get_or_init(|| Mutex::new(HashMap::new())) }
 
-/// 记录逐屏页面导航完成时间，供恢复线程判断页面是否停滞。
-pub fn mark_page_load_finished(monitor_id: &str)
+/// 记录逐屏页面导航完成时间，供首次显示和恢复线程共用。
+pub(crate) fn mark_page_load_finished(monitor_id: &str)
 {
     if let Ok(mut finished) = page_load_records().lock()
     {
@@ -129,7 +129,7 @@ pub fn mark_page_load_finished(monitor_id: &str)
 pub fn page_load_finished_at(monitor_id: &str) -> Option<Instant> { page_load_records().lock().ok().and_then(|finished| finished.get(monitor_id).copied()) }
 
 /// 清除逐屏页面导航完成时间，新一次导航重新计时。
-pub fn clear_page_load_finished(monitor_id: &str)
+pub(crate) fn clear_page_load_finished(monitor_id: &str)
 {
     if let Ok(mut finished) = page_load_records().lock()
     {
@@ -1550,7 +1550,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     // 当前模块句柄。
     let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(|error| format!("读取正式宿主模块句柄失败: {error}"))?;
     // 正式宿主外层 HWND。
-    let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE::default(), HOST_WINDOW_CLASS, w!("Desktop Tools"), WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VISIBLE, monitor.work_x, monitor.work_y, monitor.work_width as i32, monitor.work_height as i32, None, None, Some(HINSTANCE(module.0)), None) }.map_err(|error| format!("创建正式宿主 HWND 失败: {error}"))?;
+    let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE::default(), HOST_WINDOW_CLASS, w!("Desktop Tools"), WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, monitor.work_x, monitor.work_y, monitor.work_width as i32, monitor.work_height as i32, None, None, Some(HINSTANCE(module.0)), None) }.map_err(|error| format!("创建正式宿主 HWND 失败: {error}"))?;
     // Wry 使用的正式宿主句柄包装。
     let raw_window = NativeWindowHandle { hwnd: NonZeroIsize::new(hwnd.0 as isize).ok_or("正式宿主 HWND 为空")? };
     // 本地协议使用的 AppHandle。
@@ -1572,7 +1572,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     let webview = WebViewBuilder::new()
         .with_id(&label)
         .with_transparent(true)
-        .with_visible(true)
+        .with_visible(false)
         .with_bounds(WryRect { position: dpi::PhysicalPosition::new(0, 0).into(), size: dpi::PhysicalSize::new(monitor.work_width, monitor.work_height).into() })
         .with_initialization_script(&initialization_script)
         .with_asynchronous_custom_protocol(protocol, move |_id, request, responder| {
@@ -1620,6 +1620,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
 
     // 正式 WebView2 的原生 Controller。
     let controller = webview.controller();
+    unsafe { controller.SetIsVisible(true) }.map_err(|error| format!("隐藏宿主内启用 WebView2 绘制失败: {error}"))?; // 外层 HWND 仍隐藏，页面可加载并供就绪像素诊断。
     attach_host(hwnd.0 as isize, shell, monitor)?;
     configure_controller(&controller, monitor)?;
     unsafe {

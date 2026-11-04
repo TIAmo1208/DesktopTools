@@ -997,7 +997,7 @@ export const WeatherSettings = ({
                                         if (removal.kind === "source") void handleRemove();
                                         else void handleRemoveCity(removal.source, removal.city);
                                     }}
-                                 data-button="primary">
+                                 data-button="danger">
                                     {busy === "remove" ? "正在删除" : "删除"}
                                 </button>
                             </>

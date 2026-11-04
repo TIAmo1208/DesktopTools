@@ -26,6 +26,9 @@ const RENDERER_NAVIGATION_LIMIT: Duration = Duration::from_secs(120);
 /// 未就绪宿主连续重载的退避上限，避免页面恢复后仍被反复打断。
 const RENDERER_RELOAD_BACKOFF_CAP: Duration = Duration::from_secs(40);
 
+/// 页面连续重载仍未就绪时撤下宿主并恢复 Explorer，而不暴露空白 WebView。
+const RENDERER_STARTUP_RELOAD_LIMIT: u32 = 3;
+
 /// 环境事件到达后等待 Explorer 与显示器事实稳定的最大次数。
 const ENVIRONMENT_FAILURE_LIMIT: u32 = 20;
 
@@ -210,7 +213,6 @@ impl DesktopHostRuntime
         {
             crate::log_info!("恢复：Renderer 轻量重载已恢复，显示器={monitor_id}");
         }
-        context.renderer_reload_attempts = 0;
         context.renderer_failure_reported = false;
         context.last_renderer_heartbeat = Instant::now();
         Ok(())
@@ -241,7 +243,7 @@ impl DesktopHostRuntime
         host_context(&data, monitor_id).map(|_| ())
     }
 
-    /// 校验并提交 React 双帧、系统图像和交互命中图证据。
+    /// 校验并提交 React 双帧、系统图像和交互命中图证据；首次显示还需页面导航完成。
     pub fn publish_frontend_readiness(&self, report: FrontendHostReadiness) -> Result<DesktopHostSnapshot, DesktopHostError>
     {
         let monitor_id = report.monitor_id.clone(); // 当前页面所属的显示器稳定身份。
@@ -274,7 +276,6 @@ impl DesktopHostRuntime
             } // 重建期间旧 HWND 的结果不能污染新宿主门槛。
             context.hit_regions = report.hit_regions;
             context.readiness.page = true;
-            context.renderer_reload_attempts = 0;
             context.renderer_failure_reported = false;
             context.renderer_wait_started = Instant::now();
             context.readiness.system_images = true;
@@ -419,7 +420,7 @@ impl DesktopHostRuntime
         destroy_desktop_hosts();
     }
 
-    /// 监视逐屏页面就绪与前端心跳，并按当前恢复契约轻量重载失效 Renderer。
+    /// 监视逐屏页面就绪与前端心跳，重载有限次数仍失败则保留 Explorer 可见。
     pub fn start_renderer_watchdog(app: AppHandle, runtime: Arc<Self>)
     {
         thread::spawn(move || {
@@ -427,7 +428,7 @@ impl DesktopHostRuntime
             {
                 thread::sleep(Duration::from_secs(1));
                 // 本轮重载目标与保留的命中图；提交前只重载未就绪页面，不携带命中图。
-                let (reloads, committed) = {
+                let (reloads, committed, exhausted) = {
                     let mut data = match runtime.data.lock()
                     {
                         Ok(data) => data,
@@ -439,6 +440,7 @@ impl DesktopHostRuntime
                     }
                     let now = Instant::now(); // 本轮重载判断基准。
                     let committed = data.coordinator.is_committed(); // 提交后按心跳恢复，提交前按页面就绪恢复。
+                    let mut exhausted = None; // 首屏连续重载已耗尽的显示器。
                     let reloads = data
                         .hosts
                         .iter_mut()
@@ -459,8 +461,13 @@ impl DesktopHostRuntime
                             // 未提交页面按导航完成后的宽限期或失败报告触发重载，连续失败按指数退避。
                             let wait_age = now.saturating_duration_since(context.renderer_wait_started); // 当前页面等待就绪的时间。
                             let load_age = page_load_finished_at(&context.host.monitor.id).map(|finished| now.saturating_duration_since(finished)); // 当前页面导航完成后的等待时间。
-                            if !renderer_startup_reload_due(context.readiness.page, context.renderer_failure_reported, wait_age, load_age, retry_age, context.renderer_reload_attempts)
+                            if !renderer_startup_reload_due(all_host_context_ready(context), context.renderer_failure_reported, wait_age, load_age, retry_age, context.renderer_reload_attempts)
                             {
+                                return None;
+                            }
+                            if renderer_startup_exhausted(context.renderer_reload_attempts)
+                            {
+                                exhausted = Some(context.host.monitor.id.clone()); // 不再显示空页面，交回 Explorer。
                                 return None;
                             }
                             context.renderer_reload_attempts += 1;
@@ -470,8 +477,13 @@ impl DesktopHostRuntime
                             Some((context.host.clone(), None))
                         })
                         .collect::<Vec<_>>();
-                    (reloads, committed)
+                    (reloads, committed, exhausted)
                 };
+                if let Some(monitor_id) = exhausted
+                {
+                    runtime.fail_host_adapter(&format!("Renderer 首屏重载超过上限，显示器={monitor_id}")); // 失败路径撤下宿主并恢复 Explorer。
+                    return;
+                }
                 if reloads.is_empty()
                 {
                     continue;
@@ -761,7 +773,7 @@ impl DesktopHostRuntime
             if !all_hosts_ready(&data)
             {
                 static LAST_WAIT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new()); // 相同等待状态只记录一次，避免重复就绪请求刷屏。
-                let waiting = format!("guardian={}，逐屏状态={:?}", data.coordinator.guardian_ready, data.hosts.iter().map(|context| format!("{}:页面={}，系统图像={}，命中图={}", context.host.monitor.id, context.readiness.page, context.readiness.system_images, context.readiness.hit_map)).collect::<Vec<_>>()); // 全部实际门槛，不将像素诊断当作接管条件。
+                let waiting = format!("guardian={}，逐屏状态={:?}", data.coordinator.guardian_ready, data.hosts.iter().map(|context| format!("{}:页面={}，导航={}，系统图像={}，命中图={}", context.host.monitor.id, context.readiness.page, page_load_finished_at(&context.host.monitor.id).is_some(), context.readiness.system_images, context.readiness.hit_map)).collect::<Vec<_>>()); // 全部实际门槛，不将像素诊断当作接管条件。
                 if let Ok(mut previous) = LAST_WAIT.lock()
                     && *previous != waiting
                 {
@@ -780,7 +792,7 @@ impl DesktopHostRuntime
         // 已获得提交权的全部逐屏宿主、Shell 状态与命中图。
         let (hosts, shell) = commit;
         let host_hidden = hosts.iter().all(|(host, _)| set_host_visible(host.hwnd, false)); // 正式宿主切换前的整体隐藏结果。
-        // Explorer 桌面项目隐藏结果。
+        // 仅全部页面就绪时提交接管；失败恢复会撤下宿主并还原 Explorer。
         let explorer_hidden = host_hidden && set_desktop_items_visible(shell.def_view, false);
         if explorer_hidden
         {
@@ -798,6 +810,10 @@ impl DesktopHostRuntime
         } // Win+D 或 Explorer 重建后的迟到提交不能将当前宿主标记为失败。
         if committed
         {
+            for context in &mut data.hosts
+            {
+                context.renderer_reload_attempts = 0; // 首帧已提交，启动重试计数归零。
+            }
             data.coordinator.mark_committed();
             crate::log_info!("宿主：桌面接管已统一提交，Explorer 桌面项目已隐藏，宿主数量={}", hosts.len());
             return Ok(snapshot_from(&data));
@@ -820,8 +836,11 @@ fn host_context<'a>(data: &'a DesktopHostRuntimeData, monitor_id: &str) -> Resul
 /// 返回指定显示器的可变宿主上下文。
 fn host_context_mut<'a>(data: &'a mut DesktopHostRuntimeData, monitor_id: &str) -> Result<&'a mut DesktopHostContext, DesktopHostError> { data.hosts.iter_mut().find(|context| context.host.monitor.id == monitor_id).ok_or_else(|| DesktopHostError::invalid_readiness("显示器宿主不存在")) }
 
-/// 判断 guardian 与每台显示器的页面、图像和命中图是否全部就绪；像素仅供诊断。
-fn all_hosts_ready(data: &DesktopHostRuntimeData) -> bool { data.coordinator.guardian_ready && !data.hosts.is_empty() && data.hosts.iter().all(|context| context.readiness.page && context.readiness.system_images && context.readiness.hit_map) }
+/// 单屏就绪还需当前导航的 Finished 记录；重载清掉旧记录后重新等待。
+fn all_host_context_ready(context: &DesktopHostContext) -> bool { context.readiness.page && context.readiness.system_images && context.readiness.hit_map && page_load_finished_at(&context.host.monitor.id).is_some() }
+
+/// 判断 guardian 与每台显示器的页面、图像、命中图和导航是否全部就绪；像素仅供诊断。
+fn all_hosts_ready(data: &DesktopHostRuntimeData) -> bool { data.coordinator.guardian_ready && !data.hosts.is_empty() && data.hosts.iter().all(all_host_context_ready) }
 
 /// 判断 Explorer 是否已经替换桌面宿主身份。
 fn shell_hosts_changed(previous: ShellDesktopState, latest: ShellDesktopState) -> bool { previous.def_view != latest.def_view || previous.explorer_host != latest.explorer_host || previous.list_view != latest.list_view }
@@ -842,6 +861,9 @@ fn renderer_startup_reload_due(page_ready: bool, failure_reported: bool, wait_ag
     let stalled = failure_reported || load_age.map_or(wait_age >= RENDERER_NAVIGATION_LIMIT, |age| age >= RENDERER_READY_GRACE);
     !page_ready && stalled && retry_age.is_none_or(|age| age >= renderer_startup_reload_delay(attempts))
 }
+
+/// 连续启动重载耗尽后，交由适配器失败路径恢复 Explorer。
+fn renderer_startup_exhausted(attempts: u32) -> bool { attempts >= RENDERER_STARTUP_RELOAD_LIMIT }
 
 /// 返回连续未就绪重载的等待间隔，按次数倍增并封顶。
 fn renderer_startup_reload_delay(attempts: u32) -> Duration { RENDERER_RELOAD_RETRY.saturating_mul(1 << attempts.min(3)).min(RENDERER_RELOAD_BACKOFF_CAP) }

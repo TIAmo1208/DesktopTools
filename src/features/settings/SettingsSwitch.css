@@ -22,52 +22,48 @@
     cursor: inherit;
 }
 
-/* 未选轨道保持 40×22，细描边与主题表面分离。 */
+/* 默认轨道保持 40×22 胶囊外观。 */
 .settings-switch__track {
     position: relative;
     display: block;
     width: 40px;
     height: 22px;
+    padding: 4px;
+    box-sizing: border-box;
     border: 1px solid var(--color-muted);
-    border-radius: 2px;
+    border-radius: 11px;
     background: var(--color-surface);
     pointer-events: none;
 }
 
-/* 滑块固定 16×18，左上角 3px 直切，轨道上下各内缩 2px。 */
+/* 默认滑块是 12px 圆点。 */
 .settings-switch__track::after {
     position: absolute;
-    inset-block-start: 1px;
-    inset-inline-start: 1px;
-    width: 16px;
-    height: 18px;
-    clip-path: polygon(3px 0, 100% 0, 100% 100%, 0 100%, 0 3px);
-    background: color-mix(in oklch, var(--color-muted) 55%, transparent);
+    inset-block-start: 4px;
+    inset-inline-start: 4px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--color-muted);
     content: "";
 }
 
-/* 已启用与聚焦的轨道使用相同青色描边，填充不变。 */
-.settings-switch input:checked + .settings-switch__track,
-.settings-switch input:focus-visible + .settings-switch__track {
+/* 已选轨道使用界面强调色。 */
+.settings-switch input:checked + .settings-switch__track {
     border-color: var(--color-focus);
+    background: var(--color-focus);
 }
 
-/* 已选和聚焦滑块靠右，带 5px / 28% 霓虹青冷光。 */
-.settings-switch input:checked + .settings-switch__track::after,
-.settings-switch input:focus-visible + .settings-switch__track::after {
-    inset-inline-start: 21px;
-    background: var(--color-ready);
-    filter: drop-shadow(0 0 5px color-mix(in oklch, var(--color-ready) 28%, transparent));
+/* 已选滑块靠右并保持表面对比色。 */
+.settings-switch input:checked + .settings-switch__track::after {
+    inset-inline-start: 22px;
+    background: var(--color-surface);
 }
 
-/* 聚焦外环 46×28、r4；轨道仍保持 40×22、r2。 */
-.settings-switch input:focus-visible + .settings-switch__track::before {
-    position: absolute;
-    inset: -3px;
-    border: 2px solid var(--color-focus);
-    border-radius: 4px;
-    pointer-events: none;
-    content: "";
+/* 键盘焦点不改变几何。 */
+.settings-switch input:focus-visible + .settings-switch__track {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
 }
 
 /* 保存或加载期间禁止操作，不整体降低透明度。 */
@@ -81,10 +77,11 @@
     border-color: var(--color-border);
 }
 
-/* 禁用滑块不显示已选冷光。 */
+/* 禁用轨道和滑块回到弱色，不整体降低透明度。 */
+.settings-switch input:disabled + .settings-switch__track,
 .settings-switch input:disabled + .settings-switch__track::after {
+    border-color: var(--color-border);
     background: var(--color-border);
-    filter: none;
 }
 
 /* 高对比度模式保留系统选中与边框辨识。 */
@@ -100,10 +97,6 @@
     .settings-switch input:focus-visible + .settings-switch__track {
         border-color: Highlight;
         background: Canvas;
-    }
-    /* 高对比度键盘焦点外环使用系统强调色。 */
-    .settings-switch input:focus-visible + .settings-switch__track::before {
-        border-color: Highlight;
     }
     /* 高对比度开关滑块。 */
     .settings-switch__track::after {

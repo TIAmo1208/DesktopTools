@@ -128,13 +128,27 @@ h1 {
 
 /* ---------- 45° 切角 ---------- */
 
-/* 用 corner-shape 削角：只改绘制形状，不裁文字也不产生点击死区；整行命中层是结构件，不参与。 */
-button:not([data-button="row-hit"]) {
-    corner-shape: bevel;
+/* 交互控件只切左上、右下；切角量由插件设置限制为 0–12px。整行命中层与结构表面不参与。 */
+button:not([data-button="row-hit"]),
+input:not([type="checkbox"]):not([type="radio"]),
+select,
+textarea {
+    border-start-start-radius: var(--nightcity-bevel, 6px);
+    border-start-end-radius: 0;
+    border-end-start-radius: 0;
+    border-end-end-radius: var(--nightcity-bevel, 6px);
+    corner-top-left-shape: bevel;
+    corner-top-right-shape: round;
+    corner-bottom-left-shape: round;
+    corner-bottom-right-shape: bevel;
 }
 
-/* 关闭切角时回到应用原有圆角。 */
-:root[data-nightcity-bevel="off"] button:not([data-button="row-hit"]) {
+/* 关闭切角时所有参与控件回到直角，不保留部分切角。 */
+:root[data-nightcity-bevel="off"] button:not([data-button="row-hit"]),
+:root[data-nightcity-bevel="off"] input:not([type="checkbox"]):not([type="radio"]),
+:root[data-nightcity-bevel="off"] select,
+:root[data-nightcity-bevel="off"] textarea {
+    border-radius: 0;
     corner-shape: round;
 }
 
@@ -207,11 +221,64 @@ html[data-desktop-host="true"][data-desktop-theme="light"] {
 
 /* ---------- 控件 ---------- */
 
-/* 文本输入、下拉与多行输入：不改变复选/开关几何，底色仍沿用主题令牌。 */
+/* G8 开关几何只由本主题持有，撤下主题样式表后恢复共享胶囊。 */
+.settings-switch__track {
+    padding: 0;
+    border: 1px solid var(--color-muted);
+    border-radius: 2px;
+    background: var(--color-surface);
+}
+
+.settings-switch__track::after {
+    inset-block-start: 1px;
+    inset-inline-start: 1px;
+    width: 16px;
+    height: 18px;
+    border-radius: 0;
+    clip-path: polygon(3px 0, 100% 0, 100% 100%, 0 100%, 0 3px);
+    background: color-mix(in oklch, var(--color-muted) 55%, transparent);
+}
+
+.settings-switch input:checked + .settings-switch__track,
+.settings-switch input:focus-visible + .settings-switch__track {
+    border-color: var(--color-focus);
+    background: var(--color-surface);
+}
+
+.settings-switch input:checked + .settings-switch__track::after,
+.settings-switch input:focus-visible + .settings-switch__track::after {
+    inset-inline-start: 21px;
+    background: var(--color-ready);
+    filter: drop-shadow(0 0 5px color-mix(in oklch, var(--color-ready) 28%, transparent));
+}
+
+.settings-switch input:focus-visible + .settings-switch__track {
+    outline: none;
+}
+
+.settings-switch input:focus-visible + .settings-switch__track::before {
+    position: absolute;
+    inset: -3px;
+    border: 2px solid var(--color-focus);
+    border-radius: 4px;
+    pointer-events: none;
+    content: "";
+}
+
+.settings-switch input:disabled + .settings-switch__track {
+    border-color: var(--color-border);
+    background: var(--color-surface);
+}
+
+.settings-switch input:disabled + .settings-switch__track::after {
+    background: var(--color-border);
+    filter: none;
+}
+
+/* 文本输入、下拉与多行输入：切角由上方统一规则负责，不改变复选/开关几何。 */
 input:not([type="checkbox"]):not([type="radio"]),
 select,
 textarea {
-    border-radius: 2px;
     caret-color: var(--color-focus);
     font-family: var(--interface-font);
 }

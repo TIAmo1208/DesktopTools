@@ -436,10 +436,15 @@
     cursor: pointer;
 }
 
-/* 名称、卸载、开关与箭头统一压在命中层之上，点它们不会进入插件页。 */
+/* 名称、卸载、开关与箭头统一压在命中层之上，交互控件仍独立可点。 */
 .plugin-settings__row--link > :not(.plugin-settings__hit) {
     position: relative;
     z-index: 1;
+}
+
+/* 名称和箭头只作展示，指针穿透到下层整行命中按钮。 */
+.plugin-settings__row--link > :is(.plugin-settings__copy, .plugin-settings__chevron) {
+    pointer-events: none;
 }
 
 /* 卸载按钮：32 的命中区，点击后打开确认；图标与开关同一中线居中。 */
@@ -645,8 +650,6 @@
     padding: 0 16px;
     border: 1px solid var(--color-border);
     border-radius: 4px;
-    color: var(--color-error);
-    background: transparent;
     font: inherit;
 }
 

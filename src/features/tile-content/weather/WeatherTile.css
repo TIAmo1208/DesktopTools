@@ -251,8 +251,11 @@
     cursor: pointer;
 }
 .weather-tile__picker button:disabled {
-    opacity: 0.48;
+    border-color: var(--color-border);
+    color: var(--color-muted);
+    background: var(--color-subtle);
     cursor: default;
+    text-shadow: none;
 }
 .weather-tile__cities {
     min-height: 0;

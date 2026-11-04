@@ -1,6 +1,6 @@
-use super::{DesktopHostContext, DesktopHostRuntimeData, RENDERER_HEARTBEAT_TIMEOUT, RENDERER_NAVIGATION_LIMIT, RENDERER_READY_GRACE, RENDERER_RELOAD_BACKOFF_CAP, RENDERER_RELOAD_RETRY, TakeoverCoordinator, TakeoverPhase, all_hosts_ready, environment_failure_is_blocking, monitor_topology_changed, renderer_restart_due, renderer_startup_reload_delay, renderer_startup_reload_due};
+use super::{DesktopHostContext, DesktopHostRuntimeData, RENDERER_HEARTBEAT_TIMEOUT, RENDERER_NAVIGATION_LIMIT, RENDERER_READY_GRACE, RENDERER_RELOAD_BACKOFF_CAP, RENDERER_RELOAD_RETRY, RENDERER_STARTUP_RELOAD_LIMIT, TakeoverCoordinator, TakeoverPhase, all_hosts_ready, environment_failure_is_blocking, monitor_topology_changed, renderer_restart_due, renderer_startup_exhausted, renderer_startup_reload_delay, renderer_startup_reload_due};
 use crate::contracts::{DesktopHostMonitor, DesktopHostReadiness};
-use crate::platform::windows::{NativeDesktopHost, ShellDesktopState};
+use crate::platform::windows::{NativeDesktopHost, ShellDesktopState, clear_page_load_finished, mark_page_load_finished};
 
 /// 验证 guardian 与全部逐屏门槛完成后才允许提交。
 #[test]
@@ -32,9 +32,17 @@ fn every_host_must_pass_every_automatic_gate()
     data.hosts[1].readiness.hit_map = true;
     data.hosts[1].readiness.input = false;
     data.hosts[1].readiness.pixels = false;
+    assert!(!all_hosts_ready(&data), "仅前端 readiness 不足以显示未完成导航的宿主");
+    mark_page_load_finished("DISPLAY1");
+    mark_page_load_finished("DISPLAY2");
     assert!(all_hosts_ready(&data));
+    clear_page_load_finished("DISPLAY2"); // 重载或新导航必须撤销上一页 Finished 证据。
+    assert!(!all_hosts_ready(&data));
+    mark_page_load_finished("DISPLAY2");
     data.hosts[1].readiness.page = false;
     assert!(!all_hosts_ready(&data));
+    clear_page_load_finished("DISPLAY1");
+    clear_page_load_finished("DISPLAY2");
 }
 
 /// 验证 DPI-only 变化不被分类为持久显示器拓扑变化。
@@ -78,6 +86,13 @@ fn renderer_startup_reload_waits_for_stalled_page_and_backs_off()
     assert!(renderer_startup_reload_due(false, false, limit, Some(grace), Some(RENDERER_RELOAD_RETRY * 2), 1));
     assert_eq!(renderer_startup_reload_delay(0), RENDERER_RELOAD_RETRY);
     assert_eq!(renderer_startup_reload_delay(9), RENDERER_RELOAD_BACKOFF_CAP);
+    for attempts in 0..RENDERER_STARTUP_RELOAD_LIMIT
+    {
+        assert!(!renderer_startup_exhausted(attempts)); // 前三次允许按既有退避重载。
+    }
+    assert!(renderer_startup_exhausted(RENDERER_STARTUP_RELOAD_LIMIT)); // 下一轮仍未就绪则恢复 Explorer。
+    let recovered_attempts = 0; // 首次完整加载并提交后重试计数清零。
+    assert!(!renderer_startup_exhausted(recovered_attempts));
 }
 
 /// 验证环境瞬时发现失败不会立即撤下宿主，连续失败才进入阻塞恢复。

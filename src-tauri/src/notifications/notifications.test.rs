@@ -120,6 +120,37 @@ fn appearance_uses_interface_preferences_only()
     assert!(appearance.dark && appearance.animated);
 }
 
+/// 非空队列保存新 palette 后，同一消息的身份与时限不变，下一帧颜色立刻切换。
+#[test]
+fn saved_palette_repaints_existing_toasts_without_resetting_queue()
+{
+    let preferences = ApplicationPreferences::default(); // 权威已保存偏好。
+    let manager = ToastManager::install(preferences.clone(), None).unwrap(); // 真实管理器，测试只访问非 COM 状态。
+    let now = Instant::now(); // 确定性队列时钟。
+    {
+        let mut runtime = manager.runtime.lock().unwrap();
+        runtime.queue.enqueue(message("旧消息"), 64.0, now, false);
+        runtime.queue.enqueue(message("新消息"), 64.0, now, false);
+    }
+    let before = manager.runtime.lock().unwrap().queue.items.iter().map(|item| (item.id, item.expires_at)).collect::<Vec<_>>(); // 原顺序、身份和期限。
+    assert_eq!(manager.runtime.lock().unwrap().appearance.palette_colors().0, 0xFFFFFF); // 内置浅色表面。
+    let palette = ThemeNotification { surface: Some("#0d1322".into()), ..Default::default() }; // 新主题表面。
+    manager.update_preferences(preferences.clone(), Some(palette));
+    {
+        let runtime = manager.runtime.lock().unwrap();
+        assert_eq!(runtime.queue.items.iter().map(|item| (item.id, item.expires_at)).collect::<Vec<_>>(), before);
+        assert_eq!(runtime.appearance.palette_colors().0, 0x0D1322); // 下一帧从同一 appearance 读取新色。
+    }
+    manager.sync_appearance(preferences.clone(), false, true);
+    assert_eq!(manager.runtime.lock().unwrap().appearance.palette_colors().0, 0x0D1322); // 页面同步不覆盖 Rust 权威 palette。
+    manager.update_preferences(preferences, None); // 主题停用时回落内置调色板。
+    let runtime = manager.runtime.lock().unwrap();
+    assert_eq!(runtime.queue.items.iter().map(|item| (item.id, item.expires_at)).collect::<Vec<_>>(), before);
+    assert_eq!(runtime.appearance.palette_colors().0, 0xFFFFFF);
+    drop(runtime);
+    manager.cleanup();
+}
+
 /// 真 HWND 验证长正文测量、关闭命中、主题切换和重复销毁。
 #[test]
 fn native_surface_theme_and_close_follow_rendered_frames()
@@ -137,10 +168,11 @@ fn native_surface_theme_and_close_follow_rendered_frames()
     assert!(!frame.hit_close(frame.rect.left + 40.0, frame.rect.top + 32.0));
     assert!(frame.hit_close(frame.rect.right - 28.0, frame.rect.top + 32.0));
     let started = manager.runtime.lock().unwrap().queue.items[0].motion.started; // 换色前进场时间。
-    manager.runtime.lock().unwrap().preferences.theme = ApplicationTheme::Dark;
-    let preferences = manager.runtime.lock().unwrap().preferences.clone(); // 模拟程序现有主题解析入口。
-    manager.sync_appearance(preferences, true, false, None);
-    manager.sync_appearance(ApplicationPreferences::default(), false, true, None); // 迟到页面的旧偏好不能覆写当前主题。
+    let mut preferences = manager.runtime.lock().unwrap().preferences.clone(); // 模拟程序保存主题后再由页面补系统值。
+    preferences.theme = ApplicationTheme::Dark;
+    manager.update_preferences(preferences.clone(), None);
+    manager.sync_appearance(preferences, true, false);
+    manager.sync_appearance(ApplicationPreferences::default(), false, true); // 迟到页面的旧偏好不能覆写当前主题。
     assert!(manager.runtime.lock().unwrap().appearance.dark);
     manager.paint().unwrap();
     assert_eq!(manager.runtime.lock().unwrap().queue.items[0].motion.started, started);

@@ -28,7 +28,11 @@
     outline-offset: 1px;
 }
 .folder-portal button:disabled {
-    opacity: 0.48;
+    border-color: transparent;
+    color: var(--color-muted);
+    background: transparent;
+    cursor: default;
+    text-shadow: none;
 }
 
 /* 折叠式面包屑和导航按钮。 */
@@ -137,7 +141,7 @@
 }
 
 /* 折叠菜单沿用导航的悬停与键盘焦点状态。 */
-.folder-portal__breadcrumb-menu button:hover {
+.folder-portal__breadcrumb-menu button:hover:not(:disabled) {
     background: var(--menu-hover);
 }
 

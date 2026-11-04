@@ -646,8 +646,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let preferences = command_argument(&arguments, "preferences", "消息外观偏好无效").map_err(serialize_error)?; // 页面已解析的当前程序偏好。
             let dark = command_argument(&arguments, "dark", "消息深浅色无效").map_err(serialize_error)?;
             let animations = command_argument(&arguments, "animationsEnabled", "消息动画状态无效").map_err(serialize_error)?;
-            let palette = crate::notifications::active_palette(&app, &preferences); // 主题若声明了消息配色则一并下发给原生绘制。
-            app.state::<std::sync::Arc<crate::notifications::ToastManager>>().sync_appearance(preferences, dark, animations, palette);
+            app.state::<std::sync::Arc<crate::notifications::ToastManager>>().sync_appearance(preferences, dark, animations); // 页面只补系统深浅与动画，palette 由保存偏好收敛。
             serialize_result(())
         }
         "publish_message_notification" =>

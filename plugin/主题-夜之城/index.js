@@ -8,6 +8,7 @@
 const PLUGIN_ID = "plugin.theme-nightcity"; // 清单标识，同时作为样式表键。
 const styleUrl = new URL("./style.css", import.meta.url).href; // 同级样式表资产。
 const HEX_MASK = 0xffffff; // 数据流读出保留 24 位。
+const DEFAULT_BEVEL_PIXELS = 6; // 切角量独立于宿主圆角偏好。
 
 /** 可独立关闭的特效；键同时决定 data-nightcity-<键> 属性名。 */
 const OPTIONS = [
@@ -35,6 +36,11 @@ export function normalizeOptions(settings) {
     return Object.fromEntries(OPTIONS.map((option) => [option.key, saved[option.key] !== false]));
 }
 
+/** 切角像素独立归一：非法值回默认，合法数值限制在 0–12。 */
+export function normalizeBevelPixels(value) {
+    return typeof value === "number" && Number.isFinite(value) ? Math.min(12, Math.max(0, value)) : DEFAULT_BEVEL_PIXELS;
+}
+
 /**
  * 把开关写到文档根：样式表按 data-nightcity-<键>="on" / "off" 生效。
  * 默认态写 "on"，删掉属性也等价于默认，避免主题切换后残留关闭状态。
@@ -45,6 +51,7 @@ export function applyThemeOptions(root, settings) {
         const name = option.key.charAt(0).toUpperCase() + option.key.slice(1);
         root.dataset[`nightcity${name}`] = options[option.key] ? "on" : "off";
     }
+    root.style.setProperty("--nightcity-bevel", `${normalizeBevelPixels(settings?.bevelPixels)}px`);
     return options;
 }
 
@@ -53,6 +60,7 @@ export function clearThemeOptions(root) {
     for (const option of OPTIONS) {
         delete root.dataset[`nightcity${option.key.charAt(0).toUpperCase()}${option.key.slice(1)}`];
     }
+    root.style.removeProperty("--nightcity-bevel");
 }
 
 /**
@@ -74,6 +82,7 @@ const themeOptionsEntry = {
         const root = document.createElement("div");
         root.className = "nightcity-options";
         const state = normalizeOptions(context.settings);
+        let bevelPixels = normalizeBevelPixels(context.settings?.bevelPixels);
 
         for (const option of OPTIONS) {
             const row = document.createElement("label");
@@ -95,13 +104,41 @@ const themeOptionsEntry = {
             input.setAttribute("aria-label", option.label);
             input.addEventListener("change", () => {
                 state[option.key] = input.checked;
-                applyThemeOptions(document.documentElement, state); // 当前窗口立刻生效。
-                void context.saveSettings({ ...state }).catch(() => undefined); // 其他窗口靠设置广播重新激活。
+                applyThemeOptions(document.documentElement, { ...state, bevelPixels }); // 当前窗口立刻生效。
+                void context.saveSettings({ ...state, bevelPixels }).catch(() => undefined); // 其他窗口靠设置广播重新激活。
             });
 
             row.append(text, input);
             root.append(row);
         }
+
+        const bevelRow = document.createElement("label");
+        bevelRow.className = "nightcity-options__row";
+        const bevelText = document.createElement("span");
+        bevelText.className = "nightcity-options__text";
+        const bevelLabel = document.createElement("span");
+        bevelLabel.className = "nightcity-options__label";
+        bevelLabel.textContent = "切角像素";
+        const bevelHint = document.createElement("span");
+        bevelHint.className = "nightcity-options__hint";
+        bevelHint.textContent = "只调整切角量，与界面圆角无关";
+        bevelText.append(bevelLabel, bevelHint);
+        const bevelInput = document.createElement("input");
+        bevelInput.type = "number";
+        bevelInput.className = "nightcity-options__number";
+        bevelInput.min = "0";
+        bevelInput.max = "12";
+        bevelInput.step = "1";
+        bevelInput.value = String(bevelPixels);
+        bevelInput.setAttribute("aria-label", "切角像素");
+        bevelInput.addEventListener("change", () => {
+            bevelPixels = normalizeBevelPixels(bevelInput.valueAsNumber);
+            bevelInput.value = String(bevelPixels);
+            applyThemeOptions(document.documentElement, { ...state, bevelPixels });
+            void context.saveSettings({ ...state, bevelPixels }).catch(() => undefined);
+        });
+        bevelRow.append(bevelText, bevelInput);
+        root.append(bevelRow);
 
         container.append(root);
         return () => root.remove();

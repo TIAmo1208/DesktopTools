@@ -114,6 +114,19 @@
     cursor: pointer;
 }
 
+/* 切角像素复用设置行，仅补数值输入的紧凑宽度。 */
+.nightcity-options .nightcity-options__number {
+    flex: none;
+    box-sizing: border-box;
+    width: 64px;
+    height: 28px;
+    padding-inline: 8px;
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    background: var(--color-surface);
+    font: inherit;
+}
+
 /* 勾形由两条直线绘制，不切回系统外观或改动命中尺寸。 */
 .nightcity-options .nightcity-options__input:checked {
     border-color: var(--color-focus);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createServer } from "vite";
 
@@ -12,6 +13,28 @@ const pluginContract = await server.ssrLoadModule("/src/contracts/plugin.ts");
 const scripts = await server.ssrLoadModule("/src/bridge/pluginScripts.ts");
 test.after(async () => {
     await server.close();
+});
+
+test("插件行展示元素穿透整行按钮，卸载与开关保留独立命中", () => {
+    const css = readFileSync(new URL("./PluginSettingsPage.css", import.meta.url), "utf8"); // 生产行命中样式。
+    const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector.trim(), body })); // 仅匹配声明块。
+    const row = rules.find(({ selector }) => selector === ".plugin-settings__row--link > :not(.plugin-settings__hit)"); // 同层排列。
+    const pass = rules.find(({ selector, body }) => /\.plugin-settings__row--link\s*>/.test(selector) && /pointer-events:\s*none/.test(body));
+    assert.match(row?.body ?? "", /position:\s*relative/);
+    assert.match(row?.body ?? "", /z-index:\s*1/);
+    assert.match(pass?.selector ?? "", /\.plugin-settings__copy/);
+    assert.match(pass?.selector ?? "", /\.plugin-settings__chevron/);
+    assert.doesNotMatch(pass?.selector ?? "", /\.plugin-settings__uninstall|\.settings-switch/);
+    assert.match(pass?.body ?? "", /pointer-events:\s*none/);
+    assert.match(rules.find(({ selector }) => selector === ".plugin-settings__row--link > .plugin-settings__hit")?.body ?? "", /position:\s*absolute/);
+});
+
+test("失效移除与天气删除使用 danger，分段控件仍为 primary", () => {
+    const plugin = readFileSync(new URL("./PluginSettingsPage.tsx", import.meta.url), "utf8"); // 插件移除命令。
+    const weather = readFileSync(new URL("./WeatherSettings.tsx", import.meta.url), "utf8"); // 天气确认与供应商分段。
+    assert.match(plugin, /className="plugin-settings__remove"[\s\S]*?data-button="danger"/);
+    assert.match(weather, /className="weather-settings__danger"[\s\S]*?data-button="danger"/);
+    assert.match(weather, /className=\{`weather-settings__segment[^}]+\}[\s\S]*?data-button="primary"/);
 });
 
 test("安装确认、目录草稿和任务历史", () => {

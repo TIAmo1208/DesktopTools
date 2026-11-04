@@ -20,15 +20,15 @@ test("settings switches submit independently of submenu navigation", async () =>
         assert.equal(input.props.checked, true);
         assert.equal(SettingsSwitch({ ...props, disabled: true }).props.children[1].props.disabled, true);
 
-        // 画板 G8 改为切角方滑块；断言轨道尺寸、四态与强制色，避免回退胶囊或禁用态冷光。
+        // 共享样式只断默认胶囊、键盘和强制色语义；主题专属几何由插件测试负责。
         const switchCss = readFileSync(new URL("./SettingsSwitch.css", import.meta.url), "utf8"); // 共用开关的实际样式。
-        assert.match(switchCss, /\.settings-switch__track\s*\{[^}]*width: 40px;[^}]*height: 22px;[^}]*border-radius: 2px;[^}]*background: var\(--color-surface\);/s);
-        assert.match(switchCss, /\.settings-switch__track::after\s*\{[^}]*width: 16px;[^}]*height: 18px;[^}]*clip-path: polygon\(3px 0,[^}]*background: color-mix\(in oklch, var\(--color-muted\) 55%, transparent\);/s);
-        assert.match(switchCss, /input:checked \+ \.settings-switch__track::after,[^{]*input:focus-visible \+ \.settings-switch__track::after\s*\{[^}]*inset-inline-start: 21px;[^}]*var\(--color-ready\)[^}]*drop-shadow\(0 0 5px[^}]*28%/s);
-        assert.match(switchCss, /input:focus-visible \+ \.settings-switch__track::before\s*\{[^}]*inset: -3px;[^}]*border: 2px solid var\(--color-focus\);[^}]*border-radius: 4px;/s);
-        assert.match(switchCss, /input:disabled \+ \.settings-switch__track::after\s*\{[^}]*background: var\(--color-border\);[^}]*filter: none;/s);
+        assert.match(switchCss, /\.settings-switch__track\s*\{[^}]*width: 40px;[^}]*height: 22px;[^}]*padding: 4px;[^}]*border-radius: 11px;[^}]*background: var\(--color-surface\);/s);
+        assert.match(switchCss, /\.settings-switch__track::after\s*\{[^}]*inset-block-start: 4px;[^}]*inset-inline-start: 4px;[^}]*width: 12px;[^}]*height: 12px;[^}]*border-radius: 50%;/s);
+        assert.match(switchCss, /input:checked \+ \.settings-switch__track\s*\{[^}]*background: var\(--color-focus\);/s);
+        assert.match(switchCss, /input:checked \+ \.settings-switch__track::after\s*\{[^}]*inset-inline-start: 22px;[^}]*background: var\(--color-surface\);/s);
+        assert.match(switchCss, /input:focus-visible \+ \.settings-switch__track\s*\{[^}]*outline: 2px solid var\(--color-focus\);[^}]*outline-offset: 2px;/s);
         assert.match(switchCss, /@media \(forced-colors: active\)/);
-        assert.doesNotMatch(switchCss, /border-radius: 11px|transform: translateX/);
+        assert.doesNotMatch(switchCss, /clip-path|drop-shadow|width: 16px|height: 18px/);
 
         const variantCss = readFileSync(new URL("../../styles/global.css", import.meta.url), "utf8"); // 同一 data-button 语义层。
         assert.match(variantCss, /button\[data-button="danger"\]:not\(:disabled\)[^{]*\{[^}]*var\(--color-error\)[^}]*background: transparent;/s);

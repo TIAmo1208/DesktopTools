@@ -2,7 +2,7 @@
     "appearance": {
         "accentColor": "#00c2d9",
         "desktopAccentColor": "#fce300",
-        "cornerRadius": 2,
+        "cornerRadius": 0,
         "fontFamily": "Microsoft YaHei UI",
         "fontSize": 13
     },

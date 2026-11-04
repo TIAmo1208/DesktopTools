@@ -65,8 +65,8 @@
 
 /* 当前父项、悬停和键盘焦点使用同一状态表面。 */
 .desktop-tile-menu button:hover:enabled,
-.desktop-tile-menu button:focus-visible,
-.desktop-tile-menu button[data-expanded="true"] {
+.desktop-tile-menu button:focus-visible:not([aria-disabled="true"]),
+.desktop-tile-menu button[data-expanded="true"]:not([aria-disabled="true"]) {
     background: var(--menu-hover);
 }
 
@@ -76,10 +76,14 @@
     outline-offset: -1px;
 }
 
-/* 禁用项目保留已保存选中标记。 */
+/* 禁用项目保留已保存选中标记，只弱化文字而不降低整体透明度。 */
 .desktop-tile-menu button:disabled,
 .desktop-tile-menu button[aria-disabled="true"] {
-    opacity: 0.48;
+    border-color: transparent;
+    color: var(--color-muted);
+    background: transparent;
+    cursor: default;
+    text-shadow: none;
 }
 
 /* 复选菜单分组标题不可交互，也不占用命令焦点。 */

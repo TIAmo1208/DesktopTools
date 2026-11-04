@@ -399,11 +399,6 @@
     color: var(--color-action-text);
     background: var(--color-action);
 }
-/* 删除确认使用错误色。 */
-.weather-settings__actions .weather-settings__danger {
-    border-color: var(--color-error);
-    color: var(--color-error);
-}
 /* 禁用状态保持可读但不可操作，与设置页其余禁用控件一致。 */
 .weather-settings button:disabled {
     color: var(--color-muted);

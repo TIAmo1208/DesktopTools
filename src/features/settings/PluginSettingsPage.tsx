@@ -712,7 +712,7 @@ export const PluginSettingsPage = ({
                                         className="plugin-settings__remove"
                                         type="button"
                                         onClick={(event) => handleRemoveRequest(instance, event.currentTarget)}
-                                     data-button="primary">
+                                     data-button="danger">
                                         移除
                                     </button>
                                 </div>
