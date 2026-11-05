@@ -33,6 +33,7 @@ export interface ComponentManifest {
     script: string; // 插件根内的脚本相对路径。官方清单为空串；主题没有入口文件时同样为空串。
     role?: ComponentRole; // 缺省为 tile。
     stylesheet?: string; // 插件根内的主题样式表路径。
+    stylesheetCacheKey?: string; // 仅用于主题样式表 URL 缓存失效。
     themeAppearance?: ThemeAppearance | null; // 非主题为 null。
     themeFonts?: ThemeFont[]; // 主题自带的字体，非主题缺省为空。
     requiredCapabilities: ComponentCapability[];
@@ -257,6 +258,7 @@ export const parseComponentRuntimeSnapshot = (value: unknown): ComponentRuntimeS
             removable: parseDeclarationFlag(item.removable),
             maxTiles: parseMaxTiles(item.maxTiles),
             version: parseOptionalText(item.version),
+            stylesheetCacheKey: parseOptionalText(item.stylesheetCacheKey),
             description: parseOptionalText(item.description),
             author: parseOptionalText(item.author),
             repository: parseOptionalText(item.repository),

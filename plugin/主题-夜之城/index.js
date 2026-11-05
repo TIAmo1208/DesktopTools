@@ -13,6 +13,8 @@ const DEFAULT_BEVEL_PIXELS = 6; // 切角量独立于宿主圆角偏好。
 /** 可独立关闭的特效；键同时决定 data-nightcity-<键> 属性名。 */
 const OPTIONS = [
     { key: "scan", label: "CRT 扫描线", hint: "深色叠扫描线与城市网格，浅色只留稀疏网格" },
+    { key: "brandScan", label: "设置标题扫描线", hint: "应用名称循环扫过青色亮带" },
+    { key: "tileScan", label: "时钟扫描线", hint: "桌面时间格子循环扫过青色亮带" },
     { key: "bevel", label: "45° 切角", hint: "按钮削角；开关轨道与滑块不参与" },
     { key: "glow", label: "悬停冷光", hint: "按钮悬停时叠一层青色光晕" },
     { key: "mono", label: "等宽数字", hint: "时间与数字改用等宽字形，读数不抖动" },
@@ -30,7 +32,7 @@ if (typeof document !== "undefined" && !document.querySelector(`link[data-plugin
 /** 两位补零，时分秒与十六进制共用。 */
 const pad = (value) => String(value).padStart(2, "0");
 
-/** 设置值归一成四个布尔；非对象、缺键都按默认开启。 */
+/** 设置值归一成布尔特效；非对象、缺键都按默认开启。 */
 export function normalizeOptions(settings) {
     const saved = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
     return Object.fromEntries(OPTIONS.map((option) => [option.key, saved[option.key] !== false]));
@@ -74,7 +76,7 @@ export function nightCityReadout(unixMillis, showSeconds = false) {
     return { clock, hex: `0x${seed.toString(16).toUpperCase().padStart(6, "0")}` };
 }
 
-/** 四个开关的设置条目：保存后立即作用到当前窗口。 */
+/** 布尔特效与独立数值项：保存后立即作用到当前窗口。 */
 const themeOptionsEntry = {
     id: "nightcity-effects",
     name: "夜之城特效",

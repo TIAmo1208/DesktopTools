@@ -20,6 +20,7 @@
 
 /* 界面深色调色板：主形态，夜之城的底色在这里。 */
 :root[data-theme="dark"] {
+    color-scheme: dark;
     --color-background: #05070d;
     --color-surface: #0d1322;
     --color-subtle: #121a2c;
@@ -33,6 +34,11 @@
     --color-action-text: #0a0a05;
     --color-error: #ff3b69;
     --color-error-surface: #2b0e1a;
+}
+
+/* 日间变体让原生下拉弹层与滚动条使用浅色系统外观。 */
+:root[data-theme="light"] {
+    color-scheme: light;
 }
 
 /* ---------- 桌面网格表面 ---------- */
@@ -54,6 +60,48 @@
     --fence-text: #0b1220;
     --fence-focus-border: var(--desktop-accent, #fce300);
     --fence-item-text-shadow: none;
+}
+
+/* ---------- 选中态四角 ---------- */
+
+/* 桌面项目、收集条目和格子焦点共用桌面强调色四角 L，并保留各自底色。 */
+.desktop-item[data-selected="true"],
+.official-component__collect .collect-box__item--selected,
+.desktop-tile:focus,
+.desktop-tile:focus-visible,
+.desktop-tile[data-keyboard-focus="true"] {
+    border-color: transparent;
+    background-image:
+        linear-gradient(var(--fence-focus-border), var(--fence-focus-border)), linear-gradient(var(--fence-focus-border), var(--fence-focus-border)),
+        linear-gradient(var(--fence-focus-border), var(--fence-focus-border)), linear-gradient(var(--fence-focus-border), var(--fence-focus-border)),
+        linear-gradient(var(--fence-focus-border), var(--fence-focus-border)), linear-gradient(var(--fence-focus-border), var(--fence-focus-border)),
+        linear-gradient(var(--fence-focus-border), var(--fence-focus-border)), linear-gradient(var(--fence-focus-border), var(--fence-focus-border));
+    background-position: 0 0, 0 0, 100% 0, 100% 0, 0 100%, 0 100%, 100% 100%, 100% 100%;
+    background-size: 12px 1px, 1px 12px, 12px 1px, 1px 12px, 12px 1px, 1px 12px, 12px 1px, 1px 12px;
+    background-repeat: no-repeat;
+}
+
+/* 选中项目悬停只改底色，避免组件 background 简写清除四角图层。 */
+.desktop-item[data-selected="true"]:hover {
+    background-color: color-mix(in srgb, var(--color-accent) 24%, transparent);
+}
+
+/* 门户条目选中态沿用四角语言，悬停用长写保留图层。 */
+.folder-portal__items li.is-selected {
+    border-color: transparent;
+    background-color: color-mix(in srgb, var(--color-accent) 32%, transparent);
+    background-image:
+        linear-gradient(var(--fence-focus-border), var(--fence-focus-border)), linear-gradient(var(--fence-focus-border), var(--fence-focus-border)),
+        linear-gradient(var(--fence-focus-border), var(--fence-focus-border)), linear-gradient(var(--fence-focus-border), var(--fence-focus-border)),
+        linear-gradient(var(--fence-focus-border), var(--fence-focus-border)), linear-gradient(var(--fence-focus-border), var(--fence-focus-border)),
+        linear-gradient(var(--fence-focus-border), var(--fence-focus-border)), linear-gradient(var(--fence-focus-border), var(--fence-focus-border));
+    background-position: 0 0, 0 0, 100% 0, 100% 0, 0 100%, 0 100%, 100% 100%, 100% 100%;
+    background-size: 12px 1px, 1px 12px, 12px 1px, 1px 12px, 12px 1px, 1px 12px, 12px 1px, 1px 12px;
+    background-repeat: no-repeat;
+}
+
+.folder-portal__items li.is-selected:hover {
+    background-color: color-mix(in srgb, var(--color-accent) 24%, transparent);
 }
 
 /* ---------- 自绘菜单 ---------- */
@@ -109,6 +157,48 @@ h1 {
     letter-spacing: 0.12em;
 }
 
+/* 设置品牌名称保持 NC 黄，扫描层覆盖 logo 与名称整体。 */
+.settings__brand {
+    position: relative;
+    isolation: isolate;
+}
+
+.settings__brand span {
+    color: var(--desktop-accent, #fce300);
+}
+
+.settings__brand::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+        repeating-linear-gradient(0deg, rgb(0 0 0 / 22%) 0 1px, transparent 1px 3px),
+        linear-gradient(180deg, transparent 0 38%, rgb(0 240 255 / 30%) 48% 52%, transparent 62% 100%);
+    background-size: 100% 100%, 100% 240%;
+    mask-image: linear-gradient(90deg, transparent 0, #000 12%, #000 88%, transparent 100%);
+    animation: nightcity-brand-scan 4200ms linear infinite;
+}
+
+@keyframes nightcity-brand-scan {
+    to {
+        background-position: 0 0, 0 240%;
+    }
+}
+
+/* 关闭标题扫描线时整层撤下，不残留半透明纹理。 */
+:root[data-nightcity-brand-scan="off"] .settings__brand::after,
+:root[data-interface-animations="off"] .settings__brand::after {
+    display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .settings__brand::after {
+        display: none;
+    }
+}
+
 /* 悬停冷光只给可用按钮，禁用与整行命中层不参与。 */
 @media (hover: hover) and (pointer: fine) {
     button:not([data-button="row-hit"]):hover:not(:disabled) {
@@ -154,7 +244,7 @@ textarea {
 
 /* ---------- CRT 叠加 ---------- */
 
-/* 叠加层只画线不铺底，鼠标穿透，壁纸照旧透出。 */
+/* 全屏叠加只画线与网格，不铺底，鼠标穿透。 */
 #root::after {
     content: "";
     position: fixed;
@@ -164,7 +254,6 @@ textarea {
     background: var(--nightcity-crt, none);
 }
 
-/* 深色：扫描线配城市网格，CRT 的存在感主要来自这一套。 */
 :root[data-theme="dark"] {
     --nightcity-crt:
         repeating-linear-gradient(0deg, rgb(0 0 0 / 20%) 0 1px, transparent 1px 3px),
@@ -172,26 +261,22 @@ textarea {
         repeating-linear-gradient(0deg, rgb(0 240 255 / 4%) 0 1px, transparent 1px 84px);
 }
 
-/* 浅色：只留稀疏青色网格，不叠黑色扫描线，白底不发灰也不刺眼。 */
 :root[data-theme="light"] {
     --nightcity-crt:
         repeating-linear-gradient(90deg, rgb(0 120 160 / 4%) 0 1px, transparent 1px 96px),
         repeating-linear-gradient(0deg, rgb(0 120 160 / 3%) 0 1px, transparent 1px 96px);
 }
 
-/* 桌面窗口跟随桌面网格的深浅，而不是界面主题。 */
 html[data-desktop-host="true"][data-desktop-theme="light"] {
     --nightcity-crt:
         repeating-linear-gradient(90deg, rgb(0 120 160 / 4%) 0 1px, transparent 1px 96px),
         repeating-linear-gradient(0deg, rgb(0 120 160 / 3%) 0 1px, transparent 1px 96px);
 }
 
-/* 关闭扫描线。 */
 :root[data-nightcity-scan="off"] #root::after {
     display: none;
 }
 
-/* 窄屏收敛：网格在手机上只是噪点。 */
 @media (max-width: 768px) {
     #root::after {
         display: none;
@@ -220,6 +305,74 @@ html[data-desktop-host="true"][data-desktop-theme="light"] {
 }
 
 /* ---------- 控件 ---------- */
+
+/* 设置内容滚动区使用深色轨道与主题边框滑块。 */
+.settings__content,
+.plugin-settings,
+.feature-settings {
+    scrollbar-color: var(--color-border) transparent;
+}
+
+/* 设置行与分组结构保持直角，只强化表面和边框。 */
+.settings__row,
+.appearance-settings__row,
+.feature-settings__row,
+.plugin-settings__row,
+.weather-settings__row {
+    border-color: var(--color-border);
+    border-radius: 0;
+    background-color: color-mix(in srgb, var(--color-surface) 82%, transparent);
+}
+
+.settings__row--link:hover,
+.feature-settings__row--link:hover,
+.plugin-settings__row--link:hover {
+    border-color: color-mix(in srgb, var(--color-ready) 42%, var(--color-border));
+    background-color: color-mix(in srgb, var(--color-ready) 8%, var(--color-surface));
+}
+
+/* 实际分组标签和状态文字沿用紧凑等宽终端排版。 */
+.plugin-settings__label,
+.settings__status,
+.plugin-settings__status,
+.weather-settings__status {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", "JetBrains Mono", monospace;
+    letter-spacing: 0.09375rem;
+    text-transform: uppercase;
+}
+
+.settings__status,
+.plugin-settings__status,
+.weather-settings__status {
+    color: var(--color-muted);
+}
+
+/* 设置导航只在本主题中使用青色交互与选中表面。 */
+.settings__navigation-item {
+    color: var(--color-text);
+}
+
+.settings__navigation-item:hover,
+.settings__navigation-toggle:hover {
+    color: var(--color-text);
+    background-color: color-mix(in srgb, var(--color-ready) 10%, transparent);
+}
+
+.settings__navigation-item[aria-current="page"] {
+    color: var(--color-text);
+    background-color: color-mix(in srgb, var(--color-focus) 14%, transparent);
+}
+
+.settings__navigation-item[aria-current="page"]::before {
+    background-color: var(--color-focus);
+}
+
+/* 设置下拉关闭态和原生弹层都跟随界面令牌与 color-scheme。 */
+.settings__select {
+    border-color: var(--color-border);
+    color: var(--color-text);
+    background-color: var(--color-subtle);
+}
 
 /* G8 开关几何只由本主题持有，撤下主题样式表后恢复共享胶囊。 */
 .settings-switch__track {
@@ -281,6 +434,15 @@ select,
 textarea {
     caret-color: var(--color-focus);
     font-family: var(--interface-font);
+}
+
+/* 文本字段悬停先给青色边框，复选与开关仍被排除。 */
+@media (hover: hover) and (pointer: fine) {
+    input:not([type="checkbox"]):not([type="radio"]):hover:not(:disabled),
+    select:hover:not(:disabled),
+    textarea:hover:not(:disabled) {
+        border-color: color-mix(in srgb, var(--color-ready) 58%, var(--color-border));
+    }
 }
 
 /* 文本字段聚焦用强调色描边与冷光，不覆盖 G8 开关和 B1 复选焦点。 */

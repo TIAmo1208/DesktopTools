@@ -414,16 +414,17 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     }; // 未声明角色继续按格子处理。
     let entry = required_ini(&values, "entry")?;
     confirm_plugin_entry(folder, &entry)?;
-    let (stylesheet, theme_appearance, theme_fonts, theme_notification, theme_boot) = if role == ComponentRole::Theme
+    let (stylesheet, stylesheet_cache_key, theme_appearance, theme_fonts, theme_notification, theme_boot) = if role == ComponentRole::Theme
     {
         let stylesheet = required_ini(&values, "stylesheet")?; // 主题资产必须存在并通过相同路径规则。
         confirm_plugin_asset(folder, &stylesheet, "css", false)?;
+        let cache_key = stylesheet_cache_key(&version, &folder.join(&stylesheet)); // 仅读元数据，不为缓存失效读取整份 CSS。
         let (appearance, fonts, notification, boot) = read_theme_data(folder, folder_name)?;
-        (format!("{folder_name}/{stylesheet}"), Some(appearance), fonts, notification, boot)
+        (format!("{folder_name}/{stylesheet}"), cache_key, Some(appearance), fonts, notification, boot)
     }
     else
     {
-        (String::new(), None, Vec::new(), None, None)
+        (String::new(), String::new(), None, Vec::new(), None, None)
     };
     let app_version = parse_plugin_version(env!("CARGO_PKG_VERSION")).ok_or_else(|| "程序版本无效".to_string())?; // 与 package_info 使用同一份 Cargo 版本。
     if let Some(minimum) = optional_version(&values, "minAppVersion")?
@@ -453,9 +454,21 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     // 主题默认没有格子；带入口脚本时按清单声明放行，供主题自带的格子使用（同一插件里既能换肤又能添格子）。
     let creatable = creatable && (role == ComponentRole::Tile || !script.is_empty());
     let max_tiles = if role == ComponentRole::Theme && !creatable { 0 } else { max_tiles }; // 不能创建的主题忽略格子上限。
-    let manifest = ComponentManifest { id, name, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, theme_appearance, theme_notification, theme_boot, theme_fonts, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
+    let manifest = ComponentManifest { id, name, version, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, stylesheet_cache_key, theme_appearance, theme_notification, theme_boot, theme_fonts, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
     validate_manifest(&manifest).map_err(|error| error.message)?;
     Ok(manifest)
+}
+
+/// 组合已校验清单版本与稳定文件元数据；元数据不可用时仍返回非空版本。
+fn stylesheet_cache_key(version: &str, path: &std::path::Path) -> String
+{
+    let Ok(metadata) = std::fs::metadata(path)
+    else
+    {
+        return version.to_string();
+    };
+    let modified = metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|elapsed| elapsed.as_nanos()).unwrap_or(0);
+    format!("{version}-{}-{modified}", metadata.len())
 }
 
 /// 解析 ini 的 required_capabilities：逗号分隔的能力名，非法值或重复值让插件加载失败。
@@ -708,6 +721,14 @@ fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(Theme
         if colors.weight.as_deref().is_some_and(|weight| !matches!(weight, "normal" | "medium" | "semibold" | "bold"))
         {
             return Err("主题消息字重无效".to_string()); // 只接受四个枚举，避免传进 DirectWrite 无法识别的值。
+        }
+        if colors.corner_style.as_deref().is_some_and(|style| !matches!(style, "round" | "bevel"))
+        {
+            return Err("主题消息切角样式无效".to_string());
+        }
+        if colors.corner_size.is_some_and(|size| !(1..=24).contains(&size))
+        {
+            return Err("主题消息切角尺寸超出范围".to_string());
         }
     }
     let boot = document.boot; // 缺省用内置时长。

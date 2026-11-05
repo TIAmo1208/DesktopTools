@@ -28,6 +28,7 @@ struct Bitmap
 fn pixels_match_theme_alpha_and_dpi()
 {
     use super::{Appearance, Frame, Visual};
+    use crate::contracts::ThemeNotification;
     use crate::contracts::settings::ApplicationPreferences;
     for scale in [1.0, 1.5, 2.0]
     {
@@ -83,6 +84,43 @@ fn pixels_match_theme_alpha_and_dpi()
             surface.draw(&fading, &appearance, None, false).unwrap();
             assert_ne!(first_rotation, pixels, "loading 角度变化必须改变实际像素");
         }
+        let theme = ThemeNotification { surface: Some("#0d1322".into()), border: Some("#00c2d9".into()), corner_style: Some("bevel".into()), corner_size: Some(12), ..Default::default() }; // 显式声明独立切角尺寸。
+        let appearance = Appearance::resolve(&ApplicationPreferences::default(), false, false).with_palette(Some(theme));
+        let mut surface = Surface::new(SIZE { cx: (300.0 * scale) as i32, cy: (350.0 * scale) as i32 }, scale, &appearance).unwrap();
+        surface.measure(3, "主题通知").unwrap();
+        let frame = Frame { loading_phase: 0.0, id: 3, kind: "info".into(), loading: false, rect: D2D_RECT_F { left: 2.0, top: 140.0, right: 298.0, bottom: 204.0 }, visual: Visual { top: 140.0, height: 64.0, scale: 1.0, alpha: 1.0, content: 1.0 }, closable: true };
+        let pixel = |surface: &Surface, x: f32, y: f32| {
+            let mut section = DIBSECTION::default();
+            unsafe { assert_ne!(GetObjectW(surface.bitmap.image.into(), std::mem::size_of::<DIBSECTION>() as i32, Some((&mut section as *mut DIBSECTION).cast())), 0); }
+            let bytes = unsafe { std::slice::from_raw_parts(section.dsBm.bmBits.cast::<u8>(), (surface.size.cx * surface.size.cy * 4) as usize) };
+            let offset = (((y * scale) as i32 * surface.size.cx + (x * scale) as i32) * 4) as usize;
+            [bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]]
+        }; // 真实预乘 BGRA 的指定 DIP 像素。
+        surface.draw(&[frame.clone()], &appearance, None, false).unwrap();
+        let surface_bgra = pixel(&surface, 140.0, 150.0); // 画板主题表面，正文轨道另取样。
+        let text_region = (36..244).flat_map(|x| (140..204).map(move |y| (x, y))).filter(|(x, y)| {
+            let color = pixel(&surface, *x as f32, *y as f32);
+            color[3] > 200 && color != surface_bgra
+        }).count();
+        assert!(text_region > 8, "bevel 主题正文应明显区别于表面，DPI={scale}，像素={text_region}");
+        let icon_region = (12..28).flat_map(|x| (165..181).map(move |y| (x, y))).filter(|(x, y)| pixel(&surface, *x as f32, *y as f32) != surface_bgra).count();
+        assert!(icon_region > 4, "bevel 主题状态图标不应消失，DPI={scale}");
+        let close_region = (260..286).flat_map(|x| (159..185).map(move |y| (x, y))).filter(|(x, y)| pixel(&surface, *x as f32, *y as f32) != surface_bgra).count();
+        assert!(close_region > 4, "bevel 主题关闭图标不应消失，DPI={scale}");
+        assert_eq!(pixel(&surface, 3.0, 141.0)[3], 0, "切角外必须透明，DPI={scale}");
+        assert!(pixel(&surface, 10.0, 144.0)[3] > 0, "左上切边描线连续，DPI={scale}");
+        assert!(pixel(&surface, 4.0, 150.0)[3] > 0, "左边框连续，DPI={scale}");
+        assert_eq!(pixel(&surface, 296.0, 202.0)[3], 0, "右下切角外透明，DPI={scale}");
+        assert!(pixel(&surface, 289.0, 199.0)[3] > 0, "右下切边描线连续，DPI={scale}");
+        for visual_scale in [1.0, 0.94, 0.88]
+        {
+            let mut folded = frame.clone();
+            folded.visual.scale = visual_scale;
+            folded.rect.right = folded.rect.left + 296.0 * visual_scale;
+            folded.rect.bottom = folded.rect.top + 64.0 * visual_scale;
+            surface.draw(&[folded], &appearance, None, false).unwrap();
+            assert_eq!(pixel(&surface, 2.0, 140.0)[3], 0, "切角应与 {visual_scale} 折叠比例同步，DPI={scale}");
+        }
     }
 }
 
@@ -104,6 +142,7 @@ pub(super) struct Surface
 {
     loading_mask: ID2D1Bitmap,                       // loading.svg 的 DPI 相关透明度缓存，主题色由画刷提供。
     stroke: ID2D1StrokeStyle,                        // Lucide 圆头与圆角连接样式，创建后复用。
+    factory: ID2D1Factory,                           // 复用工厂创建当前帧轮廓。
     pub target: ID2D1DCRenderTarget,                 // 可反复清空和重绘的软件目标。
     write: IDWriteFactory,                           // 文字布局工厂。
     format: IDWriteTextFormat,                       // 当前字体格式。
@@ -143,7 +182,7 @@ impl Surface
             let loading_mask = target.CreateBitmap(D2D_SIZE_U { width: icon_size, height: icon_size }, Some(alpha.as_ptr().cast()), icon_size, &D2D1_BITMAP_PROPERTIES { pixelFormat: D2D1_PIXEL_FORMAT { format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED }, dpiX: 96.0 * scale, dpiY: 96.0 * scale })?;
             let write: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?; // 复用系统文本工厂。
             let format = write.CreateTextFormat(&HSTRING::from(&appearance.font), None, DWRITE_FONT_WEIGHT(appearance.weight), DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, appearance.font_size as f32, w!("zh-CN"))?; // 已保存的界面字体与主题字重。
-            Ok(Self { loading_mask, stroke, target, write, format, layouts: HashMap::new(), size, scale, font: (appearance.font.clone(), appearance.font_size, appearance.weight), bitmap })
+            Ok(Self { loading_mask, stroke, factory, target, write, format, layouts: HashMap::new(), size, scale, font: (appearance.font.clone(), appearance.font_size, appearance.weight), bitmap })
         }
     }
 
@@ -184,15 +223,37 @@ impl Surface
     /// 将颜色转换为 Direct2D 预合成输入，复用前端主题的精确色值。
     fn color(rgb: u32, alpha: f32) -> D2D1_COLOR_F { D2D1_COLOR_F { r: ((rgb >> 16) & 255) as f32 / 255.0, g: ((rgb >> 8) & 255) as f32 / 255.0, b: (rgb & 255) as f32 / 255.0, a: alpha } }
 
+    /// 按主题独立尺寸生成两个 45° 切角，右上与左下继续使用外观圆角。
+    fn bevel_geometry(&self, rect: D2D_RECT_F, radius: f32, corner_size: f32, visual_scale: f32) -> windows::core::Result<ID2D1PathGeometry>
+    {
+        let geometry = unsafe { self.factory.CreatePathGeometry()? };
+        let sink = unsafe { geometry.Open()? };
+        let radius = radius.max(0.0).min((rect.right - rect.left) / 2.0).min((rect.bottom - rect.top) / 2.0); // 其余两角仍使用外观圆角。
+        let cut = (corner_size * visual_scale).min((rect.right - rect.left) / 2.0).min((rect.bottom - rect.top) / 2.0); // 独立切角随折叠层同比缩放。
+        let point = |x, y| {
+            let mut value = D2D1_ELLIPSE::default().point; // 已有 Windows Vector2 类型，不添加依赖。
+            value.X = x;
+            value.Y = y;
+            value
+        };
+        unsafe {
+            sink.BeginFigure(point(rect.left + cut, rect.top), D2D1_FIGURE_BEGIN_FILLED);
+            sink.AddLine(point(rect.right - radius, rect.top));
+            sink.AddArc(&D2D1_ARC_SEGMENT { point: point(rect.right, rect.top + radius), size: D2D_SIZE_F { width: radius, height: radius }, rotationAngle: 0.0, sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE, arcSize: D2D1_ARC_SIZE_SMALL });
+            sink.AddLine(point(rect.right, rect.bottom - cut));
+            sink.AddLine(point(rect.right - cut, rect.bottom));
+            sink.AddLine(point(rect.left + radius, rect.bottom));
+            sink.AddArc(&D2D1_ARC_SEGMENT { point: point(rect.left, rect.bottom - radius), size: D2D_SIZE_F { width: radius, height: radius }, rotationAngle: 0.0, sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE, arcSize: D2D1_ARC_SIZE_SMALL });
+            sink.AddLine(point(rect.left, rect.top + cut));
+            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink.Close()?;
+        }
+        Ok(geometry)
+    }
+
     /// 独立绘制每条消息的背景、文本及 Lucide 路径，不改变整个窗口透明度。
     pub fn draw(&mut self, frames: &[Frame], appearance: &Appearance, hover_id: Option<u64>, expanded: bool) -> windows::core::Result<()>
     {
-        let point = |x, y| {
-            let mut position = D2D1_ELLIPSE::default().point;
-            position.X = x;
-            position.Y = y;
-            position
-        }; // 使用 Windows 数值类型而不增加直接依赖。
         self.layouts.retain(|id, _| frames.iter().any(|frame| frame.id == *id));
         let (surface, border, text, muted, subtle) = appearance.palette_colors(); // 主题声明了消息配色时逐项覆盖内置两套。
         unsafe {
@@ -214,40 +275,75 @@ impl Surface
                 {
                     continue;
                 }
-                let rounded = D2D1_ROUNDED_RECT { rect, radiusX: appearance.radius * frame.visual.scale, radiusY: appearance.radius * frame.visual.scale }; // 按外观设置缩放圆角。
+                let rounded = D2D1_ROUNDED_RECT { rect, radiusX: appearance.radius * frame.visual.scale, radiusY: appearance.radius * frame.visual.scale }; // 未声明 bevel 时保持原圆角绘制。
+                let bevel = appearance.bevel_size(); // 只有主题显式声明 bevel 与独立尺寸才改变轮廓。
+                let geometry = bevel.map(|corner_size| self.bevel_geometry(rect, rounded.radiusX, corner_size, frame.visual.scale)).transpose()?; // 填充与描边共用轮廓。
                 brush.SetColor(&Self::color(surface, alpha));
-                self.target.FillRoundedRectangle(&rounded, &brush);
+                if let Some(geometry) = &geometry
+                {
+                    self.target.FillGeometry(geometry, &brush, None);
+                }
+                else
+                {
+                    self.target.FillRoundedRectangle(&rounded, &brush);
+                }
                 brush.SetColor(&Self::color(border, alpha));
-                self.target.DrawRoundedRectangle(&rounded, &brush, 1.0, None);
+                if let Some(geometry) = &geometry
+                {
+                    self.target.DrawGeometry(geometry, &brush, 1.0, None);
+                }
+                else
+                {
+                    self.target.DrawRoundedRectangle(&rounded, &brush, 1.0, None);
+                }
                 let content_alpha = alpha * frame.visual.content; // 后层内容随让位淡出。
                 if content_alpha <= 0.0
                 {
                     continue;
                 }
-                self.target.PushAxisAlignedClip(&rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE); // 缩小旧层时正文不能画到当前表面外。
-                brush.SetColor(&Self::color(text, content_alpha));
-                if let Some((layout, _)) = self.layouts.get(&frame.id)
-                {
-                    let mut metrics = DWRITE_TEXT_METRICS::default(); // 垂直居中当前多行正文。
-                    layout.GetMetrics(&mut metrics)?;
-                    self.target.DrawTextLayout(point(rect.left + 36.0, rect.top + ((rect.bottom - rect.top - metrics.height) / 2.0).max(12.0)), layout, &brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
-                }
-                if hover_id == Some(frame.id)
-                {
-                    brush.SetColor(&Self::color(subtle, content_alpha));
-                    self.target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: frame.close_rect(), radiusX: 4.0, radiusY: 4.0 }, &brush);
-                }
-                brush.SetColor(&Self::color(muted, content_alpha));
-                let center = point(rect.right - 28.0, rect.top + 32.0); // 18px Lucide circle-x，24 viewBox 中半径 10。
-                self.target.DrawEllipse(&D2D1_ELLIPSE { point: center, radiusX: 7.5, radiusY: 7.5 }, &brush, 1.5, &self.stroke);
-                self.target.DrawLine(point(center.X - 2.25, center.Y - 2.25), point(center.X + 2.25, center.Y + 2.25), &brush, 1.5, &self.stroke);
-                self.target.DrawLine(point(center.X + 2.25, center.Y - 2.25), point(center.X - 2.25, center.Y + 2.25), &brush, 1.5, &self.stroke);
-                let status_color = appearance.status_color(frame.kind.as_str(), muted); // 主题声明了状态色时覆盖内置语义色。
-                brush.SetColor(&Self::color(status_color, content_alpha));
-                let center = point(rect.left + 20.0, rect.top + 32.0); // 左侧 16px 状态图标。
-                if frame.loading
-                {
-                    let mut original = Default::default(); // 保存原变换，旋转只作用于资源图标。
+                self.target.PushAxisAlignedClip(&rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE); // 正文与图标都在轮廓内侧；不让几何 layer 掩膜吃掉文字。
+                self.draw_content(frame, appearance, hover_id, &brush, text, muted, subtle, content_alpha)?;
+                self.target.PopAxisAlignedClip();
+            }
+            self.target.EndDraw(None, None)
+        }
+    }
+
+    /// 绘制正文、关闭与状态图标，外层负责当前轮廓裁剪。
+    fn draw_content(&self, frame: &Frame, appearance: &Appearance, hover_id: Option<u64>, source_brush: &ID2D1SolidColorBrush, text: u32, muted: u32, subtle: u32, content_alpha: f32) -> windows::core::Result<()>
+    {
+        let brush = source_brush; // 绘制借用同一画刷，避免二次引用传入 COM 参数。
+        let rect = frame.rect;
+        let point = |x, y| {
+            let mut position = D2D1_ELLIPSE::default().point;
+            position.X = x;
+            position.Y = y;
+            position
+        };
+        unsafe {
+            brush.SetColor(&Self::color(text, content_alpha));
+            if let Some((layout, _)) = self.layouts.get(&frame.id)
+            {
+                let mut metrics = DWRITE_TEXT_METRICS::default(); // 垂直居中当前多行正文。
+                layout.GetMetrics(&mut metrics)?;
+                self.target.DrawTextLayout(point(rect.left + 36.0, rect.top + ((rect.bottom - rect.top - metrics.height) / 2.0).max(12.0)), layout, brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            if hover_id == Some(frame.id)
+            {
+                brush.SetColor(&Self::color(subtle, content_alpha));
+                self.target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: frame.close_rect(), radiusX: 4.0, radiusY: 4.0 }, brush);
+            }
+            brush.SetColor(&Self::color(muted, content_alpha));
+            let center = point(rect.right - 28.0, rect.top + 32.0); // 18px Lucide circle-x，24 viewBox 中半径 10。
+            self.target.DrawEllipse(&D2D1_ELLIPSE { point: center, radiusX: 7.5, radiusY: 7.5 }, brush, 1.5, &self.stroke);
+            self.target.DrawLine(point(center.X - 2.25, center.Y - 2.25), point(center.X + 2.25, center.Y + 2.25), brush, 1.5, &self.stroke);
+            self.target.DrawLine(point(center.X + 2.25, center.Y - 2.25), point(center.X - 2.25, center.Y + 2.25), brush, 1.5, &self.stroke);
+            let status_color = appearance.status_color(frame.kind.as_str(), muted); // 主题声明了状态色时覆盖内置语义色。
+            brush.SetColor(&Self::color(status_color, content_alpha));
+            let center = point(rect.left + 20.0, rect.top + 32.0); // 左侧 16px 状态图标。
+            if frame.loading
+            {
+                let mut original = Default::default(); // 保存原变换，旋转只作用于资源图标。
                     self.target.GetTransform(&mut original);
                     let mut rotation = original; // 以图标中心旋转缓存蒙版。
                     let (sine, cosine) = frame.loading_phase.sin_cos();
@@ -259,26 +355,24 @@ impl Surface
                     rotation.M32 = center.Y * (1.0 - cosine) - center.X * sine;
                     self.target.SetTransform(&rotation);
                     self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED); // FillOpacityMask 要求此模式，边缘 Alpha 已来自 SVG 栅格化。
-                    self.target.FillOpacityMask(&self.loading_mask, &brush, D2D1_OPACITY_MASK_CONTENT_GRAPHICS, Some(&D2D_RECT_F { left: center.X - 8.0, top: center.Y - 8.0, right: center.X + 8.0, bottom: center.Y + 8.0 }), None);
+                    self.target.FillOpacityMask(&self.loading_mask, brush, D2D1_OPACITY_MASK_CONTENT_GRAPHICS, Some(&D2D_RECT_F { left: center.X - 8.0, top: center.Y - 8.0, right: center.X + 8.0, bottom: center.Y + 8.0 }), None);
                     self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                     self.target.SetTransform(&original);
                 }
                 else if frame.kind == "success"
                 {
-                    self.target.DrawLine(point(center.X - 5.0, center.Y), point(center.X - 1.0, center.Y + 4.0), &brush, 1.5, &self.stroke);
-                    self.target.DrawLine(point(center.X - 1.0, center.Y + 4.0), point(center.X + 6.0, center.Y - 4.0), &brush, 1.5, &self.stroke);
+                    self.target.DrawLine(point(center.X - 5.0, center.Y), point(center.X - 1.0, center.Y + 4.0), brush, 1.5, &self.stroke);
+                    self.target.DrawLine(point(center.X - 1.0, center.Y + 4.0), point(center.X + 6.0, center.Y - 4.0), brush, 1.5, &self.stroke);
                 }
                 else
                 {
-                    self.target.DrawEllipse(&D2D1_ELLIPSE { point: center, radiusX: 6.5, radiusY: 6.5 }, &brush, 1.3, None);
+                    self.target.DrawEllipse(&D2D1_ELLIPSE { point: center, radiusX: 6.5, radiusY: 6.5 }, brush, 1.3, None);
                     let inverted = frame.kind == "warning" || frame.kind == "error"; // 信息与警告使用不同的点线方向。
-                    self.target.DrawLine(point(center.X, center.Y + if inverted { -3.0 } else { 0.0 }), point(center.X, center.Y + if inverted { 1.0 } else { 4.0 }), &brush, 1.5, &self.stroke);
-                    self.target.FillEllipse(&D2D1_ELLIPSE { point: point(center.X, center.Y + if inverted { 3.5 } else { -3.0 }), radiusX: 0.8, radiusY: 0.8 }, &brush);
+                    self.target.DrawLine(point(center.X, center.Y + if inverted { -3.0 } else { 0.0 }), point(center.X, center.Y + if inverted { 1.0 } else { 4.0 }), brush, 1.5, &self.stroke);
+                    self.target.FillEllipse(&D2D1_ELLIPSE { point: point(center.X, center.Y + if inverted { 3.5 } else { -3.0 }), radiusX: 0.8, radiusY: 0.8 }, brush);
                 }
-                self.target.PopAxisAlignedClip();
-            }
-            self.target.EndDraw(None, None)
         }
+        Ok(())
     }
 
     /// 以固定整窗 Alpha 提交逐像素透明，消息之间的透明度互不影响。

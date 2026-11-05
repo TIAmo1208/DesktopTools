@@ -55,11 +55,11 @@ pub struct ToastRequest
 #[derive(Clone)]
 struct Appearance
 {
-    dark: bool,     // 不使用桌面网格主题。
-    animated: bool, // 有效动画开关。
-    font: String,   // 已保存的字体。
-    font_size: u8,  // 已保存的字号。
-    radius: f32,    // 已保存的圆角。
+    dark: bool,                         // 不使用桌面网格主题。
+    animated: bool,                     // 有效动画开关。
+    font: String,                       // 已保存的字体。
+    font_size: u8,                      // 已保存的字号。
+    radius: f32,                        // 已保存的圆角。
     palette: Option<ThemeNotification>, // 主题声明的消息配色，缺省沿用内置两套。
     weight: i32,                        // 正文字重，来自主题声明，缺省常规。
 }
@@ -100,6 +100,13 @@ impl Appearance
         }
         self.palette = palette;
         self
+    }
+
+    /// 仅显式 bevel 且声明合法尺寸时切角，round 与缺省保持原外观。
+    fn bevel_size(&self) -> Option<f32>
+    {
+        let theme = self.palette.as_ref()?;
+        (theme.corner_style.as_deref() == Some("bevel")).then_some(theme.corner_size? as f32)
     }
 
     /// 状态图标颜色：主题声明了对应状态色时覆盖，未声明时沿用内置语义色。

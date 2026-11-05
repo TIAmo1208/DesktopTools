@@ -21,7 +21,7 @@
             "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
             "nsis": {
                 "template": "installer/installer.nsi",
-                "installMode": "currentUser",
+                "installMode": "both",
                 "languages": ["SimpChinese"],
                 "installerHooks": "installer/hooks.nsh"
             }

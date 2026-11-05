@@ -15,7 +15,9 @@
         "success": "#00f5a0",
         "warning": "#ffb300",
         "error": "#ff3b69",
-        "weight": "medium"
+        "weight": "medium",
+        "cornerStyle": "bevel",
+        "cornerSize": 12
     },
     "boot": {
         "durationMs": 2600

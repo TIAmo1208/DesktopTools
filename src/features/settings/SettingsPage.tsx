@@ -267,8 +267,6 @@ export const SettingsPage = () => {
                         );
                 }}
             >
-                <img src={applicationIcon} alt="" width="20" height="20" />
-                <span>Desktop Tools 设置</span>
                 <div className="settings__window-controls">
                     {(
                         [
@@ -294,6 +292,10 @@ export const SettingsPage = () => {
                 </div>
             </header>
             <aside className="settings__sidebar">
+                <div className="settings__brand">
+                    <img src={applicationIcon} alt="" width="20" height="20" />
+                    <span>Desktop Tools</span>
+                </div>
                 <button
                     type="button"
                     className="settings__navigation-toggle"

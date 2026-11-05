@@ -18,9 +18,9 @@ test("十六进制读出由秒数派生，同一秒稳定、跨秒变化", () =>
 });
 
 test("特效开关默认全开，只有显式 false 才关闭", () => {
-    assert.deepEqual(normalizeOptions(null), { scan: true, bevel: true, glow: true, mono: true });
-    assert.deepEqual(normalizeOptions({ scan: false, glow: false }), { scan: false, bevel: true, glow: false, mono: true }); // 缺键按默认开启。
-    assert.deepEqual(normalizeOptions({ scan: "off" }), { scan: true, bevel: true, glow: true, mono: true }); // 非布尔值不当作关闭。
+    assert.deepEqual(normalizeOptions(null), { scan: true, brandScan: true, tileScan: true, bevel: true, glow: true, mono: true });
+    assert.deepEqual(normalizeOptions({ scan: false, glow: false }), { scan: false, brandScan: true, tileScan: true, bevel: true, glow: false, mono: true }); // 缺键按默认开启。
+    assert.deepEqual(normalizeOptions({ scan: "off", brandScan: false, tileScan: false }), { scan: true, brandScan: false, tileScan: false, bevel: true, glow: true, mono: true }); // 非布尔值不当作关闭。
 });
 
 test("切角像素非法回落、合法值夹紧且允许零", () => {
@@ -43,11 +43,38 @@ test("开关与切角变量写入文档根，清理后不留残留", () => {
         },
     };
     applyThemeOptions(root, { bevel: false, bevelPixels: 9 });
-    assert.deepEqual(root.dataset, { nightcityScan: "on", nightcityBevel: "off", nightcityGlow: "on", nightcityMono: "on" });
+    assert.deepEqual(root.dataset, { nightcityScan: "on", nightcityBrandScan: "on", nightcityTileScan: "on", nightcityBevel: "off", nightcityGlow: "on", nightcityMono: "on" });
     assert.equal(properties.get("--nightcity-bevel"), "9px");
     clearThemeOptions(root);
     assert.deepEqual(root.dataset, {});
     assert.equal(properties.has("--nightcity-bevel"), false);
+});
+
+test("设置品牌与时钟扫描遵守开关和减少动效", () => {
+    const themeCss = readFileSync(new URL("./theme.css", import.meta.url), "utf8");
+    const tileCss = readFileSync(new URL("./style.css", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+    assert.match(source, /key:\s*"brandScan",\s*label:\s*"设置标题扫描线"/);
+    assert.match(source, /key:\s*"tileScan",\s*label:\s*"时钟扫描线"/);
+    assert.match(themeCss, /\.settings__brand span\s*\{[^}]*color:\s*var\(--desktop-accent,\s*#fce300\)/s);
+    assert.match(themeCss, /\.settings__brand::after\s*\{[^}]*repeating-linear-gradient[^}]*linear-gradient[^}]*mask-image:\s*linear-gradient\(90deg[^}]*animation:\s*nightcity-brand-scan 4200ms/s);
+    assert.match(themeCss, /:root\[data-nightcity-brand-scan="off"\] \.settings__brand::after,[^{]*:root\[data-interface-animations="off"\] \.settings__brand::after\s*\{[^}]*display:\s*none/s);
+    assert.match(themeCss, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.settings__brand::after\s*\{[^}]*display:\s*none/s);
+    assert.doesNotMatch(themeCss, /data-nightcity-scan="off"[^{}]*settings__brand span\s*\{[^}]*display:\s*none/);
+    assert.match(tileCss, /\.nightcity-clock\s*\{[^}]*repeating-linear-gradient[^}]*linear-gradient[^}]*mask-image:\s*linear-gradient\(90deg[^}]*animation:\s*nightcity-clock-scan 4800ms/s);
+    assert.match(tileCss, /:root\[data-nightcity-tile-scan="off"\] \.nightcity-clock,[^{]*:root\[data-nightcity-scan="off"\] \.nightcity-clock,[^{]*:root\[data-interface-animations="off"\] \.nightcity-clock\s*\{[^}]*animation:\s*none;[^}]*background:\s*none/s);
+    assert.match(tileCss, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.nightcity-clock\s*\{[^}]*animation:\s*none;[^}]*background:\s*none/s);
+});
+
+test("CRT 恢复为全屏叠加且不再裁字形", () => {
+    const css = readFileSync(new URL("./theme.css", import.meta.url), "utf8");
+    assert.match(css, /#root::after\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*0;[^}]*z-index:\s*9999;[^}]*pointer-events:\s*none;[^}]*background:\s*var\(--nightcity-crt,\s*none\)/s);
+    assert.match(css, /:root\[data-theme="dark"\]\s*\{[^}]*--nightcity-crt:[^}]*20%[^}]*84px[^}]*84px/s);
+    assert.match(css, /:root\[data-theme="light"\]\s*\{[^}]*--nightcity-crt:[^}]*96px[^}]*96px/s);
+    assert.match(css, /html\[data-desktop-host="true"\]\[data-desktop-theme="light"\]\s*\{[^}]*--nightcity-crt:[^}]*96px/s);
+    assert.match(css, /:root\[data-nightcity-scan="off"\] #root::after\s*\{[^}]*display:\s*none/s);
+    assert.match(css, /@media\s*\(max-width:\s*768px\)[\s\S]*?#root::after\s*\{[^}]*display:\s*none/s);
+    assert.doesNotMatch(css, /nightcity-text-scan|background-clip:\s*text|-webkit-text-fill-color|desktop-item--drag-preview/);
 });
 
 test("主题装饰只落菜单，禁用控件不发悬停冷光", () => {
@@ -60,6 +87,46 @@ test("主题装饰只落菜单，禁用控件不发悬停冷光", () => {
     assert.match(checkboxCss, /\.nightcity-options \.nightcity-options__input\s*\{[^}]*border: 1px solid var\(--color-muted\);/s);
     assert.match(checkboxCss, /\.nightcity-options \.nightcity-options__input:disabled\s*\{[^}]*border-color: var\(--color-border\);/s);
     assert.doesNotMatch(checkboxCss, /input\[type="radio"\]/);
+});
+
+test("选中四角只由主题覆盖且不画整圈边框", () => {
+    const css = readFileSync(new URL("./theme.css", import.meta.url), "utf8");
+    const shared = readFileSync(new URL("../../src/features/desktop-items/DesktopItemGrid.css", import.meta.url), "utf8");
+    assert.match(css, /\.desktop-item\[data-selected="true"\],[^{]*\.collect-box__item--selected,[^{]*\.desktop-tile:focus,[^{]*\.desktop-tile:focus-visible,[^{]*\.desktop-tile\[data-keyboard-focus="true"\]\s*\{[^}]*border-color:\s*transparent;[^}]*background-image:/s);
+    const selection = css.match(/\/\* 桌面项目、收集条目和格子焦点[^}]+\}/s)?.[0] ?? "";
+    assert.equal((selection.match(/linear-gradient\(/g) ?? []).length, 8);
+    assert.match(selection, /background-size:\s*12px 1px, 1px 12px,[^;]+;/);
+    assert.match(selection, /background-repeat:\s*no-repeat/);
+    assert.match(css, /\.desktop-item\[data-selected="true"\]:hover\s*\{[^}]*background-color:/s);
+    assert.doesNotMatch(shared, /background-image|background-size:\s*12px 1px/);
+    assert.match(shared, /\.desktop-item\[data-selected="true"\]\s*\{[^}]*border-color:[^}]*background:/s);
+});
+
+test("门户选中、设置导航与下拉由主题覆盖", () => {
+    const css = readFileSync(new URL("./theme.css", import.meta.url), "utf8");
+    const portal = css.match(/\.folder-portal__items li\.is-selected\s*\{([^}]*)\}/s)?.[1] ?? "";
+    assert.match(portal, /border-color:\s*transparent/);
+    assert.equal((portal.match(/linear-gradient\(/g) ?? []).length, 8);
+    assert.match(portal, /background-size:\s*12px 1px, 1px 12px,[^;]+;/);
+    assert.match(css, /\.folder-portal__items li\.is-selected:hover\s*\{[^}]*background-color:/s);
+    assert.match(css, /\.settings__navigation-item:hover,[^{]*\.settings__navigation-toggle:hover\s*\{[^}]*var\(--color-ready\)/s);
+    assert.match(css, /\.settings__navigation-item\[aria-current="page"\]\s*\{[^}]*color:\s*var\(--color-text\);[^}]*var\(--color-focus\)/s);
+    assert.match(css, /\.settings__navigation-item\[aria-current="page"\]::before\s*\{[^}]*var\(--color-focus\)/s);
+    assert.match(css, /\.settings__select\s*\{[^}]*border-color:\s*var\(--color-border\);[^}]*color:\s*var\(--color-text\);[^}]*background-color:\s*var\(--color-subtle\)/s);
+    assert.match(css, /:root\[data-theme="dark"\]\s*\{[^}]*color-scheme:\s*dark/s);
+    assert.match(css, /:root\[data-theme="light"\]\s*\{[^}]*color-scheme:\s*light/s);
+});
+
+test("设置行、标题、输入与滚动条使用主题语言", () => {
+    const css = readFileSync(new URL("./theme.css", import.meta.url), "utf8");
+    const rows = css.match(/\.settings__row,[^{]*\.weather-settings__row\s*\{([^}]*)\}/s)?.[1] ?? "";
+    assert.match(rows, /border-color:\s*var\(--color-border\)/);
+    assert.match(rows, /border-radius:\s*0/);
+    assert.match(rows, /background-color:\s*color-mix/);
+    assert.doesNotMatch(rows, /background-image|linear-gradient/);
+    assert.match(css, /\.settings__content,[^{]*\.feature-settings\s*\{[^}]*scrollbar-color:\s*var\(--color-border\) transparent/s);
+    assert.match(css, /\.plugin-settings__label,[^{]*\.weather-settings__status\s*\{[^}]*font-family:[^}]*Cascadia Mono[^}]*letter-spacing:\s*0\.09375rem;[^}]*text-transform:\s*uppercase/s);
+    assert.match(css, /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\):hover:not\(:disabled\),[^{]*select:hover:not\(:disabled\),[^{]*textarea:hover:not\(:disabled\)\s*\{[^}]*border-color:/s);
 });
 
 test("切角只落左上与右下，关闭后所有参与表面回到直角", () => {

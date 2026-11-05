@@ -60,15 +60,17 @@ pub struct ThemeBoot
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ThemeNotification
 {
-    pub surface: Option<String>, // 消息表面。
-    pub border: Option<String>,  // 消息边框。
-    pub text: Option<String>,    // 正文。
-    pub muted: Option<String>,   // 次要正文。
-    pub subtle: Option<String>,  // 后层消息与悬停表面。
-    pub success: Option<String>, // 成功状态图标。
-    pub warning: Option<String>, // 警告状态图标；未声明时沿用次要正文色。
-    pub error: Option<String>,   // 错误状态图标。
-    pub weight: Option<String>,  // 正文字重：normal、medium、semibold 或 bold。
+    pub surface: Option<String>,      // 消息表面。
+    pub border: Option<String>,       // 消息边框。
+    pub text: Option<String>,         // 正文。
+    pub muted: Option<String>,        // 次要正文。
+    pub subtle: Option<String>,       // 后层消息与悬停表面。
+    pub success: Option<String>,      // 成功状态图标。
+    pub warning: Option<String>,      // 警告状态图标；未声明时沿用次要正文色。
+    pub error: Option<String>,        // 错误状态图标。
+    pub weight: Option<String>,       // 正文字重：normal、medium、semibold 或 bold。
+    pub corner_style: Option<String>, // 原生消息轮廓：round 或 bevel。
+    pub corner_size: Option<u32>,     // bevel 的 45° 切角尺寸，1–24 DIP。
 }
 
 /// 主题自带的字体文件，由宿主注册到文档字体集。
@@ -95,6 +97,9 @@ pub struct ComponentManifest
     pub id: String,
     /// 用户可见组件名称。
     pub name: String,
+    /// 插件清单版本；官方组件与测试构造缺省为空。
+    #[serde(default)]
+    pub version: String,
     /// 前端分派入口。插件固定为 `plugin:slot`，不拿来当脚本路径。
     pub entry: String,
     /// 插件根内的脚本相对路径，形如 `<文件夹>/<入口脚本>`。官方清单为空。
@@ -106,6 +111,9 @@ pub struct ComponentManifest
     /// 插件根内的主题样式表相对路径，非主题为空。
     #[serde(default)]
     pub stylesheet: String,
+    /// 仅用于主题样式表 URL 缓存失效；由清单版本与文件元数据组成。
+    #[serde(default)]
+    pub stylesheet_cache_key: String,
     /// 主题外观覆盖，非主题为空。
     #[serde(default)]
     pub theme_appearance: Option<ThemeAppearance>,

@@ -17,6 +17,33 @@
     font-family: var(--interface-font);
     user-select: none;
     overflow: hidden;
+    background:
+        repeating-linear-gradient(0deg, rgb(0 0 0 / 20%) 0 1px, transparent 1px 3px),
+        linear-gradient(180deg, transparent 0 40%, rgb(0 240 255 / 20%) 48% 52%, transparent 60% 100%);
+    background-size: 100% 100%, 100% 240%;
+    mask-image: linear-gradient(90deg, transparent 0, #000 12%, #000 88%, transparent 100%);
+    animation: nightcity-clock-scan 4800ms linear infinite;
+}
+
+@keyframes nightcity-clock-scan {
+    to {
+        background-position: 0 0, 0 240%;
+    }
+}
+
+/* 独立开关、CRT 总闸、界面动画或系统动效关闭时，时钟不保留扫描层。 */
+:root[data-nightcity-tile-scan="off"] .nightcity-clock,
+:root[data-nightcity-scan="off"] .nightcity-clock,
+:root[data-interface-animations="off"] .nightcity-clock {
+    animation: none;
+    background: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .nightcity-clock {
+        animation: none;
+        background: none;
+    }
 }
 
 /* 十六进制数据流：等宽栈让走秒时不抖动，弱化到次要层次。 */

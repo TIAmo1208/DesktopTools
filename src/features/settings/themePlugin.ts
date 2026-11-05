@@ -4,7 +4,8 @@ import { applyThemeSelection } from "./applyThemeSelection.ts";
 let failedHref = ""; // 加载失败的地址不再重挂，避免快照反复推送打成循环。
 
 /** 主题样式表地址。stylesheet 已是插件根相对路径，不再另拼目录。 */
-const themeStylesheetHref = (theme: { stylesheet: string; version: string }) => `/plugins/${theme.stylesheet}?v=${theme.version}`;
+const themeStylesheetHref = (theme: { stylesheet: string; version?: string; stylesheetCacheKey?: string }) =>
+    `/plugins/${theme.stylesheet}?v=${theme.stylesheetCacheKey || theme.version || "0"}`;
 
 /** 读取已校验偏好的主题标识，null 表示内置主题。 */
 export const readThemePluginId = (preferences: Pick<ApplicationPreferences, "themePluginId"> | undefined) => {
@@ -13,7 +14,7 @@ export const readThemePluginId = (preferences: Pick<ApplicationPreferences, "the
 };
 
 /** 样式装配与失效回退共用的清单投影。 */
-type ThemeSnapshot = { manifests: readonly { id: string; role?: string; stylesheet?: string; version?: string }[] };
+type ThemeSnapshot = { manifests: readonly { id: string; role?: string; stylesheet?: string; version?: string; stylesheetCacheKey?: string }[] };
 
 /** 当前生效主题的入口脚本；内置主题、已停用、清单未到、非主题角色或没有入口文件时为空。 */
 export const activeThemeScript = (
@@ -31,7 +32,7 @@ export const activeThemeScript = (
 export const resolveTheme = (
     snapshot: ThemeSnapshot | undefined,
     preferences: Pick<ApplicationPreferences, "themePluginId" | "disabledPlugins"> | undefined,
-): { stylesheet: { stylesheet: string; version: string } | null; reason: "disabled" | "removed" | "unavailable" | null } => {
+): { stylesheet: { stylesheet: string; version: string; stylesheetCacheKey: string } | null; reason: "disabled" | "removed" | "unavailable" | null } => {
     const id = readThemePluginId(preferences); // 当前已保存的主题标识。
     if (!id) return { stylesheet: null, reason: null };
     if (preferences?.disabledPlugins.includes(id)) return { stylesheet: null, reason: "disabled" };
@@ -39,7 +40,7 @@ export const resolveTheme = (
     const manifest = snapshot.manifests.find((item) => item.id === id); // 未找到与非法清单使用不同提示。
     if (!manifest) return { stylesheet: null, reason: "removed" };
     if (manifest.role === "theme" && manifest.stylesheet)
-        return { stylesheet: { stylesheet: manifest.stylesheet, version: manifest.version ?? "" }, reason: null };
+        return { stylesheet: { stylesheet: manifest.stylesheet, version: manifest.version || "0", stylesheetCacheKey: manifest.stylesheetCacheKey || manifest.version || "0" }, reason: null };
     return { stylesheet: null, reason: "unavailable" };
 };
 
@@ -92,7 +93,7 @@ export const recoverUnavailableTheme = async (
 };
 
 /** 挂载或摘除唯一的主题样式表。null 时移除残留，回到内置主题。加载失败时摘掉该表并回调一次。 */
-export const applyThemeStylesheet = (theme: { stylesheet: string; version: string } | null, onError?: (message: string) => void) => {
+export const applyThemeStylesheet = (theme: { stylesheet: string; version?: string; stylesheetCacheKey?: string } | null, onError?: (message: string) => void) => {
     const root = globalThis.document; // 每份文档各自挂自己的那一张表。
     const head = root.head; // 样式表只进 head。
     if (!head) return;

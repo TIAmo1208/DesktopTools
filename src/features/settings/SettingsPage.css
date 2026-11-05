@@ -20,10 +20,11 @@
     user-select: text;
 }
 
-/* 固定宽度的设置导航区域。 */
+/* 固定宽度的设置导航区域，从窗口顶部贯穿全部网格行。 */
 .settings__sidebar {
+    grid-row: 1 / -1;
     position: sticky;
-    top: 0;
+    inset-block-start: 0;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -46,9 +47,17 @@
     transition: gap var(--interface-transition-duration, 0ms) ease-out;
 }
 
+/* 品牌位图固定 20px，不随侧栏收展压缩。 */
+.settings__brand img {
+    flex: none;
+    width: 20px;
+    height: 20px;
+}
+
 /* 品牌文字与侧栏宽度同步收展。 */
 .settings__brand span {
     max-width: 140px;
+    font-size: 18px;
     overflow: hidden;
     opacity: 1;
     visibility: visible;
@@ -206,13 +215,11 @@
     }
 }
 
-/* 自定义标题栏完整覆盖窗口顶部，原生 DWM 负责窗口阴影。 */
+/* 自定义标题栏只覆盖右侧内容区，原生 DWM 负责窗口阴影。 */
 .settings__titlebar {
-    grid-column: 1 / -1;
+    grid-column: 2;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding-left: 12px;
     min-width: 0;
     user-select: none;
     background: var(--color-background);

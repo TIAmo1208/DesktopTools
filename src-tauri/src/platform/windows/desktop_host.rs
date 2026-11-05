@@ -1383,7 +1383,8 @@ fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
     {
         return None;
     }
-    Some(format!("/plugins/{}?v=", manifest.stylesheet)) // 与前端 themeStylesheetHref 同一格式。
+    let version = if !manifest.stylesheet_cache_key.is_empty() { &manifest.stylesheet_cache_key } else if !manifest.version.is_empty() { &manifest.version } else { "0" };
+    Some(format!("/plugins/{}?v={version}", manifest.stylesheet)) // 与前端 themeStylesheetHref 使用同一缓存失效值。
 }
 
 /// 当前生效主题声明的启动覆盖层时长；没声明时为空，前端用内置时长。
@@ -1572,7 +1573,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     let webview = WebViewBuilder::new()
         .with_id(&label)
         .with_transparent(true)
-        .with_visible(false)
+        .with_visible(true)
         .with_bounds(WryRect { position: dpi::PhysicalPosition::new(0, 0).into(), size: dpi::PhysicalSize::new(monitor.work_width, monitor.work_height).into() })
         .with_initialization_script(&initialization_script)
         .with_asynchronous_custom_protocol(protocol, move |_id, request, responder| {
@@ -1620,7 +1621,6 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
 
     // 正式 WebView2 的原生 Controller。
     let controller = webview.controller();
-    unsafe { controller.SetIsVisible(true) }.map_err(|error| format!("隐藏宿主内启用 WebView2 绘制失败: {error}"))?; // 外层 HWND 仍隐藏，页面可加载并供就绪像素诊断。
     attach_host(hwnd.0 as isize, shell, monitor)?;
     configure_controller(&controller, monitor)?;
     unsafe {

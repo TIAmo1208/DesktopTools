@@ -123,7 +123,7 @@ test("两个文档并发回退写入相同结果，均不写回旧主题标识",
 test("未停用的主题清单才提供样式表", () => {
     const snapshot = {
         manifests: [
-            { id: "plugin.theme", role: "theme", stylesheet: "示例-主题/theme.css", version: "2", script: "示例-主题/main.js" },
+            { id: "plugin.theme", role: "theme", stylesheet: "示例-主题/theme.css", version: "2", stylesheetCacheKey: "2-128-456", script: "示例-主题/main.js" },
             { id: "plugin.tile", role: "tile", stylesheet: "nope.css", version: "1" },
         ],
     }; // 主题与格子各一份；脚本字段不得进入装配结果。
@@ -135,6 +135,7 @@ test("未停用的主题清单才提供样式表", () => {
     assert.deepEqual(activeThemeStylesheet(snapshot, { disabledPlugins: [], themePluginId: "plugin.theme" }), {
         stylesheet: "示例-主题/theme.css",
         version: "2",
+        stylesheetCacheKey: "2-128-456",
     });
     assert.equal(activeThemeStylesheet(snapshot, { disabledPlugins: ["plugin.theme"], themePluginId: "plugin.theme" }), null);
     assert.equal(activeThemeStylesheet(snapshot, { disabledPlugins: [], themePluginId: "plugin.tile" }), null);
@@ -222,23 +223,26 @@ test("主题 link 保持单例，切换摘旧，无主题无残留", () => {
         },
     };
     globalThis.document = document as unknown as Document;
-    const theme = (stylesheet: string, version: string) => ({ stylesheet, version }); // 测试用的样式表描述。
+    const theme = (stylesheet: string, version?: string, stylesheetCacheKey?: string) => ({ stylesheet, version, stylesheetCacheKey }); // 测试用的样式表描述。
     applyThemeStylesheet(null);
     assert.equal(links.length, 0);
 
-    applyThemeStylesheet(theme("示例-主题/theme.css", "1"));
+    applyThemeStylesheet(theme("示例-主题/theme.css", "1", "1-42-99"));
     assert.equal(links.length, 1);
     assert.equal(links[0].rel, "stylesheet");
     assert.equal(links[0].getAttribute("data-theme-plugin"), "");
-    assert.equal(links[0].getAttribute("href"), "/plugins/示例-主题/theme.css?v=1");
+    assert.equal(links[0].getAttribute("href"), "/plugins/示例-主题/theme.css?v=1-42-99");
     const first = links[0]; // 同一地址不应再插一张。
-    applyThemeStylesheet(theme("示例-主题/theme.css", "1"));
+    applyThemeStylesheet(theme("示例-主题/theme.css", "1", "1-42-99"));
     assert.equal(links.length, 1);
     assert.equal(links[0], first);
 
+    applyThemeStylesheet(theme("无版本/theme.css"));
+    assert.equal(links[0].getAttribute("href"), "/plugins/无版本/theme.css?v=0");
+
     events.length = 0;
     applyThemeStylesheet(theme("另一主题/theme.css", "2"));
-    assert.deepEqual(events, ["add /plugins/另一主题/theme.css?v=2", "remove /plugins/示例-主题/theme.css?v=1"]);
+    assert.deepEqual(events, ["add /plugins/另一主题/theme.css?v=2", "remove /plugins/无版本/theme.css?v=0"]);
     assert.equal(links.length, 1);
     assert.equal(links[0].getAttribute("href"), "/plugins/另一主题/theme.css?v=2");
 
