@@ -4,6 +4,9 @@ use std::time::Duration;
 /// 构造正式协议消息，不绕过真实队列路径。
 fn message(content: &str) -> ToastRequest { ToastRequest { r#type: "info".into(), content: content.into(), source: "test".into(), dedupe_key: None, loading: None, duration_ms: 4000 } }
 
+/// 两个用例都建真实 Toast 窗口，安装会改写进程级前台快照；串行执行避免互相覆盖。
+static TOAST_SNAPSHOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 新消息独立淡入，旧层从当前画面缩小上移，连发也不跳回起点。
 #[test]
 fn incoming_toast_does_not_fade_existing_items()
@@ -125,6 +128,7 @@ fn appearance_uses_interface_preferences_only()
 fn saved_palette_repaints_existing_toasts_without_resetting_queue()
 {
     let preferences = ApplicationPreferences::default(); // 权威已保存偏好。
+    let _snapshot = TOAST_SNAPSHOT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner()); // 共用前台快照的用例串行。
     let manager = ToastManager::install(preferences.clone(), None).unwrap(); // 真实管理器，测试只访问非 COM 状态。
     let now = Instant::now(); // 确定性队列时钟。
     {
@@ -156,6 +160,7 @@ fn saved_palette_repaints_existing_toasts_without_resetting_queue()
 fn native_surface_theme_and_close_follow_rendered_frames()
 {
     let preferences = ApplicationPreferences { theme: ApplicationTheme::Light, follow_system_reduced_motion: false, interface_animations: false, ..Default::default() }; // 确定性原生测试。
+    let _snapshot = TOAST_SNAPSHOT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner()); // 共用前台快照的用例串行。
     let manager = ToastManager::install(preferences, None).unwrap(); // 真实分层窗口。
     crate::platform::windows::refresh_policy::assume_notifications_visible_for_test();
     {

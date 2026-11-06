@@ -5,7 +5,7 @@ test("主题字段缺省为 null，基线完整校验且不检查插件目录", 
     const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 无主题的当前缺省配置。
     assert.equal(defaults.themePluginId, null);
     assert.equal(defaults.themeBaseline, null);
-    const baseline = { accentColor: "#AABBCC", desktopAccentColor: "#123456", cornerRadius: 0, fontFamily: "Arial", fontSize: 18 };
+    const baseline = { accentColor: "#AABBCC", desktopAccentColor: "#123456", cornerRadius: 0, islandRadius: 12, fontFamily: "Arial", fontSize: 18 };
     const selected = parsePreferences({ ...defaults, themePluginId: "plugin.not-installed", themeBaseline: baseline });
     assert.deepEqual(selected.themeBaseline, baseline);
     assert.equal(selected.themePluginId, "plugin.not-installed");
@@ -15,6 +15,8 @@ test("主题字段缺省为 null，基线完整校验且不检查插件目录", 
         { desktopAccentColor: "#12345g" },
         { cornerRadius: 13 },
         { cornerRadius: -1 },
+        { islandRadius: 17 },
+        { islandRadius: 1.5 },
         { fontFamily: "Arial; color:red" },
         { fontSize: 11 },
         { fontSize: 19 },
@@ -22,6 +24,47 @@ test("主题字段缺省为 null，基线完整校验且不检查插件目录", 
     ])
         assert.throws(() => parsePreferences({ ...defaults, themeBaseline: { ...baseline, ...patch } }));
     for (const themeBaseline of [{}, [], "bad", 1]) assert.throws(() => parsePreferences({ ...defaults, themeBaseline }));
+});
+
+test("岛偏好默认值、整份保存往返与 Rust 一致的边界", () => {
+    const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 从读取到整份提交使用同一个解析结果。
+    assert.deepEqual(
+        [defaults.islandEnabled, defaults.islandEdge, defaults.islandOffset, defaults.islandHideOnFullscreen, defaults.islandCardOrder, defaults.islandRadius],
+        [false, "", 0, true, [], 12],
+    );
+    const selected = parsePreferences({
+        ...defaults,
+        islandEnabled: true,
+        islandEdge: "left",
+        islandOffset: -12.5,
+        islandHideOnFullscreen: false,
+        islandCardOrder: ["official.music", "plugin.clock"],
+        islandRadius: 16,
+    });
+    assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify({ ...selected, fontSize: 14 }))), { ...selected, fontSize: 14 });
+    for (const islandEdge of ["", "top", "bottom", "left", "right"]) assert.equal(parsePreferences({ ...defaults, islandEdge }).islandEdge, islandEdge);
+    for (const islandRadius of [0, 12, 16]) assert.equal(parsePreferences({ ...defaults, islandRadius }).islandRadius, islandRadius);
+    for (const patch of [
+        { islandEnabled: null },
+        { islandHideOnFullscreen: 1 },
+        { islandEdge: "Top" },
+        { islandEdge: null },
+        { islandOffset: NaN },
+        { islandOffset: Infinity },
+        { islandOffset: "0" },
+        { islandRadius: -1 },
+        { islandRadius: 17 },
+        { islandRadius: 1.5 },
+        { islandRadius: null },
+        { islandCardOrder: null },
+        { islandCardOrder: [1] },
+    ])
+        assert.throws(() => parsePreferences({ ...defaults, ...patch }));
+    const cards = ["official.music", "official.music", "plugin.", "other.card", ...Array.from({ length: 40 }, (_, index) => `plugin.card${index}`)]; // 同 Rust：丢弃非法标识、去重、截断。
+    assert.deepEqual(parsePreferences({ ...defaults, islandCardOrder: cards }).islandCardOrder, [
+        "official.music",
+        ...Array.from({ length: 31 }, (_, index) => `plugin.card${index}`),
+    ]);
 });
 
 test("图片预览宽度使用默认值并验证整数边界", () => {

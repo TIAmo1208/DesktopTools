@@ -6,6 +6,7 @@ import { getSettings } from "../bridge/settings";
 import type { ApplicationSnapshot, ApplicationStatus } from "../contracts/application";
 import type { DesktopItemSnapshot } from "../contracts/desktopItem";
 import { DesktopItemGrid } from "../features/desktop-items/DesktopItemGrid";
+import { IslandPage } from "../features/island/island";
 import { WorkspaceSurface } from "../features/workspace/surface/WorkspaceSurface";
 import "./App.css";
 
@@ -19,7 +20,11 @@ const STATUS_LABELS: Record<ApplicationStatus, string> = {
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : "应用状态请求失败");
 
 /** 呈现正式应用状态并验证 command/event 纵向链路。 */
-export const App = () => (new URLSearchParams(window.location.search).get("desktop-host") === "1" ? <WorkspaceSurface /> : <ApplicationStatusPage />);
+export const App = () => {
+    const query = new URLSearchParams(window.location.search); // 岛与桌面是并列的独立呈现位。
+    if (query.get("island") === "1") return <IslandPage />;
+    return query.get("desktop-host") === "1" ? <WorkspaceSurface /> : <ApplicationStatusPage />;
+};
 
 /** 仅用于评审音乐 UX 的本地预览入口，不连接真实媒体会话。 */
 /* const MusicPreview = () => {

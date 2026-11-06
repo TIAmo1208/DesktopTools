@@ -1,3 +1,4 @@
+use crate::app::settings::SettingsState;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::component_runtime::ComponentRuntimeState;
@@ -18,13 +19,16 @@ pub(crate) fn execute_get_component_runtime_snapshot(app: &AppHandle, state: &Co
 
 /// 校验实例清单后执行一个已声明并授权的宿主能力。
 #[tauri::command]
-pub fn invoke_component_capability(state: State<'_, ComponentRuntimeState>, workspace: State<'_, WorkspaceState>, instance_id: String, capability: ComponentCapability) -> Result<ComponentCapabilityResult, ComponentRuntimeError> { execute_invoke_component_capability(&state, &workspace, instance_id, capability) }
+pub fn invoke_component_capability(settings: State<'_, SettingsState>, state: State<'_, ComponentRuntimeState>, workspace: State<'_, WorkspaceState>, instance_id: String, capability: ComponentCapability) -> Result<ComponentCapabilityResult, ComponentRuntimeError> { execute_invoke_component_capability(&state, &workspace, &settings, instance_id, capability) }
 
 /// 两种 transport 共用的命令执行与事件发布。
-pub(crate) fn execute_invoke_component_capability(state: &ComponentRuntimeState, workspace: &WorkspaceState, instance_id: String, capability: ComponentCapability) -> Result<ComponentCapabilityResult, ComponentRuntimeError>
+pub(crate) fn execute_invoke_component_capability(state: &ComponentRuntimeState, workspace: &WorkspaceState, settings: &SettingsState, instance_id: String, capability: ComponentCapability) -> Result<ComponentCapabilityResult, ComponentRuntimeError>
 {
     let workspace = workspace.snapshot().map_err(|error| ComponentRuntimeError::invalid_instance(error.message))?; // 统一工作区组件实例来源。
-    state.invoke_capability(&workspace.components, &instance_id, capability)
+    let preferences = settings.preferences().map_err(|_| ComponentRuntimeError::state_unavailable())?; // 当前上岛顺序决定合成实例授权。
+    let mut instances = workspace.components;
+    instances.extend(state.island_instances(&preferences.island_card_order)); // 仅在本次能力校验中合并，不写布局或共享注册表。
+    state.invoke_capability(&instances, &instance_id, capability)
 }
 
 /// 返回 Tauri 与本地 transport 共享的组件运行时快照。

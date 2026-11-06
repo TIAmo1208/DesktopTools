@@ -106,9 +106,7 @@ impl ComponentRuntimeState
     pub fn capability_declarations(&self) -> Vec<ComponentCapabilityDeclaration> { self.catalog().declarations.clone() }
 
     /// 按卡片顺序产出已注册且允许上岛的合成实例；岛不持有桌面布局，不计入 max_tiles，不调用 enforce_plugin_tile_limit。
-    /// 调用方将结果与本屏工作区实例合并，作为 snapshot(instances) 与 invoke_component_capability 能力校验的入参；岛不进工作区快照。
-    /// 注册沿用 registration_snapshot / snapshot(instances)，仍按清单 required_capabilities 逐实例授权，不新增集合或命令。
-    #[allow(dead_code)] // 岛页面接入后移除。
+    /// 岛注册沿用 registration_snapshot 逐实例校验，不写工作区注册集合；能力调用只使用临时合并视图。
     pub(crate) fn island_instances(&self, card_order: &[String]) -> Vec<ComponentInstanceSnapshot>
     {
         let catalog = self.catalog(); // 仅依据已通过注册校验的清单。
@@ -116,7 +114,18 @@ impl ComponentRuntimeState
         card_order.iter().filter(|id| seen.insert(id.as_str()) && catalog.manifests.get(id.as_str()).is_some_and(|manifest| manifest.island)).map(|id| ComponentInstanceSnapshot { instance_id: format!("island.{id}"), component_id: id.clone(), monitor_id: String::new(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 }, state_version: 1, state: json!({}) }).collect()
     }
 
-    /// 校验并注册统一工作区的全部插件实例；入参必须是本屏完整实例集合（含已合并的岛实例）。
+    /// 按需生成岛注册投影，不修改工作区注册集合或其修订号。
+    pub(crate) fn island_snapshot(&self, card_order: &[String]) -> Result<(Vec<ComponentInstanceSnapshot>, ComponentRuntimeSnapshot), ComponentRuntimeError>
+    {
+        let instances = self.island_instances(card_order); // 岛独立合成，不持有布局。
+        let registrations = instances.iter().map(|instance| self.registration_snapshot(instance)).collect(); // 与工作区相同的逐实例授权。
+        let catalog = self.catalog();
+        let mut manifests = catalog.manifests.values().cloned().collect::<Vec<_>>(); // 设置页也需要未上岛但允许上岛的清单。
+        manifests.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok((instances, ComponentRuntimeSnapshot { revision: self.revision.load(Ordering::Relaxed), manifests, instances: registrations, failures: catalog.failures.clone() }))
+    }
+
+    /// 校验并注册统一工作区的全部插件实例；岛投影不进入该集合。
     pub fn snapshot(&self, instances: &[ComponentInstanceSnapshot]) -> Result<ComponentRuntimeSnapshot, ComponentRuntimeError>
     {
         let registrations = instances.iter().filter(|instance| cfg!(debug_assertions) || instance.component_id != "official.debug-test").map(|instance| self.registration_snapshot(instance)).collect::<Vec<_>>(); // 当前布局中每个实例互相隔离的注册结果。
@@ -137,8 +146,8 @@ impl ComponentRuntimeState
     /// 校验实例声明后执行一个已授权宿主能力。
     pub fn invoke_capability(&self, instances: &[ComponentInstanceSnapshot], instance_id: &str, capability: ComponentCapability) -> Result<ComponentCapabilityResult, ComponentRuntimeError>
     {
-        let snapshot = self.snapshot(instances)?; // 能力调用前同步的当前实例注册结果。
-        let registration = snapshot.instances.iter().find(|instance| instance.instance_id == instance_id).ok_or_else(|| ComponentRuntimeError::invalid_instance("插件实例不存在"))?;
+        let instance = instances.iter().find(|instance| instance.instance_id == instance_id).ok_or_else(|| ComponentRuntimeError::invalid_instance("插件实例不存在"))?; // 只信调用方提供的权威临时视图。
+        let registration = self.registration_snapshot(instance); // 纯校验，不为能力读取改写工作区注册集合。
         if registration.status != ComponentLoadStatus::Ready || !registration.authorized_capabilities.contains(&capability)
         {
             return Err(ComponentRuntimeError::capability_denied(capability));
@@ -719,6 +728,10 @@ fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(Theme
     if appearance.corner_radius.is_some_and(|value| value > 12)
     {
         return Err("主题圆角超出范围".to_string());
+    }
+    if appearance.island_radius.is_some_and(|value| value > 16)
+    {
+        return Err("主题岛圆角超出范围".to_string());
     }
     if appearance.font_size.is_some_and(|value| !(12..=18).contains(&value))
     {

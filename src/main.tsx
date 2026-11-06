@@ -16,8 +16,10 @@ if (!rootElement) throw new Error("缺少 React 应用挂载节点");
 // 正式透明桌面宿主页面标记。
 const query = new URLSearchParams(window.location.search);
 const isDesktopHost = query.get("desktop-host") === "1";
+const isIsland = query.get("island") === "1"; // 独立岛不装配设置页或桌面工作区。
 const isCollectEditor = query.get("collect-editor") === "1";
 document.documentElement.dataset.desktopHost = String(isDesktopHost);
+document.documentElement.dataset.island = String(isIsland);
 document.documentElement.dataset.collectEditor = String(isCollectEditor);
 document.documentElement.dataset.theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 document.documentElement.dataset.desktopTheme = document.documentElement.dataset.theme;
@@ -77,7 +79,7 @@ playBootSplash();
 createRoot(rootElement).render(
     <StrictMode>
         <PreferencesProvider>
-            {isDesktopHost ? (
+            {isDesktopHost || isIsland ? (
                 <App />
             ) : isCollectEditor ? (
                 <Suspense fallback={<p>正在加载编辑器…</p>}>

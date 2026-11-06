@@ -242,7 +242,7 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
           pauseSince ||= performance.now();
           if (performance.now() - pauseSince >= 300) setPaused(true);
         } else { pauseSince = 0; setPaused(false); }
-      }
+      } else { setPaused(foreground?.locked === true); } // 独立岛没有桌面 monitorId，解锁也须恢复。
     } catch { if (requested === policyGeneration && foreground?.locked !== true) { pauseSince = 0; setPaused(false); } }
     finally {
       if (requested === policyGeneration && pauseSince && !refreshPaused) policyTimer = window.setTimeout(checkRefresh, 350);
@@ -281,6 +281,7 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
   // 权威布局、桌面项目及组件注册事件使用真实投递。
   const listen = async (eventName, handler) => {
     if (
+      eventName === "plugin-settings-changed" ||
       eventName === "folder-portal-changed" ||
       eventName === "collect-items-changed" ||
       eventName === "weather-configuration-changed" ||
@@ -338,6 +339,9 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
 })();
 "#;
 
+/// 各独立来源复用原生桥实现，但只注入自身命令地址。
+pub(crate) fn native_bridge_script(origin: &str) -> String { NATIVE_BRIDGE_SCRIPT.replace("__DESKTOP_NATIVE_ORIGIN__", &serde_json::to_string(origin).expect("宿主地址序列化失败")).replace("__REFRESH_POLICY_FALLBACK__", if super::refresh_policy::fallback_enabled() { "true" } else { "false" }) }
+
 /// 将保存的原始整数恢复为 HWND。
 fn raw_hwnd(raw: isize) -> HWND { HWND(raw as *mut c_void) }
 
@@ -355,6 +359,7 @@ pub(crate) fn install_host_events(app: &AppHandle)
             let task_handle = handle.clone(); // 主线任务持有独立句柄，监听回调仍可重复执行。
             if let Err(error) = handle.run_on_main_thread(move || {
                 let script = format!("window.__DESKTOP_TOOLS_NATIVE__?.dispatch('{name}', {payload});"); // 内部白名单事件名，不执行外部脚本输入。
+                super::island::dispatch_script(&script); // 同一白名单事件投递到独立岛，不新增事件或轮询。
                 // 频谱只在同时开启音乐控件与频谱时才有订阅者，每帧读一次设置即可。
                 let spectrum_active = spectrum_event && task_handle.state::<crate::app::settings::SettingsState>().preferences().is_ok_and(|preferences| preferences.music_enabled && preferences.music_spectrum_enabled);
                 let workspace = task_handle.state::<crate::workspace::WorkspaceState>(); // 按显示器判断音乐控件归属，避免整份快照拷贝。
@@ -1363,14 +1368,14 @@ fn desktop_page_url(native_origin: &str, dev_url: Option<&tauri::Url>, index: us
 }
 
 /// 进程内第一次建宿主窗口的时刻，页面据此只在本进程启动后播放一次启动动画。
-fn boot_epoch() -> u64
+pub(crate) fn boot_epoch() -> u64
 {
     static BOOT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *BOOT.get_or_init(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as u64).unwrap_or(0))
 }
 
 /// 当前生效主题的样式表地址；没有选中主题、已停用或清单缺失时为空。
-fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
+pub(crate) fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
 {
     let preferences = app.state::<crate::app::settings::SettingsState>().preferences().ok()?;
     let id = preferences.theme_plugin_id.clone()?; // 内置主题不需要额外样式表。
@@ -1384,7 +1389,18 @@ fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
     {
         return None;
     }
-    let version = if !manifest.stylesheet_cache_key.is_empty() { &manifest.stylesheet_cache_key } else if !manifest.version.is_empty() { &manifest.version } else { "0" };
+    let version = if !manifest.stylesheet_cache_key.is_empty()
+    {
+        &manifest.stylesheet_cache_key
+    }
+    else if !manifest.version.is_empty()
+    {
+        &manifest.version
+    }
+    else
+    {
+        "0"
+    };
     Some(format!("/plugins/{}?v={version}", manifest.stylesheet)) // 与前端 themeStylesheetHref 使用同一缓存失效值。
 }
 
@@ -1534,6 +1550,13 @@ mod desktop_dev_tests
             assert!(!allowed_desktop_origin(origin, native, None));
         }
         assert!(!allowed_desktop_origin("http://127.0.0.1:14200", native, Some("http://127.0.0.1:1420")));
+        let island = "http://desktop-tools-island.localhost"; // 岛白名单不扩大桌面或设置来源。
+        assert!(allowed_desktop_origin(island, island, None));
+        assert!(!allowed_desktop_origin(island, native, None));
+        for origin in [native, "http://desktop-tools-settings.localhost", "null", ""]
+        {
+            assert!(!allowed_desktop_origin(origin, island, None));
+        }
     }
 
     /// 设置窗口来源必须等于协议名加 `.localhost`，否则 Tauri 不把它当本地 IPC 来源。
@@ -1567,7 +1590,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     let dev_url = if tauri::is_dev() { app.config().build.dev_url.as_ref() } else { None }; // Debug 构建不等同于 Tauri 开发模式。
     let dev_origin = dev_url.map(|url| url.origin().ascii_serialization()); // 正式模式不会放行开发 Origin。
     let page_url = desktop_page_url(&native_origin, dev_url, index, boot_epoch(), active_theme_stylesheet(app).as_deref(), active_theme_boot(app)).to_string(); // 页面与刷新共享当前模式地址。
-    let initialization_script = NATIVE_BRIDGE_SCRIPT.replace("__DESKTOP_NATIVE_ORIGIN__", &serde_json::to_string(&native_origin).expect("宿主地址序列化失败")).replace("__REFRESH_POLICY_FALLBACK__", if super::refresh_policy::fallback_enabled() { "true" } else { "false" }); // JSON 编码避免脚本字符串转义错误，Hook 状态在宿主创建前确定。
+    let initialization_script = native_bridge_script(&native_origin); // JSON 编码避免脚本字符串转义错误，Hook 状态在宿主创建前确定。
     super::refresh_policy::set_paused(&monitor.id, false);
     crate::log_info!("宿主：页面来源={}，原生命令来源={}", page_url, native_origin);
     // 正式 Windowed WebView2。

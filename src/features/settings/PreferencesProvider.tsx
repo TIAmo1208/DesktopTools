@@ -142,6 +142,7 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
         const desktop = preferences.desktopAppearance; // 桌面主题保持独立，系统读取失败时保留该组自定义色。
         root.style.setProperty("--desktop-accent", desktop.useWindowsAccentColor ? (windowsAccentColor ?? desktop.accentColor) : desktop.accentColor);
         root.style.setProperty("--surface-radius", `${preferences.cornerRadius}px`);
+        root.style.setProperty("--island-radius", `${preferences.islandRadius}px`);
         root.style.setProperty("--interface-font", interfaceFontStack(preferences.fontFamily));
         root.style.setProperty("--interface-font-size", `${preferences.fontSize}px`);
         for (const [scope, grid] of [

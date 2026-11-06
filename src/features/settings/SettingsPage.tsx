@@ -14,6 +14,7 @@ import { applyThemeSelection } from "./applyThemeSelection";
 import type { ComponentManifest } from "../../contracts/component";
 import { GridSettings } from "./GridSettings";
 import { FeatureSettings } from "./FeatureSettings";
+import { IslandSettings } from "./IslandSettingsPage";
 import { PluginSettingsPage } from "./PluginSettingsPage";
 import { SettingsSwitch } from "./SettingsSwitch";
 import { SettingsInfo } from "./SettingsInfo";
@@ -27,6 +28,7 @@ const PAGES = [
     { id: "general", label: "常规", icon: "\uE80F" },
     { id: "appearance", label: "外观", icon: "\uE790" },
     { id: "features", label: "功能格子", icon: "\uE80A" },
+    { id: "island", label: "岛", icon: "\uE7F4" },
     { id: "plugins", label: "插件", icon: "" },
     { id: "performance", label: "性能", icon: "\uE9D9" },
     { id: "diagnostics", label: "诊断与维护", icon: "\uE90F" },
@@ -491,6 +493,7 @@ export const SettingsPage = () => {
                         leaveGuard={leaveGuard}
                     />
                 )}
+                {page === "island" && <IslandSettings preferences={preferences} disabled={busy || !preferences} onPreferences={handlePreferences} />}
                 {page === "plugins" && <PluginSettingsPage preferences={preferences} disabled={busy || !preferences} onPreferences={handlePreferences} />}
                 {page === "performance" && (
                     <div className="settings__rows">

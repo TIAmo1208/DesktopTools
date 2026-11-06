@@ -5,6 +5,7 @@
   "requiredCapabilities": ["read-current-media"],
   "creatable": true,
   "removable": true,
+  "island": true,
   "maxTiles": 1,
   "persistenceVersion": 1
 }

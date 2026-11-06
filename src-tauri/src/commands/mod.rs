@@ -334,6 +334,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
     // 当前本地 transport 命令的统一 JSON 结果。
     let result: Result<Value, Value> = match command
     {
+        "get_island_snapshot" => island::execute_get_island_snapshot(app).map_err(serialize_error).and_then(serialize_result),
         "set_island_state" =>
         {
             let request = command_argument(&arguments, "request", "岛状态参数无效").map_err(serialize_error)?;
@@ -604,7 +605,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let instance: String = command_argument(&arguments, "instanceId", "组件实例标识无效").map_err(serialize_error)?; // 需要校验的真实组件实例。
             let monitor: String = command_argument(&arguments, "monitorId", "显示器标识无效").map_err(serialize_error)?; // 当前呈现宿主。
             runtime.validate_monitor_id(&monitor).map_err(serialize_error)?;
-            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), instance, crate::contracts::ComponentCapability::ReadHostTime).map_err(serialize_error)?;
+            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::app::settings::SettingsState>(), instance, crate::contracts::ComponentCapability::ReadHostTime).map_err(serialize_error)?;
             serialize_result(ComponentRuntimeState::subscribe_time(monitor))
         }
         "unsubscribe_component_time" =>
@@ -726,7 +727,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         {
             let instance_id: String = command_argument(&arguments, "instanceId", "命令参数无效").map_err(serialize_error)?; // 已解码的 instanceId。
             let capability: ComponentCapability = command_argument(&arguments, "capability", "命令参数无效").map_err(serialize_error)?; // 已解码的 capability。
-            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), instance_id, capability).map_err(serialize_error).and_then(serialize_result)
+            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::app::settings::SettingsState>(), instance_id, capability).map_err(serialize_error).and_then(serialize_result)
         }
         "get_current_desktop_item_snapshot" => desktop_item::read_desktop_item_snapshot(&app.state::<DesktopItemState>()).map_err(serialize_error).and_then(serialize_result),
         "open_desktop_items" => command_argument(&arguments, "itemIds", "桌面项目打开参数无效").map_err(serialize_error).and_then(|item_ids: Vec<String>| app.state::<DesktopItemState>().open(&item_ids).map_err(serialize_error)).and_then(serialize_result),

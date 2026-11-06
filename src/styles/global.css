@@ -4,6 +4,7 @@
     --interface-font: "Segoe UI Variable", "Segoe UI", sans-serif;
     --interface-font-size: 13px;
     --surface-radius: 6px;
+    --island-radius: 12px;
     --color-accent: #2563eb;
     font-family: var(--interface-font);
     font-size: var(--interface-font-size);

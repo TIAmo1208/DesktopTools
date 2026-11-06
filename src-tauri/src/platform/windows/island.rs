@@ -2,7 +2,7 @@ use crate::{app::settings::SettingsState, contracts::DesktopHostMonitor};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    cell::RefCell,
+    cell::{Cell, RefCell},
     num::NonZeroIsize,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -10,13 +10,16 @@ use std::{
 use tauri::{AppHandle, Emitter, Listener, Manager};
 use windows::{
     Win32::{
-        Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SetLastError, WIN32_ERROR, WPARAM},
         Graphics::{
-            Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWA_SYSTEMBACKDROP_TYPE, DwmSetWindowAttribute},
-            Gdi::{CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, HBRUSH, RGN_ERROR, RGN_OR, SetWindowRgn},
+            Dwm::{DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DwmEnableBlurBehindWindow},
+            Gdi::{CreateRectRgn, DeleteObject, ScreenToClient},
         },
         System::LibraryLoader::GetModuleHandleW,
-        UI::{Input::KeyboardAndMouse::ReleaseCapture, WindowsAndMessaging::*},
+        UI::{
+            Input::KeyboardAndMouse::{GetAsyncKeyState, ReleaseCapture, VK_ESCAPE, VK_LBUTTON},
+            WindowsAndMessaging::*,
+        },
     },
     core::{PCWSTR, w},
 };
@@ -148,8 +151,17 @@ pub fn union_box(a: IslandRect, b: IslandRect) -> IslandRect
 pub(crate) const ISLAND_PROTOCOL: &str = "desktop-tools-island";
 const ISLAND_CLASS: PCWSTR = w!("DesktopTools.Island"); // 唯一岛窗口类。
 
-/// 页面不在本次交付范围，开启时仅创建隐藏的占位 WebView。
-pub(crate) fn island_page_url() -> &'static str { "about:blank" }
+/// 岛始终使用独立协议与内嵌页面；主题地址沿用桌面宿主的缓存键派生规则。
+pub(crate) fn island_page_url(boot: u64, theme_css: Option<&str>) -> tauri::Url
+{
+    let mut url = tauri::Url::parse(&format!("http://{ISLAND_PROTOCOL}.localhost/index.html")).expect("岛协议地址无效"); // 不接受开发服务器来源。
+    url.query_pairs_mut().append_pair("island", "1").append_pair("boot", &boot.to_string());
+    if let Some(stylesheet) = theme_css
+    {
+        url.query_pairs_mut().append_pair("theme-css", stylesheet);
+    }
+    url
+}
 
 /// 页面提交的窗口内局部卡片区域，圆角半径也使用 DIP。
 #[derive(Clone, Debug, Deserialize)]
@@ -216,9 +228,10 @@ struct IslandWindow
 #[derive(Default)]
 struct DragProgress
 {
-    revision: u64,        // 当前几何代次。
-    pending: Option<u64>, // 进行中移动循环的几何代次。
-    landing_seq: u64,     // 开始拖动时分配，跨窗口重建也不复用。
+    revision: u64,                                                       // 当前几何代次。
+    pending: Option<u64>,                                                // 进行中移动循环的几何代次。
+    landing_seq: u64,                                                    // 开始拖动时分配，跨窗口重建也不复用。
+    landing_done: Option<std::sync::mpsc::SyncSender<IslandDragResult>>, // 本次后台保存与命令完成的单次屏障。
 }
 impl DragProgress
 {
@@ -235,6 +248,7 @@ impl DragProgress
     {
         self.revision = self.revision.wrapping_add(1);
         self.pending = None;
+        self.landing_done = None; // 取消且未调度保存时断开等待者，不报保存失败。
     }
     fn take_commit(&mut self) -> bool { self.pending.take() == Some(self.revision) }
 }
@@ -297,7 +311,7 @@ impl HasWindowHandle for IslandHandle
 }
 
 /// 将全屏和锁屏事实映射为岛可见性；未知状态不伪造已确认覆盖。
-fn suppressed(snapshot: &super::refresh_policy::ForegroundSnapshot, hide_fullscreen: bool, monitor: &str) -> bool { snapshot.locked == Some(true) || (hide_fullscreen && (snapshot.exclusive_fullscreen == Some(true) || snapshot.coverage.as_ref().is_some_and(|screens| screens.iter().any(|screen| screen.monitor_id == monitor && (screen.screen || (snapshot.maximized == Some(true) && screen.work)))))) }
+fn suppressed(snapshot: &super::refresh_policy::ForegroundSnapshot, hide_fullscreen: bool) -> bool { snapshot.locked == Some(true) || (hide_fullscreen && snapshot.exclusive_fullscreen == Some(true)) }
 
 /// 在既有前台事件上重新断言置顶，不启动轮询。
 pub(crate) fn install(app: &AppHandle)
@@ -343,12 +357,98 @@ fn primary_monitor() -> Result<DesktopHostMonitor, String> { super::enumerate_de
 fn work_dip(monitor: &DesktopHostMonitor) -> IslandRect { IslandRect { left: f64::from(monitor.work_x) / monitor.scale_factor, top: f64::from(monitor.work_y) / monitor.scale_factor, width: f64::from(monitor.work_width) / monitor.scale_factor, height: f64::from(monitor.work_height) / monitor.scale_factor } }
 fn px(value: f64, scale: f64) -> i32 { (value * scale).round() as i32 }
 
+const WM_ISLAND_RESTORE_FOREGROUND: u32 = WM_APP + 38; // WebView2 绕过鼠标激活消息时的一次性补偿。
+const WM_ISLAND_CHILD_NOACTIVATE: u32 = WM_APP + 37; // 合并子窗口创建与导航完成后的样式修复时机。
+
+/// 一次点击最多恢复一次；任何条件失效也消费记录，不能留到下次激活使用。
+#[derive(Default)]
+struct ClickForeground
+{
+    target: Option<isize>, // 鼠标激活前的外部根窗口。
+}
+impl ClickForeground
+{
+    fn take(&mut self, island: isize, foreground: isize, valid: bool, dragging: bool) -> Option<isize>
+    {
+        let target = self.target.take()?; // 在任何 Win32 调用前清空，允许消息同步重入。
+        (valid && !dragging && foreground == island && target != 0 && target != island).then_some(target)
+    }
+}
+thread_local! {
+    static CLICK_FOREGROUND: RefCell<ClickForeground> = RefCell::new(ClickForeground::default()); // 不与岛资源 RefCell 共借用，避免窗口消息重入冲突。
+    static NATIVE_DRAGGING: Cell<bool> = const { Cell::new(false) }; // 原生移动循环内禁止恢复前台。
+}
+
+/// 同时检查已接受的拖动请求与实际原生移动循环；借用冲突时保守放弃补偿。
+fn native_dragging() -> bool { NATIVE_DRAGGING.get() || ISLAND.with(|slot| slot.try_borrow().map_or(true, |slot| slot.as_ref().is_some_and(|window| window.drag.pending.is_some()))) }
+
+/// 仅补偿尚未被用户主动切走的本次点击激活，不保证系统级禁止显式激活。
+fn restore_click_foreground(hwnd: HWND)
+{
+    let target = CLICK_FOREGROUND.with(|state| state.borrow().target); // 只快照数值，Win32 调用不持有借用。
+    let valid = target.is_some_and(|target| unsafe { IsWindow(Some(HWND(target as *mut _))).as_bool() && IsWindowVisible(HWND(target as *mut _)).as_bool() });
+    let foreground = unsafe { GetForegroundWindow() }.0 as isize;
+    let target = CLICK_FOREGROUND.with(|state| state.borrow_mut().take(hwnd.0 as isize, foreground, valid, native_dragging()));
+    if let Some(target) = target
+        && !unsafe { SetForegroundWindow(HWND(target as *mut _)) }.as_bool()
+    {
+        crate::log_warn!("岛：点击激活后的前台恢复被系统拒绝，目标={target}");
+    }
+}
+
+/// 仅合并不激活位，不能覆盖 WebView2 已设置的透明、布局及其他扩展样式。
+fn noactivate_style(style: isize) -> isize { style | WS_EX_NOACTIVATE.0 as isize }
+
+/// EnumChildWindows 自身递归后代；只改样式，不子类化、不吞鼠标或键盘消息。
+fn apply_child_noactivate(hwnd: HWND)
+{
+    unsafe extern "system" fn apply(child: HWND, _: LPARAM) -> windows::core::BOOL
+    {
+        let style = unsafe { GetWindowLongPtrW(child, GWL_EXSTYLE) }; // 保留 Chromium/WebView2 自有位。
+        let merged = noactivate_style(style);
+        if merged != style
+        {
+            unsafe {
+                SetLastError(WIN32_ERROR(0));
+            }
+            let previous = unsafe { SetWindowLongPtrW(child, GWL_EXSTYLE, merged) }; // 返回零也可能是合法旧样式，须配合 LastError 判断。
+            let error = unsafe { GetLastError() };
+            if previous == 0 && error.0 != 0
+            {
+                let actual = unsafe { GetWindowLongPtrW(child, GWL_EXSTYLE) }; // WebView2 建窗钩子可能留下 LastError，以读回的目标位为准。
+                if unsafe { IsWindow(Some(child)) }.as_bool() && actual != noactivate_style(actual)
+                {
+                    crate::log_warn!("岛：子窗口不激活样式读回未生效，窗口={}，错误={}", child.0 as isize, error.0);
+                } // 已销毁的创建期窗口无需修复；后续创建/导航事件会处理仍存活的后代。
+            }
+        }
+        windows::core::BOOL(1)
+    }
+    let _ = unsafe { EnumChildWindows(Some(hwnd), Some(apply), LPARAM(0)) }; // 枚举期间新建窗口由通知或导航完成补齐。
+}
+
+/// 延后到子窗口创建流程退出后再枚举，避免在 WebView2 的建窗栈中修改样式。
+fn schedule_child_noactivate(hwnd: HWND)
+{
+    if let Err(error) = unsafe { PostMessageW(Some(hwnd), WM_ISLAND_CHILD_NOACTIVATE, WPARAM(0), LPARAM(0)) }
+    {
+        crate::log_warn!("岛：子窗口样式更新调度失败，错误：{error}");
+    }
+}
+
 /// 建窗失败也释放 HWND；开启但页面尚未提交状态时保持隐藏。
 fn create(app: &AppHandle) -> Result<(), String>
 {
     let monitor = primary_monitor()?; // 从原生 rcWork 获取当前主屏。
     let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(|error| error.to_string())?; // 当前模块身份。
-    let class = WNDCLASSEXW { cbSize: size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(window_proc), hInstance: HINSTANCE(module.0), lpszClassName: ISLAND_CLASS, hbrBackground: HBRUSH((windows::Win32::Graphics::Gdi::COLOR_WINDOW.0 + 1) as usize as *mut _), ..Default::default() }; // 纯色回退由系统背景画刷绘制。
+    let class = WNDCLASSEXW {
+        cbSize: size_of::<WNDCLASSEXW>() as u32,
+        lpfnWndProc: Some(window_proc),
+        hInstance: HINSTANCE(module.0),
+        lpszClassName: ISLAND_CLASS,
+        hbrBackground: Default::default(), // 空类画刷，不绘制不透明窗口底色。
+        ..Default::default()
+    }; // 透明矩形 HWND，可见圆角交给页面 CSS。
     if unsafe { RegisterClassExW(&class) } == 0 && unsafe { GetLastError() } != ERROR_CLASS_ALREADY_EXISTS
     {
         return Err(format!("注册岛窗口类失败：{}", windows::core::Error::from_win32()));
@@ -357,14 +457,23 @@ fn create(app: &AppHandle) -> Result<(), String>
     let build = (|| {
         let raw = IslandHandle(NonZeroIsize::new(hwnd.0 as isize).ok_or("岛 HWND 为空")?); // Wry 句柄借用只限本线程。
         let protocol_app = app.clone(); // 协议请求后台分派。
+        let island_hwnd = hwnd.0 as isize; // 页面回调仅捕获数值，不跨线程持有原生窗口对象。
         WebViewBuilder::new()
             .with_id("island")
             .with_transparent(true)
+            .with_focused(false) // Wry 默认主动 MoveFocus；岛创建时不能抢走前台。
             .with_bounds(WryRect { position: dpi::PhysicalPosition::new(0, 0).into(), size: dpi::PhysicalSize::new(1, 1).into() })
             .with_asynchronous_custom_protocol(ISLAND_PROTOCOL.into(), move |_id, request, responder| {
                 dispatch_protocol(request, protocol_app.clone(), move |response| responder.respond(response));
             })
-            .with_url(island_page_url())
+            .with_on_page_load_handler(move |event, _| {
+                if matches!(event, wry::PageLoadEvent::Finished)
+                {
+                    schedule_child_noactivate(HWND(island_hwnd as *mut _)); // 某些 WebView2 后代禁用父通知，导航完成再补齐一次。
+                }
+            })
+            .with_initialization_script(&super::desktop_host::native_bridge_script(&format!("http://{ISLAND_PROTOCOL}.localhost")))
+            .with_url(island_page_url(super::desktop_host::boot_epoch(), super::desktop_host::active_theme_stylesheet(app).as_deref()).as_str())
             .build_as_child(&raw)
             .map_err(|error| format!("创建岛 WebView 失败：{error}"))
     })(); // 任何 WebView 构造失败均销毁占位 HWND。
@@ -377,32 +486,51 @@ fn create(app: &AppHandle) -> Result<(), String>
             return Err(error);
         }
     };
-    let backdrop = unsafe { DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, (&DWMSBT_TRANSIENTWINDOW as *const windows::Win32::Graphics::Dwm::DWM_SYSTEMBACKDROP_TYPE).cast(), size_of_val(&DWMSBT_TRANSIENTWINDOW) as u32).and_then(|_| windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea(hwnd, &windows::Win32::UI::Controls::MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 })) }; // 背景材质铺满客户区，不让不透明类画刷盖住它。
-    match backdrop
+    apply_child_noactivate(hwnd); // 创建后的全部后代都必须保持点击不激活，根窗口样式不变。
+    let empty = unsafe { CreateRectRgn(0, 0, 0, 0) }; // 空模糊区域，只启用合成透明，不铺系统材质。
+    if empty.is_invalid()
     {
-        Ok(()) =>
-        unsafe {
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 1);
-        },
-        Err(error) =>
-        {
-            crate::log_warn!("岛：系统材质不可用，回退纯色，显示器={}，错误：{error}", monitor.id);
-        }
+        drop(webview);
+        let _ = unsafe { DestroyWindow(hwnd) };
+        return Err("创建岛透明合成空区域失败".into());
     }
+    let blur = DWM_BLURBEHIND { dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION, fEnable: true.into(), hRgnBlur: empty, ..Default::default() };
+    let result = unsafe { DwmEnableBlurBehindWindow(hwnd, &blur).and_then(|_| windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea(hwnd, &windows::Win32::UI::Controls::MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 })) }; // 无系统材质，让整个客户区参与 DWM 透明合成。
+    let _ = unsafe { DeleteObject(empty.into()) }; // DWM调用复制区域，不转移HRGN所有权。
+    if let Err(error) = result
+    {
+        drop(webview);
+        let _ = unsafe { DestroyWindow(hwnd) };
+        return Err(format!("启用岛透明合成失败：{error}"));
+    }
+    crate::log_info!("岛：透明矩形窗口已启用，CSS 绘制圆角，透明角落仍属于岛命中区");
     if let Err(error) = unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) }
     {
         drop(webview);
         let _ = unsafe { DestroyWindow(hwnd) };
         return Err(format!("岛置顶失败：{error}"));
     }
-    crate::log_info!("岛：已创建隐藏占位窗口，显示器={}，工作区=[{}, {}, {}, {}]，缩放={}", monitor.id, monitor.work_x, monitor.work_y, monitor.work_width, monitor.work_height, monitor.scale_factor);
+    crate::log_info!("岛：已创建隐藏窗口，显示器={}，工作区=[{}, {}, {}, {}]，缩放={}", monitor.id, monitor.work_x, monitor.work_y, monitor.work_width, monitor.work_height, monitor.scale_factor);
     ISLAND.with(|slot| *slot.borrow_mut() = Some(IslandWindow { hwnd, webview: Rc::new(webview), app: app.clone(), monitor, geometry: None, drag: DragProgress::default() }));
     Ok(())
+}
+
+/// 共享事件白名单在 UI 线程调用；借用结束后执行脚本，允许原生消息重入。
+pub(crate) fn dispatch_script(script: &str)
+{
+    let webview = ISLAND.with(|slot| slot.borrow().as_ref().map(|window| Rc::clone(&window.webview))); // 岛关闭时没有投递目标。
+    if let Some(webview) = webview
+        && let Err(error) = webview.evaluate_script(script)
+    {
+        crate::log_warn!("岛：事件投递失败，错误：{error}");
+    }
 }
 
 /// UI 线程幂等清理，先释放 WebView 再销毁外层 HWND。
 pub(crate) fn destroy()
 {
+    CLICK_FOREGROUND.with(|state| state.borrow_mut().target = None); // 关闭后不保留旧 HWND 的补偿任务。
+    NATIVE_DRAGGING.set(false);
     let resource = ISLAND.with(|slot| slot.borrow_mut().take()); // 先移出，窗口销毁重入时不会重复释放。
     if let Some(resource) = resource
     {
@@ -449,7 +577,7 @@ fn apply_policy(reassert_topmost: bool)
         let slot = slot.borrow(); // 仅计算副作用所需的 Copy 数据，不调用窗口 API。
         let resource = slot.as_ref()?;
         let preferences = resource.app.state::<SettingsState>().preferences().ok()?;
-        let hide = !preferences.island_enabled || resource.geometry.is_none() || suppressed(&super::refresh_policy::foreground_snapshot(), preferences.island_hide_on_fullscreen, &resource.monitor.id);
+        let hide = !preferences.island_enabled || resource.geometry.is_none() || suppressed(&super::refresh_policy::foreground_snapshot(), preferences.island_hide_on_fullscreen);
         Some((resource.hwnd, hide))
     }); // RefCell 借用到此结束，隐藏中重入 finish_drag 也可以取得可变借用。
     if let Some((hwnd, hide)) = target
@@ -468,7 +596,6 @@ fn apply_policy(reassert_topmost: bool)
 #[derive(Clone, Copy, Debug)]
 enum StateStage
 {
-    Region,
     WindowBox,
     WebView,
     Commit,
@@ -507,14 +634,43 @@ fn run_transition(request: IslandStateRequest, apply: impl FnOnce(&IslandStateRe
 }
 
 /// 未提交首态或切态失败后的岛一律不能开始拖动。
-fn can_drag(geometry: Option<&IslandStateRequest>) -> bool { geometry.is_some_and(|geometry| geometry.state == "collapsed") }
+fn can_drag(geometry: Option<&IslandStateRequest>) -> bool { geometry.is_some_and(|geometry| matches!(geometry.state.as_str(), "collapsed" | "hover")) }
 
-/// UI 线程一次提交区域与窗口联合盒，不逐帧调整 HWND。
-pub(crate) fn set_state(mut request: IslandStateRequest) -> Result<(), String>
+/// 每次提交都完整校验；静默态一次提交，动画帧复用同一入口，不另设队列或节流。
+pub(crate) fn set_state(request: IslandStateRequest) -> Result<(), String>
+{
+    finish_state_submission(apply_state(request), || {
+        let hwnd = ISLAND.with(|slot| {
+            let mut slot = slot.borrow_mut(); // 包括参数和工作区预检失败，绝不保留上一动画中间态。
+            slot.as_mut().map(|resource| {
+                resource.geometry = None;
+                resource.drag.invalidate();
+                resource.hwnd
+            })
+        });
+        if let Some(hwnd) = hwnd
+        {
+            let _ = unsafe { ShowWindow(hwnd, SW_HIDE) }; // 状态借用释放后隐藏，允许消息重入。
+        }
+    })
+}
+
+/// 任意失败只触发一次外层清理；成功帧和最终态均不隐藏。
+fn finish_state_submission(result: Result<(), String>, on_failure: impl FnOnce()) -> Result<(), String>
+{
+    if result.is_err()
+    {
+        on_failure();
+    }
+    result
+}
+
+/// UI 线程应用一份完整几何；调用方串行按帧提交，原生错误统一交给外层隐藏。
+fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
 {
     request.validate()?;
     let monitor = primary_monitor()?; // 枚举窗口环境也在 RefCell 借用期外。
-    let (hwnd, webview, revision) = ISLAND.with(|slot| {
+    let (hwnd, webview, revision, state_changed) = ISLAND.with(|slot| {
         let mut slot = slot.borrow_mut(); // 只校验并取出快照，不调用会泵消息的 API。
         let resource = slot.as_mut().ok_or("岛未开启")?;
         if !resource.app.state::<SettingsState>().preferences()?.island_enabled
@@ -541,56 +697,25 @@ pub(crate) fn set_state(mut request: IslandStateRequest) -> Result<(), String>
         }
         request.window_box.left = request.window_box.left.clamp(area.left, area.left + area.width - request.window_box.width);
         request.window_box.top = request.window_box.top.clamp(area.top, area.top + area.height - request.window_box.height);
+        let state_changed = resource.geometry.as_ref().is_none_or(|previous| previous.state != request.state); // 动画同态帧不重复记录 INFO。
         resource.drag.invalidate(); // 先使旧拖动失效，再执行可能重入的窗口操作。
         resource.geometry = None; // 提交完成前也拒绝按上一态开始拖动。
-        Ok::<_, String>((resource.hwnd, Rc::clone(&resource.webview), resource.drag.revision))
+        Ok::<_, String>((resource.hwnd, Rc::clone(&resource.webview), resource.drag.revision, state_changed))
     })?; // 从此开始不持有 ISLAND 的任何借用。
     let scale = monitor.scale_factor;
-    let stage = std::cell::Cell::new(StateStage::Region); // 多闭包共享阶段，不持有 RefCell 借用。
+    let stage = std::cell::Cell::new(StateStage::WindowBox); // 多闭包共享阶段，不持有 RefCell 借用。
     let result = run_transition(
         request,
         |request| {
-            let region = unsafe { CreateRectRgn(0, 0, 0, 0) }; // 合成区域失败时仍由本函数释放。
-            if region.is_invalid()
-            {
-                return Err("创建岛区域失败".into());
-            }
-            for card in &request.cards
-            {
-                let rect = card.rect; // 窗口客户区局部 DIP。
-                let part = unsafe { CreateRoundRectRgn(px(rect.left, scale), px(rect.top, scale), px(rect.left + rect.width, scale), px(rect.top + rect.height, scale), px(card.radius * 2.0, scale), px(card.radius * 2.0, scale)) }; // 圆角参数是椭圆直径。
-                if part.is_invalid()
-                {
-                    unsafe {
-                        let _ = DeleteObject(region.into());
-                    }
-                    return Err("创建岛卡片区域失败".into());
-                }
-                let combined = unsafe { CombineRgn(Some(region), Some(region), Some(part), RGN_OR) }; // 所有卡片外像素不属于窗口。
-                unsafe {
-                    let _ = DeleteObject(part.into());
-                }
-                if combined == RGN_ERROR
-                {
-                    unsafe {
-                        let _ = DeleteObject(region.into());
-                    }
-                    return Err("合成岛区域失败".into());
-                }
-            }
-            if unsafe { SetWindowRgn(hwnd, Some(region), false) } == 0
-            {
-                unsafe {
-                    let _ = DeleteObject(region.into());
-                }
-                return Err("设置岛窗口区域失败".into());
-            } // 成功即把 HRGN 所有权交给系统。
-            let rect = request.window_box; // 只提交一次物理窗口盒。
+            let rect = request.window_box; // 本次静默态或动画帧对应的物理窗口盒。
             stage.set(StateStage::WindowBox);
             unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), px(rect.left, scale), px(rect.top, scale), px(rect.width, scale), px(rect.height, scale), SWP_NOACTIVATE) }.map_err(|error| format!("设置岛窗口盒失败：{error}"))?;
             stage.set(StateStage::WebView);
             webview.set_bounds(WryRect { position: dpi::PhysicalPosition::new(0, 0).into(), size: dpi::PhysicalSize::new(px(rect.width, scale) as u32, px(rect.height, scale) as u32).into() }).map_err(|error| format!("设置岛 WebView 尺寸失败：{error}"))?;
-            crate::log_info!("岛：切换状态={}，显示器={}，窗口盒DIP=[{}, {}, {}, {}]，缩放={}", request.state, monitor.id, rect.left, rect.top, rect.width, rect.height, scale);
+            if state_changed
+            {
+                crate::log_info!("岛：切换状态={}，显示器={}，窗口盒DIP=[{}, {}, {}, {}]，缩放={}", request.state, monitor.id, rect.left, rect.top, rect.width, rect.height, scale);
+            }
             stage.set(StateStage::Commit);
             Ok(())
         },
@@ -611,14 +736,7 @@ pub(crate) fn set_state(mut request: IslandStateRequest) -> Result<(), String>
             })
         },
         || {
-            let exists = ISLAND.with(|slot| slot.borrow().as_ref().is_some_and(|resource| Rc::ptr_eq(&resource.webview, &webview))); // 防止重入销毁后的旧 HWND 被复用。
-            if exists
-            {
-                unsafe {
-                    let _ = ShowWindow(hwnd, SW_HIDE);
-                }
-            } // 共用收口确保隐藏只调用一次，且借用已释放。
-            crate::log_warn!("岛：切态失败，已清空几何并隐藏，阶段={:?}", stage.get());
+            crate::log_warn!("岛：几何提交失败，外层将清空几何并隐藏，阶段={:?}", stage.get()); // 前置校验与原生步骤共用外层 fail-closed。
         },
     );
     if result.is_ok()
@@ -628,26 +746,74 @@ pub(crate) fn set_state(mut request: IslandStateRequest) -> Result<(), String>
     result
 }
 
-/// 拖动前必须由调用方将 hover 回落 collapsed；展开态不允许进入窗口移动循环。
-pub(crate) fn begin_drag() -> Result<(), String>
+/// 释放并吸附后的指针事实，不依赖 WebView2 是否补发 pointerleave。
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IslandDragResult
 {
-    let hwnd = ISLAND.with(|slot| {
+    pub pointer_inside: bool, // 未确认、取消或超时时保守返回 false。
+}
+
+/// Win32 客户区命中规则：左上含、右下不含，圆角不参与矩形内外事实。
+fn point_inside_client(point: POINT, rect: RECT) -> bool { point.x >= rect.left && point.y >= rect.top && point.x < rect.right && point.y < rect.bottom }
+
+/// 仅在成功吸附并提交最终几何后调用，使用同一物理客户区坐标空间。
+fn cursor_inside_client(hwnd: HWND) -> bool
+{
+    let mut point = POINT::default(); // 当前屏幕物理坐标。
+    let mut rect = RECT::default(); // 最终窗口客户区物理矩形。
+    unsafe { GetAsyncKeyState(VK_ESCAPE.0 as i32) >= 0 && GetCursorPos(&mut point).is_ok() && ScreenToClient(hwnd, &mut point).as_bool() && GetClientRect(hwnd, &mut rect).is_ok() && point_inside_client(point, rect) }
+}
+
+/// 常态与 hover 均可进入原生移动循环，展开态只允许卡片排序，不移动窗口。
+pub(crate) fn begin_drag() -> Result<std::sync::mpsc::Receiver<IslandDragResult>, String>
+{
+    let (done, saved) = std::sync::mpsc::sync_channel(1); // UI线程只传递完成信号，不等待磁盘。
+    let (hwnd, sequence) = ISLAND.with(|slot| {
         let mut slot = slot.borrow_mut(); // 开始一次当前修订的移动循环，随后立即释放借用。
         let resource = slot.as_mut().ok_or("岛未开启")?;
         if !can_drag(resource.geometry.as_ref())
         {
-            return Err("请先将岛回落常态后再拖动".to_string());
+            return Err("展开态不能拖动岛窗口，请先收起卡片".to_string());
         }
         let mut order = LANDINGS.lock().map_err(|_| "岛落点状态不可用")?; // 序号分配与后台写盘线性化，不跨 Win32 调用持锁。
         resource.drag.begin()?;
         resource.drag.landing_seq = order.begin()?;
-        Ok(resource.hwnd)
+        resource.drag.landing_done = Some(done);
+        Ok((resource.hwnd, resource.drag.landing_seq))
     })?;
+    CLICK_FOREGROUND.with(|state| state.borrow_mut().target = None); // 原生移动循环不能执行排队的点击补偿。
+    NATIVE_DRAGGING.set(true);
     unsafe {
         let _ = ReleaseCapture();
         SendMessageW(hwnd, WM_NCLBUTTONDOWN, Some(WPARAM(HTCAPTION as usize)), Some(LPARAM(0)));
     }
-    Ok(())
+    NATIVE_DRAGGING.set(false);
+    ISLAND.with(|slot| {
+        if let Some(resource) = slot.borrow_mut().as_mut().filter(|resource| resource.hwnd == hwnd && resource.drag.landing_seq == sequence)
+        {
+            resource.drag.landing_done = None; // 没有成功调度保存的取消/失败移动不让命令空等。
+        }
+    });
+    Ok(saved)
+}
+
+/// 仅命令后台线程等待保存；超时不改变已完成的原生拖动结果。
+pub(crate) fn wait_for_landing(saved: std::sync::mpsc::Receiver<IslandDragResult>, timeout: std::time::Duration) -> IslandDragResult
+{
+    match saved.recv_timeout(timeout)
+    {
+        Ok(result) => result,
+        Err(error) =>
+        {
+            match error
+            {
+                std::sync::mpsc::RecvTimeoutError::Timeout => crate::log_warn!("岛：等待拖动落点保存超时，后台任务继续，不改变拖动结果"),
+                std::sync::mpsc::RecvTimeoutError::Disconnected => crate::log_debug!("岛：本次拖动未调度落点保存或已取消，无需等待"),
+            }
+            IslandDragResult::default()
+        }
+    }
 }
 
 /// 原生移动循环结束后按胶囊而非联合盒中心吸附，并异步保存偏好。
@@ -660,9 +826,9 @@ fn finish_drag(hwnd: HWND) -> Result<(), String>
         {
             return None;
         } // 重复退出、非拖动态或旧修订均无提交。
-        Some((resource.app.clone(), Rc::clone(&resource.webview), resource.geometry.clone()?, resource.drag.revision, resource.drag.landing_seq))
+        Some((resource.app.clone(), Rc::clone(&resource.webview), resource.geometry.clone()?, resource.drag.revision, resource.drag.landing_seq, resource.drag.landing_done.take()))
     });
-    let Some((app, webview, geometry, revision, landing_seq)) = snapshot
+    let Some((app, webview, geometry, revision, landing_seq, done)) = snapshot
     else
     {
         return Ok(());
@@ -702,6 +868,7 @@ fn finish_drag(hwnd: HWND) -> Result<(), String>
     {
         return Ok(());
     }
+    let pointer_inside = cursor_inside_client(hwnd); // 吸附成功后的释放事实先采样，后台磁盘等待期间不重读鼠标。
     crate::log_info!("岛：拖动吸附，显示器={}，边={}，偏移DIP={}，窗口原点DIP=[{}, {}]", monitor.id, edge.as_preference(), offset, x, y);
     tauri::async_runtime::spawn_blocking(move || {
         let result = (|| {
@@ -710,13 +877,18 @@ fn finish_drag(hwnd: HWND) -> Result<(), String>
             if let Some(saved) = saved
             {
                 app.emit("preferences-changed", &saved).map_err(|error| format!("岛落点已保存，但偏好事件发布失败：{error}"))?;
+                return Ok(pointer_inside);
             }
-            Ok::<(), String>(())
+            Ok::<bool, String>(false) // 过期序号或关闭后丢弃，不误报指针仍在岛内。
         })();
-        if let Err(error) = result
+        if let Err(error) = &result
         {
             crate::log_warn!("岛：保存拖动位置失败，错误：{error}");
         }
+        if let Some(done) = done
+        {
+            let _ = done.send(IslandDragResult { pointer_inside: result.unwrap_or(false) });
+        } // 保存/广播成功、过期丢弃或错误均释放命令屏障，错误不改变拖动结果。
     });
     Ok(())
 }
@@ -724,13 +896,62 @@ fn finish_drag(hwnd: HWND) -> Result<(), String>
 /// 不抢焦点；松手吸附由 Windows 原生移动循环触发。
 unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT
 {
-    if message == WM_ERASEBKGND && unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } == 1
+    if message == WM_ERASEBKGND
     {
         return LRESULT(1);
-    } // DWM 成功时不绘制不透明纯色底。
+    } // 不覆盖 WebView2 的透明像素。
+    if message == WM_ISLAND_CHILD_NOACTIVATE
+    {
+        apply_child_noactivate(hwnd);
+        return LRESULT(0);
+    }
+    if message == WM_PARENTNOTIFY && matches!((wparam.0 & 0xffff) as u32, WM_CREATE | WM_DESTROY)
+    {
+        schedule_child_noactivate(hwnd); // 后代重建后重做，不只修复首次创建的子窗口。
+    }
     if message == WM_MOUSEACTIVATE
     {
+        let previous = unsafe { GetForegroundWindow() }.0 as isize; // 某些 WebView2 路径不发此消息，激活时另用 lparam 兜底。
+        CLICK_FOREGROUND.with(|state| state.borrow_mut().target = (previous != 0 && previous != hwnd.0 as isize).then_some(previous));
         return LRESULT(MA_NOACTIVATE as isize);
+    }
+    if message == WM_ACTIVATE
+    {
+        let activation = (wparam.0 & 0xffff) as u32;
+        let clicking = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0; // 不补偿程序切换、键盘激活或过期记录。
+        if matches!(activation, WA_ACTIVE | WA_CLICKACTIVE) && clicking && !native_dragging()
+        {
+            CLICK_FOREGROUND.with(|state| {
+                let mut state = state.borrow_mut();
+                if state.target.is_none()
+                {
+                    state.target = (lparam.0 != 0 && lparam.0 != hwnd.0 as isize).then_some(lparam.0);
+                }
+            });
+            if let Err(error) = unsafe { PostMessageW(Some(hwnd), WM_ISLAND_RESTORE_FOREGROUND, WPARAM(0), LPARAM(0)) }
+            {
+                CLICK_FOREGROUND.with(|state| state.borrow_mut().target = None);
+                crate::log_warn!("岛：点击前台恢复调度失败，错误：{error}");
+            }
+        }
+        else
+        {
+            CLICK_FOREGROUND.with(|state| state.borrow_mut().target = None);
+        }
+    }
+    if message == WM_ISLAND_RESTORE_FOREGROUND
+    {
+        restore_click_foreground(hwnd);
+        return LRESULT(0);
+    }
+    if message == WM_ENTERSIZEMOVE
+    {
+        NATIVE_DRAGGING.set(true);
+        CLICK_FOREGROUND.with(|state| state.borrow_mut().target = None);
+    }
+    if message == WM_EXITSIZEMOVE
+    {
+        NATIVE_DRAGGING.set(false);
     }
     if message == WM_EXITSIZEMOVE
         && let Err(error) = finish_drag(hwnd)
@@ -749,7 +970,7 @@ mod reentrancy_tests
     fn island_state_failure_injection_always_clears_geometry_and_disables_drag()
     {
         let previous = IslandStateRequest { state: "collapsed".into(), window_box: IslandRect { left: 0.0, top: 0.0, width: 100.0, height: 40.0 }, cards: vec![] }; // 不创建真实 HWND。
-        for stage in [StateStage::Region, StateStage::WindowBox, StateStage::WebView, StateStage::Commit]
+        for stage in [StateStage::WindowBox, StateStage::WebView, StateStage::Commit]
         {
             let mut geometry = Some(previous.clone());
             let mut drag = DragProgress::default();

@@ -43,6 +43,7 @@ pub struct ThemeAppearance
     pub accent_color: Option<String>,         // 界面强调色。
     pub desktop_accent_color: Option<String>, // 桌面强调色。
     pub corner_radius: Option<u32>,           // 共用圆角。
+    pub island_radius: Option<u32>,           // 岛展开卡圆角。
     pub font_family: Option<String>,          // 系统字体或本主题自带字体的族名。
     pub font_size: Option<u32>,               // 正文字号。
 }

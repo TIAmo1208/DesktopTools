@@ -1,0 +1,354 @@
+/* 岛是独立表面，只消费桌面主题令牌，不继承格子的轨道与尺寸。 */
+html[data-island="true"],
+html[data-island="true"] body,
+html[data-island="true"] #root {
+    min-inline-size: 0;
+    min-block-size: 0;
+    margin: 0;
+    overflow: clip;
+    background: transparent;
+}
+:root[data-island="true"] {
+    --fence-border: rgb(210 224 227 / 38%);
+    --fence-surface: rgb(32 38 40 / 58%);
+    --fence-text: #e8eff0;
+}
+:root[data-island="true"][data-desktop-theme="light"] {
+    --fence-border: rgb(55 66 69 / 22%);
+    --fence-surface: rgb(185 185 185 / 58%);
+    --fence-text: #202526;
+}
+.island {
+    display: grid;
+    grid-auto-rows: max-content;
+    inline-size: max-content;
+    max-inline-size: 360px;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    color: var(--fence-text);
+    font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+    font-size: 13px;
+    letter-spacing: 0;
+    user-select: none;
+    background: transparent;
+    border: 0;
+}
+/* 超过工作区时只滚动内容，不扩大原生窗口盒。 */
+.island[data-state="expanded"] {
+    overflow-y: auto;
+    overflow-x: clip;
+    scrollbar-width: none;
+}
+.island > .island__palette {
+    position: absolute;
+    display: none;
+    visibility: hidden;
+    pointer-events: none;
+    inline-size: 0;
+    block-size: 0;
+}
+.island-card {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    min-inline-size: 0;
+    max-inline-size: 360px;
+    padding: 16px;
+    border: 0;
+    border-radius: var(--island-radius, 12px);
+    background: var(--fence-surface);
+    overflow: clip;
+    contain: paint; /* 将插件 fixed 内容的绘制边界限制在本卡；浏览器 top-layer 仍须单独验收。 */
+}
+/* 描边内绘，不占用 44/72 DIP 高度里的媒体与内边距。 */
+.island-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 1px solid var(--fence-border);
+    border-radius: inherit;
+    pointer-events: none;
+}
+.island-card__content {
+    min-inline-size: 0;
+    flex: 1;
+}
+.island-card__content [data-island-plugin] > p {
+    margin: 0;
+    block-size: 88px;
+    line-height: 20px;
+}
+.island-card__content > p {
+    margin: 0;
+    block-size: 88px;
+    line-height: 20px;
+}
+.island-card__content [data-plugin-container] {
+    block-size: 88px;
+    min-inline-size: 180px;
+    overflow: clip;
+}
+.island-card__content p {
+    white-space: nowrap;
+    overflow: clip;
+    text-overflow: ellipsis;
+}
+.island[data-state="expanded"] .island-card {
+    cursor: grab;
+}
+.island[data-state="expanded"] .island-card:active {
+    cursor: grabbing;
+}
+/* 根只承接键盘入口，焦点视觉内绘到卡片，透明圆角不出现矩形 UA 外环。 */
+.island:focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: -2px;
+}
+.island:focus-visible .island-card,
+.island [tabindex]:focus-visible,
+.island button:focus-visible {
+    outline: 2px solid var(--fence-text);
+    outline-offset: -2px;
+}
+.island[data-state="collapsed"] .island-card {
+    block-size: 44px;
+    padding: 8px;
+    border-radius: 22px;
+}
+.island[data-state="hover"] .island-card {
+    block-size: 72px;
+    padding: 12px;
+    border-radius: 16px;
+}
+.island[data-state="collapsed"] .island-card__content > p {
+    block-size: 28px;
+    line-height: 28px;
+    font-size: 11px;
+}
+.island[data-state="hover"] .island-card__content > p {
+    block-size: 48px;
+    line-height: 48px;
+}
+.island[data-state="collapsed"] [data-plugin-container] {
+    block-size: 28px;
+}
+.island[data-state="hover"] [data-plugin-container] {
+    block-size: 48px;
+}
+.island[data-vertical="true"] {
+    inline-size: 44px;
+}
+.island[data-vertical="true"] .island-card {
+    block-size: auto;
+    min-block-size: 52px;
+    inline-size: 44px;
+}
+.island-music {
+    min-inline-size: 0;
+}
+.island-music p {
+    margin: 0;
+    line-height: 16px;
+    block-size: 16px;
+}
+.island-music__header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-inline-size: 0;
+}
+.island-music__artwork {
+    display: grid;
+    place-items: center;
+    flex: none;
+    inline-size: 88px;
+    block-size: 88px;
+    border-radius: var(--island-radius, 12px);
+    overflow: clip;
+    background: color-mix(in srgb, var(--fence-text) 8%, transparent);
+}
+.island-music__artwork img {
+    -webkit-user-drag: none;
+    inline-size: 100%;
+    block-size: 100%;
+    object-fit: cover;
+}
+.island-music__artwork span {
+    opacity: 0.78;
+}
+.island-music__info {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 6px;
+    block-size: 88px;
+    min-inline-size: 0;
+    flex: 1;
+}
+.island-music__metadata {
+    min-inline-size: 0;
+}
+.island-music__title {
+    font-size: 13px;
+}
+.island-music__artist {
+    font-size: 12px;
+    opacity: 0.78;
+}
+.island-music__source {
+    font-size: 11px;
+    opacity: 0.78;
+}
+.island-music__controls {
+    display: flex;
+    flex: none;
+    gap: 4px;
+}
+.island-music__controls button {
+    display: grid;
+    place-items: center;
+    inline-size: 28px;
+    block-size: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    color: var(--fence-text);
+    background: transparent;
+    cursor: pointer;
+}
+.island-music__controls button:disabled {
+    opacity: 0.48;
+    cursor: default;
+}
+.island-music__controls button:active:not(:disabled) {
+    background: color-mix(in srgb, var(--fence-text) 18%, transparent);
+}
+.island-music__controls svg {
+    inline-size: 16px;
+    block-size: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    pointer-events: none;
+}
+@media (hover: hover) and (pointer: fine) {
+    .island-music__controls button:hover:not(:disabled) {
+        background: color-mix(in srgb, var(--fence-text) 10%, transparent);
+    }
+}
+.island-music__timeline {
+    margin-block-start: 10px;
+}
+.island-music__timeline progress {
+    display: block;
+    appearance: none;
+    inline-size: 100%;
+    block-size: 3px;
+    border: 0;
+    background: color-mix(in srgb, var(--fence-text) 18%, transparent);
+}
+.island-music__timeline progress::-webkit-progress-bar {
+    background: color-mix(in srgb, var(--fence-text) 18%, transparent);
+}
+.island-music__timeline progress::-webkit-progress-value {
+    background: color-mix(in srgb, var(--fence-text) 80%, transparent);
+}
+.island-music__timeline > div {
+    display: flex;
+    justify-content: space-between;
+    margin-block-start: 4px;
+    font-size: 11px;
+    line-height: 14px;
+    opacity: 0.78;
+    font-variant-numeric: tabular-nums;
+}
+.island-music__spectrum {
+    display: flex;
+    align-items: end;
+    gap: 3px;
+    block-size: 18px;
+    margin-block: 6px;
+    pointer-events: none;
+}
+.island-music__spectrum i {
+    flex: 1;
+    background: color-mix(in srgb, var(--fence-text) 42%, transparent);
+}
+.island-music__lyrics {
+    display: grid;
+    gap: 2px;
+}
+.island-music__lyrics p {
+    font-size: 12px;
+    opacity: 0.78;
+}
+.island-music__lyrics p[data-current="true"] {
+    font-size: 13px;
+    font-weight: 600;
+    opacity: 1;
+}
+.island[data-state="hover"] .island-music__artwork {
+    inline-size: 48px;
+    block-size: 48px;
+    border-radius: 16px;
+}
+.island[data-state="hover"] .island-music__header {
+    gap: 8px;
+}
+.island[data-state="hover"] .island-music__info {
+    block-size: 48px;
+}
+.island[data-state="collapsed"] .island-music__header {
+    gap: 8px;
+}
+.island[data-state="collapsed"] .island-music__artwork {
+    inline-size: 28px;
+    block-size: 28px;
+    border-radius: 50%;
+}
+.island[data-state="collapsed"] .island-music__line {
+    position: relative;
+    font-size: 11px;
+    line-height: 28px;
+    block-size: 28px;
+    min-inline-size: 72px;
+    max-inline-size: 240px;
+}
+.island-music__reserve {
+    visibility: hidden;
+}
+.island-music__current {
+    position: absolute;
+    inset: 0;
+    overflow: clip;
+    text-overflow: ellipsis;
+}
+.island[data-state="collapsed"] [data-island-plugin] > p {
+    block-size: 28px;
+    line-height: 28px;
+    font-size: 11px;
+}
+.island[data-state="hover"] [data-island-plugin] > p {
+    block-size: 48px;
+    line-height: 48px;
+}
+.island[data-vertical="true"] .island-music__header {
+    flex-direction: column;
+}
+.island[data-vertical="true"] .island-music__line {
+    writing-mode: vertical-rl;
+    text-orientation: upright;
+    min-inline-size: 48px;
+    max-inline-size: 176px;
+    inline-size: max-content;
+    block-size: 28px;
+    line-height: 28px;
+}
+.island[data-vertical="true"] .island-card__content > p {
+    writing-mode: vertical-rl;
+    text-orientation: upright;
+    inline-size: max-content;
+    block-size: 28px;
+}

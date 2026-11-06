@@ -68,6 +68,8 @@ pub struct ThemeBaseline
     pub accent_color: String,         // 界面自定义强调色。
     pub desktop_accent_color: String, // 桌面自定义强调色。
     pub corner_radius: u8,            // 表面圆角。
+    #[serde(default = "default_island_radius")]
+    pub island_radius: u8, // 岛展开卡圆角。
     pub font_family: String,          // 白名单字体。
     pub font_size: u8,                // 正文字号。
 }
@@ -113,6 +115,7 @@ pub struct ApplicationPreferences
     pub folder_portal_enabled: bool,           // 文件夹门户功能入口显隐。
     pub pause_on_fullscreen: bool,             // 前台全屏或最大化覆盖本屏时暂停刷新。
     pub pause_on_focus: bool,                  // 外部应用获得焦点时暂停全部桌面刷新。
+    pub island_radius: u8,                     // 岛展开卡圆角，独立于界面圆角。
     pub island_enabled: bool,                  // 岛总开关，关闭时不建窗并销毁 WebView。
     pub island_edge: String,                   // 岛贴边方向，空字符串表示顶部居中。
     pub island_offset: f64,                    // 沿贴边方向的偏移，单位 DIP。
@@ -122,6 +125,9 @@ pub struct ApplicationPreferences
     #[serde(default, deserialize_with = "deserialize_disabled_plugins")]
     pub disabled_plugins: Vec<String>, // 宿主停用的插件标识，不属于插件自己的设置文件。
 }
+
+/// 岛展开卡默认圆角，偏好与主题基线共用。
+fn default_island_radius() -> u8 { 12 }
 
 /// 首次启动跟随系统，并沿用现有双击打开行为。
 impl Default for ApplicationPreferences
@@ -166,6 +172,7 @@ impl Default for ApplicationPreferences
             folder_portal_enabled: true,
             pause_on_fullscreen: false,
             pause_on_focus: false,
+            island_radius: default_island_radius(),
             island_enabled: false,
             island_edge: String::new(),
             island_offset: 0.0,
@@ -242,7 +249,7 @@ where
 pub fn is_font_family_name(value: &str) -> bool { !value.is_empty() && value.len() <= 64 && value.trim() == value && !value.chars().any(|character| character.is_control() || matches!(character, ';' | '{' | '}' | '(' | ')' | '\'' | '"' | '\\')) }
 
 /// 当前外观与基线使用相同的颜色、字体和尺寸边界。
-fn validate_appearance(accent: &str, desktop_accent: &str, radius: u8, font: &str, size: u8) -> Result<(), String>
+fn validate_appearance(accent: &str, desktop_accent: &str, radius: u8, island_radius: u8, font: &str, size: u8) -> Result<(), String>
 {
     for color in [accent, desktop_accent]
     {
@@ -254,6 +261,10 @@ fn validate_appearance(accent: &str, desktop_accent: &str, radius: u8, font: &st
     if radius > 12
     {
         return Err("圆角必须介于 0 和 12 之间".to_string());
+    }
+    if island_radius > 16
+    {
+        return Err("岛圆角必须介于 0 和 16 之间".to_string());
     }
     if !(12..=18).contains(&size)
     {
@@ -302,14 +313,14 @@ impl ApplicationPreferences
             return Err("图片预览宽度必须为 48 到 156 DIP 的整数".into());
         }
         self.fence_grid.validate()?;
-        validate_appearance(&self.accent_color, &self.desktop_appearance.accent_color, self.corner_radius, &self.font_family, self.font_size)?;
+        validate_appearance(&self.accent_color, &self.desktop_appearance.accent_color, self.corner_radius, self.island_radius, &self.font_family, self.font_size)?;
         if self.theme_plugin_id.as_ref().is_some_and(|id| id.trim().is_empty())
         {
             return Err("主题插件标识无效".to_string());
         }
         if let Some(baseline) = &self.theme_baseline
         {
-            validate_appearance(&baseline.accent_color, &baseline.desktop_accent_color, baseline.corner_radius, &baseline.font_family, baseline.font_size)?;
+            validate_appearance(&baseline.accent_color, &baseline.desktop_accent_color, baseline.corner_radius, baseline.island_radius, &baseline.font_family, baseline.font_size)?;
         }
         if !matches!(self.island_edge.as_str(), "" | "top" | "bottom" | "left" | "right")
         {
@@ -352,14 +363,16 @@ mod island_tests
     fn island_preferences_defaults_and_roundtrip()
     {
         let defaults: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 缺少岛字段的旧配置。
+        assert_eq!(defaults.island_radius, 12);
         assert!(!defaults.island_enabled);
         assert_eq!(defaults.island_edge, "");
         assert_eq!(defaults.island_offset, 0.0);
         assert!(defaults.island_hide_on_fullscreen);
         assert!(defaults.island_card_order.is_empty());
         assert!(defaults.validate().is_ok());
-        let selected = ApplicationPreferences { island_enabled: true, island_edge: "left".into(), island_offset: -12.5, island_hide_on_fullscreen: false, island_card_order: vec!["official.music".into(), "plugin.clock".into()], ..defaults }; // 非默认岛偏好。
+        let selected = ApplicationPreferences { island_radius: 16, island_enabled: true, island_edge: "left".into(), island_offset: -12.5, island_hide_on_fullscreen: false, island_card_order: vec!["official.music".into(), "plugin.clock".into()], ..defaults }; // 非默认岛偏好。
         let value = serde_json::to_value(&selected).unwrap(); // 实际持久化字段名。
+        assert_eq!(value["islandRadius"], 16);
         assert_eq!(value["islandEnabled"], true);
         assert_eq!(value["islandEdge"], "left");
         assert_eq!(value["islandOffset"], -12.5);
@@ -372,6 +385,15 @@ mod island_tests
     #[test]
     fn island_preferences_validate_edge_and_offset()
     {
+        for radius in [0, 12, 16]
+        {
+            assert!(ApplicationPreferences { island_radius: radius, ..Default::default() }.validate().is_ok());
+        }
+        assert!(ApplicationPreferences { island_radius: 17, ..Default::default() }.validate().is_err());
+        for invalid in [serde_json::json!(-1), serde_json::json!(1.5), serde_json::json!("12")]
+        {
+            assert!(serde_json::from_value::<ApplicationPreferences>(serde_json::json!({"islandRadius": invalid})).is_err());
+        }
         for edge in ["", "top", "bottom", "left", "right"]
         {
             assert!(ApplicationPreferences { island_edge: edge.into(), ..Default::default() }.validate().is_ok());
@@ -417,11 +439,11 @@ mod music_tests
         let mut value = serde_json::to_value(&defaults).unwrap(); // 持久化边界的实际 camelCase 载荷。
         assert!(value["themePluginId"].is_null() && value["themeBaseline"].is_null());
         value["themePluginId"] = serde_json::json!("plugin.missing");
-        value["themeBaseline"] = serde_json::json!({"accentColor":"#AABBCC","desktopAccentColor":"#123456","cornerRadius":4,"fontFamily":"Arial","fontSize":14});
+        value["themeBaseline"] = serde_json::json!({"accentColor":"#AABBCC","desktopAccentColor":"#123456","cornerRadius":4,"islandRadius":16,"fontFamily":"Arial","fontSize":14});
         let selected: ApplicationPreferences = serde_json::from_value(value.clone()).unwrap();
         assert!(selected.validate().is_ok());
         assert_eq!(serde_json::to_value(selected).unwrap(), value);
-        for (key, invalid) in [("accentColor", serde_json::json!("red")), ("desktopAccentColor", serde_json::json!("#12345g")), ("cornerRadius", serde_json::json!(13)), ("fontFamily", serde_json::json!("Arial; color:red")), ("fontSize", serde_json::json!(19))]
+        for (key, invalid) in [("accentColor", serde_json::json!("red")), ("desktopAccentColor", serde_json::json!("#12345g")), ("cornerRadius", serde_json::json!(13)), ("islandRadius", serde_json::json!(17)), ("fontFamily", serde_json::json!("Arial; color:red")), ("fontSize", serde_json::json!(19))]
         {
             let mut invalid_value = value.clone(); // 每个字段单独验证。
             invalid_value["themeBaseline"][key] = invalid;

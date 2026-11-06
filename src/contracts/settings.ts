@@ -52,6 +52,7 @@ export interface ThemeBaseline {
     accentColor: string;
     desktopAccentColor: string;
     cornerRadius: number;
+    islandRadius: number; // 岛展开卡圆角。
     fontFamily: string;
     fontSize: number;
 }
@@ -65,12 +66,15 @@ export const parseThemeBaseline = (value: unknown): ThemeBaseline => {
     }
     if (typeof item.cornerRadius !== "number" || !Number.isInteger(item.cornerRadius) || item.cornerRadius < 0 || item.cornerRadius > 12)
         throw new Error("主题基线圆角无效");
+    const islandRadius = item.islandRadius === undefined ? 12 : item.islandRadius; // 缺失字段使用当前默认值。
+    if (typeof islandRadius !== "number" || !Number.isInteger(islandRadius) || islandRadius < 0 || islandRadius > 16) throw new Error("主题基线岛圆角无效");
     if (typeof item.fontSize !== "number" || !Number.isInteger(item.fontSize) || item.fontSize < 12 || item.fontSize > 18) throw new Error("主题基线字号无效");
     if (typeof item.fontFamily !== "string" || !isFontFamilyName(item.fontFamily)) throw new Error("主题基线字体无效");
     return {
         accentColor: item.accentColor as string,
         desktopAccentColor: item.desktopAccentColor as string,
         cornerRadius: item.cornerRadius,
+        islandRadius,
         fontFamily: item.fontFamily,
         fontSize: item.fontSize,
     };
@@ -114,6 +118,12 @@ export interface ApplicationPreferences {
     folderPortalEnabled: boolean; // 文件夹门户功能入口显隐。
     pauseOnFullscreen: boolean; // 前台全屏或最大化覆盖本屏时暂停刷新。
     pauseOnFocus: boolean; // 外部应用获得焦点时暂停全部桌面刷新。
+    islandEnabled: boolean; // 岛总开关。
+    islandEdge: "" | "top" | "bottom" | "left" | "right"; // 空串表示顶部居中默认位。
+    islandOffset: number; // 沿贴边方向的有限 DIP 偏移。
+    islandHideOnFullscreen: boolean; // 前台全屏时隐藏岛。
+    islandCardOrder: string[]; // 已启用岛卡及展开顺序，最多 32 条。
+    islandRadius: number; // 岛展开卡圆角，独立于界面圆角。
     disabledPlugins: string[]; // 宿主停用的插件标识，不属于插件自己的设置文件。
 }
 
@@ -171,6 +181,8 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         folderPortalEnabled: true,
         pauseOnFullscreen: false,
         pauseOnFocus: false,
+        islandEnabled: false,
+        islandHideOnFullscreen: true,
     }; // 旧配置默认行为。
     for (const key of Object.keys(features) as (keyof typeof features)[]) {
         if (candidate[key] === undefined) continue;
@@ -201,6 +213,18 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     const musicSpectrumFps = candidate.musicSpectrumFps === undefined ? 30 : candidate.musicSpectrumFps; // 缺失配置使用默认帧率。
     if (typeof musicSpectrumFps !== "number" || !Number.isInteger(musicSpectrumFps) || musicSpectrumFps < 15 || musicSpectrumFps > 60)
         throw new Error("频谱帧率必须为 15 到 60 的整数");
+    const islandEdge = candidate.islandEdge === undefined ? "" : candidate.islandEdge; // 未设置时顶部居中。
+    if (islandEdge !== "" && islandEdge !== "top" && islandEdge !== "bottom" && islandEdge !== "left" && islandEdge !== "right")
+        throw new Error("岛贴边方向无效");
+    const islandOffset = candidate.islandOffset === undefined ? 0 : candidate.islandOffset; // 未设置时无偏移。
+    if (typeof islandOffset !== "number" || !Number.isFinite(islandOffset)) throw new Error("岛偏移必须为有限的 DIP 数值");
+    const islandRadius = candidate.islandRadius === undefined ? 12 : candidate.islandRadius; // 展开卡默认圆角。
+    if (typeof islandRadius !== "number" || !Number.isInteger(islandRadius) || islandRadius < 0 || islandRadius > 16) throw new Error("岛圆角数据无效");
+    const cards = candidate.islandCardOrder === undefined ? [] : candidate.islandCardOrder; // 与 Rust Vec<String> 边界一致。
+    if (!Array.isArray(cards) || cards.some((card) => typeof card !== "string")) throw new Error("岛卡顺序数据无效");
+    const islandCardOrder = [
+        ...new Set(cards.filter((card: string) => ["official.", "plugin."].some((prefix) => card.startsWith(prefix) && card.length > prefix.length))),
+    ].slice(0, 32); // 按首次出现顺序规范化。
     const disabledPlugins = parseDisabledPlugins(candidate.disabledPlugins); // 缺失、非数组和非法条目都按空或丢弃处理。
     const themePluginId = candidate.themePluginId ?? null; // 缺省不选择外部主题，不检查目录存在性。
     if (themePluginId !== null && (typeof themePluginId !== "string" || !themePluginId.trim())) throw new Error("主题插件标识无效");
@@ -230,6 +254,10 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         musicSpectrumDevice,
         musicSpectrumBars,
         musicSpectrumFps,
+        islandEdge,
+        islandOffset,
+        islandRadius,
+        islandCardOrder,
         disabledPlugins,
     };
 };

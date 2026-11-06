@@ -65,6 +65,7 @@ pub fn run()
         .manage(ApplicationState::default())
         .manage(desktop_items)
         .invoke_handler(tauri::generate_handler![
+            commands::island::get_island_snapshot,
             commands::island::set_island_state,
             commands::island::begin_island_drag,
             commands::get_foreground_snapshot,
@@ -219,7 +220,7 @@ pub fn run()
             });
             let desktop_host = DesktopHostRuntime::start(app.handle())?;
             app.manage(Arc::clone(&desktop_host));
-            crate::platform::windows::island::install(app.handle()); // 仅偏好开启时懒建窗，当前页面仍为占位。
+            crate::platform::windows::island::install(app.handle()); // 仅偏好开启时懒建独立岛页面。
             // Shell 变化通知由唯一协调线程消费。
             let changes = app.state::<DesktopItemState>().take_change_receiver().map_err(|error| error.message)?;
             start_desktop_item_change_monitor(app.handle().clone(), changes);

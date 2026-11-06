@@ -18,10 +18,12 @@ src/
 │  │  ├─ fence/             # FenceTile、成员布局、排序、滚动与投放
 │  │  ├─ folder-portal/     # 门户装配、目录导航、选择及真实文件操作
 │  │  ├─ collect-box/       # 收集项、摘要、工具、独立编辑窗与回归测试
-│  │  ├─ music/             # 媒体订阅、控制、响应式布局与最小尺寸
+│  │  ├─ music/             # 桌面媒体控制、响应式布局与最小尺寸
 │  │  ├─ clock/             # 活动时间订阅与呈现
 │  │  ├─ weather/           # 共享城市弹窗与桌面格子的来源选择弹层
 │  │  └─ debug/             # 宿主诊断与测试内容
+│  ├─ music/                # 格子与岛共用的引用计数音乐源、锚点与歌词行定位
+│  ├─ island/               # 独立三态页面、岛卡、实测几何与偏好顺序拖动
 │  ├─ components/           # 运行时注册、实例能力、开关与失败隔离装配
 │  ├─ desktop-items/        # 围栏与未归类区域共享的 Shell 项目呈现
 │  ├─ notifications/        # 统一消息入口
@@ -52,6 +54,10 @@ src/
 `CollectBox` 的图片槽使用可见性与尺寸观察器，通过 `readCollectImage` 请求缩略图或 GIF 悬停原图；`CollectEditor` 管理编辑、保存和关闭清理的调用生命周期。两者通过 `bridge/collect.ts` 访问后端，文件校验与回收归后端负责。
 
 `DesktopTileBase` 内部统一调用几何与展开 Hook，组合标题显隐、菜单、八向缩放及输入生命周期。调用方只提供几何参数和类型化业务回调；标题从公共 context 读取拖动入口，视口与活动内容读取同一实际折叠状态。`tileGeometry` 保存共享算法和可选 `minimum` 的默认值解析，使用 `contracts/tile` 的公共数据底线；内容层将内容需求与外壳、标题占位换算为外框下限。`tileDragPreview` 保存有界静态视觉；跨屏消息和 OLE 投放仍归工作区。
+
+`island/island.tsx` 从独立岛快照装配三态卡片，`island.css` 独立持有外观，不导入格子外壳；`islandGeometry.ts` 负责实测卡片到屏幕 DIP 提交、透明间隙命中、工作区内放置和顺序移动。页面以不可见令牌探针读取主题现有 `.fence-workspace` 下的表面、描边和文字色，响应偏好、主题样式表与系统深浅色变化；岛根不继承工作区尺寸或定位。音乐卡消费 `music/musicSource` 的歌词与时间轴，只为可见位置投影计时；频谱只订阅已有采集，无采集保持基线，不启停桌面全局音频采集。
+
+`components/PluginSlot` 持有桌面与岛共用的脚本加载、作者设置上下文、渲染清理和失败隔离，不导入格子样式；`OfficialComponentHost` 继续持有桌面格子外框。
 
 `OfficialComponentHost` 同步运行时、过滤实例并分发内容；`plugin:slot` 在当前屏幕已有实例时按清单的 `script` 去重加载 `/plugins/<script>`，再把模块默认导出的 `renderTile` 挂进既有外框；逐屏原生命令白名单包含 `get_plugin_settings`。插件能力统一走能力通道 `invoke_component_capability`：清单声明 `required_capabilities` 后，插件格子在 `renderTile` 里以 `instanceId` 与能力名调用，`contracts/component.ts` 按能力区分载荷——`read-host-time` 返回 `unixMillis`，`probe-service-status` 返回 `{ level, startTime, checkedAt }`，`level` 只有在线、探测被拒、未运行、未知四档，`startTime` 只在在线时给出且由格子按当前时间现算时长，`checkedAt` 用于判断数据是否过期。`ComponentTile` 组合组件身份、外观命令、接收就绪状态和失败隔离，不识别具体功能。`CollectBoxTile` 持有摘要与工具，其“新建收集项”菜单复用内容模块发布的新建动作；折叠尺寸由 `collapsedSize` 提供。`CollectBox` 复用内部 `DesktopTileViewport` 滚动列表，底部投放带和计数保持固定；`collectBox.browser.html` 使用生产组件和替代原生桥验证选择、菜单、删除及拖动取消。`MusicTile` 叠加内容和外框最小尺寸，`LocalClock` 持有活动时间订阅。
 

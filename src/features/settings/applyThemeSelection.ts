@@ -11,11 +11,12 @@ const themeFontsOf = (manifest: ComponentManifest | null) => new Set((manifest?.
 const activeThemeFonts = (preferences: ApplicationPreferences) =>
     preferences.themePluginId && !SYSTEM_FONTS.has(preferences.fontFamily) ? new Set([preferences.fontFamily]) : new Set<string>();
 
-/** 捕获五项原值，不改变系统强调色开关；主题自带的字体替换成默认字体。 */
+/** 捕获外观原值，不改变系统强调色开关；主题自带的字体替换成默认字体。 */
 const captureBaseline = (preferences: ApplicationPreferences, themeFonts: ReadonlySet<string> = new Set()): ThemeBaseline => ({
     accentColor: preferences.accentColor,
     desktopAccentColor: preferences.desktopAppearance.accentColor,
     cornerRadius: preferences.cornerRadius,
+    islandRadius: preferences.islandRadius,
     fontFamily: themeFonts.has(preferences.fontFamily) ? DEFAULT_FONT : preferences.fontFamily,
     fontSize: preferences.fontSize,
 });
@@ -45,6 +46,7 @@ export const clearTheme = (preferences: ApplicationPreferences): ApplicationPref
         accentColor: baseline.accentColor,
         desktopAppearance: { ...preferences.desktopAppearance, accentColor: baseline.desktopAccentColor },
         cornerRadius: baseline.cornerRadius,
+        islandRadius: baseline.islandRadius,
         fontFamily: baseline.fontFamily,
         fontSize: baseline.fontSize,
         themePluginId: null,
@@ -67,6 +69,7 @@ export const selectTheme = (preferences: ApplicationPreferences, manifest: Compo
         accentColor: appearance?.accentColor ?? base.accentColor,
         desktopAppearance: { ...base.desktopAppearance, accentColor: appearance?.desktopAccentColor ?? base.desktopAppearance.accentColor },
         cornerRadius: appearance?.cornerRadius ?? base.cornerRadius,
+        islandRadius: appearance?.islandRadius ?? base.islandRadius,
         fontFamily: appearance?.fontFamily ?? base.fontFamily,
         fontSize: appearance?.fontSize ?? base.fontSize,
     });
