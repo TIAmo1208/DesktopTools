@@ -128,7 +128,17 @@
                 return result;
             };
             const root = createRoot(document.getElementById("fixture")); // 挂载生产组件。
-            root.render(React.createElement(React.StrictMode, null, React.createElement(WeatherSettings, { onBack: () => back++, leaveGuard }))); // 与生产入口同样以严格模式暴露重复副作用。
+            // 页头「添加天气来源」改由功能格子二级页渲染；本页用同名夹具复现：点击即自增 openAddKey。
+            const Host = () => {
+                const [addKey, setAddKey] = React.useState(0);
+                return React.createElement(
+                    React.Fragment,
+                    null,
+                    React.createElement("button", { onClick: () => setAddKey((value) => value + 1) }, "+ 添加 API"),
+                    React.createElement(WeatherSettings, { onBack: () => back++, leaveGuard, openAddKey: addKey }),
+                );
+            };
+            root.render(React.createElement(React.StrictMode, null, React.createElement(Host))); // 与生产入口同样以严格模式暴露重复副作用。
             const settle = async () => {
                 for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 24));
             }; // 等待状态与模态提交，后台标签页下不依赖动画帧。

@@ -3,5 +3,8 @@
   "name": "本地时间",
   "entry": "official:local-clock",
   "requiredCapabilities": ["read-host-time"],
+  "creatable": true,
+  "removable": true,
+  "maxTiles": 1,
   "persistenceVersion": 1
 }

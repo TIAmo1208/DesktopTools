@@ -1,0 +1,67 @@
+/* 示例-设置条目 专用样式，严格使用插件前缀隔离 */
+
+.plugin-example-settings-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    font-size: 13px;
+    font-family: sans-serif;
+}
+
+.plugin-example-settings-panel .checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.plugin-example-settings-panel .field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.plugin-example-settings-panel .field-hint {
+    font-size: 12px;
+    opacity: 0.85;
+}
+
+.plugin-example-settings-panel input[type="text"] {
+    padding: 6px 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 13px;
+    background: transparent;
+    color: inherit;
+}
+
+.plugin-example-settings-panel .actions-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.plugin-example-settings-panel .save-btn {
+    padding: 6px 14px;
+    border-radius: 4px;
+    background: #2563eb;
+    color: #ffffff;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.plugin-example-settings-panel .save-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.plugin-example-settings-panel .status-text {
+    font-size: 12px;
+    color: #16a34a;
+    visibility: hidden;
+}
+
+.plugin-example-settings-panel .status-text--visible {
+    visibility: visible;
+}

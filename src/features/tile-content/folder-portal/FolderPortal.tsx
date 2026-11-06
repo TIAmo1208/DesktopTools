@@ -340,7 +340,7 @@ export const FolderPortal = ({
                                             if (!crumbMenuOpen) window.dispatchEvent(new Event("desktop-tile-menu-opening"));
                                             setCrumbMenuOpen((open) => !open);
                                         }}
-                                    >
+                                     data-button="icon">
                                         …
                                     </button>
                                     {crumbMenuOpen &&

@@ -267,9 +267,13 @@
     outline-offset: 2px;
 }
 
-/* 提交期间保留按钮尺寸。 */
+/* 提交期间保留按钮尺寸，改用弱色而不是整体半透明。 */
 .collect-box__delete-actions button:disabled {
-    opacity: 0.5;
+    border-color: var(--color-border);
+    color: var(--color-muted);
+    background: var(--color-subtle);
+    cursor: default;
+    text-shadow: none;
 }
 
 /* 只读预览独立浮层。 */

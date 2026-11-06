@@ -65,8 +65,8 @@ pub struct WorkspaceState
     history: Mutex<WorkspaceHistory>,
     /// 每次成功布局事务使用的原子 JSON 文件。
     persistence_path: PathBuf,
-    /// 当前已注册官方清单声明的创建与移除能力。
-    capability_declarations: Vec<ComponentCapabilityDeclaration>,
+    /// 当前已注册清单声明的创建与移除能力。热刷新只换这一份。
+    capability_declarations: Mutex<Vec<ComponentCapabilityDeclaration>>,
     /// 等待 2 秒空闲合并写入的完整工作区自动快照发送端。
     auto_snapshot_sender: Option<Sender<PersistedWorkspaceStore>>,
     /// 应用退出前刷新待处理快照的后台线程。
@@ -154,7 +154,7 @@ impl WorkspaceState
         crate::log_info!("工作区：统一布局恢复完成，修订={}，围栏={}，组件={}，路径={}", snapshot.revision, snapshot.fences.len(), snapshot.components.len(), persistence_path.display());
         let auto_snapshot_directory = persistence_path.with_extension("snapshots"); // 当前工作区快照目录。
         let (auto_snapshot_sender, auto_snapshot_worker) = start_auto_snapshot_worker(auto_snapshot_directory.clone()).map_err(|error| WorkspaceError::persistence_failed(&error))?; // 空闲合并线程。
-        Ok(Self { grid_preferences: Mutex::new(GridPreferences::default()), item_names: Mutex::new(HashMap::new()), snapshot: Mutex::new(snapshot), explorer_layout_imported: Mutex::new(explorer_layout_imported), history: Mutex::new(WorkspaceHistory::default()), persistence_path, capability_declarations: capability_declarations.to_vec(), auto_snapshot_sender: Some(auto_snapshot_sender), auto_snapshot_worker: Some(auto_snapshot_worker), auto_snapshot_directory })
+        Ok(Self { grid_preferences: Mutex::new(GridPreferences::default()), item_names: Mutex::new(HashMap::new()), snapshot: Mutex::new(snapshot), explorer_layout_imported: Mutex::new(explorer_layout_imported), history: Mutex::new(WorkspaceHistory::default()), persistence_path, capability_declarations: Mutex::new(capability_declarations.to_vec()), auto_snapshot_sender: Some(auto_snapshot_sender), auto_snapshot_worker: Some(auto_snapshot_worker), auto_snapshot_directory })
     }
 
     /// 更新 Shell 权威显示名称供后续布局事务排序。
@@ -247,6 +247,19 @@ impl WorkspaceState
         changed
     }
 
+    /// 校验指定组件再创建一个格子是否超出清单数量上限；0 表示不限。
+    pub(crate) fn enforce_component_tile_limit(&self, component_id: &str, count: usize) -> Result<(), WorkspaceError> { crate::component_runtime::enforce_plugin_tile_limit(self.component_tile_limit(component_id), count).map_err(|message| WorkspaceError::invalid_command(&message)) }
+
+    /// 返回指定组件清单声明的格子数量上限，任意显示器上的实例都计入；0 或清单缺失表示不限。
+    fn component_tile_limit(&self, component_id: &str) -> u32 { self.capability_declarations.lock().unwrap_or_else(|error| error.into_inner()).iter().find(|declaration| declaration.component_id == component_id).map(|declaration| declaration.max_tiles).unwrap_or(0) }
+
+    /// 当前布局里是否已有该组件的实例，任意显示器均算。
+    pub fn has_component(&self, component_id: &str) -> bool
+    {
+        // 只看身份，不复制整份快照。
+        self.snapshot.lock().unwrap_or_else(|error| error.into_inner()).components.iter().any(|component| component.component_id == component_id)
+    }
+
     /// 返回当前不可变工作区快照。
     pub fn snapshot(&self) -> Result<WorkspaceSnapshot, WorkspaceError>
     {
@@ -284,27 +297,39 @@ impl WorkspaceState
         Err(WorkspaceError::invalid_command("工作区没有可用的组件位置"))
     }
 
-    /// 返回指定组件清单是否声明了创建或移除能力，未注册清单按未声明处理。
+    /// 返回指定组件清单是否声明了创建或移除能力，当前运行时快照中缺失清单时只对移除放行。
     fn component_declares_capability(&self, component_id: &str, operation: ComponentOperation) -> bool
     {
         // 当前操作对应的清单声明字段。
-        let declared = self.capability_declarations.iter().find(|declaration| declaration.component_id == component_id).map(|declaration| match operation
+        let declarations = self.capability_declarations.lock().unwrap_or_else(|error| error.into_inner()); // 热刷新可能正在换声明。
+        let declared = declarations.iter().find(|declaration| declaration.component_id == component_id).map(|declaration| match operation
         {
             ComponentOperation::Create => declaration.creatable,
             ComponentOperation::Remove => declaration.removable,
         });
-        declared.unwrap_or(false)
+        // 清单缺失的实例无法创建，但允许用户移除，避免留下无法清理的僵尸实例。
+        declared.unwrap_or(matches!(operation, ComponentOperation::Remove))
     }
+
+    /// 用当前插件清单替换创建与移除声明。不改实例、布局和撤销历史。
+    pub fn refresh_capability_declarations(&self, declarations: &[ComponentCapabilityDeclaration]) { *self.capability_declarations.lock().unwrap_or_else(|error| error.into_inner()) = declarations.to_vec(); }
 
     /// 按清单声明校验创建与移除命令的可操作范围，其他命令不做组件能力校验。
     fn validate_component_capability(&self, layout: &WorkspaceSnapshot, command: &WorkspaceCommand) -> Result<(), WorkspaceError>
     {
+        // 创建按目标组件身份判定，移除按目标实例所属组件身份判定。
         let (component_id, operation) = match command
         {
             WorkspaceCommand::CreateComponent { component_id, .. } => (component_id.as_str(), ComponentOperation::Create),
             WorkspaceCommand::RemoveComponent { instance_id } => (layout.components.iter().find(|component| component.instance_id == *instance_id).ok_or_else(|| WorkspaceError::invalid_command("组件实例不存在"))?.component_id.as_str(), ComponentOperation::Remove),
             _ => return Ok(()),
-        }; // 创建按目标组件身份判定，移除按目标实例所属组件身份判定。
+        };
+        if matches!(operation, ComponentOperation::Create)
+        {
+            // 清单声明的格子数量上限对所有创建入口统一生效，不限时为 0。
+            let count = layout.components.iter().filter(|component| component.component_id == component_id).count(); // 所有显示器上的该组件格子。
+            self.enforce_component_tile_limit(component_id, count)?;
+        }
         if self.component_declares_capability(component_id, operation)
         {
             return Ok(());
@@ -604,6 +629,42 @@ impl WorkspaceState
         self.schedule_auto_snapshot(store);
         crate::log_debug!("工作区：布局事务已提交，命令={command_name}，修订={}，围栏={}", next.revision, next.fences.len());
         Ok(next)
+    }
+
+    /// 卸载时移除该插件在全部分显示器上的实例和布局残留，不写入撤销历史。
+    pub fn remove_uninstalled_plugin(&self, component_id: &str) -> Result<WorkspaceSnapshot, WorkspaceError>
+    {
+        let mut current = self.snapshot.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 等待卸载清理的当前布局。
+        let imported = self.explorer_layout_imported.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 与布局一起保存的导入状态。
+        let mut histories = self.history.lock().map_err(|_| WorkspaceError::state_unavailable())?; // 历史里的同名实例也不能被撤销救回。
+        let mut next = current.clone(); // 保存失败时当前布局不变。
+        let interaction = next.interaction.clone(); // 用来判断焦点是否因实例消失而变化。
+        let changed = next.strip_uninstalled_plugin(component_id); // 当前布局是否还有该插件的格子。
+        if changed
+        {
+            if next.interaction != interaction
+            {
+                next.interaction.revision += 1;
+            }
+            next.revision += 1;
+            next.validate()?;
+            let store = save_workspace_store(&self.persistence_path, &next, *imported).map_err(|error| {
+                crate::log_error!("工作区：卸载插件保存失败，插件={component_id}，错误={error}");
+                WorkspaceError::persistence_failed(&error)
+            })?; // 实例消失后的完整工作区文件。
+            *current = next;
+            self.schedule_auto_snapshot(store);
+            crate::log_info!("工作区：已移除卸载插件的实例，插件={component_id}，修订={}", current.revision);
+        }
+        for entry in &mut histories.undo
+        {
+            entry.layout.strip_uninstalled_plugin(component_id);
+        }
+        for entry in &mut histories.redo
+        {
+            entry.layout.strip_uninstalled_plugin(component_id);
+        }
+        Ok(current.clone())
     }
 
     /// 从当前会话布局历史撤销或重做一个完整事务。
@@ -1871,6 +1932,32 @@ impl WorkspaceSnapshot
                 unreachable!("布局历史命令由 WorkspaceState 处理")
             }
         }
+    }
+
+    /// 去掉该插件的实例、包围盒、外观键和指向这些实例的焦点。用户移除格子不走这里。
+    fn strip_uninstalled_plugin(&mut self, component_id: &str) -> bool
+    {
+        let removed_ids = self.components.iter().filter(|component| component.component_id == component_id).map(|component| component.instance_id.clone()).collect::<Vec<_>>(); // 这次卸载实际拿掉的实例。
+        let before = self.tile_appearances.len(); // 用来发现已经没有实例、只剩外观键的残留。
+        self.components.retain(|component| component.component_id != component_id);
+        let prefix = format!("component:{component_id}."); // 创建实例时使用的身份前缀。
+        let exact = format!("component:{component_id}"); // 实例身份就等于插件身份的旧数据。
+        let live = self.components.iter().map(|component| component.instance_id.clone()).collect::<std::collections::HashSet<_>>(); // 其他插件仍占用的实例身份。
+        self.tile_appearances.retain(|key, _| {
+            let Some(instance_id) = key.strip_prefix("component:")
+            else
+            {
+                return true;
+            };
+            if removed_ids.iter().any(|removed| removed == instance_id)
+            {
+                return false;
+            }
+            !((key == &exact || key.starts_with(&prefix)) && !live.contains(instance_id))
+        });
+        let interaction = self.interaction.clone(); // 实例消失后焦点可能落到背景。
+        self.normalize_interaction();
+        !removed_ids.is_empty() || self.tile_appearances.len() != before || self.interaction != interaction
     }
 
     /// 清理布局变化后已经失效的选择、锚点和键盘焦点。

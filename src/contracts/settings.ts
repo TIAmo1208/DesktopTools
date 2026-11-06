@@ -38,10 +38,51 @@ export const parseGridPreferences = (value: unknown): GridPreferences => {
 // Windows 界面字体选项与后端白名单保持一致。
 export const APPLICATION_FONTS = ["Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "Arial"] as const;
 
+/** 字体族名只做字形名边界校验：内置系统字体和插件自带字体共用这条规则。 */
+export const isFontFamilyName = (value: unknown): value is string =>
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 64 &&
+    value.trim() === value &&
+    !/[;{}()'"\\]/.test(value) &&
+    !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+
+/** 选择主题之前的用户外观快照，不包含系统强调色开关。 */
+export interface ThemeBaseline {
+    accentColor: string;
+    desktopAccentColor: string;
+    cornerRadius: number;
+    fontFamily: string;
+    fontSize: number;
+}
+
+/** 校验完整外观基线，不读取插件目录。 */
+export const parseThemeBaseline = (value: unknown): ThemeBaseline => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("主题基线无效");
+    const item = value as Record<string, unknown>; // 基线所有字段均必填。
+    for (const key of ["accentColor", "desktopAccentColor"]) {
+        if (typeof item[key] !== "string" || !/^#[0-9a-f]{6}$/i.test(item[key])) throw new Error("主题基线颜色无效");
+    }
+    if (typeof item.cornerRadius !== "number" || !Number.isInteger(item.cornerRadius) || item.cornerRadius < 0 || item.cornerRadius > 12)
+        throw new Error("主题基线圆角无效");
+    if (typeof item.fontSize !== "number" || !Number.isInteger(item.fontSize) || item.fontSize < 12 || item.fontSize > 18) throw new Error("主题基线字号无效");
+    if (typeof item.fontFamily !== "string" || !isFontFamilyName(item.fontFamily)) throw new Error("主题基线字体无效");
+    return {
+        accentColor: item.accentColor as string,
+        desktopAccentColor: item.desktopAccentColor as string,
+        cornerRadius: item.cornerRadius,
+        fontFamily: item.fontFamily,
+        fontSize: item.fontSize,
+    };
+};
+
 /** 已由 Rust 保存的应用偏好。 */
 export interface ApplicationPreferences {
     configDirectory: string; // 下次启动使用的配置目录。
+    pluginDirectory: string; // 空串由 Rust 解析为可执行文件同级的 plugin 目录。
     theme: ApplicationTheme; // 应用界面与自绘菜单的深浅模式。
+    themePluginId: string | null; // 当前主题插件，null 为内置主题。
+    themeBaseline: ThemeBaseline | null; // 未应用主题覆盖时的用户原值。
     desktopAppearance: DesktopAppearance; // 独立于界面与菜单的桌面主题。
     doubleClickToOpen: boolean; // 是否通过双击打开桌面项目。
     accentColor: string; // 应用界面与自绘菜单的强调色。
@@ -73,6 +114,7 @@ export interface ApplicationPreferences {
     folderPortalEnabled: boolean; // 文件夹门户功能入口显隐。
     pauseOnFullscreen: boolean; // 前台全屏或最大化覆盖本屏时暂停刷新。
     pauseOnFocus: boolean; // 外部应用获得焦点时暂停全部桌面刷新。
+    disabledPlugins: string[]; // 宿主停用的插件标识，不属于插件自己的设置文件。
 }
 
 /** 设置页读取的真实应用和 Windows 状态。 */
@@ -89,6 +131,8 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     const candidate = value as Record<string, unknown>; // 等待边界校验的原始偏好。
     const configDirectory = candidate.configDirectory === undefined ? "%APPDATA%\\TIAmo\\DesktopTools" : candidate.configDirectory; // 旧配置使用新的默认目录。
     if (typeof configDirectory !== "string" || !configDirectory.trim()) throw new Error("配置目录无效");
+    const pluginDirectory = candidate.pluginDirectory === undefined ? "" : candidate.pluginDirectory; // 空串交给 Rust 解析默认目录。
+    if (typeof pluginDirectory !== "string" || (pluginDirectory !== "" && !pluginDirectory.trim())) throw new Error("插件目录无效");
     if (candidate.theme !== "system" && candidate.theme !== "light" && candidate.theme !== "dark") throw new Error("应用主题数据无效");
     if (typeof candidate.doubleClickToOpen !== "boolean") throw new Error("项目打开方式数据无效");
     const accentColor = candidate.accentColor === undefined ? "#2563eb" : candidate.accentColor; // 旧配置缺省时的主题色。
@@ -108,7 +152,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     if (typeof desktopAppearance.useWindowsAccentColor !== "boolean") throw new Error("桌面网格 Windows 主题色开关无效");
     if (typeof cornerRadius !== "number" || !Number.isInteger(cornerRadius) || cornerRadius < 0 || cornerRadius > 12) throw new Error("圆角数据无效");
     if (typeof fontSize !== "number" || !Number.isInteger(fontSize) || fontSize < 12 || fontSize > 18) throw new Error("字号数据无效");
-    if (typeof fontFamily !== "string" || !APPLICATION_FONTS.some((font) => font === fontFamily)) throw new Error("字体数据无效");
+    if (typeof fontFamily !== "string" || !isFontFamilyName(fontFamily)) throw new Error("字体数据无效");
     const features = {
         clockEnabled: true,
         weatherEnabled: false,
@@ -157,14 +201,21 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     const musicSpectrumFps = candidate.musicSpectrumFps === undefined ? 30 : candidate.musicSpectrumFps; // 缺失配置使用默认帧率。
     if (typeof musicSpectrumFps !== "number" || !Number.isInteger(musicSpectrumFps) || musicSpectrumFps < 15 || musicSpectrumFps > 60)
         throw new Error("频谱帧率必须为 15 到 60 的整数");
+    const disabledPlugins = parseDisabledPlugins(candidate.disabledPlugins); // 缺失、非数组和非法条目都按空或丢弃处理。
+    const themePluginId = candidate.themePluginId ?? null; // 缺省不选择外部主题，不检查目录存在性。
+    if (themePluginId !== null && (typeof themePluginId !== "string" || !themePluginId.trim())) throw new Error("主题插件标识无效");
+    const themeBaseline = candidate.themeBaseline == null ? null : parseThemeBaseline(candidate.themeBaseline); // 仅校验保存值。
     return {
         theme: candidate.theme,
+        themePluginId,
+        themeBaseline,
         desktopAppearance: {
             theme: desktopAppearance.theme,
             accentColor: desktopAppearance.accentColor,
             useWindowsAccentColor: desktopAppearance.useWindowsAccentColor,
         },
         configDirectory,
+        pluginDirectory,
         doubleClickToOpen: candidate.doubleClickToOpen,
         accentColor,
         useWindowsAccentColor,
@@ -179,7 +230,21 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         musicSpectrumDevice,
         musicSpectrumBars,
         musicSpectrumFps,
+        disabledPlugins,
     };
+};
+
+/** 停用名单只保留带 plugin. 前缀且前缀后仍有名称的标识，去重后最多 64 条。 */
+const parseDisabledPlugins = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    const kept: string[] = []; // 按首次出现顺序保留的合法标识。
+    const seen = new Set<string>(); // 已保留的标识。
+    for (const item of value) {
+        if (typeof item !== "string" || !item.startsWith("plugin.") || item.length <= "plugin.".length || seen.has(item) || kept.length >= 64) continue;
+        seen.add(item);
+        kept.push(item);
+    }
+    return kept;
 };
 
 /** 解析当前窗口实际使用的动画状态。 */

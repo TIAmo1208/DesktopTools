@@ -20,10 +20,11 @@
     user-select: text;
 }
 
-/* 固定宽度的设置导航区域。 */
+/* 固定宽度的设置导航区域，从窗口顶部贯穿全部网格行。 */
 .settings__sidebar {
+    grid-row: 1 / -1;
     position: sticky;
-    top: 0;
+    inset-block-start: 0;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -46,9 +47,17 @@
     transition: gap var(--interface-transition-duration, 0ms) ease-out;
 }
 
+/* 品牌位图固定 20px，不随侧栏收展压缩。 */
+.settings__brand img {
+    flex: none;
+    width: 20px;
+    height: 20px;
+}
+
 /* 品牌文字与侧栏宽度同步收展。 */
 .settings__brand span {
     max-width: 140px;
+    font-size: 18px;
     overflow: hidden;
     opacity: 1;
     visibility: visible;
@@ -58,7 +67,7 @@
         visibility 0ms linear 0ms;
 }
 
-/* Windows 内置 Fluent 图标字体。 */
+/* Windows 内置 Fluent 图标字体。插件导航改用 resources 里的 SVG。 */
 .settings__icon {
     flex: 0 0 20px;
     width: 20px;
@@ -68,6 +77,18 @@
     font-weight: 400;
     line-height: 20px;
     text-align: center;
+}
+
+/* 资源 SVG 导航图标，颜色跟随当前文字色。 */
+.settings__icon--svg {
+    display: grid;
+    place-items: center;
+}
+
+/* 导航 SVG 与字体图标同一外框。 */
+.settings__icon--svg svg {
+    width: 18px;
+    height: 18px;
 }
 
 /* 导航折叠命令的固定点击区域。 */
@@ -194,13 +215,11 @@
     }
 }
 
-/* 自定义标题栏完整覆盖窗口顶部，原生 DWM 负责窗口阴影。 */
+/* 自定义标题栏只覆盖右侧内容区，原生 DWM 负责窗口阴影。 */
 .settings__titlebar {
-    grid-column: 1 / -1;
+    grid-column: 2;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding-left: 12px;
     min-width: 0;
     user-select: none;
     background: var(--color-background);
@@ -274,11 +293,28 @@
     cursor: pointer;
 }
 
+/* 二级菜单标题行：返回与标题垂直居中，间距 12。 */
+.settings__heading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 22px;
+}
+
+/* 标题行内的间距由标题行负责，标题不再自带下边距。 */
+.settings__heading h1 {
+    margin: 0;
+}
+
 /* 二级菜单返回命令沿用系统图标与点击尺寸。 */
 .settings__back {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
     width: 38px;
     height: 38px;
-    margin-bottom: 12px;
+    padding: 0;
     border: 0;
     border-radius: 4px;
     color: var(--color-text);
@@ -293,13 +329,24 @@
     background: var(--color-subtle);
 }
 
-/* 设置名称允许换行，控制区域不遮挡名称。 */
+/* 设置名称允许换行，控制区域不遮挡名称；单行文字与行内控件按行盒居中对齐。 */
 .settings__row-title {
     user-select: none;
+    display: flex;
     flex: 1;
+    flex-direction: column;
+    justify-content: center;
     min-width: 0;
     overflow-wrap: anywhere;
     font-size: calc(var(--interface-font-size) + 1px);
+}
+
+/* 文本与补充说明按钮同处一行；行内对齐从左排起，不继承纵向基线时的居中。 */
+.settings__row-title--inline {
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 6px;
 }
 
 /* 状态值与诊断详情。 */
@@ -379,6 +426,11 @@
     --settings-icon: url("../../../resources/settings-reset.svg");
 }
 
+/* 复制当前目录路径命令图标。 */
+.settings__directory-icon--copy {
+    --settings-icon: url("../../../resources/settings-copy.svg");
+}
+
 /* 带系统图标的明确操作命令。 */
 .settings__button {
     display: inline-flex;
@@ -393,10 +445,10 @@
     background: var(--color-background);
 }
 
-/* 保存期间的禁用控件。 */
+/* 保存期间的禁用控件：与“添加插件”按钮一致，用次要色文字而不是整体半透明。 */
 .settings__button:disabled,
 .settings__select:disabled {
-    opacity: 0.5;
+    color: var(--color-muted);
     cursor: default;
 }
 

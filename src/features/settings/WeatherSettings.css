@@ -12,13 +12,6 @@
 .weather-settings textarea {
     user-select: text;
 }
-/* 页面标题、返回和当前启用来源。 */
-.weather-settings__heading {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-}
 /* 二级页、弹窗与区块标题。 */
 .weather-settings h2,
 .weather-settings__dialog h2 {
@@ -406,14 +399,9 @@
     color: var(--color-action-text);
     background: var(--color-action);
 }
-/* 删除确认使用错误色。 */
-.weather-settings__actions .weather-settings__danger {
-    border-color: var(--color-error);
-    color: var(--color-error);
-}
-/* 禁用状态保持可读但不可操作。 */
+/* 禁用状态保持可读但不可操作，与设置页其余禁用控件一致。 */
 .weather-settings button:disabled {
-    opacity: 48%;
+    color: var(--color-muted);
     cursor: default;
 }
 /* 供应商分段控件：轨道内边距 2、圆角 6。 */

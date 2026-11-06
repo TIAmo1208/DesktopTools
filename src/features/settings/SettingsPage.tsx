@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import applicationIcon from "../../../resources/application.png";
+import pluginNavIcon from "../../../resources/settings-plugin.svg?raw";
 import { getDesktopHostSnapshot } from "../../bridge/desktopHost";
-import { getSettings, openLogs, savePreferences, setAutostart, settingsErrorMessage } from "../../bridge/settings";
+import { getSettings, openLogs, resolvedConfigDirectory, savePreferences, setAutostart, settingsErrorMessage } from "../../bridge/settings";
 import { applyWorkspaceCommand, getWorkspaceSnapshot, listenWorkspaceSnapshots } from "../../bridge/workspace";
 import type { DesktopHostSnapshot, TakeoverPhase } from "../../contracts/desktopHost";
 import type { ApplicationPreferences, SettingsSnapshot } from "../../contracts/settings";
 import type { WorkspaceCommand, WorkspaceSnapshot } from "../../contracts/workspace";
 import { usePreferences } from "./PreferencesProvider";
 import { AppearanceSettings } from "./AppearanceSettings";
+import { applyThemeSelection } from "./applyThemeSelection";
+import type { ComponentManifest } from "../../contracts/component";
 import { GridSettings } from "./GridSettings";
 import { FeatureSettings } from "./FeatureSettings";
+import { PluginSettingsPage } from "./PluginSettingsPage";
 import { SettingsSwitch } from "./SettingsSwitch";
 import { SettingsInfo } from "./SettingsInfo";
 import { invokeRuntime } from "../../bridge/runtime";
@@ -18,11 +22,12 @@ import { MessageNotificationHost } from "../notifications/MessageNotificationHos
 import { publishMessage } from "../notifications/messageNotification";
 import "./SettingsPage.css";
 
-// 设置页使用 Windows 自带的 Fluent 图标字体，不新增图标依赖。
+// 设置页导航沿用 Windows 图标字体；插件项改用 resources 里的 SVG。
 const PAGES = [
     { id: "general", label: "常规", icon: "\uE80F" },
     { id: "appearance", label: "外观", icon: "\uE790" },
     { id: "features", label: "功能格子", icon: "\uE80A" },
+    { id: "plugins", label: "插件", icon: "" },
     { id: "performance", label: "性能", icon: "\uE9D9" },
     { id: "diagnostics", label: "诊断与维护", icon: "\uE90F" },
     { id: "about", label: "关于", icon: "\uE946" },
@@ -49,6 +54,7 @@ export const SettingsPage = () => {
     const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(); // 当前工作区映射快照。
     const [busy, setBusy] = useState(false); // 配置变更的控件禁用状态。
     const [directoryDraft, setDirectoryDraft] = useState<string>(); // 尚未保存的配置目录输入。
+    const [resolvedDirectory, setResolvedDirectory] = useState<string>(); // 本次启动实际使用的配置目录。
     const pending = useRef(false); // 阻止同一事件循环中的重复命令。
     const leaveGuard = useRef<((action: () => void) => void) | undefined>(undefined); // 子页未保存草稿的导航保护。
     const requestRevision = useRef(0); // 防止较早的加载结果覆盖更新后的设置。
@@ -124,6 +130,28 @@ export const SettingsPage = () => {
     }, [handleRefresh]);
 
     useEffect(() => {
+        let alive = true; // 卸载后忽略迟到结果。
+        void resolvedConfigDirectory()
+            .then((path) => alive && setResolvedDirectory(path))
+            .catch(() => undefined);
+        return () => {
+            alive = false;
+        };
+    }, []);
+
+    /** 复制当前配置目录；剪贴板不可用时提示手动复制。 */
+    const handleCopyConfigDirectory = () => {
+        const path = directoryDraft?.trim() || resolvedDirectory || preferences?.configDirectory || ""; // 草稿优先，其次是本次生效路径。
+        const clipboard = navigator.clipboard; // 只有安全上下文才提供。
+        const failed = () => publishMessage({ type: "error", content: "复制失败，请手动选择路径", source: "settings" });
+        if (!clipboard) {
+            failed();
+            return;
+        }
+        void clipboard.writeText(path).then(() => publishMessage({ type: "success", content: "已复制配置目录", source: "settings" }), failed);
+    };
+
+    useEffect(() => {
         if (preferencesFailure) publishMessage({ type: "error", content: preferencesFailure, source: "settings-preferences" });
     }, [preferencesFailure]);
 
@@ -148,6 +176,14 @@ export const SettingsPage = () => {
         if (!preferences) return;
         void handleCommand(async () => {
             onPreferences(await savePreferences({ ...preferences, ...patch }));
+        });
+    };
+
+    /** 主题选择沿用同一 busy、错误提示与权威偏好回写链。 */
+    const handleThemeSelection = (manifest: ComponentManifest | null) => {
+        if (!preferences) return;
+        void handleCommand(async () => {
+            onPreferences(await applyThemeSelection(preferences, manifest, savePreferences));
         });
     };
 
@@ -181,6 +217,33 @@ export const SettingsPage = () => {
         });
     };
 
+    /** 开启限量为 1 的功能格子：后端写开关并在桌面没有格子时补建一个，成功后重读偏好与工作区。 */
+    const handleEnableFeature = async (componentId: string) => {
+        try {
+            await invokeRuntime("enable_feature", { componentId });
+        } catch (error: unknown) {
+            publishMessage({ type: "error", content: settingsErrorMessage(error), source: "settings-workspace" });
+            return false;
+        }
+        await handleRefresh();
+        return true;
+    };
+
+    /** 文件夹映射的添加按钮：选目录后在桌面创建映射格子。 */
+    const handleCreateFolderPortal = async () => {
+        const rootPath = await chooseFolderPortalDirectory();
+        if (!rootPath) return;
+        await handleWorkspaceCommand({ type: "create-folder-portal", rootPath, bounds: { left: 24, top: 24, width: 360, height: 280 } });
+    };
+
+    /** 功能格子二级标题行的“添加格子到桌面”；复用后端统一创建入口与既有格子开关。 */
+    const handleCreateTile = async (componentId: string) => {
+        await handleCommand(async () => {
+            await invokeRuntime("create_tile_to_desktop", { componentId });
+            publishMessage({ type: "success", content: "格子已添加到桌面", source: "settings-workspace" });
+        });
+    };
+
     const chooseFolderPortalDirectory = async () => {
         try {
             const selected = await invokeRuntime<unknown>("choose_folder_portal_directory");
@@ -204,8 +267,6 @@ export const SettingsPage = () => {
                         );
                 }}
             >
-                <img src={applicationIcon} alt="" width="20" height="20" />
-                <span>Desktop Tools 设置</span>
                 <div className="settings__window-controls">
                     {(
                         [
@@ -231,6 +292,10 @@ export const SettingsPage = () => {
                 </div>
             </header>
             <aside className="settings__sidebar">
+                <div className="settings__brand">
+                    <img src={applicationIcon} alt="" width="20" height="20" />
+                    <span>Desktop Tools</span>
+                </div>
                 <button
                     type="button"
                     className="settings__navigation-toggle"
@@ -238,7 +303,7 @@ export const SettingsPage = () => {
                     aria-label={collapsed ? "展开导航" : "收起导航"}
                     aria-expanded={!collapsed}
                     onClick={() => setCollapsed(!collapsed)}
-                >
+                 data-button="secondary">
                     <span className="settings__icon" aria-hidden="true">
                         {"\uE700"}
                     </span>
@@ -253,9 +318,13 @@ export const SettingsPage = () => {
                             title={entry.label}
                             aria-label={entry.label}
                             onClick={() => handlePageChange(entry.id)}
-                        >
-                            <span className="settings__icon" aria-hidden="true">
-                                {entry.icon}
+                         data-button="row-hit">
+                            <span
+                                className={`settings__icon${entry.id === "plugins" ? " settings__icon--svg" : ""}`}
+                                aria-hidden="true"
+                                dangerouslySetInnerHTML={entry.id === "plugins" ? { __html: pluginNavIcon } : undefined}
+                            >
+                                {entry.id === "plugins" ? null : entry.icon}
                             </span>
                             <span className="settings__navigation-label">{entry.label}</span>
                         </button>
@@ -263,12 +332,17 @@ export const SettingsPage = () => {
                 </nav>
             </aside>
             <main className="settings__content" aria-labelledby="settings-title" aria-busy={busy}>
-                {page === "appearance" && gridDetail && (
-                    <button className="settings__back" type="button" title="返回外观" aria-label="返回外观" onClick={() => setGridDetail(undefined)}>
-                        {"\uE72B"}
-                    </button>
+                {page === "appearance" && gridDetail ? (
+                    <div className="settings__heading">
+                        <button className="settings__back" type="button" title="返回外观" aria-label="返回外观" onClick={() => setGridDetail(undefined)} data-button="icon">
+                            {"\uE72B"}
+                        </button>
+                        <h1 id="settings-title">{gridDetail === "desktopGrid" ? "桌面网格" : "围栏内网格"}</h1>
+                    </div>
+                ) : (
+                    // 功能格子二级页自己渲染二级标题，外壳标题由 FeatureSettings 的样式按视觉隐藏但保留可访问名。
+                    <h1 id="settings-title">{title}</h1>
                 )}
-                <h1 id="settings-title">{page === "appearance" && gridDetail ? (gridDetail === "desktopGrid" ? "桌面网格" : "围栏内网格") : title}</h1>
                 {!snapshot && (
                     <p className="settings__status" role="status">
                         正在读取设置…
@@ -296,6 +370,16 @@ export const SettingsPage = () => {
                             <button
                                 type="button"
                                 className="settings__button settings__icon-button"
+                                title="复制配置目录"
+                                aria-label="复制配置目录"
+                                disabled={busy || !preferences}
+                                onClick={handleCopyConfigDirectory}
+                             data-button="icon">
+                                <span className="settings__directory-icon settings__directory-icon--copy" aria-hidden="true" />
+                            </button>
+                            <button
+                                type="button"
+                                className="settings__button settings__icon-button"
                                 title="选择配置目录"
                                 aria-label="选择配置目录"
                                 disabled={busy || !preferences}
@@ -307,7 +391,7 @@ export const SettingsPage = () => {
                                         setDirectoryDraft(selected);
                                     })
                                 }
-                            >
+                             data-button="icon">
                                 <span className="settings__directory-icon settings__directory-icon--folder" aria-hidden="true" />
                             </button>
                             <button
@@ -317,14 +401,14 @@ export const SettingsPage = () => {
                                 aria-label="恢复默认目录"
                                 disabled={busy || !preferences}
                                 onClick={() => setDirectoryDraft("%APPDATA%\\TIAmo\\DesktopTools")}
-                            >
+                             data-button="icon">
                                 <span className="settings__directory-icon settings__directory-icon--reset" aria-hidden="true" />
                             </button>
                             <button
                                 type="submit"
                                 className="settings__button"
                                 disabled={busy || !preferences || directoryDraft === undefined || !directoryDraft.trim()}
-                            >
+                             data-button="secondary">
                                 保存
                             </button>
                         </form>
@@ -367,14 +451,19 @@ export const SettingsPage = () => {
                 )}
                 {page === "appearance" && !gridDetail && (
                     <div className="settings__rows">
-                        <AppearanceSettings preferences={preferences} disabled={busy} onPreferences={handlePreferences} />
+                        <AppearanceSettings
+                            preferences={preferences}
+                            disabled={busy}
+                            onPreferences={handlePreferences}
+                            onThemeSelection={handleThemeSelection}
+                        />
                         {(
                             [
                                 ["desktopGrid", "桌面网格"],
                                 ["fenceGrid", "围栏内网格"],
                             ] as const
                         ).map(([kind, label]) => (
-                            <button key={kind} className="settings__row settings__row--link" type="button" onClick={() => setGridDetail(kind)}>
+                            <button key={kind} className="settings__row settings__row--link" type="button" onClick={() => setGridDetail(kind)} data-button="row-hit">
                                 <span className="settings__row-title">{label}</span>
                                 <span className="settings__icon" aria-hidden="true">
                                     {"\uE76C"}
@@ -396,9 +485,13 @@ export const SettingsPage = () => {
                         onWorkspaceCommand={handleWorkspaceCommand}
                         onChooseFolder={chooseFolderPortalDirectory}
                         onCreateCollectBox={handleCreateCollectBox}
+                        onCreateTile={handleCreateTile}
+                        onEnableFeature={handleEnableFeature}
+                        onCreateFolderPortal={handleCreateFolderPortal}
                         leaveGuard={leaveGuard}
                     />
                 )}
+                {page === "plugins" && <PluginSettingsPage preferences={preferences} disabled={busy || !preferences} onPreferences={handlePreferences} />}
                 {page === "performance" && (
                     <div className="settings__rows">
                         {(
@@ -408,7 +501,7 @@ export const SettingsPage = () => {
                             ] as const
                         ).map(([key, label, description]) => (
                             <div className="settings__row" key={key}>
-                                <span className="settings__row-title">
+                                <span className="settings__row-title settings__row-title--inline">
                                     <label htmlFor={key}>{label}</label>
                                     <SettingsInfo label={label} description={description} />
                                 </span>
@@ -422,7 +515,7 @@ export const SettingsPage = () => {
                             </div>
                         ))}
                         <div className="settings__row">
-                            <span className="settings__row-title">
+                            <span className="settings__row-title settings__row-title--inline">
                                 <label htmlFor="follow-system-reduced-motion">跟随系统减少动态效果控制</label>
                                 <SettingsInfo label="跟随系统减少动态效果控制" description="开启时由 Windows 动态效果设置控制实际动画，并保留界面动画开关值" />
                             </span>
@@ -435,7 +528,7 @@ export const SettingsPage = () => {
                             />
                         </div>
                         <div className="settings__row">
-                            <span className="settings__row-title">
+                            <span className="settings__row-title settings__row-title--inline">
                                 <label htmlFor="interface-animations">界面动画</label>
                                 <SettingsInfo label="界面动画" description="未跟随系统减少动态效果时，启用布局切换与状态过渡动画" />
                             </span>
@@ -486,14 +579,14 @@ export const SettingsPage = () => {
                                 {"\uE8B7"}
                             </span>
                             <span className="settings__row-title">应用日志</span>
-                            <button type="button" className="settings__button" disabled={busy} onClick={() => void handleCommand(openLogs)}>
+                            <button type="button" className="settings__button" disabled={busy} onClick={() => void handleCommand(openLogs)} data-button="secondary">
                                 <span className="settings__icon" aria-hidden="true">
                                     {"\uE8DA"}
                                 </span>
                                 打开目录
                             </button>
                         </div>
-                        <button type="button" className="settings__button settings__refresh" disabled={busy} onClick={() => void handleRefresh()}>
+                        <button type="button" className="settings__button settings__refresh" disabled={busy} onClick={() => void handleRefresh()} data-button="secondary">
                             <span className="settings__icon" aria-hidden="true">
                                 {"\uE72C"}
                             </span>

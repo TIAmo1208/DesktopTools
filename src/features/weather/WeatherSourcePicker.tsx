@@ -34,7 +34,7 @@ export const WeatherSourcePicker = ({
             <section ref={panel} tabIndex={-1} className="weather-source" role="dialog" aria-modal="false" aria-label="选择 API">
                 <header className="weather-source__head">
                     <h2>选择 API</h2>
-                    <button type="button" className="weather-source__close" aria-label="关闭" title="关闭" onClick={onClose}>
+                    <button type="button" className="weather-source__close" aria-label="关闭" title="关闭" onClick={onClose} data-button="icon">
                         <span className="weather-source__glyph" aria-hidden="true" dangerouslySetInnerHTML={{ __html: closeIcon }} />
                     </button>
                 </header>

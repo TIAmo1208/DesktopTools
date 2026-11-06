@@ -71,7 +71,7 @@ export const DesktopTileViewport = ({
             </Content>
             {scrollable && (
                 <div className="desktop-tile-viewport__scrollbar" data-scrollable={bar.max > 1}>
-                    <button type="button" className="desktop-tile-viewport__button" aria-label="向上滚动" onClick={() => scrollBy(-46)}>
+                    <button type="button" className="desktop-tile-viewport__button" aria-label="向上滚动" onClick={() => scrollBy(-46)} data-button="icon">
                         <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: collapseIcon }} />
                     </button>
                     <div
@@ -144,7 +144,7 @@ export const DesktopTileViewport = ({
                             }}
                         />
                     </div>
-                    <button type="button" className="desktop-tile-viewport__button" aria-label="向下滚动" onClick={() => scrollBy(46)}>
+                    <button type="button" className="desktop-tile-viewport__button" aria-label="向下滚动" onClick={() => scrollBy(46)} data-button="icon">
                         <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: expandIcon }} />
                     </button>
                 </div>

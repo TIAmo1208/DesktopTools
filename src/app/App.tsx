@@ -173,7 +173,7 @@ const ApplicationStatusPage = () => {
                         </p>
                     )}
 
-                    <button className="status-action" type="button" onClick={handleToggleStatus} disabled={!snapshot || isUpdating}>
+                    <button className="status-action" type="button" onClick={handleToggleStatus} disabled={!snapshot || isUpdating} data-button="primary">
                         {isUpdating ? "正在更新" : "切换运行状态"}
                     </button>
                 </section>

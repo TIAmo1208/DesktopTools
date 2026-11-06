@@ -52,7 +52,7 @@
   !insertmacro DESKTOP_TOOLS_STOP
 !macroend
 
-; 文件就位后沿用应用的菜单注册入口。
+; 插件资源已随程序写入安装目录，只需注册桌面菜单。
 !macro NSIS_HOOK_POSTINSTALL
   nsExec::ExecToStack /TIMEOUT=15000 '"$INSTDIR\desktop-tools.exe" --register-desktop-menu'
   Pop $R0
@@ -63,7 +63,7 @@
   ${EndIf}
 !macroend
 
-; 先等待正常退出，再清理菜单；不允许模板删除用户数据。
+; 先等待正常退出，再清理菜单；插件由卸载器随安装目录删除。
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro DESKTOP_TOOLS_STOP
   StrCpy $DeleteAppDataCheckboxState 0

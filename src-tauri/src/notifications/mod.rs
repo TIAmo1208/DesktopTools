@@ -1,6 +1,7 @@
 mod state;
 mod surface;
 
+use crate::contracts::ThemeNotification;
 use crate::contracts::settings::{ApplicationPreferences, ApplicationTheme};
 use serde::{Deserialize, Serialize};
 use state::{ToastState, Visual};
@@ -54,11 +55,13 @@ pub struct ToastRequest
 #[derive(Clone)]
 struct Appearance
 {
-    dark: bool,     // 不使用桌面网格主题。
-    animated: bool, // 有效动画开关。
-    font: String,   // 已保存的字体。
-    font_size: u8,  // 已保存的字号。
-    radius: f32,    // 已保存的圆角。
+    dark: bool,                         // 不使用桌面网格主题。
+    animated: bool,                     // 有效动画开关。
+    font: String,                       // 已保存的字体。
+    font_size: u8,                      // 已保存的字号。
+    radius: f32,                        // 已保存的圆角。
+    palette: Option<ThemeNotification>, // 主题声明的消息配色，缺省沿用内置两套。
+    weight: i32,                        // 正文字重，来自主题声明，缺省常规。
 }
 impl Appearance
 {
@@ -83,8 +86,108 @@ impl Appearance
             font: preferences.font_family.clone(),
             font_size: preferences.font_size,
             radius: preferences.corner_radius as f32,
+            palette: None,
+            weight: 400,
         }
     }
+
+    /// 合入当前主题声明的消息配色；None 表示沿用内置两套。
+    fn with_palette(mut self, palette: Option<ThemeNotification>) -> Self
+    {
+        if let Some(palette) = &palette
+        {
+            self.weight = theme_font_weight(palette.weight.as_deref()); // 字重和配色一起走主题数据。
+        }
+        self.palette = palette;
+        self
+    }
+
+    /// 仅显式 bevel 且声明合法尺寸时切角，round 与缺省保持原外观。
+    fn bevel_size(&self) -> Option<f32>
+    {
+        let theme = self.palette.as_ref()?;
+        (theme.corner_style.as_deref() == Some("bevel")).then_some(theme.corner_size? as f32)
+    }
+
+    /// 状态图标颜色：主题声明了对应状态色时覆盖，未声明时沿用内置语义色。
+    fn status_color(&self, kind: &str, muted: u32) -> u32
+    {
+        let (success, error) = if self.dark { (0x34D399, 0xFDA29B) } else { (0x059669, 0xB42318) }; // 与 global.css 同源状态色。
+        let Some(theme) = &self.palette
+        else
+        {
+            return match kind
+            {
+                "success" => success,
+                "error" => error,
+                _ => muted,
+            };
+        };
+        let pick = |value: &Option<String>, fallback: u32| value.as_deref().and_then(parse_theme_rgb).unwrap_or(fallback);
+        match kind
+        {
+            "success" => pick(&theme.success, success),
+            "error" => pick(&theme.error, error),
+            "warning" => pick(&theme.warning, muted), // 未声明警告色时保持现状，不凭空换色。
+            _ => muted,
+        }
+    }
+
+    /// 内置两套色值，主题声明了消息配色时逐项覆盖；未声明的字段仍用当前深浅模式的值。
+    fn palette_colors(&self) -> (u32, u32, u32, u32, u32)
+    {
+        let (surface, border, text, muted, subtle) = if self.dark
+        {
+            (0x20252A, 0x394149, 0xF2F5F7, 0xA9B2BB, 0x272D33)
+        }
+        else
+        {
+            (0xFFFFFF, 0xD7DCE2, 0x17202A, 0x687481, 0xF7F8FA)
+        }; // 与 global.css 同源色值。
+        let Some(theme) = &self.palette
+        else
+        {
+            return (surface, border, text, muted, subtle);
+        };
+        let pick = |value: &Option<String>, fallback: u32| value.as_deref().and_then(parse_theme_rgb).unwrap_or(fallback);
+        (pick(&theme.surface, surface), pick(&theme.border, border), pick(&theme.text, text), pick(&theme.muted, muted), pick(&theme.subtle, subtle))
+    }
+}
+
+/// 主题声明的字重转成 DirectWrite 数值；未声明或非法值按常规。
+fn theme_font_weight(weight: Option<&str>) -> i32
+{
+    match weight
+    {
+        Some("medium") => 500,
+        Some("semibold") => 600,
+        Some("bold") => 700,
+        _ => 400,
+    }
+}
+
+/// `#RRGGBB` 转 D2D 使用的 0xRRGGBB；格式已在校验阶段拦过，这里只做兜底。
+fn parse_theme_rgb(value: &str) -> Option<u32>
+{
+    let digits = value.strip_prefix('#')?;
+    if digits.len() != 6
+    {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok()
+}
+
+/// 当前生效主题声明的消息配色；没选主题、已停用或未声明时为空。
+pub fn active_palette(app: &tauri::AppHandle, preferences: &ApplicationPreferences) -> Option<ThemeNotification>
+{
+    use tauri::Manager;
+    let id = preferences.theme_plugin_id.clone()?; // 内置主题没有额外配色。
+    if preferences.disabled_plugins.contains(&id)
+    {
+        return None;
+    }
+    let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).ok()?.manifests; // 只读清单。
+    manifests.iter().find(|manifest| manifest.id == id)?.theme_notification.clone()
 }
 
 /// 最后提交到窗口的消息画面，也是鼠标命中的唯一依据。
@@ -134,9 +237,9 @@ const SETTINGS_CHANGED: u32 = WM_APP + 41; // 设置变化的异步窗口通知�
 impl ToastManager
 {
     /// 创建无激活原生窗口并应用初始偏好。
-    pub fn install(preferences: ApplicationPreferences) -> Result<Arc<Self>, String>
+    pub fn install(preferences: ApplicationPreferences, palette: Option<ThemeNotification>) -> Result<Arc<Self>, String>
     {
-        let appearance = Appearance::resolve(&preferences, false, true); // 系统值随后在窗口线程解析。
+        let appearance = Appearance::resolve(&preferences, false, true).with_palette(palette); // 系统值随后在窗口线程解析。
         let manager = Arc::new(Self { hwnd: AtomicIsize::new(0), runtime: Mutex::new(Runtime { suppressed: false, queue: ToastState::default(), preferences, appearance, frames: Vec::new(), scale: 1.0, hover_id: None }) }); // HWND 引用的稳定地址。
         let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(|error| error.to_string())?; // 当前模块。
         let class = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(window_proc), hInstance: HINSTANCE(module.0), lpszClassName: w!("DesktopToolsNativeToast"), ..Default::default() }; // 无不透明背景刷。
@@ -174,11 +277,22 @@ impl ToastManager
         .map_err(|error| error.to_string())
     }
 
-    /// 只接受已保存偏好，异步更新现有消息。
-    pub fn update_preferences(&self, preferences: ApplicationPreferences)
+    /// 同锁写入已保存偏好与主题 palette，保留现有系统深浅与动画解析值直到页面补齐。
+    pub fn update_preferences(&self, preferences: ApplicationPreferences, palette: Option<ThemeNotification>)
     {
         if let Ok(mut runtime) = self.runtime.lock()
         {
+            let dark = runtime.appearance.dark; // 系统主题先沿用当前解析结果。
+            let animated = runtime.appearance.animated;
+            let next = Appearance::resolve(&preferences, dark, animated).with_palette(palette);
+            if runtime.appearance.animated && !next.animated
+            {
+                for item in &mut runtime.queue.items
+                {
+                    item.motion.from = item.motion.to;
+                }
+            }
+            runtime.appearance = next;
             runtime.preferences = preferences;
         }
         self.settings_changed();
@@ -195,7 +309,7 @@ impl ToastManager
         }
     }
 
-    /// 接收程序现有主题入口的解析结果；过期页面偏好不能覆盖新设置。
+    /// 接收页面已解析的系统深浅和动画；palette 保留 Rust 已保存偏好的权威结果。
     pub fn sync_appearance(&self, preferences: ApplicationPreferences, dark: bool, animations_enabled: bool)
     {
         if let Ok(mut runtime) = self.runtime.lock()
@@ -204,7 +318,8 @@ impl ToastManager
             {
                 return;
             }
-            let next = Appearance::resolve(&preferences, dark, animations_enabled); // 不读取或监听系统颜色。
+            let palette = runtime.appearance.palette.clone(); // 不让迟到页面覆盖权威主题配色。
+            let next = Appearance::resolve(&preferences, dark, animations_enabled).with_palette(palette);
             if runtime.appearance.animated && !next.animated
             {
                 for item in &mut runtime.queue.items

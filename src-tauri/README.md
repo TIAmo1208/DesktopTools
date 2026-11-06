@@ -9,7 +9,7 @@ src-tauri/
 ├─ src/
 │  ├─ main.rs             # 进程入口
 │  ├─ lib.rs              # Tauri 应用装配和命令注册
-│  ├─ app/                # 生命周期、运行时状态和桌面接管
+│  ├─ app/                # 生命周期、运行时状态与桌面接管
 │  ├─ commands/           # 前端命令边界、校验和用例调度
 │  ├─ workspace/          # 布局、围栏、门户、组件和事务规则
 │  ├─ shell/              # 桌面项目事实、Shell 身份、菜单、剪贴板和拖放
@@ -29,14 +29,17 @@ src-tauri/
 ├─ installer/             # NSIS 重装页模板与安装、卸载生命周期钩子
 ├─ Cargo.toml             # Rust 依赖和构建配置
 ├─ tauri.conf.json        # Tauri 应用配置
-└─ tauri.installer.conf.json # 当前用户 NSIS 测试安装包覆盖配置
+└─ tauri.installer.conf.json # 当前用户 NSIS 测试安装包覆盖配置（随包写入安装目录 plugin）
 ```
 
 ## 关键边界
 
 - `commands/weather.rs` 把凭据草稿类命令（临时城市搜索、验证城市、把验证通过的城市写入来源列表、保存与清除）保留给设置窗口，桌面 transport 另提供已保存凭据下的来源列表、某来源城市列表读写、按来源城市搜索与天气读取。`weather/source.rs` 定义来源标识与顺序；`weather/credentials.rs` 按来源各保存一条 Windows Credential Manager 记录（和风沿用既有应用级记录名，其他来源在其后追加来源标识）；`weather/mod.rs` 管理草稿、并发互斥、取消、保存门槛、来源列表与运行期可用状态、存活探测与按来源删除，运行期状态按来源索引：凭据记录名与 `weather-cities-<来源>.json` 城市列表文件按来源派生，配置代次、取消标记与退避记录都以来源为键，磁盘预报缓存仍按配置指纹与城市标识保存；`weather/provider.rs` 与 `weather/foreca.rs` 分别校验各自凭据、签发 JWT 或使用 Bearer 令牌、按来源校验城市与天气数据。网络任务只在用户操作时创建，禁止重定向，限制超时与响应大小；城市搜索结果和天气验证响应不落盘。天气格子在拖动缩放期间按实时尺寸切换布局，详情入口由前端公共标题栏提供；`weather/activity.rs` 负责展开实例的共享活动调度，并通过 `weather-forecast-changed` 通知预报更新。天气格子与收集箱一样由组件清单声明可创建、可移除，创建入口写入绑定标识并在同一链路开启天气功能开关。
 
-- `commands/` 负责跨边界校验与调度，不持有长期领域状态。
+- `app/settings.rs` 维护配置目录与插件目录。配置目录仍用启动定位目录里的 `config-location.json`。插件目录不迁移：`pluginDirectory` 为空时用可执行文件所在目录下的 `plugin`（安装后即安装目录 `\plugin`），显式路径仍按原有安全边界覆盖；取不到程序目录时报错，不回退到 `%APPDATA%`。运行期内目录冻结，改偏好下次启动再生效，不复制旧目录。插件安装按 `作者@名称` 落盘并原样保留清单标识，同一作者同一标识视为同一插件。
+- `installer/` 包含 NSIS 自定义重装页与生命周期钩子。`tauri.installer.conf.json` 把随包插件资源直接写到 `$INSTDIR\plugin`，`hooks.nsh` 不再在安装后复制插件，也不在卸载时按清单清理。真正卸载且非升级时删除 `$INSTDIR\plugin`。
+
+- `commands/` 负责跨边界校验与调度，不持有长期领域状态。`commands/probe.rs` 是插件能力 `probe-service-status` 的唯一探活实现：探测地址与 2 秒超时在宿主内固定，不进入命令入参或插件设置；它新开独立的 HTTP 客户端，不启用 cookie jar，也不带浏览器来源头，把观察结果判成在线、探测被拒、未运行或未知四档，只回传判定时刻与该服务的启动时间，不透传服务端返回原文。该文件不注册成平铺原生命令，只由能力通道按实例授权后调用。
 - `workspace/` 负责自有布局、围栏归属、门户和组件布局事务，不执行文件操作。各类格子的持久展开边界统一使用工作区契约中的公共尺寸底线，临时投射单独校验；内容可读性和标题占位由前端负责。
 - `shell/` 负责 Shell 项目身份、真实文件操作、菜单、剪贴板和 Shell OLE 数据对象。
 - `shell/images.rs` 持有独立图像 STA、去重队列和有界 LRU；`platform/windows/shell_image.rs` 在所属线程提取 Shell 缩略图、转换 PNG 及原生拖动位图。`get_desktop_item_image` 校验当前项目身份后请求图像，Shell 变化使缓存和在途结果失效，原生拖动只读取已完成缓存。

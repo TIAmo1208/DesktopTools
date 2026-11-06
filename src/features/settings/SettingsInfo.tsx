@@ -15,7 +15,7 @@ export const SettingsInfo = ({ label, description }: { label: string; descriptio
                 }}
             >
                 <Tooltip.Trigger asChild>
-                    <button ref={trigger} className="settings-info" type="button" aria-label={`关于${label}`}>
+                    <button ref={trigger} className="settings-info" type="button" aria-label={`关于${label}`} data-button="secondary">
                         <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: infoIcon }} />
                     </button>
                 </Tooltip.Trigger>

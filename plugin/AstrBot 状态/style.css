@@ -1,0 +1,62 @@
+/* AstrBot 状态 专用样式，选择器全部挂在插件前缀下；颜色优先取全局主题变量 */
+
+.astrbot-status {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: 12px;
+    display: flex;
+    align-items: center;
+    font-size: 13px;
+    font-family: var(--interface-font);
+    color: var(--color-text);
+    user-select: none;
+    overflow: hidden;
+}
+
+/* 状态行：8px 状态点配 13px 文字，超宽省略不换行，状态变化不引起布局跳动 */
+.astrbot-status .astrbot-status__status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.astrbot-status .astrbot-status__text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 过期标记：主题变量没有警告色，黄点与文字沿用收集箱悬停的取值 */
+.astrbot-status .astrbot-status__stale {
+    flex: none;
+    padding: 0 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #d97706;
+}
+
+/* 状态点四档：在线绿、探测被拒黄、离线与未知灰、过期一律灰 */
+.astrbot-status .astrbot-status__dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-muted);
+    transition: background-color var(--interface-transition-duration) ease-out;
+}
+
+.astrbot-status .astrbot-status__dot.astrbot-status__level--ok {
+    background: var(--color-active);
+}
+
+.astrbot-status .astrbot-status__dot.astrbot-status__level--warn {
+    background: #d97706;
+}
+
+.astrbot-status .astrbot-status__dot.astrbot-status__level--off,
+.astrbot-status .astrbot-status__dot.astrbot-status__level--unknown {
+    background: var(--color-muted);
+}

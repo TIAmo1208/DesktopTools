@@ -1,8 +1,21 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
-import { getPreferences, getWindowsAccentColor, listenPreferences, listenWindowsAccentColor, settingsErrorMessage } from "../../bridge/settings";
-import { resolveAnimationsEnabled, type ApplicationPreferences } from "../../contracts/settings";
+import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../bridge/components";
 import { invokeRuntime } from "../../bridge/runtime";
+import {
+    getPreferences,
+    getWindowsAccentColor,
+    listenPreferences,
+    listenWindowsAccentColor,
+    savePreferences,
+    settingsErrorMessage,
+} from "../../bridge/settings";
+import type { ComponentRuntimeSnapshot } from "../../contracts/component";
+import { resolveAnimationsEnabled, type ApplicationPreferences } from "../../contracts/settings";
+import { publishMessage } from "../notifications/messageNotification";
+import { activeThemeScript, activeThemeStylesheet, applyThemeStylesheet, readThemePluginId, startThemeRecovery } from "./themePlugin";
+import { activateThemeScript, stopThemeScript } from "./themeRuntime";
+import { interfaceFontStack, registerThemeFonts } from "./themeFonts";
 
 /** 当前窗口内共享的偏好加载状态。 */
 interface PreferencesContextValue {
@@ -27,6 +40,8 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
     const [windowsAccentColor, setWindowsAccentColor] = useState<string>(); // 系统颜色独立于持久化的自定义颜色。
     const [accentFailure, setAccentFailure] = useState<string>(); // 系统强调色读取或订阅错误。
     const revision = useRef(0); // 当前窗口已接收偏好的顺序，防止启动读取回退已保存值。
+    const [runtimeSnapshot, setRuntimeSnapshot] = useState<ComponentRuntimeSnapshot>(); // 本窗口最近一次权威运行时快照。
+    const recovery = useRef({ key: "" }); // 同一连续失效只保存一次。
     const animationsEnabled = resolveAnimationsEnabled(preferences, reducedMotion); // 跟随系统与手动动画偏好只由一个入口解析。
     useEffect(() => {
         const query = window.matchMedia("(prefers-reduced-motion: reduce)"); // 持续监听系统设置。
@@ -127,7 +142,7 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
         const desktop = preferences.desktopAppearance; // 桌面主题保持独立，系统读取失败时保留该组自定义色。
         root.style.setProperty("--desktop-accent", desktop.useWindowsAccentColor ? (windowsAccentColor ?? desktop.accentColor) : desktop.accentColor);
         root.style.setProperty("--surface-radius", `${preferences.cornerRadius}px`);
-        root.style.setProperty("--interface-font", `"${preferences.fontFamily}", "Segoe UI", sans-serif`);
+        root.style.setProperty("--interface-font", interfaceFontStack(preferences.fontFamily));
         root.style.setProperty("--interface-font-size", `${preferences.fontSize}px`);
         for (const [scope, grid] of [
             ["desktop", preferences.desktopGrid],
@@ -139,6 +154,66 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
             root.style.setProperty(`--${scope}-grid-row-gap`, `${grid.rowGap}px`);
         }
     }, [preferences, windowsAccentColor]);
+
+    useEffect(() => {
+        let active = true; // 卸载后不接收迟到快照。
+        const handleSnapshot = (snapshot: ComponentRuntimeSnapshot) => {
+            if (active) setRuntimeSnapshot((current) => (!current || snapshot.revision >= current.revision ? snapshot : current));
+        };
+        const handleFailure = (error: unknown) => {
+            if (active) setFailure(settingsErrorMessage(error));
+        };
+        const subscription = listenComponentRuntimeSnapshots(handleSnapshot, handleFailure); // 先建立订阅，避免错过安装卸载事件。
+        void subscription
+            .then(() => getComponentRuntimeSnapshot())
+            .then(handleSnapshot)
+            .catch(handleFailure);
+        return () => {
+            active = false;
+            void subscription.then((unlisten) => unlisten()).catch(() => undefined);
+        };
+    }, []);
+
+    // 主题自带字体按快照注册进当前文档，字体列表与正文排版共用这份注册结果。
+    useEffect(() => {
+        registerThemeFonts(runtimeSnapshot?.manifests);
+    }, [runtimeSnapshot]);
+
+    // 样式装配必须位于偏好变量副作用之后，逐屏和设置窗使用相同路径。
+    useEffect(() => {
+        if (!preferences || (!runtimeSnapshot && readThemePluginId(preferences))) return;
+        applyThemeStylesheet(activeThemeStylesheet(runtimeSnapshot, preferences), (message) =>
+            publishMessage({ type: "error", content: message, source: "settings-preferences" }),
+        );
+    }, [preferences, runtimeSnapshot]);
+
+    // 主题入口脚本按当前主题激活一次；主题切换、停用和窗口销毁时执行清理函数。
+    useEffect(() => {
+        void activateThemeScript(activeThemeScript(runtimeSnapshot, preferences));
+    }, [preferences, runtimeSnapshot]);
+    useEffect(() => () => stopThemeScript(), []);
+
+    const recoveryLifetime = useRef(0); // 独立于偏好广播的挂载代次，禁止销毁后更新。
+    useEffect(() => {
+        recoveryLifetime.current++;
+        return () => {
+            recoveryLifetime.current++;
+            recovery.current.key = "";
+        };
+    }, []);
+    useEffect(() => {
+        const initialRevision = revision.current; // 迟到保存响应不能覆盖较新的偏好广播。
+        const lifetime = recoveryLifetime.current; // 仅当前挂载能接收成功结果或消息。
+        void startThemeRecovery(recovery.current, runtimeSnapshot, preferences, savePreferences)
+            .then((result) => {
+                if (!result || lifetime !== recoveryLifetime.current) return;
+                if (initialRevision === revision.current) handlePreferences(result.preferences);
+                publishMessage({ type: "warning", content: result.message, source: "theme-recovery" });
+            })
+            .catch((error: unknown) => {
+                if (lifetime === recoveryLifetime.current) publishMessage({ type: "error", content: settingsErrorMessage(error), source: "theme-recovery" });
+            });
+    }, [preferences, runtimeSnapshot, handlePreferences]);
 
     return (
         <PreferencesContext.Provider

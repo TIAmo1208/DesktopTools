@@ -1,0 +1,199 @@
+/* 夜之城插件的样式：时钟取桌面网格令牌，设置条目取界面令牌。 */
+
+/* ---------- 时钟格子 ---------- */
+
+/* 格子落在桌面工作区，颜色跟随桌面网格主题而不是界面主题。 */
+.nightcity-clock {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    color: var(--fence-text, var(--color-text));
+    font-family: var(--interface-font);
+    user-select: none;
+    overflow: hidden;
+    background:
+        repeating-linear-gradient(0deg, rgb(0 0 0 / 20%) 0 1px, transparent 1px 3px),
+        linear-gradient(180deg, transparent 0 40%, rgb(0 240 255 / 20%) 48% 52%, transparent 60% 100%);
+    background-size: 100% 100%, 100% 240%;
+    mask-image: linear-gradient(90deg, transparent 0, #000 12%, #000 88%, transparent 100%);
+    animation: nightcity-clock-scan 4800ms linear infinite;
+}
+
+@keyframes nightcity-clock-scan {
+    to {
+        background-position: 0 0, 0 240%;
+    }
+}
+
+/* 独立开关、CRT 总闸、界面动画或系统动效关闭时，时钟不保留扫描层。 */
+:root[data-nightcity-tile-scan="off"] .nightcity-clock,
+:root[data-nightcity-scan="off"] .nightcity-clock,
+:root[data-interface-animations="off"] .nightcity-clock {
+    animation: none;
+    background: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .nightcity-clock {
+        animation: none;
+        background: none;
+    }
+}
+
+/* 十六进制数据流：等宽栈让走秒时不抖动，弱化到次要层次。 */
+.nightcity-clock .nightcity-clock__hex {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", "JetBrains Mono", monospace;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.08em;
+    opacity: 0.62;
+}
+
+/* 主读出：固定字号与等宽数字，不跟随正文字号缩放。 */
+.nightcity-clock .nightcity-clock__time {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", "JetBrains Mono", monospace;
+    font-size: 20px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+}
+
+/* 时区标记：与主读出同基线，不参与命中区。 */
+.nightcity-clock .nightcity-clock__zone {
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    opacity: 0.62;
+}
+
+/* 折叠态只保留主读出，数据流与时区标记整行不占位。 */
+.nightcity-clock[data-collapsed] .nightcity-clock__hex,
+.nightcity-clock[data-collapsed] .nightcity-clock__zone {
+    display: none;
+}
+
+/* ---------- 主题设置条目 ---------- */
+
+/* 条目容器：与设置页其它行同样的上下间距。 */
+.nightcity-options {
+    display: grid;
+    gap: 4px;
+    padding: 4px 0;
+}
+
+/* 单个开关行：文本在左、开关贴右，与其他设置行一致。 */
+.nightcity-options .nightcity-options__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 16px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    cursor: pointer;
+}
+
+/* 悬停时只换底色，不改尺寸；禁用行不反馈。 */
+@media (hover: hover) and (pointer: fine) {
+    .nightcity-options .nightcity-options__row:hover:not(:has(.nightcity-options__input:disabled)) {
+        background: var(--color-subtle);
+    }
+}
+
+/* 文本列：标题与说明两行。 */
+.nightcity-options .nightcity-options__text {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+/* 开关标题。 */
+.nightcity-options .nightcity-options__label {
+    color: var(--color-text);
+    font-size: 13px;
+}
+
+/* 开关说明，次要层级，超宽省略。 */
+.nightcity-options .nightcity-options__hint {
+    color: var(--color-muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 复选保持原生键盘与辅助技术语义，所有普通状态共用 16×16 外观盒。 */
+.nightcity-options .nightcity-options__input {
+    flex: none;
+    box-sizing: border-box;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    appearance: none;
+    border: 1px solid var(--color-muted);
+    border-radius: 2px;
+    background: var(--color-surface);
+    cursor: pointer;
+}
+
+/* 切角像素复用设置行，仅补数值输入的紧凑宽度。 */
+.nightcity-options .nightcity-options__number {
+    flex: none;
+    box-sizing: border-box;
+    width: 64px;
+    height: 28px;
+    padding-inline: 8px;
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    background: var(--color-surface);
+    font: inherit;
+}
+
+/* 勾形由两条直线绘制，不切回系统外观或改动命中尺寸。 */
+.nightcity-options .nightcity-options__input:checked {
+    border-color: var(--color-focus);
+    background:
+        linear-gradient(45deg, transparent 42%, var(--color-background) 42% 62%, transparent 62%) 3px 7px / 4px 4px no-repeat,
+        linear-gradient(-45deg, transparent 44%, var(--color-background) 44% 60%, transparent 60%) 6px 3px / 7px 8px no-repeat,
+        var(--color-focus);
+}
+
+/* 原生复选的键盘聚焦环不被输入字段冷光规则覆盖。 */
+.nightcity-options .nightcity-options__input:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
+/* 禁用控件与说明一起弱化，边框仅使用 border 令牌。 */
+.nightcity-options .nightcity-options__row:has(.nightcity-options__input:disabled) {
+    color: var(--color-muted);
+    cursor: default;
+}
+
+/* 禁用标题不再保留高对比的正文色。 */
+.nightcity-options .nightcity-options__row:has(.nightcity-options__input:disabled) .nightcity-options__label {
+    color: var(--color-muted);
+}
+
+/* 禁用复选即便已选也恢复弱描边与表面，不改尺寸或外观源。 */
+.nightcity-options .nightcity-options__input:disabled {
+    border-color: var(--color-border);
+    background: var(--color-surface);
+    cursor: default;
+}
+
+/* 强制色模式回到系统绘制，恢复系统勾选和禁用色。 */
+@media (forced-colors: active) {
+    .nightcity-options .nightcity-options__input,
+    .nightcity-options .nightcity-options__input:checked,
+    .nightcity-options .nightcity-options__input:disabled {
+        appearance: auto;
+        border: revert;
+        background: revert;
+    }
+}

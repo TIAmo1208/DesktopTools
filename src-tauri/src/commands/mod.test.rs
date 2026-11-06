@@ -76,6 +76,17 @@ fn settings_window_is_opened_through_the_existing_entry()
     assert!(!table.contains("WebviewWindowBuilder"), "命令层不得自建窗口");
 }
 
+/// 桌面格子只读插件设置。没有登记时保存后的重读会被宿主拒绝。
+#[test]
+fn native_host_can_read_plugin_settings()
+{
+    let table = include_str!("mod.rs"); // 逐屏命令分发表。
+    assert!(table.contains(r#""get_plugin_settings" =>"#), "原生通道必须登记读取插件设置");
+    assert!(table.contains(r#"command_argument(&arguments, "pluginId""#), "逐屏参数名是 pluginId");
+    assert!(table.contains("read_plugin_settings"), "必须走与设置窗口相同的读取");
+    assert!(!table.contains(r#""save_plugin_settings" =>"#), "桌面格子不写插件设置");
+}
+
 /// 缺失和类型错误参数不得进入业务执行，错误保留公开编码。
 #[test]
 fn native_arguments_reject_invalid_mutations()

@@ -1,5 +1,12 @@
 use super::*;
 
+/// 串行化 cleanup 测试：`RECORDS` 是进程级静态锁，任一测试在持锁时 panic（回收断言、闭包 panic）
+/// 都会让其余测试拿到 poison 锁并报“附件归属锁不可用”。测试按序取同一把锁，断言保持不变。
+static 测试串行: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 取测试串行锁；上一个测试即使 panic 也要能继续，因此忽略 poison。
+fn serialize() -> std::sync::MutexGuard<'static, ()> { 测试串行.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) }
+
 /// 隔离目录内创建受管图片，测试不会访问用户附件。
 fn fixture() -> (PathBuf, String)
 {
@@ -13,6 +20,7 @@ fn image(config: &Path, name: &str, file: &str) -> String { super::super::write_
 #[test]
 fn managed_only_with_markdown_html_encoded_and_cross_document_references()
 {
+    let _serial = serialize(); // 与其他 cleanup 测试串行，避免共享静态锁被 panic 污染。
     let (config, name) = fixture();
     let keep = image(&config, &name, "有 空格.png");
     let html = image(&config, &name, "html&image.png");
@@ -42,6 +50,7 @@ fn managed_only_with_markdown_html_encoded_and_cross_document_references()
 #[test]
 fn discard_only_new_and_saved_references_win()
 {
+    let _serial = serialize(); // 与其他 cleanup 测试串行，避免共享静态锁被 panic 污染。
     let (config, name) = fixture();
     let old = image(&config, &name, "old.png");
     let baseline = baseline(&config, &name).unwrap();
@@ -58,6 +67,7 @@ fn discard_only_new_and_saved_references_win()
 #[test]
 fn modified_files_and_uncertain_references_are_preserved()
 {
+    let _serial = serialize(); // 与其他 cleanup 测试串行，避免共享静态锁被 panic 污染。
     let (config, name) = fixture();
     let modified = image(&config, &name, "modified.png");
     let unused = image(&config, &name, "unused.png");
@@ -85,6 +95,7 @@ fn modified_files_and_uncertain_references_are_preserved()
 #[test]
 fn renamed_resources_keep_identity_and_external_links_are_never_owned()
 {
+    let _serial = serialize(); // 与其他 cleanup 测试串行，避免共享静态锁被 panic 污染。
     let (config, name) = fixture();
     image(&config, &name, "unused.png");
     let external = config.join("external.png");
@@ -106,6 +117,7 @@ fn renamed_resources_keep_identity_and_external_links_are_never_owned()
 #[test]
 fn html_attributes_and_file_urls_preserve_references()
 {
+    let _serial = serialize(); // 与其他 cleanup 测试串行，避免共享静态锁被 panic 污染。
     assert_eq!(destinations("<img src='a&amp;b.png'>").unwrap(), vec!["a&b.png"]);
     assert_eq!(destinations("<img src=a.png>").unwrap(), vec!["a.png"]);
     let (config, name) = fixture();
@@ -121,6 +133,7 @@ fn html_attributes_and_file_urls_preserve_references()
 #[test]
 fn nested_managed_images_and_corrupt_records_are_conservative()
 {
+    let _serial = serialize(); // 与其他 cleanup 测试串行，避免共享静态锁被 panic 污染。
     let (config, name) = fixture();
     let root = resource_directory(&config, &name).unwrap();
     let nested = root.join("copy/images");
@@ -146,6 +159,7 @@ fn nested_managed_images_and_corrupt_records_are_conservative()
 #[test]
 fn native_cleanup_recycles_with_file_proof()
 {
+    let _serial = serialize(); // 与其他 cleanup 测试串行，避免共享静态锁被 panic 污染。
     use crate::contracts::ShellOperationKind;
     use crate::platform::windows::{ShellCompensationAction, ShellMenuOwner, compensate_desktop_items, initialize_shell_apartment, uninitialize_shell_apartment};
     initialize_shell_apartment().unwrap();

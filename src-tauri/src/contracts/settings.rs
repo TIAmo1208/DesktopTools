@@ -60,13 +60,28 @@ impl Default for DesktopAppearance
     fn default() -> Self { Self { theme: ApplicationTheme::System, accent_color: "#2563eb".to_string(), use_windows_accent_color: false } }
 }
 
+/// 选择主题前保存的用户外观值，系统强调色开关不参与覆盖。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeBaseline
+{
+    pub accent_color: String,         // 界面自定义强调色。
+    pub desktop_accent_color: String, // 桌面自定义强调色。
+    pub corner_radius: u8,            // 表面圆角。
+    pub font_family: String,          // 白名单字体。
+    pub font_size: u8,                // 正文字号。
+}
+
 /// 原子保存的用户界面与项目打开偏好。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ApplicationPreferences
 {
     pub config_directory: String,              // 下次启动使用的配置目录，支持 %APPDATA% 前缀。
+    pub plugin_directory: String,              // 非空时固定插件目录；空值使用可执行文件同级 plugin。
     pub theme: ApplicationTheme,               // 当前用户选择的应用主题。
+    pub theme_plugin_id: Option<String>,       // 当前主题插件，缺省使用内置主题。
+    pub theme_baseline: Option<ThemeBaseline>, // 主题覆盖前的用户外观原值。
     pub desktop_appearance: DesktopAppearance, // 桌面独立主题，缺失时使用默认值。
     pub double_click_to_open: bool,            // 是否要求双击打开桌面项目。
     pub accent_color: String,                  // 应用界面与自绘菜单的十六进制主题色。
@@ -98,6 +113,8 @@ pub struct ApplicationPreferences
     pub folder_portal_enabled: bool,           // 文件夹门户功能入口显隐。
     pub pause_on_fullscreen: bool,             // 前台全屏或最大化覆盖本屏时暂停刷新。
     pub pause_on_focus: bool,                  // 外部应用获得焦点时暂停全部桌面刷新。
+    #[serde(default, deserialize_with = "deserialize_disabled_plugins")]
+    pub disabled_plugins: Vec<String>, // 宿主停用的插件标识，不属于插件自己的设置文件。
 }
 
 /// 首次启动跟随系统，并沿用现有双击打开行为。
@@ -108,8 +125,11 @@ impl Default for ApplicationPreferences
     {
         Self {
             theme: ApplicationTheme::System,
+            theme_plugin_id: None,
+            theme_baseline: None,
             desktop_appearance: DesktopAppearance::default(),
             config_directory: r"%APPDATA%\TIAmo\DesktopTools".to_string(),
+            plugin_directory: String::new(),
             double_click_to_open: true,
             accent_color: "#2563eb".to_string(),
             use_windows_accent_color: false,
@@ -140,8 +160,68 @@ impl Default for ApplicationPreferences
             folder_portal_enabled: true,
             pause_on_fullscreen: false,
             pause_on_focus: false,
+            disabled_plugins: Vec::new(),
         }
     }
+}
+
+/// 停用名单只保留带 plugin. 前缀的标识，去重后最多 64 条。
+pub fn normalize_disabled_plugins(values: impl IntoIterator<Item = String>) -> Vec<String>
+{
+    let mut kept = Vec::new(); // 按首次出现顺序保留的合法标识。
+    let mut seen = std::collections::HashSet::new(); // 已保留的标识。
+    let mut dropped = 0u32; // 非法、重复或超出上限的条数。
+    for plugin_id in values
+    {
+        let valid = plugin_id.starts_with("plugin.") && plugin_id.len() > "plugin.".len(); // 空名称不算插件标识。
+        if !valid || !seen.insert(plugin_id.clone()) || kept.len() >= 64
+        {
+            dropped += 1;
+            continue;
+        }
+        kept.push(plugin_id);
+    }
+    if dropped > 0
+    {
+        crate::log_warn!("插件停用：已丢弃 {dropped} 条非法、重复或超出上限的标识");
+    }
+    kept
+}
+
+/// 缺失字段走默认空列表；出现的非法条目在反序列化时丢弃。
+fn deserialize_disabled_plugins<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(normalize_disabled_plugins(Vec::<String>::deserialize(deserializer)?))
+}
+
+/// 字体族名只做字形名边界校验：内置系统字体和插件自带字体共用这条规则。
+pub fn is_font_family_name(value: &str) -> bool { !value.is_empty() && value.len() <= 64 && value.trim() == value && !value.chars().any(|character| character.is_control() || matches!(character, ';' | '{' | '}' | '(' | ')' | '\'' | '"' | '\\')) }
+
+/// 当前外观与基线使用相同的颜色、字体和尺寸边界。
+fn validate_appearance(accent: &str, desktop_accent: &str, radius: u8, font: &str, size: u8) -> Result<(), String>
+{
+    for color in [accent, desktop_accent]
+    {
+        if color.len() != 7 || !color.starts_with('#') || !color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+        {
+            return Err("主题色必须为 #RRGGBB 格式".to_string());
+        }
+    }
+    if radius > 12
+    {
+        return Err("圆角必须介于 0 和 12 之间".to_string());
+    }
+    if !(12..=18).contains(&size)
+    {
+        return Err("字号必须介于 12 和 18 之间".to_string());
+    }
+    if !is_font_family_name(font)
+    {
+        return Err("不支持的界面字体".to_string());
+    }
+    Ok(())
 }
 
 /// 校验配置文件和命令输入共用的外观边界。
@@ -150,18 +230,25 @@ impl ApplicationPreferences
     /// 拒绝无效颜色、越界数值及不能安全应用的字体。
     pub fn validate(&self) -> Result<(), String>
     {
-        let directory = self.config_directory.trim(); // 契约只校验文本，不读取当前用户环境。
-        let suffix = if directory.get(..9).is_some_and(|prefix| prefix.eq_ignore_ascii_case("%APPDATA%"))
+        for (label, value) in [("配置目录", &self.config_directory), ("插件目录", &self.plugin_directory)]
         {
-            &directory[9..]
-        }
-        else
-        {
-            directory
-        }; // 只允许约定的变量前缀。
-        if directory.is_empty() || suffix.contains(['%', '\0', '*', '?', '"', '<', '>', '|'])
-        {
-            return Err("配置目录不能为空，且不能包含未知变量或特殊字符".to_string());
+            let directory = value.trim(); // 契约只校验文本，不读取当前用户环境。
+            if label == "插件目录" && directory.is_empty()
+            {
+                continue;
+            }
+            let suffix = if directory.get(..9).is_some_and(|prefix| prefix.eq_ignore_ascii_case("%APPDATA%"))
+            {
+                &directory[9..]
+            }
+            else
+            {
+                directory
+            }; // 只允许约定的变量前缀。
+            if directory.is_empty() || suffix.contains(['%', '\0', '*', '?', '"', '<', '>', '|'])
+            {
+                return Err(format!("{label}不能为空，且不能包含未知变量或特殊字符"));
+            }
         }
         if !matches!(self.collect_image_import_mode.as_str(), "copy" | "move" | "link")
         {
@@ -173,24 +260,14 @@ impl ApplicationPreferences
             return Err("图片预览宽度必须为 48 到 156 DIP 的整数".into());
         }
         self.fence_grid.validate()?;
-        for color in [&self.accent_color, &self.desktop_appearance.accent_color]
+        validate_appearance(&self.accent_color, &self.desktop_appearance.accent_color, self.corner_radius, &self.font_family, self.font_size)?;
+        if self.theme_plugin_id.as_ref().is_some_and(|id| id.trim().is_empty())
         {
-            if color.len() != 7 || !color.starts_with('#') || !color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
-            {
-                return Err("主题色必须为 #RRGGBB 格式".to_string());
-            }
+            return Err("主题插件标识无效".to_string());
         }
-        if self.corner_radius > 12
+        if let Some(baseline) = &self.theme_baseline
         {
-            return Err("圆角必须介于 0 和 12 之间".to_string());
-        }
-        if !(12..=18).contains(&self.font_size)
-        {
-            return Err("字号必须介于 12 和 18 之间".to_string());
-        }
-        if !["Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "Arial"].contains(&self.font_family.as_str())
-        {
-            return Err("不支持的界面字体".to_string());
+            validate_appearance(&baseline.accent_color, &baseline.desktop_accent_color, baseline.corner_radius, &baseline.font_family, baseline.font_size)?;
         }
         if !(16..=64).contains(&self.music_spectrum_bars)
         {
@@ -219,6 +296,27 @@ pub struct SettingsSnapshot
 mod music_tests
 {
     use super::ApplicationPreferences;
+
+    /// 主题字段缺省为空，基线通过保存值域校验且往返不丢字段。
+    #[test]
+    fn theme_preferences_roundtrip_and_validation()
+    {
+        let defaults: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 旧配置直接使用当前缺省值。
+        assert!(defaults.theme_plugin_id.is_none() && defaults.theme_baseline.is_none());
+        let mut value = serde_json::to_value(&defaults).unwrap(); // 持久化边界的实际 camelCase 载荷。
+        assert!(value["themePluginId"].is_null() && value["themeBaseline"].is_null());
+        value["themePluginId"] = serde_json::json!("plugin.missing");
+        value["themeBaseline"] = serde_json::json!({"accentColor":"#AABBCC","desktopAccentColor":"#123456","cornerRadius":4,"fontFamily":"Arial","fontSize":14});
+        let selected: ApplicationPreferences = serde_json::from_value(value.clone()).unwrap();
+        assert!(selected.validate().is_ok());
+        assert_eq!(serde_json::to_value(selected).unwrap(), value);
+        for (key, invalid) in [("accentColor", serde_json::json!("red")), ("desktopAccentColor", serde_json::json!("#12345g")), ("cornerRadius", serde_json::json!(13)), ("fontFamily", serde_json::json!("Arial; color:red")), ("fontSize", serde_json::json!(19))]
+        {
+            let mut invalid_value = value.clone(); // 每个字段单独验证。
+            invalid_value["themeBaseline"][key] = invalid;
+            assert!(serde_json::from_value::<ApplicationPreferences>(invalid_value).unwrap().validate().is_err());
+        }
+    }
 
     /// 默认尺寸和保存边界与前端一致，缺失字段不需要迁移。
     #[test]

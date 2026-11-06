@@ -412,7 +412,7 @@ export const CollectEditor = () => {
                                 title="确认重命名"
                                 aria-label="确认重命名"
                                 disabled={!ready || busy || !itemName.trim() || itemName.trim() === fileName.replace(/\.md$/i, "")}
-                            >
+                             data-button="icon">
                                 <span className="collect-editor__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: checkIcon }} />
                             </button>
                             <button
@@ -422,7 +422,7 @@ export const CollectEditor = () => {
                                 aria-label="取消重命名"
                                 disabled={busy}
                                 onClick={handleCancelRename}
-                            >
+                             data-button="icon">
                                 <span className="collect-editor__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: closeIcon }} />
                             </button>
                         </form>
@@ -439,7 +439,7 @@ export const CollectEditor = () => {
                                 aria-label="重命名"
                                 disabled={!ready || busy}
                                 onClick={() => setRenaming(true)}
-                            >
+                             data-button="icon">
                                 <span className="collect-editor__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: pencilIcon }} />
                             </button>
                         </>

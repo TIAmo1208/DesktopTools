@@ -94,3 +94,42 @@ html[data-session-locked="true"] *::before,
 html[data-session-locked="true"] *::after {
     animation-play-state: paused !important;
 }
+
+/* danger 变体仅用错误色描边与文字，默认表面透明。 */
+button[data-button="danger"]:not(:disabled) {
+    border: 1px solid var(--color-error);
+    color: var(--color-error);
+    background: transparent;
+}
+
+/* 危险命令悬停才出现错误色表面。 */
+@media (hover: hover) and (pointer: fine) {
+    button[data-button="danger"]:hover:not(:disabled) {
+        background: var(--color-error-surface);
+    }
+}
+
+/* 危险命令键盘焦点仍用界面青色焦点环。 */
+button[data-button="danger"]:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
+/* 标注的命令按钮原生禁用态：不整体降低透明度。 */
+button[data-button]:not([data-button="row-hit"]):disabled {
+    color: var(--color-muted);
+    cursor: default;
+}
+
+/* 主命令禁用时不让 muted 文字落在强调色填充上。 */
+button[data-button="primary"]:disabled {
+    background: var(--color-subtle);
+    border-color: var(--color-border);
+    color: var(--color-muted);
+}
+
+/* 危险命令禁用时恢复中性边框与底色，不留危险反馈。 */
+button[data-button="danger"]:disabled {
+    border-color: var(--color-border);
+    background: var(--color-subtle);
+}

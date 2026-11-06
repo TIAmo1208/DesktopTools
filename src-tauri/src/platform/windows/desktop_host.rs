@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tauri::{AppHandle, Listener, Manager};
-use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS, ICoreWebView2Controller3};
+use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS, ICoreWebView2Controller3, ICoreWebView2Settings3};
 use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{BI_RGB, BITMAPINFO, BITMAPINFOHEADER, ClientToScreen, CombineRgn, CreateCompatibleDC, CreateDIBSection, CreateRectRgn, DIB_RGB_COLORS, DeleteDC, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC, HGDIOBJ, HMONITOR, MONITORINFO, MONITORINFOEXW, RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW, RGN_OR, RedrawWindow, ScreenToClient, SelectObject, SetWindowRgn};
 use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
@@ -20,7 +20,7 @@ use windows::Win32::System::Ole::{IDropTarget, OleInitialize, OleUninitialize, R
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Shell::{IFolderView, IShellBrowser, IShellFolder, IShellItem, IShellWindows, SHCreateItemWithParent, SHELLFLAGSTATE, SHGetSettings, SID_STopLevelBrowser, SIGDN_DESKTOPABSOLUTEPARSING, SSF_HIDEICONS, SVGIO_ALLVIEW, SWC_DESKTOP, SWFO_NEEDDISPATCH, ShellWindows};
-use windows::Win32::UI::WindowsAndMessaging::{CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GWL_STYLE, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId, HWND_TOP, IsWindow, IsWindowVisible, MONITORINFOF_PRIMARY, PW_RENDERFULLCONTENT, RegisterClassExW, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, ShowWindowAsync, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_POPUP, WS_VISIBLE};
+use windows::Win32::UI::WindowsAndMessaging::{CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GWL_STYLE, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId, HWND_TOP, IsWindow, IsWindowVisible, MONITORINFOF_PRIMARY, PW_RENDERFULLCONTENT, RegisterClassExW, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, ShowWindowAsync, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_POPUP};
 use windows::core::{BOOL, Interface, PCWSTR, w};
 use wry::http::{Request, Response, StatusCode};
 use wry::raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle};
@@ -116,8 +116,8 @@ static PAGE_LOAD_FINISHED: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock:
 /// 返回逐屏页面加载完成记录表，首次使用时创建。
 fn page_load_records() -> &'static Mutex<HashMap<String, Instant>> { PAGE_LOAD_FINISHED.get_or_init(|| Mutex::new(HashMap::new())) }
 
-/// 记录逐屏页面导航完成时间，供恢复线程判断页面是否停滞。
-pub fn mark_page_load_finished(monitor_id: &str)
+/// 记录逐屏页面导航完成时间，供首次显示和恢复线程共用。
+pub(crate) fn mark_page_load_finished(monitor_id: &str)
 {
     if let Ok(mut finished) = page_load_records().lock()
     {
@@ -129,7 +129,7 @@ pub fn mark_page_load_finished(monitor_id: &str)
 pub fn page_load_finished_at(monitor_id: &str) -> Option<Instant> { page_load_records().lock().ok().and_then(|finished| finished.get(monitor_id).copied()) }
 
 /// 清除逐屏页面导航完成时间，新一次导航重新计时。
-pub fn clear_page_load_finished(monitor_id: &str)
+pub(crate) fn clear_page_load_finished(monitor_id: &str)
 {
     if let Ok(mut finished) = page_load_records().lock()
     {
@@ -261,7 +261,14 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
   };
 
   const eventSubscriptions = new Map(); // 已迁移事件的本页订阅，不保留历史消息。
+  const pluginEventListeners = new Set(); // 插件作者注册的宿主事件回调。
   const dispatch = (name, payload) => {
+    if (name === "plugin-event") {
+      for (const handler of [...pluginEventListeners]) {
+        try { handler(payload); } catch (error) { reportFailure("插件事件处理失败", error); } // 一个回调失败不影响其他插件。
+      }
+      return;
+    }
     if (name === "desktop-refresh-policy-changed") acceptForeground(payload);
     if (name === "desktop-host-snapshot-changed") requestRefresh();
     if (name === "desktop-refresh-policy-changed" || name === "preferences-changed") {
@@ -319,7 +326,14 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
     }
   };
 
-  window.__DESKTOP_TOOLS_NATIVE__ = { invoke, listen, dispatch, isRefreshPaused: () => refreshPaused };
+  // 插件订阅宿主事件：通知显示、程序启动与退出等，返回退订函数。
+  const onPluginEvent = (handler) => {
+    if (typeof handler !== "function") return () => {};
+    pluginEventListeners.add(handler);
+    return () => pluginEventListeners.delete(handler);
+  };
+
+  window.__DESKTOP_TOOLS_NATIVE__ = { invoke, listen, dispatch, onPluginEvent, isRefreshPaused: () => refreshPaused };
 })();
 "#;
 
@@ -330,7 +344,7 @@ fn raw_hwnd(raw: isize) -> HWND { HWND(raw as *mut c_void) }
 pub(crate) fn install_host_events(app: &AppHandle)
 {
     super::refresh_policy::start_events(app);
-    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed"]
+    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, crate::contracts::PLUGIN_EVENT_CHANNEL]
     {
         let handle = app.clone(); // 原生窗口所属的 UI 调度器。
         app.listen(name, move |event| {
@@ -1102,7 +1116,7 @@ fn attach_host(hwnd: isize, shell: ShellDesktopState, monitor: &DesktopHostMonit
     Ok(())
 }
 
-/// 为目标显示器固定 WebView2 raw-pixel Bounds 与栅格化比例。
+/// 为目标显示器固定 WebView2 raw-pixel Bounds 与栅格化比例，并关闭浏览器级导航快捷键。
 fn configure_controller(controller: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller, monitor: &DesktopHostMonitor) -> Result<(), String>
 {
     // 支持显式 BoundsMode 与 RasterizationScale 的 Controller3。
@@ -1112,6 +1126,13 @@ fn configure_controller(controller: &webview2_com::Microsoft::Web::WebView2::Win
         controller3.SetShouldDetectMonitorScaleChanges(false).map_err(|error| format!("关闭 WebView2 自动显示器缩放失败: {error}"))?;
         controller3.SetRasterizationScale(monitor.scale_factor).map_err(|error| format!("设置 WebView2 栅格化比例失败: {error}"))?;
     }
+    // 桌面宿主不是浏览器页面：关闭浏览器快捷键后，鼠标侧键不再触发前进/后退导航，页面自身快捷键不受影响。
+    let settings = unsafe {
+        let webview = controller.CoreWebView2().map_err(|error| format!("读取 WebView2 失败: {error}"))?;
+        webview.Settings().map_err(|error| format!("读取 WebView2 设置失败: {error}"))?
+    };
+    let settings3 = settings.cast::<ICoreWebView2Settings3>().map_err(|error| format!("读取 WebView2 设置3 失败: {error}"))?;
+    unsafe { settings3.SetAreBrowserAcceleratorKeysEnabled(false) }.map_err(|error| format!("关闭 WebView2 浏览器快捷键失败: {error}"))?;
     Ok(())
 }
 
@@ -1127,11 +1148,127 @@ fn protocol_response(status: StatusCode, content_type: &str, csp: Option<&str>, 
     builder.body(body).expect("FATAL 正式宿主协议响应构造失败")
 }
 
-/// 路由 Tauri 内嵌资产和正式宿主命令。
+/// 按路径段做百分号解码。段内的 `%2F`、`%5C` 不会变成分隔符。
+fn decode_plugin_relative(relative: &str) -> Option<String>
+{
+    if relative.is_empty() || relative.contains(['\\', '\0'])
+    {
+        return None;
+    }
+    let mut decoded = String::new(); // 解码后的相对路径，仍用 `/` 分段。
+    for (index, segment) in relative.split('/').enumerate()
+    {
+        if index > 0
+        {
+            decoded.push('/');
+        }
+        let segment = percent_decode_segment(segment)?; // 非法 %xx 或非 UTF-8 直接拒绝。
+        if segment.is_empty() || segment == "." || segment == ".." || segment.contains(['/', '\\', ':', '\0'])
+        {
+            return None;
+        }
+        decoded.push_str(&segment);
+    }
+    Some(decoded)
+}
+
+/// 把单个路径段从百分号编码还原成 UTF-8。`+` 保持原样。
+fn percent_decode_segment(segment: &str) -> Option<String>
+{
+    let bytes = segment.as_bytes(); // 百分号序列按字节解释。
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len()
+    {
+        if bytes[index] == b'%'
+        {
+            if index + 2 >= bytes.len()
+            {
+                return None;
+            }
+            let high = hex_value(bytes[index + 1])?;
+            let low = hex_value(bytes[index + 2])?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        }
+        else
+        {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+/// 十六进制数字，大小写均可。
+fn hex_value(byte: u8) -> Option<u8>
+{
+    match byte
+    {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// 只读取插件根目录内的 JS/CSS，任何链接、重解析点或非普通路径均拒绝。
+fn read_plugin_asset(directory: &std::path::Path, relative: &str) -> Option<(&'static str, Vec<u8>)>
+{
+    use std::{
+        fs,
+        os::windows::fs::MetadataExt,
+        path::{Component, Path},
+    };
+    let relative = decode_plugin_relative(relative)?; // 先按段解码，再做穿越校验。
+    let relative_path = Path::new(&relative);
+    if relative_path.components().any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return None;
+    }
+    let content_type = match relative_path.extension()?.to_str()?
+    {
+        "js" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        _ => return None,
+    }; // 其他格式不能通过插件协议读取。
+    let candidate = directory.join(relative_path); // 尚未跟随链接的请求目标。
+    for ancestor in candidate.ancestors().take_while(|ancestor| ancestor.starts_with(directory))
+    {
+        let metadata = fs::symlink_metadata(ancestor).ok()?; // 仅检查插件根及其内部，不约束用户目录重定向。
+        if metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
+        {
+            return None;
+        }
+    }
+    let root = fs::canonicalize(directory).ok()?; // 实际插件根。
+    let path = fs::canonicalize(candidate).ok()?; // 实际资产路径必须仍在插件根内。
+    if !path.starts_with(&root) || !fs::metadata(&path).ok()?.is_file()
+    {
+        return None;
+    }
+    Some((content_type, fs::read(path).ok()?))
+}
+
+/// 路由插件资产、Tauri 内嵌资产和正式宿主命令。
 fn handle_protocol_request(request: Request<Vec<u8>>, app: &AppHandle, command_handler: &NativeCommandHandler) -> Response<Cow<'static, [u8]>>
 {
     // 当前本地协议请求路径。
     let path = request.uri().path();
+    if let Some(relative) = path.strip_prefix("/plugins/")
+    {
+        if let Some(runtime) = app.try_state::<crate::component_runtime::ComponentRuntimeState>()
+            && let Some((content_type, bytes)) = read_plugin_asset(runtime.plugin_directory(), relative)
+        {
+            return protocol_response(StatusCode::OK, content_type, None, Cow::Owned(bytes));
+        }
+        crate::log_warn!("插件：资产不存在或路径不受支持，相对路径={relative}");
+        return protocol_response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", None, Cow::Borrowed(b"not found"));
+    }
     if let Some(command) = path.strip_prefix("/__desktop_tools_invoke/")
     {
         // 前端提交的命令参数。
@@ -1165,14 +1302,102 @@ fn handle_protocol_request(request: Request<Vec<u8>>, app: &AppHandle, command_h
     protocol_response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", None, Cow::Borrowed(b"not found"))
 }
 
-/// 保留开发 URL 的路径与查询字段，并设置宿主身份；正式模式使用内嵌资源。
-fn desktop_page_url(native_origin: &str, dev_url: Option<&tauri::Url>, index: usize) -> tauri::Url
+/// 设置窗口自定义协议名。Windows 上页面来源为 `http://desktop-tools-settings.localhost`。
+pub(crate) const SETTINGS_PROTOCOL: &str = "desktop-tools-settings";
+
+/// 设置窗口页面地址，与协议名对应，供同源 `import("/plugins/...")`。
+pub(crate) fn settings_page_url() -> tauri::Url { tauri::Url::parse(&format!("http://{SETTINGS_PROTOCOL}.localhost/")).expect("设置窗口协议地址无效") }
+
+/// 设置窗口协议入口。页面、插件资产和原生命令都交给现有处理函数。
+pub(crate) fn handle_settings_protocol_request(request: Request<Vec<u8>>, app: &AppHandle) -> Response<Cow<'static, [u8]>>
+{
+    // 请求到达时再取宿主运行时；设置窗口打开时运行时已经放进应用状态。
+    let handler: NativeCommandHandler = Arc::new({
+        let app = app.clone(); // 命令闭包独立持有应用句柄。
+        move |command, arguments| {
+            let Some(runtime) = app.try_state::<Arc<crate::host::DesktopHostRuntime>>()
+            else
+            {
+                return Err(json!({ "code": "desktop-host-starting", "message": "桌面宿主正在启动" }));
+            }; // 与逐屏宿主同一条命令边界。
+            crate::commands::dispatch_native_command(&app, &runtime, command, arguments)
+        }
+    });
+    handle_protocol_request(request, app, &handler)
+}
+
+/// 静态资产在协议线程直接返回；原生命令改到阻塞池，避免占用 WebView UI 线程。
+pub(crate) fn dispatch_settings_protocol<F>(request: Request<Vec<u8>>, app: AppHandle, respond: F)
+where
+    F: FnOnce(Response<Cow<'static, [u8]>>) + Send + 'static,
+{
+    let invoke = request.uri().path().starts_with("/__desktop_tools_invoke/"); // 只有命令可能等待 Shell STA。
+    let run = move || respond(handle_settings_protocol_request(request, &app));
+    if invoke
+    {
+        tauri::async_runtime::spawn_blocking(run);
+    }
+    else
+    {
+        run();
+    }
+}
+
+/// 保留开发 URL 的路径与查询字段，并设置宿主身份、启动时刻与首帧主题；正式模式使用内嵌资源。
+fn desktop_page_url(native_origin: &str, dev_url: Option<&tauri::Url>, index: usize, boot: u64, theme_css: Option<&str>, boot_ms: Option<u32>) -> tauri::Url
 {
     let mut url = dev_url.cloned().unwrap_or_else(|| tauri::Url::parse(&format!("{native_origin}/index.html")).expect("宿主协议地址无效")); // 当前模式的页面来源。
-    let pairs: Vec<(String, String)> = url.query_pairs().filter(|(key, _)| key != "desktop-host" && key != "monitor").map(|(key, value)| (key.into_owned(), value.into_owned())).collect(); // 保留非宿主查询字段。
+    let pairs: Vec<(String, String)> = url.query_pairs().filter(|(key, _)| key != "desktop-host" && key != "monitor" && key != "boot" && key != "theme-css" && key != "theme-boot-ms").map(|(key, value)| (key.into_owned(), value.into_owned())).collect(); // 保留非宿主查询字段。
     url.set_query(None);
-    url.query_pairs_mut().extend_pairs(pairs).append_pair("desktop-host", "1").append_pair("monitor", &index.to_string());
+    url.query_pairs_mut().extend_pairs(pairs).append_pair("desktop-host", "1").append_pair("monitor", &index.to_string()).append_pair("boot", &boot.to_string());
+    if let Some(stylesheet) = theme_css
+    {
+        url.query_pairs_mut().append_pair("theme-css", stylesheet); // 首帧就挂主题样式表，不让它等偏好 IPC。
+    }
+    if let Some(duration) = boot_ms
+    {
+        url.query_pairs_mut().append_pair("theme-boot-ms", &duration.to_string()); // 主题自定的启动覆盖层时长。
+    }
     url
+}
+
+/// 进程内第一次建宿主窗口的时刻，页面据此只在本进程启动后播放一次启动动画。
+fn boot_epoch() -> u64
+{
+    static BOOT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *BOOT.get_or_init(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as u64).unwrap_or(0))
+}
+
+/// 当前生效主题的样式表地址；没有选中主题、已停用或清单缺失时为空。
+fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
+{
+    let preferences = app.state::<crate::app::settings::SettingsState>().preferences().ok()?;
+    let id = preferences.theme_plugin_id.clone()?; // 内置主题不需要额外样式表。
+    if preferences.disabled_plugins.contains(&id)
+    {
+        return None;
+    }
+    let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).ok()?.manifests; // 只读清单，不碰实例。
+    let manifest = manifests.iter().find(|manifest| manifest.id == id)?;
+    if manifest.role != crate::contracts::ComponentRole::Theme || manifest.stylesheet.is_empty()
+    {
+        return None;
+    }
+    let version = if !manifest.stylesheet_cache_key.is_empty() { &manifest.stylesheet_cache_key } else if !manifest.version.is_empty() { &manifest.version } else { "0" };
+    Some(format!("/plugins/{}?v={version}", manifest.stylesheet)) // 与前端 themeStylesheetHref 使用同一缓存失效值。
+}
+
+/// 当前生效主题声明的启动覆盖层时长；没声明时为空，前端用内置时长。
+fn active_theme_boot(app: &AppHandle) -> Option<u32>
+{
+    let preferences = app.state::<crate::app::settings::SettingsState>().preferences().ok()?;
+    let id = preferences.theme_plugin_id.clone()?;
+    if preferences.disabled_plugins.contains(&id)
+    {
+        return None;
+    }
+    let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).ok()?.manifests;
+    manifests.iter().find(|manifest| manifest.id == id)?.theme_boot.as_ref()?.duration_ms // 0 也照原样传，表示不播。
 }
 
 /// 检查命令来源；开发来源只由调用方在 Tauri 开发模式下注入。
@@ -1219,6 +1444,55 @@ mod desktop_dev_tests
 {
     use super::{allowed_desktop_origin, desktop_page_url};
 
+    /// 插件资产仅允许根内 JS/CSS，拒绝穿越、设备流和目录联接。
+    #[test]
+    fn plugin_assets_reject_unsafe_paths_and_reparse_points()
+    {
+        let root = std::env::temp_dir().join(format!("desktop-tools-plugin-assets-{}", std::process::id())); // 独占资产目录。
+        let directory = root.join("plugin"); // 插件来源根。
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("plugin.test.js"), "window.test = true;").unwrap();
+        std::fs::write(directory.join("plugin.test.css"), "body {}").unwrap();
+        std::fs::write(directory.join("private.json"), "{}").unwrap();
+        assert_eq!(super::read_plugin_asset(&directory, "plugin.test.js").unwrap().0, "text/javascript; charset=utf-8");
+        assert_eq!(super::read_plugin_asset(&directory, "plugin.test.css").unwrap().1, b"body {}");
+        for path in ["", "../outside.js", "/plugin.test.js", "private.json", "missing.js", "plugin.test.js:stream", "%2e%2e/outside.js", r"..\outside.js"]
+        {
+            assert!(super::read_plugin_asset(&directory, path).is_none(), "不安全路径应拒绝: {path}");
+        }
+        std::fs::create_dir(directory.join("nested")).unwrap();
+        std::fs::write(directory.join("nested/plugin.test.js"), "redirected").unwrap();
+        let junction = directory.join("linked"); // 目录联接不需要创建符号链接权限。
+        assert!(std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&directory).output().unwrap().status.success());
+        assert!(super::read_plugin_asset(&directory, "linked/plugin.test.js").is_none());
+        assert_eq!(super::read_plugin_asset(&junction.join("nested"), "plugin.test.js").unwrap().1, b"redirected"); // 插件根以上的目录联接允许使用。
+        std::fs::remove_dir(&junction).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 中文目录名按百分号解码后能读到脚本；穿越和非法编码仍是 404。
+    #[test]
+    fn percent_encoded_plugin_paths_decode_and_stay_inside()
+    {
+        let root = std::env::temp_dir().join(format!("desktop-tools-plugin-encoded-{}", std::process::id())); // 独占资产目录。
+        let directory = root.join("plugin"); // 插件来源根。
+        let folder = directory.join("演示插件-正常"); // 与实机请求同一文件夹名。
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("main.js"), "encoded").unwrap();
+        let encoded = "%E6%BC%94%E7%A4%BA%E6%8F%92%E4%BB%B6-%E6%AD%A3%E5%B8%B8/main.js"; // 浏览器对非 ASCII 段的编码。
+        assert_eq!(super::read_plugin_asset(&directory, encoded).unwrap().1, b"encoded");
+        assert_eq!(super::read_plugin_asset(&directory, "演示插件-正常/main.js").unwrap().1, b"encoded");
+        for path in ["%2e%2e/main.js", "ok/%2e%2e/main.js", "%2e%2e%2fmain.js", "%2E/main.js", "%5cmain.js", "%00main.js"]
+        {
+            assert!(super::read_plugin_asset(&directory, path).is_none(), "解码后仍应拒绝: {path}");
+        }
+        for path in ["%ZZ/main.js", "%E6/main.js", "%FF/main.js", "main%2Ejs%"]
+        {
+            assert!(super::read_plugin_asset(&directory, path).is_none(), "非法编码应 404: {path}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// 完整围栏图像超过普通消息上限时，两层必须接受相同的有界载荷。
     #[test]
     fn tile_drag_payload_uses_shared_budget()
@@ -1230,16 +1504,28 @@ mod desktop_dev_tests
         assert_eq!(super::drag_payload_limit(&serde_json::json!({"phase": "ole-preview"})), 1048576);
     }
 
+    /// 插件事件通道必须同时出现在注入脚本与转发白名单里。
+    #[test]
+    fn plugin_events_are_exposed_to_pages()
+    {
+        assert!(super::NATIVE_BRIDGE_SCRIPT.contains("onPluginEvent")); // 页面侧注册入口。
+        assert!(super::NATIVE_BRIDGE_SCRIPT.contains("plugin-event")); // 分派分支按同一名字匹配。
+    }
+
     /// 开发路径与原生命令来源独立，正式模式不接收开发来源。
     #[test]
     fn development_url_and_origin_are_scoped()
     {
         let native = "http://desktop-tools-host-2.localhost"; // 第二个显示器的协议来源。
         let dev = tauri::Url::parse("http://127.0.0.1:1420/app/?theme=dark&monitor=9").unwrap(); // 带路径和已有查询的开发入口。
-        let page = desktop_page_url(native, Some(&dev), 2); // 开发页面保留原路径，替换显示器字段。
+        let page = desktop_page_url(native, Some(&dev), 2, 1700000000000, None, None); // 开发页面保留原路径，替换显示器字段。
         assert_eq!(page.path(), "/app/");
-        assert_eq!(page.query(), Some("theme=dark&desktop-host=1&monitor=2"));
-        assert_eq!(desktop_page_url(native, None, 2).as_str(), "http://desktop-tools-host-2.localhost/index.html?desktop-host=1&monitor=2");
+        assert_eq!(page.query(), Some("theme=dark&desktop-host=1&monitor=2&boot=1700000000000"));
+        assert_eq!(desktop_page_url(native, None, 2, 7, None, None).as_str(), "http://desktop-tools-host-2.localhost/index.html?desktop-host=1&monitor=2&boot=7");
+        let themed = desktop_page_url(native, None, 0, 7, Some("/plugins/主题-夜之城/theme.css?v="), Some(2600)); // 首帧主题表带查询字段，必须原样转义。
+        assert_eq!(themed.query_pairs().find(|(key, _)| key == "theme-css").map(|(_, value)| value.into_owned()), Some("/plugins/主题-夜之城/theme.css?v=".to_string()));
+        assert_eq!(desktop_page_url(native, None, 0, 8, None, None).query_pairs().any(|(key, _)| key == "theme-css"), false);
+        assert_eq!(themed.query_pairs().find(|(key, _)| key == "theme-boot-ms").map(|(_, value)| value.into_owned()), Some("2600".to_string()));
         assert!(allowed_desktop_origin(native, native, None));
         assert!(allowed_desktop_origin("http://127.0.0.1:1420", native, Some("http://127.0.0.1:1420")));
         for origin in ["http://127.0.0.1:1420", "http://desktop-tools-host-1.localhost", "null", ""]
@@ -1247,6 +1533,15 @@ mod desktop_dev_tests
             assert!(!allowed_desktop_origin(origin, native, None));
         }
         assert!(!allowed_desktop_origin("http://127.0.0.1:14200", native, Some("http://127.0.0.1:1420")));
+    }
+
+    /// 设置窗口来源必须等于协议名加 `.localhost`，否则 Tauri 不把它当本地 IPC 来源。
+    #[test]
+    fn settings_page_url_matches_protocol_name()
+    {
+        let url = super::settings_page_url(); // 设置窗口实际导航地址。
+        assert_eq!(url.as_str(), "http://desktop-tools-settings.localhost/");
+        assert_eq!(url.host_str().and_then(|host| host.strip_suffix(".localhost")), Some(super::SETTINGS_PROTOCOL));
     }
 }
 
@@ -1256,7 +1551,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     // 当前模块句柄。
     let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(|error| format!("读取正式宿主模块句柄失败: {error}"))?;
     // 正式宿主外层 HWND。
-    let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE::default(), HOST_WINDOW_CLASS, w!("Desktop Tools"), WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VISIBLE, monitor.work_x, monitor.work_y, monitor.work_width as i32, monitor.work_height as i32, None, None, Some(HINSTANCE(module.0)), None) }.map_err(|error| format!("创建正式宿主 HWND 失败: {error}"))?;
+    let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE::default(), HOST_WINDOW_CLASS, w!("Desktop Tools"), WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, monitor.work_x, monitor.work_y, monitor.work_width as i32, monitor.work_height as i32, None, None, Some(HINSTANCE(module.0)), None) }.map_err(|error| format!("创建正式宿主 HWND 失败: {error}"))?;
     // Wry 使用的正式宿主句柄包装。
     let raw_window = NativeWindowHandle { hwnd: NonZeroIsize::new(hwnd.0 as isize).ok_or("正式宿主 HWND 为空")? };
     // 本地协议使用的 AppHandle。
@@ -1270,7 +1565,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     let native_origin = format!("http://{protocol}.localhost"); // 本屏桥接始终使用自己的协议。
     let dev_url = if tauri::is_dev() { app.config().build.dev_url.as_ref() } else { None }; // Debug 构建不等同于 Tauri 开发模式。
     let dev_origin = dev_url.map(|url| url.origin().ascii_serialization()); // 正式模式不会放行开发 Origin。
-    let page_url = desktop_page_url(&native_origin, dev_url, index).to_string(); // 页面与刷新共享当前模式地址。
+    let page_url = desktop_page_url(&native_origin, dev_url, index, boot_epoch(), active_theme_stylesheet(app).as_deref(), active_theme_boot(app)).to_string(); // 页面与刷新共享当前模式地址。
     let initialization_script = NATIVE_BRIDGE_SCRIPT.replace("__DESKTOP_NATIVE_ORIGIN__", &serde_json::to_string(&native_origin).expect("宿主地址序列化失败")).replace("__REFRESH_POLICY_FALLBACK__", if super::refresh_policy::fallback_enabled() { "true" } else { "false" }); // JSON 编码避免脚本字符串转义错误，Hook 状态在宿主创建前确定。
     super::refresh_policy::set_paused(&monitor.id, false);
     crate::log_info!("宿主：页面来源={}，原生命令来源={}", page_url, native_origin);

@@ -51,3 +51,4 @@ package-lock.json
 graphflow-out/
 .dsh-switchman/
 .agent-teams/
+.dsh-ops/

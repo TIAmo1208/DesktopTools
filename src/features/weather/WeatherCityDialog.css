@@ -245,6 +245,9 @@
 }
 /* 禁用状态保持可读但不可操作。 */
 .weather-city button:disabled {
-    opacity: 48%;
+    border-color: var(--color-border);
+    color: var(--color-muted);
+    background: var(--color-subtle);
     cursor: default;
+    text-shadow: none;
 }

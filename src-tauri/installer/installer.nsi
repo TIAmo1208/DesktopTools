@@ -1,7 +1,8 @@
-; 本文件取自 tauri-bundler 的 NSIS 模板（tauri-cli-v2.11.4），仅改动重装页：
+; 本文件取自 tauri-bundler 的 NSIS 模板（tauri-cli-v2.11.4），改动重装页与卸载确认页：
 ; 同版本与升级提供“添加/重新安装组件”（默认勾选）与“卸载 Desktop Tools”两个互斥勾选项；
-; 降级必须勾选卸载确认后才能继续。
-; 升级 @tauri-apps/cli 后须重新对比上游模板并回放这项修改，约束见 ADR-0024。
+; 降级必须勾选卸载确认后才能继续；
+; 插件直接位于安装目录，卸载清除 plugin 子树，不提供独立的预设插件清理勾选。
+; 升级 @tauri-apps/cli 后须重新对比上游模板并回放这些修改，约束见 ADR-0024。
 Unicode true
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
@@ -833,6 +834,10 @@ Section Uninstall
   {{#each resources_ancestors}}
   RMDir /REBOOTOK "$INSTDIR\\{{this}}"
   {{/each}}
+  ; 真正卸载清除全部安装目录插件；升级保留用户新增插件，外部覆盖目录不触碰。
+  ${If} $UpdateMode <> 1
+    RMDir /r /REBOOTOK "$INSTDIR\plugin"
+  ${EndIf}
   RMDir "$INSTDIR"
 
   ; Remove shortcuts if not updating

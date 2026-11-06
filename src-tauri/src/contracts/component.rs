@@ -9,6 +9,9 @@ pub const COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT: &str = "component-runtime-sn
 /// 组件接收宿主事件的事件名称。
 pub const COMPONENT_HOST_EVENT: &str = "component-host-event";
 
+/// 插件设置保存成功后的通知；载荷只含 pluginId，读者重新读取命令。
+pub const PLUGIN_SETTINGS_CHANGED_EVENT: &str = "plugin-settings-changed";
+
 /// 官方组件可以声明并由宿主授权的能力。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -18,6 +21,71 @@ pub enum ComponentCapability
     ReadHostTime,
     /// 读取系统当前媒体会话。
     ReadCurrentMedia,
+    /// 探活宿主固定的本机服务地址（当前只有 AstrBot）。
+    ProbeServiceStatus,
+}
+
+/// 插件呈现角色，未声明时保持格子行为。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentRole
+{
+    #[default]
+    Tile,
+    Theme,
+}
+
+/// 主题经偏好写入的外观覆盖，缺省项不覆盖用户值。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeAppearance
+{
+    pub accent_color: Option<String>,         // 界面强调色。
+    pub desktop_accent_color: Option<String>, // 桌面强调色。
+    pub corner_radius: Option<u32>,           // 共用圆角。
+    pub font_family: Option<String>,          // 系统字体或本主题自带字体的族名。
+    pub font_size: Option<u32>,               // 正文字号。
+}
+
+/// 主题声明的启动覆盖层时长；缺省用内置时长，0 表示不播。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeBoot
+{
+    pub duration_ms: Option<u32>, // 覆盖层从出现到消失的总时长，上限 10 秒。
+}
+
+/// 主题声明的原生消息配色。整套只有一套色值，不随深浅模式变化；缺省字段回落到当前模式的内置色。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeNotification
+{
+    pub surface: Option<String>,      // 消息表面。
+    pub border: Option<String>,       // 消息边框。
+    pub text: Option<String>,         // 正文。
+    pub muted: Option<String>,        // 次要正文。
+    pub subtle: Option<String>,       // 后层消息与悬停表面。
+    pub success: Option<String>,      // 成功状态图标。
+    pub warning: Option<String>,      // 警告状态图标；未声明时沿用次要正文色。
+    pub error: Option<String>,        // 错误状态图标。
+    pub weight: Option<String>,       // 正文字重：normal、medium、semibold 或 bold。
+    pub corner_style: Option<String>, // 原生消息轮廓：round 或 bevel。
+    pub corner_size: Option<u32>,     // bevel 的 45° 切角尺寸，1–24 DIP。
+}
+
+/// 主题自带的字体文件，由宿主注册到文档字体集。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeFont
+{
+    /// 用户可见的字体族名，也是偏好里保存的值。
+    pub family: String,
+    /// 插件根内的字体文件相对路径，形如 `<文件夹>/fonts/x.woff2`。
+    pub file: String,
+    /// 字重，100–900。
+    pub weight: u16,
+    /// 字形，`normal` 或 `italic`。
+    pub style: String,
 }
 
 /// 一个官方组件的版本化清单。
@@ -29,16 +97,55 @@ pub struct ComponentManifest
     pub id: String,
     /// 用户可见组件名称。
     pub name: String,
-    /// 前端官方组件注册表入口。
+    /// 插件清单版本；官方组件与测试构造缺省为空。
+    #[serde(default)]
+    pub version: String,
+    /// 前端分派入口。插件固定为 `plugin:slot`，不拿来当脚本路径。
     pub entry: String,
+    /// 插件根内的脚本相对路径，形如 `<文件夹>/<入口脚本>`。官方清单为空。
+    #[serde(default)]
+    pub script: String,
+    /// 插件角色，官方及未声明角色的插件为格子。
+    #[serde(default)]
+    pub role: ComponentRole,
+    /// 插件根内的主题样式表相对路径，非主题为空。
+    #[serde(default)]
+    pub stylesheet: String,
+    /// 仅用于主题样式表 URL 缓存失效；由清单版本与文件元数据组成。
+    #[serde(default)]
+    pub stylesheet_cache_key: String,
+    /// 主题外观覆盖，非主题为空。
+    #[serde(default)]
+    pub theme_appearance: Option<ThemeAppearance>,
+    /// 主题声明的原生消息配色，非主题或未声明时为空。
+    #[serde(default)]
+    pub theme_notification: Option<ThemeNotification>,
+    /// 主题声明的启动覆盖层时长，非主题或未声明时为空。
+    #[serde(default)]
+    pub theme_boot: Option<ThemeBoot>,
+    /// 主题自带的字体，非主题为空。
+    #[serde(default)]
+    pub theme_fonts: Vec<ThemeFont>,
     /// 组件明确请求的全部宿主能力。
     pub required_capabilities: Vec<ComponentCapability>,
-    /// 用户是否可从工作区入口创建该组件的新实例。
+    /// 用户是否可从工作区入口创建该组件的新实例。JSON 缺省为 false。
     #[serde(default)]
     pub creatable: bool,
-    /// 用户是否可移除该组件的实例。
+    /// 用户是否可移除该组件的实例。JSON 缺省为 false；插件 ini 缺省为 true。
     #[serde(default)]
     pub removable: bool,
+    /// 桌面格子数量上限。0 表示不限。
+    #[serde(default)]
+    pub max_tiles: u32,
+    /// 插件仓库地址。空字符串表示未声明。只保留 http 或 https。
+    #[serde(default)]
+    pub repository: String,
+    /// 插件简介。空字符串表示未写。换行在 ini 里写成 \n。
+    #[serde(default)]
+    pub description: String,
+    /// 插件作者。空字符串表示未写。
+    #[serde(default)]
+    pub author: String,
     /// 组件持久状态 Schema 版本。
     pub persistence_version: u32,
 }
@@ -53,6 +160,8 @@ pub struct ComponentCapabilityDeclaration
     pub creatable: bool,
     /// 用户是否可移除该组件的实例。
     pub removable: bool,
+    /// 该组件允许的桌面格子数量上限。0 表示不限。
+    pub max_tiles: u32,
 }
 
 /// 工作区持久化的一个组件实例。

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseComponentHostEvent, parseComponentInstanceSnapshot, parseComponentRuntimeSnapshot } from "./component.ts";
+import { parseComponentCapabilityResult, parseComponentHostEvent, parseComponentInstanceSnapshot, parseComponentRuntimeSnapshot } from "./component.ts";
 
 // 验证官方清单、授权能力和实例隔离状态通过公开运行时快照。
 test("parses the official component runtime snapshot", () => {
@@ -12,6 +12,7 @@ test("parses the official component runtime snapshot", () => {
                 id: "official.local-clock",
                 name: "本地时间",
                 entry: "official:local-clock",
+                script: "",
                 requiredCapabilities: ["read-host-time"],
                 persistenceVersion: 1,
             },
@@ -38,16 +39,46 @@ test("parses the official component runtime snapshot", () => {
     });
 
     assert.equal(snapshot.manifests[0].entry, "official:local-clock");
+    assert.equal(snapshot.manifests[0].creatable, false);
+    assert.equal(snapshot.manifests[0].removable, false);
+    assert.equal(snapshot.manifests[0].maxTiles, 0);
     assert.equal(snapshot.instances[0].authorizedCapabilities[0], "read-host-time");
     assert.equal(snapshot.instances[1].status, "failed");
 });
 
+// 清单未声明创建与移除时按不可用处理，非法声明仍拒绝。
+test("组件清单的创建与移除声明缺失按不可用处理", () => {
+    const manifest = { id: "official.collect-box", name: "收集箱", entry: "official:collect-box", script: "", requiredCapabilities: [], persistenceVersion: 1 }; // 未声明创建与移除的清单。
+    const parse = (overrides: Record<string, unknown>) =>
+        parseComponentRuntimeSnapshot({ revision: 1, manifests: [{ ...manifest, ...overrides }], instances: [], failures: [] }).manifests[0];
+    assert.deepEqual([parse({}).creatable, parse({}).removable], [false, false]);
+    assert.deepEqual([parse({ creatable: true, removable: false }).creatable, parse({ creatable: true, removable: false }).removable], [true, false]);
+    for (const invalid of [null, "true", 1]) assert.throws(() => parse({ creatable: invalid }));
+    assert.equal(parse({}).maxTiles, 0);
+    assert.equal(parse({ maxTiles: 0 }).maxTiles, 0);
+    assert.equal(parse({ maxTiles: 3 }).maxTiles, 3);
+    for (const invalid of [null, -1, 1.5, "2"]) assert.throws(() => parse({ maxTiles: invalid }));
+    assert.equal(parse({ script: "演示插件/dist/main.js" }).script, "演示插件/dist/main.js");
+    for (const invalid of [undefined, null, 1]) assert.throws(() => parse({ script: invalid }));
+});
+
 // 投射边界不能误用持久尺寸底线，非有限值始终拒绝。
 test("组件持久尺寸和小视口投射分别校验", () => {
-    const instance = { instanceId: "clock", componentId: "official.local-clock", monitorId: "A", projectionMonitorId: "B", projectionBounds: { left: 0, top: 0, width: 40, height: 24 }, bounds: { left: 0, top: 0, width: 80, height: 48 }, stateVersion: 1, state: {} }; // 最小持久矩形与临时投射。
+    const instance = {
+        instanceId: "clock",
+        componentId: "official.local-clock",
+        monitorId: "A",
+        projectionMonitorId: "B",
+        projectionBounds: { left: 0, top: 0, width: 40, height: 24 },
+        bounds: { left: 0, top: 0, width: 80, height: 48 },
+        stateVersion: 1,
+        state: {},
+    }; // 最小持久矩形与临时投射。
     assert.equal(parseComponentInstanceSnapshot(instance).projectionBounds?.width, 40);
-    for (const size of [0, -1, NaN, Infinity, 79]) assert.throws(() => parseComponentInstanceSnapshot({ ...instance, bounds: { ...instance.bounds, width: size } }));
-    for (const size of [0, -1, NaN, Infinity, 47]) assert.throws(() => parseComponentInstanceSnapshot({ ...instance, bounds: { ...instance.bounds, height: size } }));
+    for (const size of [0, -1, NaN, Infinity, 79])
+        assert.throws(() => parseComponentInstanceSnapshot({ ...instance, bounds: { ...instance.bounds, width: size } }));
+    for (const size of [0, -1, NaN, Infinity, 47])
+        assert.throws(() => parseComponentInstanceSnapshot({ ...instance, bounds: { ...instance.bounds, height: size } }));
     assert.throws(() => parseComponentInstanceSnapshot({ ...instance, projectionBounds: { ...instance.projectionBounds, height: NaN } }));
 });
 
@@ -69,7 +100,30 @@ test("parses a persisted component instance and host event", () => {
     assert.equal(event.sequence, 4);
 });
 
-// 验证未知能力不会越过前端契约边界。
+// 验证探活结果按四档通过契约边界，非 ok 档不带启动时间。
+test("parses a probe service status payload", () => {
+    assert.deepEqual(parseComponentCapabilityResult({ instanceId: "tile", capability: "probe-service-status", payload: { level: "ok", startTime: 1_793_365_017, checkedAt: 1_793_372_400 } }), {
+        instanceId: "tile",
+        capability: "probe-service-status",
+        payload: { level: "ok", startTime: 1_793_365_017, checkedAt: 1_793_372_400 },
+    });
+    for (const level of ["warn", "off", "unknown"]) {
+        const result = parseComponentCapabilityResult({ instanceId: "tile", capability: "probe-service-status", payload: { level, startTime: null, checkedAt: 1_793_372_400 } }); // 非 ok 档的探活结果。
+        assert.deepEqual(result.payload, { level, startTime: null, checkedAt: 1_793_372_400 });
+    }
+});
+
+// 验证未知档、ok 缺启动时间和非 ok 带启动时间都被拒绝。
+test("rejects an invalid probe service status payload", () => {
+    const invalid = [
+        { level: "online", startTime: null, checkedAt: 1_793_372_400 },
+        { level: "ok", startTime: null, checkedAt: 1_793_372_400 },
+        { level: "off", startTime: 1_793_365_017, checkedAt: 1_793_372_400 },
+        { level: "ok", startTime: 1_793_365_017, checkedAt: 0 },
+    ];
+    for (const payload of invalid) assert.throws(() => parseComponentCapabilityResult({ instanceId: "tile", capability: "probe-service-status", payload }), { name: "ComponentContractError" });
+});
+
 test("rejects an unknown component capability", () => {
     assert.throws(
         () =>

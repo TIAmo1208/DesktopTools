@@ -34,6 +34,56 @@ pub fn choose_directory(owner: isize, title: &str) -> Result<Option<String>, Str
     result.map_err(|error| format!("选择目录失败：{error}"))
 }
 
+/// 一次选择多个插件文件夹。取消时返回空列表。
+pub fn choose_directories(owner: isize, title: &str) -> Result<Vec<String>, String> { choose_paths(owner, title, true, None).map_err(|error| format!("选择目录失败：{error}")) }
+
+/// 一次选择多个 zip。过滤只是提示，调用方仍要校验内容。取消时返回空列表。
+pub fn choose_zip_archives(owner: isize) -> Result<Vec<String>, String>
+{
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::core::w;
+    let filter = [COMDLG_FILTERSPEC { pszName: w!("插件压缩包"), pszSpec: w!("*.zip") }]; // 只提示 zip，不选目录。
+    choose_paths(owner, "选择插件压缩包", false, Some(&filter)).map_err(|error| format!("选择插件压缩包失败：{error}"))
+}
+
+fn choose_paths(owner: isize, title: &str, folders: bool, filter: Option<&[windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC]>) -> windows::core::Result<Vec<String>>
+{
+    use windows::Win32::{
+        Foundation::{ERROR_CANCELLED, HWND},
+        System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree},
+        UI::Shell::{FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH},
+    };
+    unsafe {
+        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?; // 系统原生选择器，允许多选。
+        let mut options = dialog.GetOptions()? | FOS_ALLOWMULTISELECT | FOS_FORCEFILESYSTEM;
+        options = if folders { options | FOS_PICKFOLDERS } else { options | FOS_FILEMUSTEXIST };
+        dialog.SetOptions(options)?;
+        if let Some(filter) = filter
+        {
+            dialog.SetFileTypes(filter)?;
+        }
+        dialog.SetTitle(&windows::core::HSTRING::from(title))?;
+        if let Err(error) = dialog.Show(Some(HWND(owner as *mut std::ffi::c_void)))
+        {
+            if error.code() == windows::core::HRESULT::from_win32(ERROR_CANCELLED.0)
+            {
+                return Ok(Vec::new());
+            }
+            return Err(error);
+        }
+        let items = dialog.GetResults()?; // 多选结果。
+        let mut paths = Vec::new(); // 用户选中的路径。
+        for index in 0..items.GetCount()?
+        {
+            let name = items.GetItemAt(index)?.GetDisplayName(SIGDN_FILESYSPATH)?;
+            let value = name.to_string();
+            CoTaskMemFree(Some(name.0.cast()));
+            paths.push(value?);
+        }
+        Ok(paths)
+    }
+}
+
 /// 将真实路径交给系统默认程序打开。
 pub fn open_path(path: &Path) -> Result<(), String>
 {

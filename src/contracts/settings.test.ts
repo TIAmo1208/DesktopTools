@@ -1,6 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+test("主题字段缺省为 null，基线完整校验且不检查插件目录", () => {
+    const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 无主题的当前缺省配置。
+    assert.equal(defaults.themePluginId, null);
+    assert.equal(defaults.themeBaseline, null);
+    const baseline = { accentColor: "#AABBCC", desktopAccentColor: "#123456", cornerRadius: 0, fontFamily: "Arial", fontSize: 18 };
+    const selected = parsePreferences({ ...defaults, themePluginId: "plugin.not-installed", themeBaseline: baseline });
+    assert.deepEqual(selected.themeBaseline, baseline);
+    assert.equal(selected.themePluginId, "plugin.not-installed");
+    for (const themePluginId of [1, false, "", " "]) assert.throws(() => parsePreferences({ ...defaults, themePluginId }));
+    for (const patch of [
+        { accentColor: "red" },
+        { desktopAccentColor: "#12345g" },
+        { cornerRadius: 13 },
+        { cornerRadius: -1 },
+        { fontFamily: "Arial; color:red" },
+        { fontSize: 11 },
+        { fontSize: 19 },
+        { fontSize: 14.5 },
+    ])
+        assert.throws(() => parsePreferences({ ...defaults, themeBaseline: { ...baseline, ...patch } }));
+    for (const themeBaseline of [{}, [], "bad", 1]) assert.throws(() => parsePreferences({ ...defaults, themeBaseline }));
+});
+
 test("图片预览宽度使用默认值并验证整数边界", () => {
     const base = { theme: "light", doubleClickToOpen: true };
     assert.equal(parsePreferences(base).collectImagePreviewWidth, 78);
@@ -40,6 +63,17 @@ test("界面动画使用默认值并严格校验布尔设置", () => {
     assert.equal(resolveAnimationsEnabled(defaults, true), false);
     assert.equal(resolveAnimationsEnabled({ ...defaults, followSystemReducedMotion: false, interfaceAnimations: false }, false), false);
     assert.equal(resolveAnimationsEnabled({ ...defaults, followSystemReducedMotion: false, interfaceAnimations: true }, true), true);
+});
+
+test("插件目录缺省跟随配置目录，保存往返保留且拒绝错误类型与纯空白", () => {
+    const base = { theme: "light", doubleClickToOpen: true }; // 当前最小偏好载荷。
+    assert.equal(parsePreferences(base).pluginDirectory, "");
+    for (const pluginDirectory of ["", "D:\\DesktopToolsPlugins", "%APPDATA%\\TIAmo\\plugin"]) {
+        const preferences = parsePreferences({ ...base, pluginDirectory }); // 已保存的自定义路径不可因前端解析丢失。
+        assert.equal(preferences.pluginDirectory, pluginDirectory);
+        assert.equal(parsePreferences(JSON.parse(JSON.stringify(preferences))).pluginDirectory, pluginDirectory);
+    }
+    for (const pluginDirectory of [null, false, 1, " ", "\t"]) assert.throws(() => parsePreferences({ ...base, pluginDirectory }));
 });
 
 // 桌面主题缺失时使用固定默认值，后续修改、系统色开关及序列化均不能串组。
@@ -125,4 +159,17 @@ test("migrates old preferences and rejects invalid appearance values", () => {
         assert.throws(() => parsePreferences({ ...legacy, ...patch }));
     }
     assert.equal(parsePreferences({ ...legacy, accentColor: "#AABBCC", cornerRadius: 0, fontSize: 18 }).cornerRadius, 0);
+});
+
+test("停用插件缺失按空列表，非数组和非字符串条目丢弃", () => {
+    const base = { theme: "system", doubleClickToOpen: true }; // 旧配置没有停用名单。
+    assert.deepEqual(parsePreferences(base).disabledPlugins, []);
+    assert.deepEqual(parsePreferences({ ...base, disabledPlugins: "plugin.clock" }).disabledPlugins, []);
+    assert.deepEqual(
+        parsePreferences({ ...base, disabledPlugins: ["plugin.clock", "official.weather", "plugin.clock", "plugin.", "plugin.b", 1, null] }).disabledPlugins,
+        ["plugin.clock", "plugin.b"],
+    );
+    const overflow = Array.from({ length: 70 }, (_item, index) => `plugin.n${index}`); // 超过后端上限的合法标识。
+    assert.equal(parsePreferences({ ...base, disabledPlugins: overflow }).disabledPlugins.length, 64);
+    assert.equal(parsePreferences({ ...base, disabledPlugins: overflow }).disabledPlugins[0], "plugin.n0");
 });

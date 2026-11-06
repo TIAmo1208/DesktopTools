@@ -17,6 +17,7 @@ mod workspace;
 use app::ApplicationState;
 use commands::get_desktop_item_image;
 use commands::sync_message_appearance;
+use commands::{apply_plugin_install, apply_plugin_installs, cancel_plugin_install, choose_plugin_directory, create_plugin_component, get_plugin_settings, open_plugin_directory, open_plugin_repository, prepare_plugin_install_from_archive, prepare_plugin_install_from_folder, resolved_plugin_directory, save_plugin_settings, uninstall_plugin};
 use commands::{apply_workspace_command, apply_workspace_interaction, begin_desktop_host_input_drag, delete_desktop_items, end_desktop_host_input_drag, execute_music_action, exit_desktop_tools, get_application_snapshot, get_component_runtime_snapshot, get_current_music_session, get_desktop_host_snapshot, get_desktop_item_snapshot, get_workspace_snapshot, inspect_workspace_backup, invoke_component_capability, list_workspace_auto_snapshots, open_desktop_items, open_settings_window, paste_desktop_items, publish_desktop_host_readiness, publish_message_notification, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, redo_workspace, rename_desktop_item, restore_workspace_backup, set_application_status, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag, undo_workspace, update_desktop_host_hit_map, write_workspace_backup};
 use commands::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
 use component_runtime::ComponentRuntimeState;
@@ -59,14 +60,10 @@ pub fn run()
         let _ = tools::log::shutdown();
         panic!("FATAL Shell STA 运行时启动失败: {}", error.message);
     });
-    let component_runtime = ComponentRuntimeState::new(); // 已隔离加载失败的官方组件注册表。
-    let default_components = component_runtime.default_instances(); // 首次创建工作区使用的官方默认组件集合。
-    let component_capabilities = component_runtime.capability_declarations().to_vec(); // 工作区创建与移除命令读取的清单能力声明，注册表移入应用状态前取出。
     // Tauri 应用构建结果。
     let app = tauri::Builder::default()
         .manage(ApplicationState::default())
         .manage(desktop_items)
-        .manage(component_runtime)
         .invoke_handler(tauri::generate_handler![
             commands::get_foreground_snapshot,
             commands::settings::get_settings,
@@ -85,9 +82,23 @@ pub fn run()
             commands::settings::get_preferences,
             commands::settings::get_windows_accent_color,
             commands::settings::save_preferences,
+            apply_plugin_install,
+            apply_plugin_installs,
+            cancel_plugin_install,
+            choose_plugin_directory,
+            prepare_plugin_install_from_archive,
+            prepare_plugin_install_from_folder,
+            create_plugin_component,
+            resolved_plugin_directory,
+            get_plugin_settings,
+            open_plugin_repository,
+            uninstall_plugin,
+            open_plugin_directory,
+            save_plugin_settings,
             commands::settings::set_autostart,
             commands::settings::open_logs,
             commands::settings::choose_config_directory,
+            commands::settings::resolved_config_directory,
             commands::settings::choose_folder_portal_directory,
             get_application_snapshot,
             get_desktop_host_snapshot,
@@ -119,6 +130,8 @@ pub fn run()
             commands::collect::delete_collect_item,
             commands::collect::restore_collect_item,
             commands::create_collect_box,
+            commands::create_tile_to_desktop,
+            commands::enable_feature,
             open_settings_window,
             get_component_runtime_snapshot,
             invoke_component_capability,
@@ -159,15 +172,27 @@ pub fn run()
             sync_message_appearance,
             update_desktop_host_hit_map,
         ])
+        .register_asynchronous_uri_scheme_protocol(crate::platform::windows::SETTINGS_PROTOCOL, |context, request, responder| {
+            crate::platform::windows::dispatch_settings_protocol(request, context.app_handle().clone(), move |response| responder.respond(response)); // wry 在创建 WebView 时调用 with_asynchronous_custom_protocol。
+        })
         .setup(move |app| {
-            let config_directory = crate::app::settings::prepare_config_directory(&app.path().app_data_dir()?)?; // 在后台写入线程启动前完成配置迁移。
+            let bootstrap = app.path().app_data_dir()?; // 启动定位目录，配置目录指针放在这里。
+            let config_directory = crate::app::settings::prepare_config_directory(&bootstrap)?; // 在后台写入线程启动前完成配置迁移。
             let settings_path = config_directory.join("settings.json"); // 当前用户的正式设置文件。
-            app.manage(crate::app::settings::SettingsState::load(settings_path)?);
+            let settings = crate::app::settings::SettingsState::load(settings_path)?; // 配置迁移后读取插件目录偏好。
+            let plugin_directory = crate::app::settings::resolve_plugin_directory(&settings.preferences()?.plugin_directory, &config_directory).map_err(std::io::Error::other)?; // 启动直接解析插件偏好，不复制迁移，本次运行内保持不变。
+            let component_runtime = ComponentRuntimeState::new(&plugin_directory); // 坏清单只进入 failures，不阻塞工作区加载。
+            let default_components = component_runtime.default_instances(); // 首次工作区的官方默认实例。
+            let component_capabilities = component_runtime.capability_declarations().to_vec(); // 注册表移入应用前取出工作区能力声明。
+            app.manage(component_runtime);
+            app.manage(settings);
             app.manage(crate::weather::WeatherState::new(&config_directory));
             std::fs::create_dir_all(config_directory.join("collect"))?;
             let _ = crate::platform::windows::directory_watch::start(app.handle().clone(), "collect".to_string(), config_directory.join("collect"));
             app.manage(crate::platform::windows::settings::WindowsAccentMonitor::install(app.handle().clone())?);
-            app.manage(ToastManager::install(app.state::<crate::app::settings::SettingsState>().preferences()?)?);
+            let toast_preferences = app.state::<crate::app::settings::SettingsState>().preferences()?; // 启动时已经解析好的当前偏好。
+            let toast_palette = crate::notifications::active_palette(app.handle(), &toast_preferences); // 已选主题若声明了消息配色，首条消息就用它。
+            app.manage(ToastManager::install(toast_preferences, toast_palette)?);
             crate::app::tray::install(app.handle())?;
             // 当前 Windows 用户独占的正式工作区快照路径。
             let workspace_path = config_directory.join("workspace-layout.json");
@@ -230,6 +255,7 @@ pub fn run()
             {
                 callback_exit_code.store(code, Ordering::Relaxed);
             }
+            crate::contracts::emit_plugin_event(app, "app-quitting", serde_json::json!({})); // 关窗之前先告知插件，插件还能做收尾。
             if let Some(runtime) = app.try_state::<Arc<DesktopHostRuntime>>()
             {
                 runtime.cleanup();

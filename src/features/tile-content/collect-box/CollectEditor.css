@@ -172,7 +172,7 @@ html[data-collect-editor="true"] #root {
     font: inherit;
 }
 
-/* 固定工具栏；局部覆盖 Vditor resize 写入的行内左边距。 */
+/* 固定工具栏；显式消费界面令牌，覆盖 Vditor 自身浅色规则。 */
 .collect-editor__content .vditor-toolbar {
     display: flex;
     flex: 0 0 40px;
@@ -182,6 +182,8 @@ html[data-collect-editor="true"] #root {
     overflow-x: auto;
     scrollbar-width: thin;
     border-bottom: 1px solid var(--color-border);
+    color: var(--color-text);
+    background: var(--color-subtle);
 }
 
 /* 去掉 Vditor 手机端工具额外间距。 */
@@ -249,9 +251,11 @@ html[data-collect-editor="true"] #root {
     overflow-y: auto;
 }
 
-/* 正文余高由 flex 分配，不撑开整个窗口。 */
+/* 正文余高由 flex 分配，不撑开整个窗口，并使用当前界面表面。 */
 .collect-editor__content .vditor-content {
     min-height: 0;
+    color: var(--color-text);
+    background: var(--color-surface);
 }
 
 /* 正文独立滚动；局部覆盖 Vditor 重算的行内 padding。 */

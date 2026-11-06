@@ -93,7 +93,8 @@ pub(crate) fn execute_apply_preferences(app: &AppHandle, state: &SettingsState, 
     let monitors = app.state::<std::sync::Arc<crate::host::DesktopHostRuntime>>().snapshot().map_err(|error| error.message)?.hosts.into_iter().map(|host| host.monitor).collect::<Vec<_>>(); // 原生宿主的当前工作区尺寸。
     let workspace = app.state::<crate::workspace::WorkspaceState>(); // 全部布局共同使用的权威状态。
     let saved = workspace.save_preferences(state, preferences, &monitors).inspect_err(|error| crate::log_error!("设置：{error}"))?; // 原子保存后的权威偏好。
-    app.state::<std::sync::Arc<crate::notifications::ToastManager>>().update_preferences(saved.clone()); // 原生 Toast 读取同一已保存界面主题。
+    let palette = crate::notifications::active_palette(app, &saved); // 与权威偏好同源解析，页面不再决定 Toast 配色。
+    app.state::<std::sync::Arc<crate::notifications::ToastManager>>().update_preferences(saved.clone(), palette); // 同锁更新偏好与 palette 并唤醒已入队消息。
     if let Some(window) = app.get_webview_window("main")
     {
         let theme = match saved.theme
@@ -122,6 +123,10 @@ pub(crate) fn execute_apply_preferences(app: &AppHandle, state: &SettingsState, 
 /// 更新并复核当前 Windows 用户的开机启动条目。
 #[tauri::command]
 pub fn set_autostart(enabled: bool) -> Result<bool, String> { settings::set_autostart(enabled).inspect_err(|error| crate::log_error!("设置：{error}")) }
+
+/// 当前生效的配置目录绝对路径；空偏好按当前用户目录解析，供设置页复制。
+#[tauri::command]
+pub fn resolved_config_directory(state: State<'_, SettingsState>) -> Result<String, String> { crate::app::settings::resolve_config_directory(&state.preferences()?.config_directory).map(|path| path.to_string_lossy().into_owned()) }
 
 /// 打开与当前日志初始化配置一致的目录。
 #[tauri::command]

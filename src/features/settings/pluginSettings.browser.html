@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>插件设置样式核对</title>
+    <body>
+        <div id="root"></div>
+        <script type="module">
+            // 全部动态导入，把模块加载失败显式写到页面上，便于在浏览器里定位。
+            try {
+                const React = await import("react");
+                const { createRoot } = await import("react-dom/client");
+                const { mockIPC, mockWindows } = await import("@tauri-apps/api/mocks");
+                const { PreferencesProvider } = await import("./PreferencesProvider.tsx");
+                const { SettingsPage } = await import("./SettingsPage.tsx");
+                await import("../../styles/global.css");
+
+                // 替代宿主偏好，字段与 Rust 侧同口径。
+                const preferences = {
+                    configDirectory: "C:\\Users\\TIAmo\\Documents\\DesktopTools",
+                    pluginDirectory: "",
+                    theme: "light",
+                    doubleClickToOpen: true,
+                    accentColor: "#2563eb",
+                    useWindowsAccentColor: true,
+                    cornerRadius: 3,
+                    fontFamily: "Segoe UI Variable",
+                    fontSize: 13,
+                    clockEnabled: true,
+                    musicEnabled: false,
+                    musicSpectrumEnabled: false,
+                    collectEnabled: true,
+                    folderPortalEnabled: true,
+                    debugEnabled: false,
+                    weatherEnabled: true,
+                    pauseOnFullscreen: false,
+                    pauseOnFocus: false,
+                    disabledPlugins: [],
+                    desktopGrid: { width: 68, height: 90, columnGap: 10, rowGap: 8 },
+                    fenceGrid: { width: 68, height: 90, columnGap: 6, rowGap: 8 },
+                };
+
+                // 替代插件运行时快照：一个已安装插件。
+                const snapshot = {
+                    revision: 1,
+                    manifests: [
+                        {
+                            id: "plugin.item",
+                            name: "演示插件·正常",
+                            entry: "plugin:slot",
+                            script: "演示插件·正常/main.js",
+                            requiredCapabilities: ["read-host-time"],
+                            creatable: true,
+                            removable: true,
+                            persistenceVersion: 1,
+                        },
+                    ],
+                    instances: [],
+                    failures: [],
+                };
+
+                mockWindows("main");
+                mockIPC((command) => {
+                    switch (command) {
+                        case "get_preferences":
+                            return preferences;
+                        case "get_windows_accent_color":
+                            return "#2563eb";
+                        case "get_component_runtime_snapshot":
+                            return snapshot;
+                        case "resolved_plugin_directory":
+                            return "C:\\Users\\TIAmo\\AppData\\Roaming\\TIAmo\\plugins";
+                        case "get_plugin_settings":
+                            return null;
+                        default:
+                            return null;
+                    }
+                });
+
+                createRoot(document.getElementById("root")).render(
+                    React.createElement(
+                        React.StrictMode,
+                        null,
+                        React.createElement(PreferencesProvider, null, React.createElement(SettingsPage, null)),
+                    ),
+                );
+            } catch (error) {
+                document.body.textContent = "HARNESS ERROR: " + (error && error.message ? error.message : String(error));
+            }
+        </script>
+    </body>
+</html>
