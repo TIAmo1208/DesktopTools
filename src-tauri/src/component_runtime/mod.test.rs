@@ -2,6 +2,64 @@ use super::{ComponentRuntimeState, validate_manifest};
 use crate::contracts::{ComponentCapability, ComponentCapabilityDeclaration, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, WorkspaceRect};
 use serde_json::json;
 
+/// 岛布尔值沿用 ini 旗标规则，主题即使声明也不允许上岛。
+#[test]
+fn island_manifest_flags_and_theme_ignore()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-island-flags-{}", std::process::id())); // 本测试独占主题资产目录。
+    std::fs::create_dir_all(&directory).unwrap();
+    let base = "[plugin]\nid=plugin.test\nname=test\nversion=1.0.0\nentry=main.js\n"; // 合法插件必填字段。
+    for (extra, expected) in [("", false), ("island=1\n", true), ("island=0\n", false), ("island=true\n", true), ("island=false\n", false), ("island=yes\n", false), ("island=\n", false)]
+    {
+        let manifest = super::plugin_manifest_from_ini("test", &directory, &format!("{base}{extra}")).unwrap(); // 非法旗标不使注册失败。
+        assert_eq!(manifest.island, expected, "{extra}");
+    }
+    std::fs::write(directory.join("theme.css"), ":root {}").unwrap();
+    std::fs::write(directory.join("theme.json"), r#"{"appearance":{}}"#).unwrap();
+    for flag in ["1", "0", "true", "false", "junk"]
+    {
+        let manifest = super::plugin_manifest_from_ini("test", &directory, &format!("{base}role=theme\nstylesheet=theme.css\nisland={flag}\n")).unwrap(); // 主题声明全部忽略且照常注册。
+        assert!(!manifest.island);
+    }
+    assert!(!serde_json::from_str::<ComponentManifest>(super::LOCAL_CLOCK_MANIFEST).unwrap().island); // 官方 JSON 未声明时也为 false。
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// 合成岛实例按首次卡片顺序注册，并沿用清单逐实例能力边界，不占桌面格子配额。
+#[test]
+fn island_instances_preserve_order_and_capabilities()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-island-instances-{}", std::process::id())); // 解析不要求入口脚本已经存在。
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut plugins = Vec::new(); // 测试清单与实际 ini 解析共用同一路径。
+    for (id, extra) in [("plugin.clock", "island=1\nrequired_capabilities=read-host-time\n"), ("plugin.media", "island=true\nrequired_capabilities=read-current-media\n"), ("plugin.off", "island=false\n")]
+    {
+        plugins.push(super::plugin_manifest_from_ini("test", &directory, &format!("[plugin]\nid={id}\nname=test\nversion=1.0.0\nentry=main.js\nmaxTiles=1\n{extra}")).unwrap());
+    }
+    let runtime = ComponentRuntimeState::from_manifest_sources(&[], Vec::new(), plugins, &directory); // 只含本测试声明的清单。
+    let order = ["plugin.media", "plugin.missing", "plugin.off", "plugin.clock", "plugin.media"].map(str::to_string); // 包含未知、未启用与重复候选。
+    let instances = runtime.island_instances(&order); // 不调用格子配额校验，也不写入工作区。
+    assert_eq!(instances.iter().map(|instance| instance.instance_id.as_str()).collect::<Vec<_>>(), ["island.plugin.media", "island.plugin.clock"]);
+    for instance in &instances
+    {
+        assert!(instance.monitor_id.is_empty());
+        assert!(instance.projection_monitor_id.is_none() && instance.projection_bounds.is_none());
+        assert_eq!(instance.bounds, WorkspaceRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 });
+        assert_eq!(instance.state_version, 1);
+        assert_eq!(instance.state, json!({}));
+    }
+    let snapshot = runtime.snapshot(&instances).unwrap(); // 合成实例通过现有注册路径授权。
+    for registration in &snapshot.instances
+    {
+        assert_eq!(registration.status, ComponentLoadStatus::Ready);
+        assert_eq!(registration.authorized_capabilities, runtime.catalog().manifests[&registration.component_id].required_capabilities);
+    }
+    assert!(runtime.invoke_capability(&instances, "island.plugin.clock", ComponentCapability::ReadHostTime).is_ok());
+    assert_eq!(runtime.invoke_capability(&instances, "island.plugin.clock", ComponentCapability::ReadCurrentMedia).unwrap_err().code, "component-capability-denied");
+    assert_eq!(runtime.invoke_capability(&instances, "island.plugin.off", ComponentCapability::ReadHostTime).unwrap_err().code, "invalid-component-instance");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// 主题清单与数据经过真实目录扫描，错误均进入隔离失败集合。
 #[test]
 fn theme_manifest_validates_assets_and_appearance()
@@ -310,7 +368,7 @@ fn time_subscriptions_are_scoped_and_do_not_reuse_identity()
 #[test]
 fn manifest_rejects_an_unauthorized_capability_set()
 {
-    let manifest = ComponentManifest { theme_notification: None, theme_boot: None, id: "official.local-clock".to_string(), name: "本地时间".to_string(), version: String::new(), stylesheet_cache_key: String::new(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable: true, removable: true, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
+    let manifest = ComponentManifest { theme_notification: None, theme_boot: None, id: "official.local-clock".to_string(), name: "本地时间".to_string(), version: String::new(), stylesheet_cache_key: String::new(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable: true, removable: true, island: false, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
 
     assert_eq!(validate_manifest(&manifest).expect_err("空能力集合应被拒绝").code, "invalid-component-manifest");
 }

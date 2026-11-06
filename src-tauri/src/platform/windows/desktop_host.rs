@@ -1404,7 +1404,7 @@ fn active_theme_boot(app: &AppHandle) -> Option<u32>
 fn allowed_desktop_origin(origin: &str, native_origin: &str, dev_origin: Option<&str>) -> bool { origin == native_origin || dev_origin == Some(origin) }
 
 /// 为开发页面提供受限跨域命令访问，预检不执行任何原生命令。
-fn handle_desktop_request(request: Request<Vec<u8>>, app: &AppHandle, handler: &NativeCommandHandler, native_origin: &str, dev_origin: Option<&str>) -> Response<Cow<'static, [u8]>>
+pub(crate) fn handle_desktop_request(request: Request<Vec<u8>>, app: &AppHandle, handler: &NativeCommandHandler, native_origin: &str, dev_origin: Option<&str>) -> Response<Cow<'static, [u8]>>
 {
     if !request.uri().path().starts_with("/__desktop_tools_invoke/")
     {

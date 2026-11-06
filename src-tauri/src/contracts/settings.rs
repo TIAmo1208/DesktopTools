@@ -72,8 +72,8 @@ pub struct ThemeBaseline
     pub font_size: u8,                // 正文字号。
 }
 
-/// 原子保存的用户界面与项目打开偏好。
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// 原子保存的用户界面与项目打开偏好；含 f64 偏移，故只有 PartialEq。
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ApplicationPreferences
 {
@@ -113,6 +113,12 @@ pub struct ApplicationPreferences
     pub folder_portal_enabled: bool,           // 文件夹门户功能入口显隐。
     pub pause_on_fullscreen: bool,             // 前台全屏或最大化覆盖本屏时暂停刷新。
     pub pause_on_focus: bool,                  // 外部应用获得焦点时暂停全部桌面刷新。
+    pub island_enabled: bool,                  // 岛总开关，关闭时不建窗并销毁 WebView。
+    pub island_edge: String,                   // 岛贴边方向，空字符串表示顶部居中。
+    pub island_offset: f64,                    // 沿贴边方向的偏移，单位 DIP。
+    pub island_hide_on_fullscreen: bool,       // 前台全屏时隐藏岛。
+    #[serde(default, deserialize_with = "deserialize_island_card_order")]
+    pub island_card_order: Vec<String>, // 已启用岛卡及其展开态排列顺序。
     #[serde(default, deserialize_with = "deserialize_disabled_plugins")]
     pub disabled_plugins: Vec<String>, // 宿主停用的插件标识，不属于插件自己的设置文件。
 }
@@ -160,6 +166,11 @@ impl Default for ApplicationPreferences
             folder_portal_enabled: true,
             pause_on_fullscreen: false,
             pause_on_focus: false,
+            island_enabled: false,
+            island_edge: String::new(),
+            island_offset: 0.0,
+            island_hide_on_fullscreen: true,
+            island_card_order: Vec::new(),
             disabled_plugins: Vec::new(),
         }
     }
@@ -194,6 +205,37 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(normalize_disabled_plugins(Vec::<String>::deserialize(deserializer)?))
+}
+
+/// 岛卡只保留带 official. 或 plugin. 前缀的非空标识，去重后最多 32 条。
+pub fn normalize_island_card_order(values: impl IntoIterator<Item = String>) -> Vec<String>
+{
+    let mut kept = Vec::new(); // 按首次出现顺序保留的合法标识。
+    let mut seen = std::collections::HashSet::new(); // 已保留的标识。
+    let mut dropped = 0u32; // 非法、重复或超出上限的条数。
+    for card_id in values
+    {
+        let valid = ["official.", "plugin."].iter().any(|prefix| card_id.starts_with(prefix) && card_id.len() > prefix.len()); // 前缀后必须有名称。
+        if !valid || !seen.insert(card_id.clone()) || kept.len() >= 32
+        {
+            dropped += 1;
+            continue;
+        }
+        kept.push(card_id);
+    }
+    if dropped > 0
+    {
+        crate::log_warn!("岛卡顺序：已丢弃 {dropped} 条非法、重复或超出上限的标识");
+    }
+    kept
+}
+
+/// 缺失字段走默认空列表；出现的非法岛卡在反序列化时丢弃。
+fn deserialize_island_card_order<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(normalize_island_card_order(Vec::<String>::deserialize(deserializer)?))
 }
 
 /// 字体族名只做字形名边界校验：内置系统字体和插件自带字体共用这条规则。
@@ -269,6 +311,14 @@ impl ApplicationPreferences
         {
             validate_appearance(&baseline.accent_color, &baseline.desktop_accent_color, baseline.corner_radius, &baseline.font_family, baseline.font_size)?;
         }
+        if !matches!(self.island_edge.as_str(), "" | "top" | "bottom" | "left" | "right")
+        {
+            return Err("岛贴边方向必须为空或 top、bottom、left、right".to_string());
+        }
+        if !self.island_offset.is_finite()
+        {
+            return Err("岛偏移必须为有限的 DIP 数值".to_string());
+        }
         if !(16..=64).contains(&self.music_spectrum_bars)
         {
             return Err("频谱段数必须为 16 到 64 之间的整数".to_string());
@@ -290,6 +340,67 @@ pub struct SettingsSnapshot
     pub autostart: bool,                     // 当前 Windows 注册项是否启用本程序。
     pub version: String,                     // Cargo 构建产生的应用版本。
     pub debug_build: bool,                   // Rust 构建模式决定测试功能可用性。
+}
+
+#[cfg(test)]
+mod island_tests
+{
+    use super::ApplicationPreferences;
+
+    /// 旧配置直接使用岛默认值，camelCase 字段往返不丢失。
+    #[test]
+    fn island_preferences_defaults_and_roundtrip()
+    {
+        let defaults: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 缺少岛字段的旧配置。
+        assert!(!defaults.island_enabled);
+        assert_eq!(defaults.island_edge, "");
+        assert_eq!(defaults.island_offset, 0.0);
+        assert!(defaults.island_hide_on_fullscreen);
+        assert!(defaults.island_card_order.is_empty());
+        assert!(defaults.validate().is_ok());
+        let selected = ApplicationPreferences { island_enabled: true, island_edge: "left".into(), island_offset: -12.5, island_hide_on_fullscreen: false, island_card_order: vec!["official.music".into(), "plugin.clock".into()], ..defaults }; // 非默认岛偏好。
+        let value = serde_json::to_value(&selected).unwrap(); // 实际持久化字段名。
+        assert_eq!(value["islandEnabled"], true);
+        assert_eq!(value["islandEdge"], "left");
+        assert_eq!(value["islandOffset"], -12.5);
+        assert_eq!(value["islandHideOnFullscreen"], false);
+        assert_eq!(value["islandCardOrder"], serde_json::json!(["official.music", "plugin.clock"]));
+        assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap(), selected);
+    }
+
+    /// 方向严格限制为约定值，偏移不能是 NaN 或无穷。
+    #[test]
+    fn island_preferences_validate_edge_and_offset()
+    {
+        for edge in ["", "top", "bottom", "left", "right"]
+        {
+            assert!(ApplicationPreferences { island_edge: edge.into(), ..Default::default() }.validate().is_ok());
+        }
+        for edge in ["center", "Top", " top", "right "]
+        {
+            assert!(ApplicationPreferences { island_edge: edge.into(), ..Default::default() }.validate().is_err());
+        }
+        for offset in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY]
+        {
+            assert!(ApplicationPreferences { island_offset: offset, ..Default::default() }.validate().is_err());
+        }
+        for offset in [-100.0, 0.0, 100.0]
+        {
+            assert!(ApplicationPreferences { island_offset: offset, ..Default::default() }.validate().is_ok());
+        }
+    }
+
+    /// 反序列化去重并丢弃非法项，只保留首次出现的前 32 个岛卡。
+    #[test]
+    fn island_card_order_normalizes_and_caps()
+    {
+        let mut cards = vec!["official.music".to_string(), "plugin.clock".into(), "official.music".into(), "".into(), "official.".into(), "plugin.".into(), "other.card".into()]; // 含重复与非法标识。
+        cards.extend((0..40).map(|index| format!("plugin.card{index}")));
+        let parsed: ApplicationPreferences = serde_json::from_value(serde_json::json!({"islandCardOrder": cards})).unwrap(); // 走实际 deserialize_with 边界。
+        let mut expected = vec!["official.music".to_string(), "plugin.clock".into()]; // 首次出现的顺序不变。
+        expected.extend((0..30).map(|index| format!("plugin.card{index}")));
+        assert_eq!(parsed.island_card_order, expected);
+    }
 }
 
 #[cfg(test)]

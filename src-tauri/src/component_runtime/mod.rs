@@ -105,7 +105,18 @@ impl ComponentRuntimeState
     /// 返回全部已注册清单声明的创建与移除能力，供工作区命令校验可操作范围。
     pub fn capability_declarations(&self) -> Vec<ComponentCapabilityDeclaration> { self.catalog().declarations.clone() }
 
-    /// 校验并注册统一工作区的全部插件实例。
+    /// 按卡片顺序产出已注册且允许上岛的合成实例；岛不持有桌面布局，不计入 max_tiles，不调用 enforce_plugin_tile_limit。
+    /// 调用方将结果与本屏工作区实例合并，作为 snapshot(instances) 与 invoke_component_capability 能力校验的入参；岛不进工作区快照。
+    /// 注册沿用 registration_snapshot / snapshot(instances)，仍按清单 required_capabilities 逐实例授权，不新增集合或命令。
+    #[allow(dead_code)] // 岛页面接入后移除。
+    pub(crate) fn island_instances(&self, card_order: &[String]) -> Vec<ComponentInstanceSnapshot>
+    {
+        let catalog = self.catalog(); // 仅依据已通过注册校验的清单。
+        let mut seen = HashSet::new(); // 重复卡片只保留首次出现位置。
+        card_order.iter().filter(|id| seen.insert(id.as_str()) && catalog.manifests.get(id.as_str()).is_some_and(|manifest| manifest.island)).map(|id| ComponentInstanceSnapshot { instance_id: format!("island.{id}"), component_id: id.clone(), monitor_id: String::new(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 }, state_version: 1, state: json!({}) }).collect()
+    }
+
+    /// 校验并注册统一工作区的全部插件实例；入参必须是本屏完整实例集合（含已合并的岛实例）。
     pub fn snapshot(&self, instances: &[ComponentInstanceSnapshot]) -> Result<ComponentRuntimeSnapshot, ComponentRuntimeError>
     {
         let registrations = instances.iter().filter(|instance| cfg!(debug_assertions) || instance.component_id != "official.debug-test").map(|instance| self.registration_snapshot(instance)).collect::<Vec<_>>(); // 当前布局中每个实例互相隔离的注册结果。
@@ -445,6 +456,15 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     let max_tiles = plugin_max_tiles(&id, values.get("maxTiles").map(String::as_str)); // 缺省和 0 都不限。
     let creatable = plugin_flag(&id, "creatable", values.get("creatable").map(String::as_str), false); // 缺省不能添加到桌面。
     let removable = plugin_flag(&id, "removable", values.get("removable").map(String::as_str), true); // 缺省允许用户移除格子。
+    let island = if role == ComponentRole::Theme && values.contains_key("island")
+    {
+        crate::log_warn!("插件：主题忽略 island 声明，身份={id}");
+        false
+    }
+    else
+    {
+        plugin_flag(&id, "island", values.get("island").map(String::as_str), false)
+    }; // 主题不上岛，普通插件缺省关闭。
     let repository = plugin_repository(&id, values.get("repository").map(String::as_str)); // 非法地址视同未声明。
     let description = plugin_description(values.get("description").map(String::as_str)); // ini 按行切，换行写成 \n。
     let author = values.get("author").map(|value| value.trim().to_string()).unwrap_or_default(); // 缺省没有作者。
@@ -454,7 +474,7 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     // 主题默认没有格子；带入口脚本时按清单声明放行，供主题自带的格子使用（同一插件里既能换肤又能添格子）。
     let creatable = creatable && (role == ComponentRole::Tile || !script.is_empty());
     let max_tiles = if role == ComponentRole::Theme && !creatable { 0 } else { max_tiles }; // 不能创建的主题忽略格子上限。
-    let manifest = ComponentManifest { id, name, version, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, stylesheet_cache_key, theme_appearance, theme_notification, theme_boot, theme_fonts, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
+    let manifest = ComponentManifest { id, name, version, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, stylesheet_cache_key, theme_appearance, theme_notification, theme_boot, theme_fonts, required_capabilities, creatable, removable, island, persistence_version: 1, max_tiles, repository, description, author };
     validate_manifest(&manifest).map_err(|error| error.message)?;
     Ok(manifest)
 }

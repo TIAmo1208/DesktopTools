@@ -13,6 +13,7 @@ pub(crate) mod environment_watch;
 pub(crate) mod file_proof;
 pub(crate) use shell::shell_parsing_path;
 mod file_system;
+pub(crate) mod island;
 pub mod music;
 pub mod settings;
 mod shell;

@@ -65,6 +65,8 @@ pub fn run()
         .manage(ApplicationState::default())
         .manage(desktop_items)
         .invoke_handler(tauri::generate_handler![
+            commands::island::set_island_state,
+            commands::island::begin_island_drag,
             commands::get_foreground_snapshot,
             commands::settings::get_settings,
             commands::weather::weather_settings,
@@ -175,6 +177,9 @@ pub fn run()
         .register_asynchronous_uri_scheme_protocol(crate::platform::windows::SETTINGS_PROTOCOL, |context, request, responder| {
             crate::platform::windows::dispatch_settings_protocol(request, context.app_handle().clone(), move |response| responder.respond(response)); // wry 在创建 WebView 时调用 with_asynchronous_custom_protocol。
         })
+        .register_asynchronous_uri_scheme_protocol(crate::platform::windows::island::ISLAND_PROTOCOL, |context, request, responder| {
+            crate::platform::windows::island::dispatch_protocol(request, context.app_handle().clone(), move |response| responder.respond(response));
+        })
         .setup(move |app| {
             let bootstrap = app.path().app_data_dir()?; // 启动定位目录，配置目录指针放在这里。
             let config_directory = crate::app::settings::prepare_config_directory(&bootstrap)?; // 在后台写入线程启动前完成配置迁移。
@@ -213,6 +218,7 @@ pub fn run()
             });
             let desktop_host = DesktopHostRuntime::start(app.handle())?;
             app.manage(Arc::clone(&desktop_host));
+            crate::platform::windows::island::install(app.handle()); // 仅偏好开启时懒建窗，当前页面仍为占位。
             // Shell 变化通知由唯一协调线程消费。
             let changes = app.state::<DesktopItemState>().take_change_receiver().map_err(|error| error.message)?;
             start_desktop_item_change_monitor(app.handle().clone(), changes);
@@ -260,6 +266,7 @@ pub fn run()
             {
                 runtime.cleanup();
             }
+            crate::platform::windows::island::destroy(); // 退出分支均在 UI 线程，重复调用安全。
             if let Some(toast) = app.try_state::<Arc<ToastManager>>()
             {
                 toast.inner().cleanup();
@@ -277,6 +284,7 @@ pub fn run()
             {
                 runtime.cleanup();
             }
+            crate::platform::windows::island::destroy(); // 退出分支均在 UI 线程，重复调用安全。
             if let Some(toast) = app.try_state::<Arc<ToastManager>>()
             {
                 toast.inner().cleanup();

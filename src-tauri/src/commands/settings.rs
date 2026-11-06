@@ -93,6 +93,7 @@ pub(crate) fn execute_apply_preferences(app: &AppHandle, state: &SettingsState, 
     let monitors = app.state::<std::sync::Arc<crate::host::DesktopHostRuntime>>().snapshot().map_err(|error| error.message)?.hosts.into_iter().map(|host| host.monitor).collect::<Vec<_>>(); // 原生宿主的当前工作区尺寸。
     let workspace = app.state::<crate::workspace::WorkspaceState>(); // 全部布局共同使用的权威状态。
     let saved = workspace.save_preferences(state, preferences, &monitors).inspect_err(|error| crate::log_error!("设置：{error}"))?; // 原子保存后的权威偏好。
+    crate::platform::windows::island::reconcile(app); // 岛开关与抑制偏好只消费保存后的最新事实。
     let palette = crate::notifications::active_palette(app, &saved); // 与权威偏好同源解析，页面不再决定 Toast 配色。
     app.state::<std::sync::Arc<crate::notifications::ToastManager>>().update_preferences(saved.clone(), palette); // 同锁更新偏好与 palette 并唤醒已入队消息。
     if let Some(window) = app.get_webview_window("main")

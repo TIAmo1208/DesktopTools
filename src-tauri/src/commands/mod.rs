@@ -7,6 +7,7 @@ pub mod desktop_item;
 pub mod folder_portal;
 pub use desktop_item::get_desktop_item_image;
 pub use desktop_item::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
+pub(crate) mod island;
 pub mod music;
 mod notifications;
 pub mod plugin_settings;
@@ -333,6 +334,12 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
     // 当前本地 transport 命令的统一 JSON 结果。
     let result: Result<Value, Value> = match command
     {
+        "set_island_state" =>
+        {
+            let request = command_argument(&arguments, "request", "岛状态参数无效").map_err(serialize_error)?;
+            island::execute_set_island_state(app, request).map_err(serialize_error).and_then(serialize_result)
+        }
+        "begin_island_drag" => island::execute_begin_island_drag(app).map_err(serialize_error).and_then(serialize_result),
         "list_audio_output_devices" => serialize_result(audio::list_audio_output_devices()),
         "start_audio_spectrum" =>
         {

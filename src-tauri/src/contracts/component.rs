@@ -134,6 +134,9 @@ pub struct ComponentManifest
     /// 用户是否可移除该组件的实例。JSON 缺省为 false；插件 ini 缺省为 true。
     #[serde(default)]
     pub removable: bool,
+    /// 插件是否可上岛；官方 JSON 缺省为 false。
+    #[serde(default)]
+    pub island: bool,
     /// 桌面格子数量上限。0 表示不限。
     #[serde(default)]
     pub max_tiles: u32,
