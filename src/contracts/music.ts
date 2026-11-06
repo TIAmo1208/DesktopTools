@@ -11,6 +11,72 @@ export interface MusicMediaSnapshot {
     canNext: boolean; // 下一曲能力。
 }
 
+/** 时间轴原始 100ns ticks 保留字符串；LastUpdatedTime 为 1601 纪元。 */
+export interface MusicTimeline {
+    sessionId: string;
+    title: string;
+    artist: string;
+    positionTicks: string;
+    endTimeTicks: string;
+    lastUpdatedTimeTicks: string;
+    playbackStatus: number;
+    positionMs: number;
+    durationMs: number;
+    advancing: boolean;
+}
+/** 已按起始毫秒排序、合并同时间戳的逐句歌词。 */
+export interface LyricLine {
+    startMs: number;
+    text: string;
+}
+export interface MusicDetails {
+    timeline?: MusicTimeline;
+    lyrics: LyricLine[];
+}
+
+/** 第二事实边界拒绝错误类型和非有限位置，不推断缺失字段。 */
+export const parseMusicDetails = (value: unknown): MusicDetails => {
+    if (!value || typeof value !== "object" || !("timeline" in value) || !("lyrics" in value) || !Array.isArray(value.lyrics))
+        throw new Error("音乐时间轴无效");
+    let timeline: MusicTimeline | undefined;
+    if (value.timeline !== null) {
+        if (!value.timeline || typeof value.timeline !== "object") throw new Error("音乐时间轴无效");
+        const raw = value.timeline as Record<string, unknown>;
+        for (const key of ["sessionId", "title", "artist"]) if (typeof raw[key] !== "string") throw new Error("时间轴身份无效");
+        if (!raw.sessionId) throw new Error("时间轴身份无效");
+        for (const key of ["positionTicks", "endTimeTicks", "lastUpdatedTimeTicks"])
+            if (typeof raw[key] !== "string" || !/^-?\d+$/.test(raw[key])) throw new Error("时间轴原始值无效");
+        for (const key of ["positionMs", "durationMs", "playbackStatus"])
+            if (typeof raw[key] !== "number" || !Number.isFinite(raw[key])) throw new Error("时间轴数值无效");
+        if (
+            !Number.isInteger(raw.playbackStatus) ||
+            Number(raw.positionMs) < 0 ||
+            Number(raw.durationMs) < Number(raw.positionMs) ||
+            typeof raw.advancing !== "boolean"
+        )
+            throw new Error("时间轴投影无效");
+        timeline = raw as unknown as MusicTimeline;
+    }
+    let previous = -1;
+    const lyrics = value.lyrics.map((line: unknown): LyricLine => {
+        if (
+            !line ||
+            typeof line !== "object" ||
+            !("startMs" in line) ||
+            !("text" in line) ||
+            typeof line.startMs !== "number" ||
+            !Number.isSafeInteger(line.startMs) ||
+            line.startMs < 0 ||
+            line.startMs <= previous ||
+            typeof line.text !== "string"
+        )
+            throw new Error("歌词行无效");
+        previous = line.startMs;
+        return { startMs: line.startMs, text: line.text };
+    });
+    return { timeline, lyrics };
+};
+
 /** 校验真实 IPC 数据，不能以类型断言代替边界验证。 */
 export const parseMusicSnapshot = (value: unknown): MusicMediaSnapshot | undefined => {
     if (!value || typeof value !== "object" || !("media" in value)) throw new Error("媒体快照无效");

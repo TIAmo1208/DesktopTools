@@ -138,6 +138,7 @@ pub fn run()
             get_component_runtime_snapshot,
             invoke_component_capability,
             get_current_music_session,
+            commands::music::get_music_details,
             execute_music_action,
             commands::audio::list_audio_output_devices,
             commands::audio::start_audio_spectrum,
