@@ -73,6 +73,12 @@ interface PluginHostContext {
 
 const attempted = new Set<string>(); // 已尝试插入脚本的标识，失败也不重试。
 
+/** 读取实例 state 里保存的格子类型。state 不是对象或字段不是字符串时按未声明处理。 */
+const pluginTileType = (state: unknown) => {
+    const value = typeof state === "object" && state !== null ? (state as Record<string, unknown>).tileType : undefined; // 类型写在 state 里，不占实例字段。
+    return typeof value === "string" ? value : "";
+};
+
 const renderFailed = new Set<string>(); // renderTile 抛错的实例。
 const tileCleanups = new Map<string, () => void>(); // 每个实例最近一次 renderTile 的清理函数。
 const revisions = new Map<string, number>(); // 该插件外壳变化后的重绘代数。
@@ -159,7 +165,7 @@ const syncPluginScripts = (manifests: readonly { id: string; script?: string }[]
 };
 
 /** 把一个插件实例的作者内容挂到外框给出的容器上。 */
-const PluginTileBody = ({ pluginId, instanceId, collapsed, revision }: { pluginId: string; instanceId: string; collapsed: boolean; revision: number }) => {
+const PluginTileBody = ({ pluginId, instanceId, tileType, collapsed, revision }: { pluginId: string; instanceId: string; tileType: string; collapsed: boolean; revision: number }) => {
     const containerRef = useRef<HTMLDivElement>(null); // 作者内容的挂载点。
     const collapsedRef = useRef(collapsed); // 读取返回时使用当前折叠状态。
     const settingsRef = useRef<{ ready: boolean; value: unknown }>({ ready: false, value: null }); // 已读过的设置，折叠时不再等命令。
@@ -177,6 +183,7 @@ const PluginTileBody = ({ pluginId, instanceId, collapsed, revision }: { pluginI
                 mountPluginTile(containerRef.current, {
                     pluginId,
                     instanceId,
+                    tileType,
                     collapsed: collapsedRef.current,
                     settings,
                     saveSettings: (value) => savePluginSettings(pluginId, value),
@@ -209,7 +216,7 @@ const PluginTileBody = ({ pluginId, instanceId, collapsed, revision }: { pluginI
             releasePluginTile(instanceId);
             void subscription.then((unlisten) => unlisten()).catch(() => undefined);
         };
-    }, [pluginId, instanceId, revision]);
+    }, [pluginId, instanceId, tileType, revision]);
 
     useEffect(() => {
         const container = containerRef.current;
@@ -218,6 +225,7 @@ const PluginTileBody = ({ pluginId, instanceId, collapsed, revision }: { pluginI
             mountPluginTile(container, {
                 pluginId,
                 instanceId,
+                tileType,
                 collapsed,
                 settings: settingsRef.current.value,
                 saveSettings: (value) => savePluginSettings(pluginId, value),
@@ -294,6 +302,7 @@ const pluginRenderers = new Map<string, (props: ComponentTileProps, context: Plu
                             <PluginTileBody
                                 pluginId={pluginId}
                                 instanceId={props.instance.instanceId}
+                                tileType={pluginTileType(props.instance.state)}
                                 collapsed={collapsed}
                                 revision={pluginRevision(pluginId)}
                             />

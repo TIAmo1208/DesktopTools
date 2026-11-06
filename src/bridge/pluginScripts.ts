@@ -14,6 +14,7 @@ import { invokeRuntime, listenRuntime } from "./runtime";
 export interface PluginShellContext {
     pluginId: string; // 清单标识。
     instanceId: string; // 当前格子实例；设置条目可以不对应单个格子。
+    tileType: string; // 当前实例的格子类型键；没有声明类型或缺失时为空串。
     collapsed: boolean; // 外框实际折叠状态。
     settings: unknown; // 读取命令给出的设置，没有文件时为 null。
     saveSettings: (settings: unknown) => Promise<void>; // 调用保存命令。
@@ -211,8 +212,8 @@ export const uninstallPlugin = async (pluginId: string, removeSettings = false) 
     return removed as string[];
 };
 
-/** 在当前桌面创建一个该插件的格子。 */
-export const createPluginComponent = (pluginId: string) => invokeRuntime<void>("create_plugin_component", { pluginId });
+/** 在当前桌面创建一个该插件的格子。给了类型就随实例 state 一起提交。 */
+export const createPluginComponent = (pluginId: string, tileType?: string) => invokeRuntime<void>("create_plugin_component", { pluginId, tileType: tileType ?? null });
 
 /** 选择插件目录。取消返回 undefined，选中默认目录时返回空串。 */
 export const choosePluginDirectory = async () => {

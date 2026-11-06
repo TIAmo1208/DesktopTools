@@ -25,6 +25,12 @@ export interface ThemeAppearance {
     fontSize: number | null;
 }
 
+/** 插件声明的一种格子类型。键写进实例 state 的 tileType。 */
+export interface ComponentTileType {
+    key: string; // 作者代码里的稳定标识，也是 state 里保存的值。
+    name: string; // 创建菜单里显示的名称。
+}
+
 /** 一个官方组件的版本化清单。 */
 export interface ComponentManifest {
     id: string;
@@ -42,6 +48,7 @@ export interface ComponentManifest {
     // 用户是否可移除该组件的实例。
     removable: boolean;
     maxTiles: number; // 可创建的格子上限。0 表示不限。
+    tileTypes: ComponentTileType[]; // 插件声明的格子类型，第一项为默认类型。空表示隐式单类型。
     version?: string; // 插件版本。缺省不展示。
     description?: string; // 插件简介。缺省不展示。
     author?: string; // 插件作者。缺省时信息行不拼 @。
@@ -210,6 +217,21 @@ const parseThemeAppearance = (value: unknown): ThemeAppearance | null => {
     };
 };
 
+/** 校验格子类型：键与显示名都非空，键不重复。缺省为空，表示隐式单类型。 */
+const parseTileTypes = (value: unknown): ComponentTileType[] => {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) throw new ComponentContractError();
+    const keys = new Set<string>(); // 已出现的键，用于拒绝重复。
+    return value.map((tileType): ComponentTileType => {
+        if (typeof tileType !== "object" || tileType === null) throw new ComponentContractError();
+        const item = tileType as Record<string, unknown>; // 待校验的类型声明。
+        if (typeof item.key !== "string" || !item.key || keys.has(item.key)) throw new ComponentContractError();
+        if (typeof item.name !== "string" || !item.name) throw new ComponentContractError();
+        keys.add(item.key);
+        return { key: item.key, name: item.name };
+    });
+};
+
 /** 校验主题自带字体：族名走公共规则，文件只认插件根内的字体扩展名。 */
 const parseThemeFonts = (value: unknown): ThemeFont[] => {
     if (value === undefined || value === null) return [];
@@ -257,6 +279,7 @@ export const parseComponentRuntimeSnapshot = (value: unknown): ComponentRuntimeS
             creatable: parseDeclarationFlag(item.creatable),
             removable: parseDeclarationFlag(item.removable),
             maxTiles: parseMaxTiles(item.maxTiles),
+            tileTypes: parseTileTypes(item.tileTypes),
             version: parseOptionalText(item.version),
             stylesheetCacheKey: parseOptionalText(item.stylesheetCacheKey),
             description: parseOptionalText(item.description),

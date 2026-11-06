@@ -34,6 +34,7 @@ src-tauri/
 
 ## 关键边界
 
+- `component_runtime/mod.rs` 读 `manifest.ini` 的 `[plugin]` 与 `[tiles]` 两节：`[tiles]` 每行 `键 = 显示名`，按序保留、第一节为默认类型，空节、非法键、重复键都让整份清单进 `failures`。`contracts/component.rs` 的 `tile_type_bucket` 是计数归属的唯一口径：视图按实例 `state.tileType` 分桶，缺失时记到第一节，没有 `[tiles]` 的组件共用一个桶。`workspace/mod.rs` 在创建命令上做数量校验，`component_runtime::plugin_tile_limit_reached` 按同一口径逐类计数，`maxTiles` 因此是每类各自的上限；`create_plugin_component` 先校验类型是否在清单里，再把类型写进新实例的 `state`。
 - `commands/weather.rs` 把凭据草稿类命令（临时城市搜索、验证城市、把验证通过的城市写入来源列表、保存与清除）保留给设置窗口，桌面 transport 另提供已保存凭据下的来源列表、某来源城市列表读写、按来源城市搜索与天气读取。`weather/source.rs` 定义来源标识与顺序；`weather/credentials.rs` 按来源各保存一条 Windows Credential Manager 记录（和风沿用既有应用级记录名，其他来源在其后追加来源标识）；`weather/mod.rs` 管理草稿、并发互斥、取消、保存门槛、来源列表与运行期可用状态、存活探测与按来源删除，运行期状态按来源索引：凭据记录名与 `weather-cities-<来源>.json` 城市列表文件按来源派生，配置代次、取消标记与退避记录都以来源为键，磁盘预报缓存仍按配置指纹与城市标识保存；`weather/provider.rs` 与 `weather/foreca.rs` 分别校验各自凭据、签发 JWT 或使用 Bearer 令牌、按来源校验城市与天气数据。网络任务只在用户操作时创建，禁止重定向，限制超时与响应大小；城市搜索结果和天气验证响应不落盘。天气格子在拖动缩放期间按实时尺寸切换布局，详情入口由前端公共标题栏提供；`weather/activity.rs` 负责展开实例的共享活动调度，并通过 `weather-forecast-changed` 通知预报更新。天气格子与收集箱一样由组件清单声明可创建、可移除，创建入口写入绑定标识并在同一链路开启天气功能开关。
 
 - `app/settings.rs` 维护配置目录与插件目录。配置目录仍用启动定位目录里的 `config-location.json`。插件目录不迁移：`pluginDirectory` 为空时用可执行文件所在目录下的 `plugin`（安装后即安装目录 `\plugin`），显式路径仍按原有安全边界覆盖；取不到程序目录时报错，不回退到 `%APPDATA%`。运行期内目录冻结，改偏好下次启动再生效，不复制旧目录。插件安装按 `作者@名称` 落盘并原样保留清单标识，同一作者同一标识视为同一插件。

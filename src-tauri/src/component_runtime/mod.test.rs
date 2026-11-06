@@ -157,6 +157,20 @@ fn repo_preset_plugins_register()
     assert_eq!(night_city.max_tiles, 2);
 }
 
+/// [tiles] 子节按行保留顺序，非法键、重复键和空节都让清单无效。
+#[test]
+fn plugin_tile_types_parse_in_order_and_reject_invalid_entries()
+{
+    let parsed = super::parse_plugin_tiles("[plugin]\nid = plugin.multi\n\n[tiles]\nstatus = 连通状态\nmessages = 消息数\n").unwrap();
+    assert_eq!(parsed.iter().map(|tile_type| tile_type.key.as_str()).collect::<Vec<_>>(), ["status", "messages"]); // 第一节是默认类型。
+    assert_eq!(parsed[0].name, "连通状态");
+    assert!(super::parse_plugin_tiles("[plugin]\nid = plugin.multi\n").unwrap().is_empty(), "没有子节时按隐式单类型处理");
+    for invalid in ["[plugin]\nid = p\n[tiles]\n", "[plugin]\nid = p\n[tiles]\nStatus = 甲\n", "[plugin]\nid = p\n[tiles]\na = 甲\na = 乙\n", "[plugin]\nid = p\n[tiles]\na = \n", "[plugin]\nid = p\n[tiles]\na = 一二三四五六七八九十一二三四五六七八九十一二三四五\n"]
+    {
+        assert!(super::parse_plugin_tiles(invalid).is_err(), "{invalid}");
+    }
+}
+
 /// 点开头的目录不注册，作者@名称 的文件夹按同一份清单校验。
 #[test]
 fn plugin_scan_skips_dot_folders_and_accepts_author_prefix()
@@ -310,7 +324,7 @@ fn time_subscriptions_are_scoped_and_do_not_reuse_identity()
 #[test]
 fn manifest_rejects_an_unauthorized_capability_set()
 {
-    let manifest = ComponentManifest { theme_notification: None, theme_boot: None, id: "official.local-clock".to_string(), name: "本地时间".to_string(), version: String::new(), stylesheet_cache_key: String::new(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable: true, removable: true, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
+    let manifest = ComponentManifest { theme_notification: None, theme_boot: None, id: "official.local-clock".to_string(), name: "本地时间".to_string(), version: String::new(), stylesheet_cache_key: String::new(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable: true, removable: true, persistence_version: 1, max_tiles: 0, tile_types: Vec::new(), repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
 
     assert_eq!(validate_manifest(&manifest).expect_err("空能力集合应被拒绝").code, "invalid-component-manifest");
 }
@@ -334,10 +348,10 @@ fn registered_manifests_publish_creation_and_removal_declarations()
     let runtime = ComponentRuntimeState::new(&std::env::temp_dir().join(format!("desktop-tools-no-plugins-{}", std::process::id()))); // 当前构建注册表。
     let declaration = |component_id: &str| runtime.capability_declarations().iter().find(|declaration| declaration.component_id == component_id).cloned(); // 当前构建的单项能力声明。
 
-    assert_eq!(declaration("official.collect-box"), Some(ComponentCapabilityDeclaration { component_id: "official.collect-box".to_string(), creatable: true, removable: true, max_tiles: 0 }));
-    assert_eq!(declaration("official.weather"), Some(ComponentCapabilityDeclaration { component_id: "official.weather".to_string(), creatable: true, removable: true, max_tiles: 0 }));
-    assert_eq!(declaration("official.local-clock"), Some(ComponentCapabilityDeclaration { component_id: "official.local-clock".to_string(), creatable: true, removable: true, max_tiles: 1 }));
-    assert_eq!(declaration("official.music-control"), Some(ComponentCapabilityDeclaration { component_id: "official.music-control".to_string(), creatable: true, removable: true, max_tiles: 1 }));
+    assert_eq!(declaration("official.collect-box"), Some(ComponentCapabilityDeclaration { component_id: "official.collect-box".to_string(), creatable: true, removable: true, max_tiles: 0, tile_types: Vec::new() }));
+    assert_eq!(declaration("official.weather"), Some(ComponentCapabilityDeclaration { component_id: "official.weather".to_string(), creatable: true, removable: true, max_tiles: 0, tile_types: Vec::new() }));
+    assert_eq!(declaration("official.local-clock"), Some(ComponentCapabilityDeclaration { component_id: "official.local-clock".to_string(), creatable: true, removable: true, max_tiles: 1, tile_types: Vec::new() }));
+    assert_eq!(declaration("official.music-control"), Some(ComponentCapabilityDeclaration { component_id: "official.music-control".to_string(), creatable: true, removable: true, max_tiles: 1, tile_types: Vec::new() }));
     assert_eq!(runtime.capability_declarations().len(), runtime.snapshot(&[]).unwrap().manifests.len());
 }
 
@@ -400,9 +414,7 @@ fn plugin_max_tiles_limits_creation_and_ignores_invalid_values()
     assert_eq!(runtime.catalog().manifests["plugin.neg"].max_tiles, 0);
     assert_eq!(runtime.catalog().manifests["plugin.bad"].max_tiles, 0);
     assert!(runtime.catalog().failures.iter().all(|failure| failure.component_id != "plugin.neg" && failure.component_id != "plugin.bad"));
-    assert!(super::enforce_plugin_tile_limit(3, 2).is_ok());
-    assert_eq!(super::enforce_plugin_tile_limit(3, 3).unwrap_err(), "已达到该插件的格子上限（3 个）");
-    assert!(super::enforce_plugin_tile_limit(0, 9).is_ok());
+    assert_eq!(super::plugin_tile_limit_message(3), "已达到该插件的格子上限（3 个）"); // 拒绝原因对所有类型一致。
     std::fs::remove_dir_all(directory).unwrap();
 }
 

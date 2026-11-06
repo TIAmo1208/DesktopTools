@@ -62,6 +62,17 @@ test("组件清单的创建与移除声明缺失按不可用处理", () => {
     for (const invalid of [undefined, null, 1]) assert.throws(() => parse({ script: invalid }));
 });
 
+// 格子类型按清单顺序保留，键重复或字段为空时拒绝整份快照。
+test("组件清单的格子类型字段按序保留并拒绝重复键", () => {
+    const manifest = { id: "plugin.multi", name: "多类型", entry: "plugin:slot", script: "多类型/index.js", requiredCapabilities: [], persistenceVersion: 1 }; // 插件槽清单。
+    const parse = (overrides: Record<string, unknown>) =>
+        parseComponentRuntimeSnapshot({ revision: 1, manifests: [{ ...manifest, ...overrides }], instances: [], failures: [] }).manifests[0];
+    assert.deepEqual(parse({}).tileTypes, [], "缺省为空，按隐式单类型处理");
+    assert.deepEqual(parse({ tileTypes: [{ key: "status", name: "连通状态" }, { key: "messages", name: "消息数" }] }).tileTypes.map((tileType) => tileType.key), ["status", "messages"]);
+    for (const invalid of ["status", [{ key: "", name: "甲" }], [{ key: "a", name: "" }], [{ key: "a", name: "甲" }, { key: "a", name: "乙" }]])
+        assert.throws(() => parse({ tileTypes: invalid }));
+});
+
 // 投射边界不能误用持久尺寸底线，非有限值始终拒绝。
 test("组件持久尺寸和小视口投射分别校验", () => {
     const instance = {

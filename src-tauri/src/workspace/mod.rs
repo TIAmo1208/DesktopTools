@@ -247,11 +247,22 @@ impl WorkspaceState
         changed
     }
 
-    /// 校验指定组件再创建一个格子是否超出清单数量上限；0 表示不限。
-    pub(crate) fn enforce_component_tile_limit(&self, component_id: &str, count: usize) -> Result<(), WorkspaceError> { crate::component_runtime::enforce_plugin_tile_limit(self.component_tile_limit(component_id), count).map_err(|message| WorkspaceError::invalid_command(&message)) }
+    /// 校验该插件再创建一个格子是否超出数量上限；声明了格子类型时按类型分别计数，0 表示不限。
+    pub(crate) fn enforce_component_tile_limit(&self, component_id: &str, tile_types: &[crate::contracts::ComponentTileType], state: &serde_json::Value, layout: &WorkspaceSnapshot) -> Result<(), WorkspaceError>
+    {
+        let limit = self.component_tile_limit(component_id); // 每个类型共用的上限。
+        if crate::component_runtime::plugin_tile_limit_reached(limit, component_id, tile_types, state, layout)
+        {
+            return Err(WorkspaceError::invalid_command(&crate::component_runtime::plugin_tile_limit_message(limit)));
+        }
+        Ok(())
+    }
 
     /// 返回指定组件清单声明的格子数量上限，任意显示器上的实例都计入；0 或清单缺失表示不限。
     fn component_tile_limit(&self, component_id: &str) -> u32 { self.capability_declarations.lock().unwrap_or_else(|error| error.into_inner()).iter().find(|declaration| declaration.component_id == component_id).map(|declaration| declaration.max_tiles).unwrap_or(0) }
+
+    /// 返回指定插件声明的格子类型。清单缺失时为空，按老口径整体计数。
+    pub(crate) fn component_tile_types(&self, component_id: &str) -> Vec<crate::contracts::ComponentTileType> { self.capability_declarations.lock().unwrap_or_else(|error| error.into_inner()).iter().find(|declaration| declaration.component_id == component_id).map(|declaration| declaration.tile_types.clone()).unwrap_or_default() }
 
     /// 当前布局里是否已有该组件的实例，任意显示器均算。
     pub fn has_component(&self, component_id: &str) -> bool
@@ -317,18 +328,20 @@ impl WorkspaceState
     /// 按清单声明校验创建与移除命令的可操作范围，其他命令不做组件能力校验。
     fn validate_component_capability(&self, layout: &WorkspaceSnapshot, command: &WorkspaceCommand) -> Result<(), WorkspaceError>
     {
-        // 创建按目标组件身份判定，移除按目标实例所属组件身份判定。
-        let (component_id, operation) = match command
+        // 创建、移除或校验用的组件身份与操作；创建时一并带上要写入的实例状态。
+        let (component_id, operation, create_state) = match command
         {
-            WorkspaceCommand::CreateComponent { component_id, .. } => (component_id.as_str(), ComponentOperation::Create),
-            WorkspaceCommand::RemoveComponent { instance_id } => (layout.components.iter().find(|component| component.instance_id == *instance_id).ok_or_else(|| WorkspaceError::invalid_command("组件实例不存在"))?.component_id.as_str(), ComponentOperation::Remove),
+            WorkspaceCommand::CreateComponent { component_id, state, .. } => (component_id.as_str(), ComponentOperation::Create, Some(state)),
+            WorkspaceCommand::RemoveComponent { instance_id } => (layout.components.iter().find(|component| component.instance_id == *instance_id).ok_or_else(|| WorkspaceError::invalid_command("组件实例不存在"))?.component_id.as_str(), ComponentOperation::Remove, None),
             _ => return Ok(()),
         };
         if matches!(operation, ComponentOperation::Create)
         {
-            // 清单声明的格子数量上限对所有创建入口统一生效，不限时为 0。
-            let count = layout.components.iter().filter(|component| component.component_id == component_id).count(); // 所有显示器上的该组件格子。
-            self.enforce_component_tile_limit(component_id, count)?;
+            // 清单声明的格子数量上限对所有创建入口统一生效；声明了类型时按实例类型分别计数，不限时为 0。
+            if let Some(state) = create_state
+            {
+                self.enforce_component_tile_limit(component_id, &self.component_tile_types(component_id), state, layout)?;
+            }
         }
         if self.component_declares_capability(component_id, operation)
         {

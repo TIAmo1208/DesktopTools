@@ -73,6 +73,9 @@ const context = {
     assert.equal(waiting.props.instanceId, "sample");
     assert.equal(waiting.props.pluginId, "plugin.waiting");
     assert.equal(waiting.props.collapsed, false);
+    assert.equal(waiting.props.tileType, "", "state 没有类型时交给作者空串");
+    const typed = pluginRenderers.get("plugin:slot")({ ...props, instance: { ...props.instance, state: { tileType: "messages" } } }, {}).props.children(false);
+    assert.equal(typed.props.tileType, "messages", "实例 state 里的类型原样下发给作者");
 
     const source = await readFile(new URL("./OfficialComponentHost.tsx", import.meta.url), "utf8"); // 保证入口优先级与原有兜底原样保留。
     assert.match(source, /props\.registration\?\.entry \?\? instance\.componentId/);

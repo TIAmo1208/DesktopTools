@@ -88,6 +88,41 @@ pub struct ThemeFont
     pub style: String,
 }
 
+/// 插件清单声明的一种格子类型，键写进实例 state 的 tileType。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentTileType
+{
+    /// 作者代码里的稳定标识，也是 state 里保存的值。
+    pub key: String,
+    /// 创建菜单里显示的名称。
+    pub name: String,
+}
+
+/// 声明了 [tiles] 的插件把数量上限按实例 tileType 分桶；桶键是类型键，缺类型落到默认类型。
+pub const DEFAULT_TILE_TYPE: &str = "default";
+
+/// 读取实例 state 里保存的格子类型。state 不是对象或字段不是字符串时返回空串。
+pub fn component_tile_type(state: &serde_json::Value) -> &str { state.get("tileType").and_then(serde_json::Value::as_str).unwrap_or("") }
+
+/// 返回该插件用于数量计数的桶键。没有声明类型时整份清单共用一个桶，旧插件与旧工作区行为不变。
+pub fn tile_type_bucket<'a>(tile_types: &'a [ComponentTileType], state: &'a serde_json::Value) -> &'a str
+{
+    if tile_types.is_empty()
+    {
+        return "";
+    }
+    let tile_type = component_tile_type(state);
+    if tile_type.is_empty()
+    {
+        tile_types.first().map_or(DEFAULT_TILE_TYPE, |default| default.key.as_str()) // 旧实例按第一节（默认类型）计。
+    }
+    else
+    {
+        tile_type
+    }
+}
+
 /// 一个官方组件的版本化清单。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -137,6 +172,9 @@ pub struct ComponentManifest
     /// 桌面格子数量上限。0 表示不限。
     #[serde(default)]
     pub max_tiles: u32,
+    /// 插件声明的格子类型，按清单顺序排列，第一项为默认类型。空表示只有一个隐式类型。
+    #[serde(default)]
+    pub tile_types: Vec<ComponentTileType>,
     /// 插件仓库地址。空字符串表示未声明。只保留 http 或 https。
     #[serde(default)]
     pub repository: String,
@@ -162,6 +200,8 @@ pub struct ComponentCapabilityDeclaration
     pub removable: bool,
     /// 该组件允许的桌面格子数量上限。0 表示不限。
     pub max_tiles: u32,
+    /// 该组件声明并已通过校验的格子类型。空表示按组件身份整体计数。
+    pub tile_types: Vec<ComponentTileType>,
 }
 
 /// 工作区持久化的一个组件实例。

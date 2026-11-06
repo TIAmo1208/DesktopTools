@@ -2,7 +2,7 @@ use super::validate_creatable_plugin;
 use crate::contracts::ComponentManifest;
 
 /// 造一份只用于门禁判断的插件清单。
-fn manifest(id: &str, entry: &str, creatable: bool) -> ComponentManifest { ComponentManifest { theme_notification: None, theme_boot: None, id: id.to_string(), name: id.to_string(), version: String::new(), stylesheet_cache_key: String::new(), entry: entry.to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable, removable: false, persistence_version: 1, max_tiles: 0, repository: String::new(), description: String::new(), author: String::new() } }
+fn manifest(id: &str, entry: &str, creatable: bool) -> ComponentManifest { ComponentManifest { theme_notification: None, theme_boot: None, id: id.to_string(), name: id.to_string(), version: String::new(), stylesheet_cache_key: String::new(), entry: entry.to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable, removable: false, persistence_version: 1, max_tiles: 0, tile_types: Vec::new(), repository: String::new(), description: String::new(), author: String::new() } }
 
 /// 非插件标识、缺失清单和未声明可创建都不能进入创建事务。
 #[test]
@@ -14,6 +14,20 @@ fn create_plugin_component_rejects_ineligible_plugins()
     assert_eq!(validate_creatable_plugin(&manifests, "plugin.missing").unwrap_err(), "插件清单不存在");
     assert_eq!(validate_creatable_plugin(&manifests, "plugin.clock").unwrap_err(), "该插件不支持创建");
     assert!(validate_creatable_plugin(&[manifest("plugin.clock", "plugin:slot", true)], "plugin.clock").is_ok());
+}
+
+/// 选中默认目录时偏好为空串，其他目录保留绝对路径。
+/// 类型必须来自清单，未给时回落到第一节；没有声明类型的插件不写 state。
+#[test]
+fn resolve_tile_type_follows_the_manifest()
+{
+    let mut multi = manifest("plugin.multi", "plugin:slot", true);
+    multi.tile_types = vec![crate::contracts::ComponentTileType { key: "status".to_string(), name: "连通状态".to_string() }, crate::contracts::ComponentTileType { key: "messages".to_string(), name: "消息数".to_string() }];
+    assert_eq!(super::resolve_tile_type(&multi, Some("messages")).unwrap(), Some("messages".to_string()));
+    assert_eq!(super::resolve_tile_type(&multi, None).unwrap(), Some("status".to_string()), "未给类型时用第一节");
+    assert_eq!(super::resolve_tile_type(&multi, Some("")).unwrap(), Some("status".to_string()), "空串按默认类型处理");
+    assert!(super::resolve_tile_type(&multi, Some("tokens")).is_err(), "未声明的类型不创建");
+    assert_eq!(super::resolve_tile_type(&manifest("plugin.clock", "plugin:slot", true), None).unwrap(), None, "隐式单类型不写 state");
 }
 
 /// 选中默认目录时偏好为空串，其他目录保留绝对路径。

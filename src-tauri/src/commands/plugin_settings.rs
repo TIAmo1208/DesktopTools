@@ -2,6 +2,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app::settings::SettingsState;
 use crate::component_runtime::ComponentRuntimeState;
+use crate::contracts::ComponentManifest;
 
 /// 读取一个插件的设置；没有文件或内容损坏时返回空，不改写磁盘。清单缺失不猜键。
 #[tauri::command]
@@ -48,8 +49,8 @@ pub struct UninstallPluginResult
     pub removed: Vec<String>, // 本次删掉的清单、脚本或设置文件名。
 }
 
-/// 设置页创建插件格子前的清单门禁。不满足时不创建。
-pub(crate) fn validate_creatable_plugin(manifests: &[crate::contracts::ComponentManifest], plugin_id: &str) -> Result<(), String>
+/// 设置页创建插件格子前的清单门禁。不满足时不创建。通过时返回该清单。
+pub(crate) fn validate_creatable_plugin<'a>(manifests: &'a [crate::contracts::ComponentManifest], plugin_id: &str) -> Result<&'a crate::contracts::ComponentManifest, String>
 {
     if !plugin_id.starts_with("plugin.") || plugin_id.len() == "plugin.".len()
     {
@@ -67,23 +68,41 @@ pub(crate) fn validate_creatable_plugin(manifests: &[crate::contracts::Component
         crate::log_warn!("插件创建：清单不允许创建，插件={plugin_id}，入口={}，可创建={}", manifest.entry, manifest.creatable);
         return Err("该插件不支持创建".to_string());
     }
-    Ok(())
+    Ok(manifest)
 }
 
-/// 在主显示器上按默认格子尺寸创建一个插件实例。
+/// 在主显示器上按默认格子尺寸创建一个插件实例。给了类型就写进实例 state，未给时用清单的第一种类型。
 #[tauri::command]
-pub fn create_plugin_component(app: AppHandle, plugin_id: String) -> Result<(), String>
+pub fn create_plugin_component(app: AppHandle, plugin_id: String, tile_type: Option<String>) -> Result<(), String>
 {
     let manifests = app.state::<ComponentRuntimeState>().snapshot(&[]).map_err(|error| error.message)?.manifests; // 当前运行时已经注册的清单。
-    validate_creatable_plugin(&manifests, &plugin_id)?;
+    let manifest = validate_creatable_plugin(&manifests, &plugin_id)?;
+    let tile_type = resolve_tile_type(manifest, tile_type.as_deref())?; // 未声明的类型不创建。
+    let state = match tile_type.as_deref() { Some(tile_type) => serde_json::json!({ "tileType": tile_type }), None => serde_json::json!({}) }; // 隐式单类型不写 state。
     let workspace = app.state::<crate::workspace::WorkspaceState>(); // 统一布局事务。
-    super::enforce_tile_limit(&workspace, &plugin_id)?;
+    super::enforce_tile_limit(&workspace, &plugin_id, &state)?; // 按类型分别计数。
     let runtime = app.state::<std::sync::Arc<crate::host::DesktopHostRuntime>>(); // 用来取主显示器。
     let monitor_id = super::primary_monitor_id(&runtime)?; // 与收集箱创建入口同一台主显示器。
     let bounds = workspace.next_component_bounds(&monitor_id, super::DEFAULT_TILE_WIDTH, super::DEFAULT_TILE_HEIGHT).map_err(|error| error.message)?; // 现有避让算法算出的位置。
-    super::workspace::execute_apply_workspace_command(&app, &workspace, &app.state::<crate::shell::DesktopItemState>(), &runtime, monitor_id.clone(), crate::contracts::WorkspaceCommand::CreateComponent { component_id: plugin_id.clone(), bounds, state: serde_json::json!({}) }).map_err(|error| error.message)?;
-    crate::log_info!("插件：已创建格子，插件={plugin_id}，显示器={monitor_id}");
+    super::workspace::execute_apply_workspace_command(&app, &workspace, &app.state::<crate::shell::DesktopItemState>(), &runtime, monitor_id.clone(), crate::contracts::WorkspaceCommand::CreateComponent { component_id: plugin_id.clone(), bounds, state }).map_err(|error| error.message)?;
+    crate::log_info!("插件已创建格子，插件={plugin_id}，类型={}，显示器={monitor_id}", tile_type.as_deref().unwrap_or("default"));
     Ok(())
+}
+
+/// 校验类型并回落到清单默认类型。没有声明类型时返回 None，保持旧插件的空 state。
+fn resolve_tile_type(manifest: &ComponentManifest, requested: Option<&str>) -> Result<Option<String>, String>
+{
+    let requested = requested.filter(|tile_type| !tile_type.is_empty()); // 前端传 null 或空串都表示按默认类型创建。
+    if let Some(tile_type) = requested
+    {
+        if manifest.tile_types.iter().any(|declared| declared.key == tile_type)
+        {
+            return Ok(Some(tile_type.to_string()));
+        }
+        crate::log_warn!("插件创建：未声明该格子类型，插件={}，类型={tile_type}", manifest.id);
+        return Err(format!("该插件没有格子类型：{tile_type}"));
+    }
+    Ok(manifest.tile_types.first().map(|declared| declared.key.clone())) // 第一节是默认类型。
 }
 
 /// 先校验文件，再移除全部显示器上的实例，最后删文件。工作区失败时文件仍在。

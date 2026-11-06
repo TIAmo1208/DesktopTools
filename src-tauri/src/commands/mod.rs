@@ -93,11 +93,11 @@ pub fn create_tile_to_desktop(app: tauri::AppHandle, component_id: String) -> Re
 }
 
 /// 组件清单声明的桌面格子数量上限；0 或缺省表示不限，官方与插件清单共用同一约束。
-/// 与工作区创建命令共用同一实现，所有应用内创建入口都不会绕过。
-pub(crate) fn enforce_tile_limit(workspace: &WorkspaceState, component_id: &str) -> Result<(), String>
+/// 与工作区创建命令共用同一实现，所有应用内创建入口都不会绕过。state 决定落进哪个类型桶，官方入口传空对象。
+pub(crate) fn enforce_tile_limit(workspace: &WorkspaceState, component_id: &str, state: &serde_json::Value) -> Result<(), String>
 {
-    let count = workspace.snapshot().map_err(|error| error.message)?.components.iter().filter(|component| component.component_id == component_id).count(); // 所有显示器上的该组件格子。
-    workspace.enforce_component_tile_limit(component_id, count).map_err(|error| error.message)
+    let layout = workspace.snapshot().map_err(|error| error.message)?; // 当前所有显示器上的格子。
+    workspace.enforce_component_tile_limit(component_id, &workspace.component_tile_types(component_id), state, &layout).map_err(|error| error.message)
 }
 
 /// 开启限量为 1 的功能格子：先把开关写成开启并广播，再在桌面没有该格子时补建一个。
@@ -110,7 +110,7 @@ pub fn enable_feature(app: tauri::AppHandle, component_id: String) -> Result<(),
     let workspace = app.state::<WorkspaceState>();
     if !workspace.has_component(&component_id)
     {
-        enforce_tile_limit(&workspace, &component_id)?;
+        enforce_tile_limit(&workspace, &component_id, &serde_json::json!({}))?;
     }
     enable_feature_preferences(&app, &component_id)?;
     if workspace.has_component(&component_id)
