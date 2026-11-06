@@ -3,6 +3,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use windows::Media::Control::{GlobalSystemMediaTransportControlsSession as Session, GlobalSystemMediaTransportControlsSessionManager as SessionManager, GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus};
+#[path = "music_details.rs"]
+pub mod details;
+
 pub const MUSIC_SESSION_CHANGED_EVENT: &str = "music-session-changed";
 
 static MEDIA_CACHE: Mutex<Option<serde_json::Value>> = Mutex::new(None); // 事件线程发布的唯一权威媒体快照。
@@ -264,6 +267,10 @@ pub fn start_monitor(app: tauri::AppHandle)
             }
             .unwrap_or_else(|error| serde_json::json!({ "media": null, "error": error })); // 故障参与事件发布。
             let failed = current.get("error").is_some();
+            if current["media"].is_null()
+            {
+                details::update(None);
+            }
             let mut cache = MEDIA_CACHE.lock().unwrap_or_else(|error| error.into_inner()); // 更新缓存后再广播。
             if cache.as_ref() != Some(&current)
             {
@@ -281,6 +288,7 @@ pub fn start_monitor(app: tauri::AppHandle)
             {
                 drop(cache);
             }
+            details::publish(&app); // 完整媒体先发布，第二事实不参与收敛比较。
             convergence = match wake
             {
                 MonitorWake::Signal(signal) if signal.starts_convergence() || convergence.is_some() => Some(Convergence::new(current)),
@@ -396,6 +404,22 @@ pub fn read_current_session(force_properties: bool) -> windows::core::Result<Opt
     {
         return Err(windows::core::Error::new(windows::core::HRESULT(0x80004004u32 as i32), "播放来源已变化，正在重新同步媒体"));
     }
+    // 时间轴读取失败只清空第二类事实，不改变播放控制能力。
+    let timeline = (|| -> windows::core::Result<details::Timeline> {
+        let timeline = session.GetTimelineProperties()?;
+        let position = timeline.Position()?.Duration;
+        let end = timeline.EndTime()?.Duration;
+        let updated = timeline.LastUpdatedTime()?.UniversalTime;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let updated_ms = updated / 10_000 - 11_644_473_600_000i64; // WinRT 的 1601 纪元转换为 Unix 毫秒。
+        let age = now_ms.saturating_sub(updated_ms);
+        let advancing = status == PlaybackStatus::Playing && updated > 0 && age >= 0 && end > 0;
+        let duration_ms = (end as f64 / 10_000.0).max(0.0);
+        let position_ms = (position as f64 / 10_000.0 + if advancing { age as f64 } else { 0.0 }).clamp(0.0, duration_ms);
+        Ok(details::Timeline { session_id: session_id.clone(), title: title.clone(), artist: artist.clone(), position_ticks: position.to_string(), end_time_ticks: end.to_string(), last_updated_time_ticks: updated.to_string(), playback_status: status.0, position_ms, duration_ms, advancing })
+    })()
+    .ok();
+    details::update(timeline);
     Ok(Some(MusicSnapshot {
         session_id,
         source: session.SourceAppUserModelId()?.to_string(),

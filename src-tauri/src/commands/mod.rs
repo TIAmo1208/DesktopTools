@@ -347,6 +347,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             serialize_result(())
         }
         "get_audio_spectrum_status" => serialize_result(audio::get_audio_spectrum_status()),
+        "get_music_details" => Ok(music::get_music_details()),
         "get_current_music_session" => music::get_current_music_session().map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))),
         "request_music_convergence" =>
         {
