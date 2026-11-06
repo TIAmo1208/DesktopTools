@@ -27,6 +27,15 @@ Desktop Tools 支持通过本地插件扩展桌面格子与设置页选项。插
    - 支持通过「选择文件夹」直接安装包含 `manifest.ini` 的插件开发目录。
    - 支持通过「安装压缩包」安装 `.zip` 格式的插件包（清单位于压缩包根目录或仅下一层子目录内）。
 
+## AstrBot 侧插件（随包附带，手动安装）
+
+`AstrBot 状态/astrbot_plugin_desktop_status/` 是给 **AstrBot（Star 插件）** 用的包，不是 Desktop Tools 的格子插件：
+
+- 该目录没有 `manifest.ini`；宿主只扫描插件根下一层含 `manifest.ini` 的文件夹，因此它不会被注册成 Desktop Tools 插件。
+- 用户手动把整个 `astrbot_plugin_desktop_status` 文件夹复制到 AstrBot 数据目录下的 `data/plugins/`，重启 AstrBot 即可加载。安装步骤、配置项（`push_url` 默认 `127.0.0.1:8765`、`listen_port` 默认 `8766`、共享 `token`）、对外接口与安全边界见该目录内的 `README.md`。
+- 插件在 AstrBot 进程内采集服务、平台、资源、消息、日志与 Token 用量，按快照契约 v1（同目录 `snapshot.schema.json`）推送；拿不到的项一律给 `null`。
+- Desktop Tools 侧读取这份数据的宿主能力尚未发布，接线状态以 `docs/adr/0036-AstrBot状态采集链路.md` 为准。
+
 ## 预设示例索引与开发方向
 
 仓库根目录下的 `plugin/` 目录提供主题插件、功能插件和开发示例。安装包通过 `src-tauri/tauri.installer.conf.json` 显式映射分发 `主题-青笺/`、`主题-宋律/`、`主题-夜之城/`、`AstrBot 状态/`、`docs/` 与 `README.md`；`示例/` 下的三个格子/设置示例仅保留在仓库，不进入安装包。运行时只扫描插件根下一层含 `manifest.ini` 的文件夹，不递归扫描 `示例/`，文档目录不注册为插件。

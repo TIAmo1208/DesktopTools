@@ -9,6 +9,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 build/
+__pycache__/
 /.scratch/**/logs/
 .scratch/
 release/
