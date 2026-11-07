@@ -23,6 +23,8 @@ pub enum ComponentCapability
     ReadCurrentMedia,
     /// 探活宿主固定的本机服务地址（当前只有 AstrBot）。
     ProbeServiceStatus,
+    /// 注册本机 loopback 通道，只收发原始 HTTP。
+    LoopbackChannel,
 }
 
 /// 插件呈现角色，未声明时保持格子行为。
@@ -89,6 +91,58 @@ pub struct ThemeFont
     pub style: String,
 }
 
+/// 类型级尺寸，单位 DIP；只用于创建默认值与实例有效下限。
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TileSize
+{
+    /// 宽度。
+    pub width: u32,
+    /// 高度。
+    pub height: u32,
+}
+
+/// 插件清单声明的一种格子类型，键写进实例 state 的 tileType。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentTileType
+{
+    /// 作者代码里的稳定标识，也是 state 里保存的值。
+    pub key: String,
+    /// 创建菜单里显示的名称。
+    pub name: String,
+    /// 该类型创建时的默认外框；未声明时沿用公共默认尺寸。
+    #[serde(default)]
+    pub default_size: Option<TileSize>,
+    /// 该类型实例的有效下限；未声明时沿用公共最小尺寸。
+    #[serde(default)]
+    pub minimum_size: Option<TileSize>,
+}
+
+/// 声明了 [tiles] 的插件把数量上限按实例 tileType 分桶；桶键是类型键，缺类型落到默认类型。
+pub const DEFAULT_TILE_TYPE: &str = "default";
+
+/// 读取实例 state 里保存的格子类型。state 不是对象或字段不是字符串时返回空串。
+pub fn component_tile_type(state: &serde_json::Value) -> &str { state.get("tileType").and_then(serde_json::Value::as_str).unwrap_or("") }
+
+/// 返回该插件用于数量计数的桶键。没有声明类型时整份清单共用一个桶，旧插件与旧工作区行为不变。
+pub fn tile_type_bucket<'a>(tile_types: &'a [ComponentTileType], state: &'a serde_json::Value) -> &'a str
+{
+    if tile_types.is_empty()
+    {
+        return "";
+    }
+    let tile_type = component_tile_type(state);
+    if tile_type.is_empty()
+    {
+        tile_types.first().map_or(DEFAULT_TILE_TYPE, |default| default.key.as_str()) // 旧实例按第一节（默认类型）计。
+    }
+    else
+    {
+        tile_type
+    }
+}
+
 /// 一个官方组件的版本化清单。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,6 +195,9 @@ pub struct ComponentManifest
     /// 桌面格子数量上限。0 表示不限。
     #[serde(default)]
     pub max_tiles: u32,
+    /// 插件声明的格子类型，按清单顺序排列，第一项为默认类型。空表示只有一个隐式类型。
+    #[serde(default)]
+    pub tile_types: Vec<ComponentTileType>,
     /// 插件仓库地址。空字符串表示未声明。只保留 http 或 https。
     #[serde(default)]
     pub repository: String,
@@ -166,6 +223,8 @@ pub struct ComponentCapabilityDeclaration
     pub removable: bool,
     /// 该组件允许的桌面格子数量上限。0 表示不限。
     pub max_tiles: u32,
+    /// 该组件声明并已通过校验的格子类型。空表示按组件身份整体计数。
+    pub tile_types: Vec<ComponentTileType>,
 }
 
 /// 工作区持久化的一个组件实例。
@@ -250,6 +309,102 @@ pub struct ComponentRuntimeSnapshot
     pub failures: Vec<ComponentRegistrationFailure>,
 }
 
+/// 一条 loopback 通道的方向。
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LoopbackChannelMode
+{
+    /// 宿主在 127.0.0.1:<port> 监听，接住对端推送。
+    Listen,
+    /// 宿主向 http://127.0.0.1:<port> 发请求。
+    Request,
+}
+
+/// `register_loopback_channel` 的入参；端点字段按 mode 二选一。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterLoopbackChannel
+{
+    /// 注册通道的插件实例。
+    pub instance_id: String,
+    /// 插件声明的通道标识，实例内唯一。
+    pub channel_id: String,
+    /// 通道方向。
+    pub mode: LoopbackChannelMode,
+    /// listen 通道的端口，1–65535。
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// request 通道的基址，只接受本机 http 地址。
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Windows Credential Manager 记录名；未声明时不做注入与校验。
+    #[serde(default)]
+    pub credential_ref: Option<String>,
+    /// 注入与校验凭据使用的头名，由插件声明。
+    #[serde(default)]
+    pub header_name: Option<String>,
+}
+
+/// 注册成功后返回的通道句柄，不进入工作区快照也不落盘。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopbackChannelHandle
+{
+    /// 插件声明的通道标识。
+    pub channel_id: String,
+    /// 通道方向。
+    pub mode: LoopbackChannelMode,
+    /// listen 通道实际绑定的端口；request 通道为空。
+    pub port: Option<u16>,
+    /// request 通道的目标基址；listen 通道为空。
+    pub base_url: Option<String>,
+    /// 注册时刻的 Unix 秒。
+    pub registered_at: i64,
+}
+
+/// 原始 HTTP 头；保留重复项与顺序，宿主不做合并。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopbackHeader
+{
+    /// 头名，按请求原样保留。
+    pub name: String,
+    /// 头值，按请求原样保留。
+    pub value: String,
+}
+
+/// 入站缓冲里的一条原始请求；宿主不解析 body。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopbackRequest
+{
+    /// 宿主递增的缓冲序号，从 1 起。
+    pub sequence: u64,
+    /// 宿主接住请求的 Unix 秒。
+    pub received_at: i64,
+    /// 请求方法。
+    pub method: String,
+    /// 请求路径，含查询串。
+    pub path: String,
+    /// 原始请求头。
+    pub headers: Vec<LoopbackHeader>,
+    /// 原始请求体，按 UTF-8 有损解码。
+    pub body: String,
+}
+
+/// `request_loopback` 返回的原始响应。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopbackResponse
+{
+    /// 对端状态码；非 2xx 也照常返回。
+    pub status: u16,
+    /// 原始响应头。
+    pub headers: Vec<LoopbackHeader>,
+    /// 原始响应体，按 UTF-8 有损解码。
+    pub body: String,
+}
+
 /// 宿主定时发布给已授权组件的事件。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -301,6 +456,30 @@ impl ComponentRuntimeError
 
     /// 创建组件运行时状态锁错误。
     pub fn state_unavailable() -> Self { Self { code: "component-runtime-state-unavailable".to_string(), message: "组件运行时状态暂时不可用".to_string() } }
+
+    /// loopback 通道端口已被占用或绑定失败；宿主不抢占、不改用其它端口。
+    pub fn loopback_port_in_use(port: u16) -> Self { Self { code: "loopback-port-in-use".to_string(), message: format!("本机端口 {port} 已被占用，通道注册失败") } }
+
+    /// loopback 通道地址或端口不符合硬限制。
+    pub fn loopback_address_invalid(message: impl Into<String>) -> Self { Self { code: "loopback-address-invalid".to_string(), message: message.into() } }
+
+    /// 实例已达到通道数量上限。
+    pub fn loopback_channel_limit(limit: usize) -> Self { Self { code: "loopback-channel-limit".to_string(), message: format!("每个实例最多注册 {limit} 条 loopback 通道") } }
+
+    /// 凭据声明无效或凭据存储里没有对应记录。
+    pub fn loopback_credential_unavailable(message: impl Into<String>) -> Self { Self { code: "loopback-credential-unavailable".to_string(), message: message.into() } }
+
+    /// 指定实例下没有这条通道，或通道已被替换与释放。
+    pub fn loopback_channel_not_found() -> Self { Self { code: "loopback-channel-not-found".to_string(), message: "loopback 通道不存在或已释放".to_string() } }
+
+    /// 出站请求在传输层失败，未拿到对端响应。
+    pub fn loopback_request_failed(message: impl Into<String>) -> Self { Self { code: "loopback-request-failed".to_string(), message: message.into() } }
+
+    /// 凭据目标或密钥内容不符合受控规则；错误信息不包含密钥明文。
+    pub fn loopback_credential_invalid(message: impl Into<String>) -> Self { Self { code: "loopback-credential-invalid".to_string(), message: message.into() } }
+
+    /// 写入或清除 Windows 凭据存储失败；错误信息不包含密钥明文。
+    pub fn loopback_credential_store_failed(message: impl Into<String>) -> Self { Self { code: "loopback-credential-store-failed".to_string(), message: message.into() } }
 }
 
 /// 将组件运行时错误写入标准错误传播链。

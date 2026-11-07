@@ -5,7 +5,7 @@ import { executeMusicAction } from "../../bridge/music";
 import { listenSpectrum } from "../../bridge/audio";
 import { getPreferences } from "../../bridge/settings";
 import type { IslandRect, IslandSnapshot, IslandStateRequest } from "../../contracts/island";
-import { PluginSlot } from "../components/PluginSlot";
+import { PluginSlot, pluginTileType } from "../components/PluginSlot";
 import { useMusicState, positionAt, lyricIndex } from "../music/musicSource";
 import { usePreferences } from "../settings/PreferencesProvider";
 import { islandGeometry, moveIslandCard, visibleIslandRect } from "./islandGeometry";
@@ -654,7 +654,7 @@ export const IslandPage = () => {
                                     <p role="status">组件加载失败</p>
                                 ) : registration?.entry === "plugin:slot" ? (
                                     <div data-island-plugin="true" inert={mode === "collapsed" ? true : undefined}>
-                                        <PluginSlot manifest={manifest} instanceId={instance.instanceId} collapsed={mode === "collapsed"} />
+                                        <PluginSlot manifest={manifest} instanceId={instance.instanceId} tileType={pluginTileType(instance.state)} collapsed={mode === "collapsed"} />
                                     </div>
                                 ) : (
                                     <p role="status">{manifest.name} · 组件入口不可用</p>

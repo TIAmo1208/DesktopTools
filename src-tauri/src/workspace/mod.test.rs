@@ -123,7 +123,7 @@ fn workspace_state(path: std::path::PathBuf) -> WorkspaceState { WorkspaceState:
 fn registered_capability_declarations() -> Vec<ComponentCapabilityDeclaration> { crate::component_runtime::ComponentRuntimeState::new(&snapshot_path("no-plugins")).capability_declarations().to_vec() }
 
 /// 构造一份「不可创建且不可移除」的合成声明；夹具不依赖真实清单字段取值。
-fn undeclared_capability(component_id: &str) -> ComponentCapabilityDeclaration { ComponentCapabilityDeclaration { component_id: component_id.to_string(), creatable: false, removable: false, max_tiles: 0 } }
+fn undeclared_capability(component_id: &str) -> ComponentCapabilityDeclaration { ComponentCapabilityDeclaration { component_id: component_id.to_string(), creatable: false, removable: false, max_tiles: 0, tile_types: Vec::new() } }
 
 /// 在真实注册表声明上覆盖指定组件身份，其余组件保持当前清单取值。
 fn declarations_with_override(overrides: &[ComponentCapabilityDeclaration]) -> Vec<ComponentCapabilityDeclaration>
@@ -402,6 +402,37 @@ fn remove_collect_box_preserves_other_tiles_and_restores_layout()
     std::fs::remove_file(path).unwrap();
 }
 
+/// 声明了格子类型的插件按类型分别计数：每类各自到上限，旧实例落到默认类型桶。
+#[test]
+fn tile_limit_counts_each_tile_type_separately()
+{
+    let path = snapshot_path("tile-limit-per-type"); // 独立测试工作区。
+    let bounds = WorkspaceRect { left: 24.0, top: 24.0, width: 360.0, height: 280.0 }; // 新格子提交边界。
+    let tile_types = vec![
+        crate::contracts::ComponentTileType { key: "clock".to_string(), name: "时钟".to_string(), default_size: None, minimum_size: None }, // 第一节即默认类型。
+        crate::contracts::ComponentTileType { key: "date".to_string(), name: "日期".to_string(), default_size: None, minimum_size: None },
+    ];
+    let declarations = [ComponentCapabilityDeclaration { component_id: "plugin.multi".into(), creatable: true, removable: true, max_tiles: 1, tile_types: tile_types.clone() }]; // 每类各限 1 个。
+    let state = WorkspaceState::load_with_components(path.clone(), &[], &declarations).unwrap();
+    state.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0)], &[], &[], &[]).unwrap();
+    let create = |tile_type: Option<&str>| {
+        let mut value = serde_json::json!({}); // 旧实例没有类型字段。
+        if let Some(tile_type) = tile_type
+        {
+            value = serde_json::json!({ "tileType": tile_type });
+        }
+        state.apply_on_monitor(Some("DISPLAY1"), WorkspaceCommand::CreateComponent { component_id: "plugin.multi".into(), bounds, state: value })
+    };
+
+    create(Some("clock")).unwrap(); // 时钟到上限。
+    assert_eq!(create(Some("clock")).unwrap_err().message, "已达到该插件的格子上限（1 个）");
+    create(Some("date")).unwrap(); // 另一类不受影响。
+    assert_eq!(create(Some("date")).unwrap_err().message, "已达到该插件的格子上限（1 个）");
+    assert_eq!(create(None).unwrap_err().message, "已达到该插件的格子上限（1 个）", "缺失类型落到默认类型桶");
+    drop(state);
+    std::fs::remove_file(path).unwrap();
+}
+
 /// 只有清单声明可创建的组件能创建，未声明的组件按中文原因失败且不改变布局。
 #[test]
 fn create_component_requires_a_declared_creation_capability()
@@ -530,14 +561,14 @@ fn missing_manifest_component_can_be_removed_without_opening_creation()
 fn refreshed_declaration_allows_creation_without_touching_layout()
 {
     let path = snapshot_path("refresh-plugin-creatable"); // 独立测试工作区。
-    let blocked = ComponentCapabilityDeclaration { component_id: "plugin.clock".to_string(), creatable: false, removable: true, max_tiles: 0 }; // 启动时看到的旧声明。
+    let blocked = ComponentCapabilityDeclaration { component_id: "plugin.clock".to_string(), creatable: false, removable: true, max_tiles: 0, tile_types: Vec::new() }; // 启动时看到的旧声明。
     let state = WorkspaceState::load_with_components(path.clone(), &[], &[blocked]).unwrap();
     state.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0)], &[], &[], &[]).unwrap();
     let bounds = WorkspaceRect { left: 400.0, top: 24.0, width: 220.0, height: 116.0 }; // 不和已有格子重叠。
     let create = WorkspaceCommand::CreateComponent { component_id: "plugin.clock".to_string(), bounds, state: serde_json::json!({}) };
     assert_eq!(state.apply_on_monitor(Some("DISPLAY1"), create.clone()).expect_err("旧声明仍不可创建").message, "不支持创建该组件");
     let before = state.snapshot().unwrap(); // 刷新前的布局。
-    state.refresh_capability_declarations(&[ComponentCapabilityDeclaration { component_id: "plugin.clock".to_string(), creatable: true, removable: true, max_tiles: 0 }]);
+    state.refresh_capability_declarations(&[ComponentCapabilityDeclaration { component_id: "plugin.clock".to_string(), creatable: true, removable: true, max_tiles: 0, tile_types: Vec::new() }]);
     assert_eq!(state.snapshot().unwrap().components, before.components);
     let created = state.apply_on_monitor(Some("DISPLAY1"), create.clone()).unwrap();
     assert_eq!(created.components.len(), 1);
@@ -1226,7 +1257,7 @@ fn uninstall_removes_plugin_instances_without_layout_history()
     let clock = component_instance("official.local-clock.default", "official.local-clock"); // 卸载后必须留下的其他格子。
     let primary = ComponentInstanceSnapshot { monitor_id: "DISPLAY1".into(), ..component_instance("plugin.clock.1", "plugin.clock") }; // 主屏上的插件格子。
     let secondary = ComponentInstanceSnapshot { monitor_id: "DISPLAY2".into(), ..component_instance("plugin.clock.2", "plugin.clock") }; // 另一屏上的同一插件。
-    let declarations = [ComponentCapabilityDeclaration { component_id: "plugin.clock".into(), creatable: false, removable: false, max_tiles: 0 }]; // 用户移除会被拒绝。
+    let declarations = [ComponentCapabilityDeclaration { component_id: "plugin.clock".into(), creatable: false, removable: false, max_tiles: 0, tile_types: Vec::new() }]; // 用户移除会被拒绝。
     let state = WorkspaceState::load_with_components(path.clone(), &[clock.clone(), primary.clone(), secondary.clone()], &declarations).unwrap();
     state.reconcile_host_monitors(&[monitor("DISPLAY1", true, 0, 1.0), monitor("DISPLAY2", false, 1920, 1.0)], &[], &[], &[]).unwrap();
     state.apply(WorkspaceCommand::SetTileAppearance { target: WorkspaceFocusTarget::Component { component_id: primary.instance_id.clone() }, change: crate::contracts::TileAppearanceChange::Title("时钟".into()) }).unwrap();

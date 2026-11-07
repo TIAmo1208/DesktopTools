@@ -1,4 +1,5 @@
 pub mod audio;
+pub(crate) mod credentials;
 mod desktop_host;
 pub(crate) mod directory_watch;
 pub(crate) mod refresh_policy;

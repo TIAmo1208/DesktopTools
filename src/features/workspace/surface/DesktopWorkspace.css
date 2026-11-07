@@ -5,6 +5,10 @@
     --fence-border: rgb(210 224 227 / 38%);
     --fence-surface: rgb(32 38 40 / 58%);
     --fence-text: #e8eff0;
+    --fence-active: #45c98c;
+    --fence-warning: #e8a33f;
+    --fence-error: #f08a80;
+    --fence-muted: #a8b4b6;
     --fence-focus-border: var(--color-accent);
     font-family: var(--interface-font);
     font-size: var(--interface-font-size);
@@ -56,6 +60,10 @@
     --fence-border: rgb(55 66 69 / 22%);
     --fence-surface: rgb(185 185 185 / 58%);
     --fence-text: #202526;
+    --fence-active: #0b7a52;
+    --fence-warning: #b4770f;
+    --fence-error: #a32118;
+    --fence-muted: #5c6668;
     --fence-item-text-shadow: none;
     --fence-focus-border: var(--color-focus);
 }
@@ -66,4 +74,8 @@
     --fence-border: rgb(210 224 227 / 38%);
     --fence-surface: rgb(32 38 40 / 58%);
     --fence-text: #e8eff0;
+    --fence-active: #45c98c;
+    --fence-warning: #e8a33f;
+    --fence-error: #f08a80;
+    --fence-muted: #a8b4b6;
 }

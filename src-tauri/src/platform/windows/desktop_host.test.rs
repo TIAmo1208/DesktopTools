@@ -1,4 +1,4 @@
-use super::{SHELL_HIDE_ICONS_BIT, is_pixel_probe_region, match_desktop_item_monitor_assignments, shell_flag_state_icons_visible};
+use super::{SHELL_HIDE_ICONS_BIT, component_host_event_needs_time_consumers, host_event_kind, is_pixel_probe_region, match_desktop_item_monitor_assignments, shell_flag_state_icons_visible};
 use crate::contracts::{DesktopHostMonitor, DesktopItem, DesktopItemAvailability, HitRegion};
 use std::collections::HashMap;
 use windows::Win32::Foundation::POINT;
@@ -29,4 +29,16 @@ fn explorer_positions_assign_items_to_monitors()
     let positions = HashMap::from([(r"c:\users\user\desktop\project".to_string(), POINT { x: -400, y: 120 })]); // Explorer 返回的绝对解析名称和物理坐标。
 
     assert_eq!(match_desktop_item_monitor_assignments(&items, &monitors, &positions), [(items[0].stable_reference.clone(), "DISPLAY2".to_string(), crate::contracts::WorkspacePoint { left: 704.0, top: 96.0 })]);
+}
+
+/// 验证 loopback 数据通知不依赖时间消费者，时间滴答仍按时间消费者过滤。
+#[test]
+fn loopback_host_events_do_not_require_time_consumers()
+{
+    let loopback = r#"{"sequence":3,"kind":"loopback-data:astrbot-push","unixMillis":1700000000000}"#;
+    let tick = r#"{"sequence":4,"kind":"time-tick","unixMillis":1700000000000}"#;
+    assert_eq!(host_event_kind(loopback).as_deref(), Some("loopback-data:astrbot-push"));
+    assert!(!component_host_event_needs_time_consumers(loopback));
+    assert!(component_host_event_needs_time_consumers(tick));
+    assert!(component_host_event_needs_time_consumers("{"));
 }

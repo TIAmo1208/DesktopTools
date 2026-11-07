@@ -1,62 +1,446 @@
-/* AstrBot 状态 专用样式，选择器全部挂在插件前缀下；颜色优先取全局主题变量 */
+/* AstrBot 状态 专用样式；只负责内容区，外壳由公共格子组件提供。选择器全部挂在插件前缀下 */
 
-.astrbot-status {
+.astrbot-tile {
+    position: relative;
     box-sizing: border-box;
     width: 100%;
     height: 100%;
-    padding: 12px;
-    display: flex;
-    align-items: center;
-    font-size: 13px;
-    font-family: var(--interface-font);
-    color: var(--color-text);
-    user-select: none;
+    padding: 2px 2px 0;
     overflow: hidden;
+    color: var(--fence-text);
+    font-family: var(--interface-font);
+    font-size: var(--interface-font-size);
+    line-height: 1.35;
+    user-select: none;
 }
 
-/* 状态行：8px 状态点配 13px 文字，超宽省略不换行，状态变化不引起布局跳动 */
-.astrbot-status .astrbot-status__status {
+.astrbot-tile__body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    height: 100%;
+    min-height: 0;
+}
+
+/* 显隐切换不参与布局；持久骨架只换 hidden，不重建整格 */
+.astrbot-tile [hidden] {
+    display: none !important;
+}
+
+/* 内容与三态区块共用一套纵向布局，刷新时保持节点稳定 */
+.astrbot-tile__normal,
+.astrbot-tile__content,
+.astrbot-tile__mode {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.astrbot-tile__normal,
+.astrbot-tile__content {
+    flex: 1 1 auto;
+}
+
+.astrbot-tile__notice {
+    flex: none;
+}
+
+/* 状态与就绪时长单档内容居中；其余类型从顶部排布 */
+.astrbot-tile[data-tile-type="status"] .astrbot-tile__content,
+.astrbot-tile[data-tile-type="uptime"] .astrbot-tile__content {
+    justify-content: center;
+}
+
+/* 通用空态：保留外框尺寸，只替换内容，避免布局跳动 */
+.astrbot-tile__empty {
+    margin: 0;
+    color: var(--fence-muted);
+}
+
+.astrbot-tile__reason {
+    margin: 0;
+    color: var(--fence-muted);
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 未配对：只给结论与去设置页的指引，不显示旧值 */
+.astrbot-tile__pairing-title {
+    color: var(--fence-warning);
+    font-size: calc(var(--interface-font-size) + 1px);
+    font-weight: 600;
+}
+
+/* token 无效：错误色与未配对区分 */
+.astrbot-tile__pairing-title--invalid {
+    color: var(--fence-error);
+}
+
+.astrbot-tile__pairing-hint {
+    margin: 6px 0 0;
+    color: var(--fence-muted);
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+    overflow-wrap: anywhere;
+}
+
+/* 状态点四档：在线绿、探测被拒黄、离线与未知灰 */
+.astrbot-tile__dot {
+    flex: none;
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--fence-muted);
+    transition: background-color var(--interface-transition-duration, 0ms) ease-out;
+}
+
+.astrbot-tile__dot--ok,
+.astrbot-tile__dot--running {
+    background: var(--fence-active);
+}
+
+.astrbot-tile__dot--warn {
+    background: var(--fence-warning);
+}
+
+.astrbot-tile__dot--off,
+.astrbot-tile__dot--unknown,
+.astrbot-tile__dot--stopped {
+    background: var(--fence-muted);
+}
+
+.astrbot-tile__dot--error {
+    background: var(--fence-error);
+}
+
+/* 状态类型：结论行与就绪时长分两行；最小档只留结论 */
+.astrbot-tile__level {
     display: flex;
     align-items: center;
     gap: 8px;
     min-width: 0;
 }
 
-.astrbot-status .astrbot-status__text {
+.astrbot-tile__verdict {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-/* 过期标记：主题变量没有警告色，黄点与文字沿用收集箱悬停的取值 */
-.astrbot-status .astrbot-status__stale {
-    flex: none;
-    padding: 0 6px;
-    border-radius: 4px;
-    font-size: 12px;
-    color: #d97706;
+.astrbot-tile__level--ok .astrbot-tile__verdict {
+    color: var(--fence-active);
 }
 
-/* 状态点四档：在线绿、探测被拒黄、离线与未知灰、过期一律灰 */
-.astrbot-status .astrbot-status__dot {
+.astrbot-tile__level--warn .astrbot-tile__verdict {
+    color: var(--fence-warning);
+}
+
+.astrbot-tile__level--off .astrbot-tile__verdict,
+.astrbot-tile__level--unknown .astrbot-tile__verdict {
+    color: var(--fence-muted);
+}
+
+.astrbot-tile[data-tile-type="status"] .astrbot-tile__body {
+    justify-content: center;
+    gap: 8px;
+}
+
+/* 状态格单档：结论后就绪时长同行，超宽按省略号截断 */
+.astrbot-tile__level-suffix {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--fence-muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 就绪时长：单档，一行大号时长 */
+.astrbot-tile[data-tile-type="uptime"] .astrbot-tile__body {
+    justify-content: center;
+}
+
+.astrbot-tile__uptime {
+    font-size: 26px;
+    font-weight: 400;
+    line-height: 1.1;
+    letter-spacing: 0.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 平台连接：汇总行 + 逐行状态，单套布局 */
+.astrbot-tile__summary {
     flex: none;
-    width: 8px;
-    height: 8px;
+    color: var(--fence-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.astrbot-tile__platforms {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.astrbot-tile__platform {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 18px;
+}
+
+.astrbot-tile__platform .astrbot-tile__dot {
+    width: 6px;
+    height: 6px;
+}
+
+.astrbot-tile__platform-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.astrbot-tile__platform-uptime {
+    flex: none;
+    color: var(--fence-muted);
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+}
+
+.astrbot-tile__platform-error {
+    flex: none;
+    color: var(--fence-error);
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+}
+
+/* 资源占用：标签、相对横条、右对齐数值 */
+.astrbot-tile__resource {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.astrbot-tile__resource-label {
+    color: var(--fence-muted);
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+}
+
+.astrbot-tile__resource-value {
+    justify-self: end;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.astrbot-tile__bar {
+    height: 3px;
+    overflow: hidden;
+    background: var(--fence-border);
+}
+
+.astrbot-tile__bar-fill {
+    display: block;
+    height: 100%;
+    background: var(--fence-muted);
+    transition: width var(--interface-transition-duration, 0ms) ease-out;
+}
+
+.astrbot-tile__threads {
+    color: var(--fence-muted);
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+}
+
+/* 消息量：今日合计 + 24 点柱状，柱高只表达相对高低 */
+.astrbot-tile__total {
+    flex: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.astrbot-tile__chart {
+    display: grid;
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    align-items: end;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-height: 32px;
+    padding-top: 4px;
+}
+
+.astrbot-tile__bar-column {
+    display: flex;
+    align-items: flex-end;
+    height: 100%;
+    min-width: 0;
+}
+
+.astrbot-tile__bar-column .astrbot-tile__bar-fill {
+    width: 100%;
+    transition: height var(--interface-transition-duration, 0ms) ease-out;
+}
+
+.astrbot-tile__chart-labels {
+    display: flex;
+    justify-content: space-between;
+    flex: none;
+    color: var(--fence-muted);
+    font-size: max(10px, calc(var(--interface-font-size) - 3px));
+}
+
+/* 运行日志：左侧时间列、固定竖轴与节点正文 */
+.astrbot-tile__timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.astrbot-tile__node {
+    display: grid;
+    grid-template-columns: 34px 9px minmax(0, 1fr);
+    align-items: start;
+    gap: 6px;
+    min-width: 0;
+}
+
+.astrbot-tile__node-time {
+    color: var(--fence-muted);
+    font-size: max(10px, calc(var(--interface-font-size) - 3px));
+    font-variant-numeric: tabular-nums;
+    line-height: 1.6;
+    white-space: nowrap;
+}
+
+/* 竖轴：每行都画到底，节点之间保持连续，不随高度改列宽 */
+.astrbot-tile__node-axis {
+    position: relative;
+    align-self: stretch;
+    min-height: 28px;
+}
+
+.astrbot-tile__node-axis::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: -6px;
+    left: 50%;
+    width: 1px;
+    background: var(--fence-border);
+    transform: translateX(-50%);
+}
+
+.astrbot-tile__node:last-child .astrbot-tile__node-axis::before {
+    bottom: 0;
+}
+
+.astrbot-tile__node-dot {
+    position: absolute;
+    top: 5px;
+    left: 50%;
+    width: 5px;
+    height: 5px;
     border-radius: 50%;
-    background: var(--color-muted);
-    transition: background-color var(--interface-transition-duration) ease-out;
+    background: var(--fence-muted);
+    transform: translateX(-50%);
 }
 
-.astrbot-status .astrbot-status__dot.astrbot-status__level--ok {
-    background: var(--color-active);
+.astrbot-tile__node-dot--error {
+    background: var(--fence-error);
 }
 
-.astrbot-status .astrbot-status__dot.astrbot-status__level--warn {
-    background: #d97706;
+.astrbot-tile__node-dot--warning {
+    background: var(--fence-warning);
 }
 
-.astrbot-status .astrbot-status__dot.astrbot-status__level--off,
-.astrbot-status .astrbot-status__dot.astrbot-status__level--unknown {
-    background: var(--color-muted);
+.astrbot-tile__node-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.astrbot-tile__node-level {
+    font-size: max(9px, calc(var(--interface-font-size) - 4px));
+    letter-spacing: 0.4px;
+    line-height: 1.2;
+}
+
+.astrbot-tile__node-level--error {
+    color: var(--fence-error);
+}
+
+.astrbot-tile__node-level--warning {
+    color: var(--fence-warning);
+}
+
+.astrbot-tile__node-text {
+    overflow: hidden;
+    color: var(--fence-text);
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.astrbot-tile__updated {
+    margin: auto 0 0;
+    color: var(--fence-muted);
+    font-size: max(10px, calc(var(--interface-font-size) - 3px));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 设置二级页：只读版本信息 */
+.astrbot-settings__rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.astrbot-settings__row {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 8px;
+    color: var(--color-text);
+    font-size: var(--interface-font-size);
+}
+
+.astrbot-settings__label {
+    color: var(--color-muted);
+}
+
+.astrbot-settings__value {
+    overflow: hidden;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 缺失原因跟在「—」后，用次要色说明为什么没有值 */
+.astrbot-settings__reason {
+    margin-left: 6px;
+    color: var(--color-muted);
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+}
+
+.astrbot-settings__hint {
+    margin: 6px 0 0;
+    color: var(--color-muted);
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
 }

@@ -345,6 +345,12 @@ pub(crate) fn native_bridge_script(origin: &str) -> String { NATIVE_BRIDGE_SCRIP
 /// 将保存的原始整数恢复为 HWND。
 fn raw_hwnd(raw: isize) -> HWND { HWND(raw as *mut c_void) }
 
+/// 从序列化的宿主事件载荷里取事件种类。
+fn host_event_kind(payload: &str) -> Option<String> { serde_json::from_str::<Value>(payload).ok()?.get("kind")?.as_str().map(str::to_string) }
+
+/// loopback 数据通知由通道订阅驱动，不要求该屏存在时间消费者；其它组件宿主事件仍按时间消费者过滤。
+fn component_host_event_needs_time_consumers(payload: &str) -> bool { !host_event_kind(payload).is_some_and(|kind| crate::component_runtime::loopback::is_event_kind(&kind)) }
+
 /// 将现有宿主事件转交 UI 线程的原生 WebView，页面重载后自动使用新的订阅入口。
 pub(crate) fn install_host_events(app: &AppHandle)
 {
@@ -356,6 +362,7 @@ pub(crate) fn install_host_events(app: &AppHandle)
             let payload = event.payload().to_string(); // Tauri 已序列化的结构化快照。
             let watcher_failed = name == "folder-portal-changed" && serde_json::from_str::<Value>(&payload).is_ok_and(|value| value.get("error").is_some()); // 暂停仍保留监听故障恢复通道。
             let spectrum_event = name == crate::platform::windows::audio::SPECTRUM_EVENT || name == crate::platform::windows::audio::SPECTRUM_DEVICE_EVENT; // 唯一按帧发布的高频事件。
+            let loopback_event = name == crate::contracts::COMPONENT_HOST_EVENT && !component_host_event_needs_time_consumers(&payload); // 通道数据通知按通道订阅投递，不依赖时间消费者。
             let task_handle = handle.clone(); // 主线任务持有独立句柄，监听回调仍可重复执行。
             if let Err(error) = handle.run_on_main_thread(move || {
                 let script = format!("window.__DESKTOP_TOOLS_NATIVE__?.dispatch('{name}', {payload});"); // 内部白名单事件名，不执行外部脚本输入。
@@ -370,7 +377,7 @@ pub(crate) fn install_host_events(app: &AppHandle)
                         {
                             continue; // 该屏没有正在显示频谱的音乐控件。
                         }
-                        if name == "component-host-event" && !crate::component_runtime::ComponentRuntimeState::has_time_consumers(&host.monitor_id)
+                        if name == crate::contracts::COMPONENT_HOST_EVENT && !loopback_event && !crate::component_runtime::ComponentRuntimeState::has_time_consumers(&host.monitor_id)
                         {
                             continue;
                         }

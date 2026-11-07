@@ -3,7 +3,7 @@ import { isFontFamilyName } from "./settings.ts";
 import { TILE_MIN_HEIGHT, TILE_MIN_WIDTH } from "./tile.ts";
 
 /** 官方组件可以声明并由宿主授权的能力。 */
-export type ComponentCapability = "read-host-time" | "read-current-media" | "probe-service-status";
+export type ComponentCapability = "read-host-time" | "read-current-media" | "probe-service-status" | "loopback-channel";
 
 /** 插件呈现角色，缺省为格子。 */
 export type ComponentRole = "tile" | "theme";
@@ -26,6 +26,20 @@ export interface ThemeAppearance {
     fontSize: number | null;
 }
 
+/** 类型级尺寸，只用于创建默认外框与该实例的有效下限。 */
+export interface ComponentTileSize {
+    width: number; // 宽度，DIP。
+    height: number; // 高度，DIP。
+}
+
+/** 插件声明的一种格子类型。键写进实例 state 的 tileType。 */
+export interface ComponentTileType {
+    key: string; // 作者代码里的稳定标识，也是 state 里保存的值。
+    name: string; // 创建菜单里显示的名称。
+    defaultSize: ComponentTileSize | null; // 创建时的默认外框，未声明为 null。
+    minimumSize: ComponentTileSize | null; // 该类型的有效下限，未声明为 null。
+}
+
 /** 一个官方组件的版本化清单。 */
 export interface ComponentManifest {
     id: string;
@@ -44,6 +58,7 @@ export interface ComponentManifest {
     removable: boolean;
     island?: boolean; // 清单是否允许上岛，缺省为 false。
     maxTiles: number; // 可创建的格子上限。0 表示不限。
+    tileTypes: ComponentTileType[]; // 插件声明的格子类型，第一项为默认类型。空表示隐式单类型。
     version?: string; // 插件版本。缺省不展示。
     description?: string; // 插件简介。缺省不展示。
     author?: string; // 插件作者。缺省时信息行不拼 @。
@@ -90,10 +105,13 @@ export interface ComponentRuntimeSnapshot {
     failures: ComponentRegistrationFailure[];
 }
 
+/** 插件 loopback 通道收到数据后的通知种类前缀。 */
+export const LOOPBACK_EVENT_PREFIX = "loopback-data:";
+
 /** 宿主定时发布给已授权组件的事件。 */
 export interface ComponentHostEvent {
     sequence: number;
-    kind: "time-tick";
+    kind: "time-tick" | `loopback-data:${string}`;
     unixMillis: number;
 }
 
@@ -162,7 +180,8 @@ export const parseComponentInstanceSnapshot = (value: unknown): ComponentInstanc
 
 /** 校验组件能力名称。 */
 const parseCapability = (value: unknown): ComponentCapability => {
-    if (value !== "read-host-time" && value !== "read-current-media" && value !== "probe-service-status") throw new ComponentContractError();
+    if (value !== "read-host-time" && value !== "read-current-media" && value !== "probe-service-status" && value !== "loopback-channel")
+        throw new ComponentContractError();
     return value;
 };
 
@@ -214,6 +233,30 @@ const parseThemeAppearance = (value: unknown): ThemeAppearance | null => {
     };
 };
 
+/** 校验类型级尺寸：宽高都是正数，缺失或非法时返回 null，由宿主退回公共值。 */
+const parseTileSize = (value: unknown): ComponentTileSize | null => {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "object" || Array.isArray(value)) return null;
+    const item = value as Record<string, unknown>; // 待校验的宽高。
+    if (!isFiniteNumber(item.width) || item.width <= 0 || !isFiniteNumber(item.height) || item.height <= 0) return null;
+    return { width: item.width, height: item.height };
+};
+
+/** 校验格子类型：键与显示名都非空，键不重复。缺省为空，表示隐式单类型。 */
+const parseTileTypes = (value: unknown): ComponentTileType[] => {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) throw new ComponentContractError();
+    const keys = new Set<string>(); // 已出现的键，用于拒绝重复。
+    return value.map((tileType): ComponentTileType => {
+        if (typeof tileType !== "object" || tileType === null) throw new ComponentContractError();
+        const item = tileType as Record<string, unknown>; // 待校验的类型声明。
+        if (typeof item.key !== "string" || !item.key || keys.has(item.key)) throw new ComponentContractError();
+        if (typeof item.name !== "string" || !item.name) throw new ComponentContractError();
+        keys.add(item.key);
+        return { key: item.key, name: item.name, defaultSize: parseTileSize(item.defaultSize), minimumSize: parseTileSize(item.minimumSize) };
+    });
+};
+
 /** 校验主题自带字体：族名走公共规则，文件只认插件根内的字体扩展名。 */
 const parseThemeFonts = (value: unknown): ThemeFont[] => {
     if (value === undefined || value === null) return [];
@@ -262,6 +305,7 @@ export const parseComponentRuntimeSnapshot = (value: unknown): ComponentRuntimeS
             removable: parseDeclarationFlag(item.removable),
             island: parseDeclarationFlag(item.island),
             maxTiles: parseMaxTiles(item.maxTiles),
+            tileTypes: parseTileTypes(item.tileTypes),
             version: parseOptionalText(item.version),
             stylesheetCacheKey: parseOptionalText(item.stylesheetCacheKey),
             description: parseOptionalText(item.description),
@@ -296,13 +340,16 @@ export const parseComponentRuntimeSnapshot = (value: unknown): ComponentRuntimeS
     return { revision: candidate.revision as number, manifests, instances, failures };
 };
 
-/** 校验组件宿主事件。 */
+/** 校验组件宿主事件：时间滴答或某条 loopback 通道的数据通知。 */
 export const parseComponentHostEvent = (value: unknown): ComponentHostEvent => {
     if (typeof value !== "object" || value === null) throw new ComponentContractError();
     const candidate = value as Record<string, unknown>; // 等待字段校验的组件宿主事件。
     if (!Number.isSafeInteger(candidate.sequence) || (candidate.sequence as number) <= 0) throw new ComponentContractError();
-    if (candidate.kind !== "time-tick" || !Number.isSafeInteger(candidate.unixMillis)) throw new ComponentContractError();
-    return { sequence: candidate.sequence as number, kind: "time-tick", unixMillis: candidate.unixMillis as number };
+    if (!Number.isSafeInteger(candidate.unixMillis)) throw new ComponentContractError();
+    const kind = candidate.kind; // 事件种类决定后续读取哪个通道。
+    if (typeof kind !== "string") throw new ComponentContractError();
+    if (kind !== "time-tick" && !(kind.startsWith(LOOPBACK_EVENT_PREFIX) && kind.length > LOOPBACK_EVENT_PREFIX.length)) throw new ComponentContractError();
+    return { sequence: candidate.sequence as number, kind: kind as ComponentHostEvent["kind"], unixMillis: candidate.unixMillis as number };
 };
 
 /** 按能力校验载荷：探活只接受固定四档，出现其它值时拒绝。 */

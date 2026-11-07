@@ -8,7 +8,4 @@ pub fn publish_message_notification(app: AppHandle, state: State<'_, std::sync::
 
 /// 复用程序已解析的界面深浅色与动画状态；Toast palette 由 Rust 保存偏好时更新。
 #[tauri::command]
-pub fn sync_message_appearance(state: State<'_, std::sync::Arc<ToastManager>>, preferences: crate::contracts::settings::ApplicationPreferences, dark: bool, animations_enabled: bool)
-{
-    state.sync_appearance(preferences, dark, animations_enabled);
-}
+pub fn sync_message_appearance(state: State<'_, std::sync::Arc<ToastManager>>, preferences: crate::contracts::settings::ApplicationPreferences, dark: bool, animations_enabled: bool) { state.sync_appearance(preferences, dark, animations_enabled); }

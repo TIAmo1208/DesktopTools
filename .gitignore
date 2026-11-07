@@ -9,6 +9,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 build/
+__pycache__/
 /.scratch/**/logs/
 .scratch/
 release/
@@ -52,3 +53,4 @@ graphflow-out/
 .dsh-switchman/
 .agent-teams/
 .dsh-ops/
+*.zip

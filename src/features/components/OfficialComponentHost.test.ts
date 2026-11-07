@@ -70,14 +70,14 @@ test("插件宿主保留官方显隐、入口别名和未知入口兜底", async
     }
     assert.equal(pluginRenderers.get("unknown:entry"), undefined);
     assert.equal(pluginRenderers.get("constructor"), undefined);
-    const pluginTile = pluginRenderers.get("plugin:slot")(props, {}); // 插件只取得容器，没有新尺寸和命中策略。
-    assert.equal(pluginTile.props.minimum, undefined);
+    const pluginTile = pluginRenderers.get("plugin:slot")(props, {}); // 插件外框由带菜单订阅的帧组件承载。
+    assert.equal(pluginTile.props.tileProps.instance, props.instance);
+    assert.equal(pluginTile.props.tileProps.registration, props.registration);
     assert.equal(pluginTile.props["data-hit-priority"], undefined);
-    assert.equal(typeof pluginTile.props.children, "function");
-    const waiting = pluginTile.props.children(false); // 折叠状态交给作者，容器本身不带样式。
-    assert.equal(waiting.props.instanceId, "sample");
-    assert.equal(waiting.props.pluginId, "plugin.waiting");
-    assert.equal(waiting.props.collapsed, false);
+    assert.equal(pluginTile.props.pluginId, "plugin.waiting");
+    assert.equal(pluginTile.props.tileType, "", "state 没有类型时交给作者空串");
+    const typed = pluginRenderers.get("plugin:slot")({ ...props, instance: { ...props.instance, state: { tileType: "messages" } } }, {});
+    assert.equal(typed.props.tileType, "messages", "实例 state 里的类型原样下发给作者");
 
     const source = await readFile(new URL("./OfficialComponentHost.tsx", import.meta.url), "utf8"); // 保证入口优先级与原有兜底原样保留。
     assert.match(source, /props\.registration\?\.entry \?\? instance\.componentId/);
@@ -108,8 +108,9 @@ test("按插件 id 去重只导入一次模块，失败不重试并进入错误�
     await host.syncPluginScripts(manifests, ["plugin.a", "plugin.b"]);
     assert.equal(imported.length, 2);
     const failed = host.pluginRenderers.get("plugin:slot")(slotProps("broken-script", "plugin.a"), {});
-    assert.equal(failed.props.children.props.className, "official-component__error");
-    assert.equal(failed.props.children.props.children, "组件渲染失败");
+    assert.equal(failed.props.pluginId, "plugin.a");
+    assert.equal(host.pluginTileFailed("plugin.a", "broken-script"), true); // 脚本失败进入错误态。
+    assert.equal(host.pluginTileFailed("plugin.c", "broken-script"), false);
     globalThis.window = previous;
 });
 
@@ -129,9 +130,8 @@ test("缺 renderTile 与未知或重复注册不参与渲染", async () => {
             true,
         );
         const broken = host.pluginRenderers.get("plugin:slot")(slotProps("missing-tile", "plugin.sample"), {});
-        assert.equal(broken.props.children.type, "p");
-        assert.equal(broken.props.children.props.className, "official-component__error");
-        assert.equal(broken.props.children.props.children, "组件渲染失败");
+        assert.equal(broken.props.pluginId, "plugin.sample");
+        assert.equal(host.pluginTileFailed("plugin.sample", "missing-tile"), true); // 缺 renderTile 同样进入错误态。
     } finally {
         console.warn = original;
     }
@@ -147,7 +147,7 @@ test("实例移除时调用最近一次 renderTile 的清理函数", () => {
             return () => cleaned.push(context.instanceId);
         },
     };
-    const context = (instanceId) => ({ pluginId: "plugin.shared", instanceId, collapsed: true, settings: { on: true }, saveSettings: async () => undefined });
+    const context = (instanceId) => ({ pluginId: "plugin.shared", instanceId, tileType: "", collapsed: true, settings: { on: true }, saveSettings: async () => undefined });
     host.mountPluginTile(fakeContainer(), context("inst-1"));
     host.mountPluginTile(fakeContainer(), context("inst-2"));
     assert.equal(seen.instanceId, "inst-2");
@@ -169,7 +169,7 @@ test("实例移除时调用最近一次 renderTile 的清理函数", () => {
             return () => order.push(current);
         },
     };
-    const redraw = { pluginId: "plugin.redraw", instanceId: "redraw-1", collapsed: false, settings: null, saveSettings: async () => undefined };
+    const redraw = { pluginId: "plugin.redraw", instanceId: "redraw-1", tileType: "", collapsed: false, settings: null, saveSettings: async () => undefined };
     host.mountPluginTile(fakeContainer(), redraw);
     host.mountPluginTile(fakeContainer(), redraw);
     assert.deepEqual(order, [1]);
@@ -186,6 +186,7 @@ test("插件清理抛错不破坏其他卡片与宿主卸载", () => {
     const context = {
         pluginId: "plugin.cleanup-failure",
         instanceId: "cleanup-failure",
+        tileType: "",
         collapsed: false,
         settings: null,
         saveSettings: async () => undefined,
@@ -201,6 +202,22 @@ test("插件清理抛错不破坏其他卡片与宿主卸载", () => {
     }
     assert.equal(warnings.length, 1);
     assert.doesNotThrow(() => host.releasePluginTile(context.instanceId));
+});
+
+test("renderTile 通过 context.menu 注册实例菜单并在清理时撤下", async () => {
+    const menu = await server.ssrLoadModule("/src/bridge/pluginMenu.ts");
+    scripts.pluginShell["plugin.menu"] = {
+        renderTile(_container, context) {
+            context.menu.register([{ id: "refresh", label: "刷新一次", onSelect: () => undefined }]);
+        },
+    };
+    host.mountPluginTile(fakeContainer(), { pluginId: "plugin.menu", instanceId: "menu-1", tileType: "", collapsed: false, settings: null, saveSettings: async () => undefined });
+    assert.deepEqual(
+        menu.readPluginMenuItems("menu-1").map((item) => item.id),
+        ["refresh"],
+    );
+    host.releasePluginTile("menu-1");
+    assert.deepEqual(menu.readPluginMenuItems("menu-1"), []);
 });
 
 test("逐屏设置事件走 dispatch，退订后不再投递", async () => {
@@ -247,7 +264,7 @@ test("收到 plugin-settings-changed 后用新设置重绘，并先执行上一�
             return () => order.push(generation);
         },
     };
-    const context = (settings) => ({ pluginId: "plugin.greet", instanceId: "tile-1", collapsed: false, settings, saveSettings: async () => undefined });
+    const context = (settings) => ({ pluginId: "plugin.greet", instanceId: "tile-1", tileType: "", collapsed: false, settings, saveSettings: async () => undefined });
     const cleared: number[] = []; // 每次重挂前是否清掉上一轮 DOM。
     const container = { replaceChildren: () => cleared.push(seen.length) };
     host.mountPluginTile(container, context(null));
@@ -394,10 +411,11 @@ test("停用插件不进入可见列表，启用后恢复作者内容", async ()
     assert.equal(host.instanceVisible("plugin.other", off), true);
     assert.equal(host.instanceVisible("plugin.off", on), true);
     const restored = host.pluginRenderers.get("plugin:slot")(slotProps("back-1", "plugin.restore"), on);
-    assert.equal(typeof restored.props.children, "function");
+    assert.equal(restored.props.tileProps.instance.instanceId, "back-1");
+    assert.equal(host.pluginTileFailed("plugin.restore", "back-1"), false);
     const broken = host.pluginRenderers.get("plugin:slot")(slotProps("still-broken", "plugin.sample"), on);
-    const brokenBody = typeof broken.props.children === "function" ? broken.props.children(false) : broken.props.children;
-    assert.equal(brokenBody.props.children, "组件渲染失败");
+    assert.equal(broken.props.pluginId, "plugin.sample");
+    assert.equal(host.pluginTileFailed("plugin.sample", "still-broken"), true);
     const source = await readFile(new URL("./OfficialComponentHost.tsx", import.meta.url), "utf8");
     assert.equal(source.includes("插件已停用"), false);
     assert.equal(source.includes("component-runtime-failure"), false);

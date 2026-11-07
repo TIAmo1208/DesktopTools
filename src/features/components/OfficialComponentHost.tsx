@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../bridge/components";
 import { adoptPluginManifests, commandErrorMessage } from "../../bridge/pluginScripts";
+import { readPluginMenuItems, subscribePluginMenuItems } from "../../bridge/pluginMenu";
 import type { ComponentInstanceSnapshot, ComponentManifest, ComponentRuntimeSnapshot } from "../../contracts/component";
 import type { DesktopHostMonitor } from "../../contracts/desktopHost";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspaceSnapshot, WorkspaceFocusTarget } from "../../contracts/workspace";
@@ -15,13 +16,13 @@ import { MusicTile } from "../tile-content/music/MusicTile";
 import { ClockTile } from "../tile-content/clock/LocalClock";
 import { DebugTile } from "../tile-content/debug/DebugTest";
 import { WeatherTile } from "../tile-content/weather/WeatherTile";
+import { pluginMenuItems as toPluginMenuItems, pluginTileMinimum, pluginTileTitle } from "./pluginTile";
 
 import {
     subscribePluginHost,
     pluginRevision,
-    pluginScriptFailed,
-    pluginMissingRenderTile,
-    pluginRenderFailed,
+    pluginTileFailed,
+    pluginTileType,
     syncPluginScripts,
     PluginTileBody,
 } from "./PluginSlot";
@@ -72,6 +73,43 @@ interface PluginHostContext {
     pluginEpoch?: number; // 外壳注册或脚本失败后的重绘计数。
 }
 
+/** 插件格子外框：合并作者菜单、类型级最小尺寸与移除项。 */
+const PluginTileFrame = ({ tileProps, pluginId, tileType, runtime }: { tileProps: ComponentTileProps; pluginId: string; tileType: string; runtime?: ComponentRuntimeSnapshot }) => {
+    const instanceId = tileProps.instance.instanceId; // 菜单项按实例归属。
+    const [entries, setEntries] = useState(() => readPluginMenuItems(instanceId)); // 最近一轮 renderTile 注册的菜单。
+    useEffect(() => {
+        setEntries(readPluginMenuItems(instanceId)); // 重挂前先对齐当前实例。
+        return subscribePluginMenuItems(instanceId, () => setEntries(readPluginMenuItems(instanceId)));
+    }, [instanceId]);
+    const manifest = runtime?.manifests.find((item) => item.id === pluginId); // 当前插件的类型声明。
+    const broken = pluginTileFailed(pluginId, instanceId); // 脚本、注册或作者渲染失败。
+    const removable = manifest?.removable === true; // 清单缺失时不可移除。
+    return (
+        <ComponentTile
+            key={instanceId}
+            {...tileProps}
+            title={pluginTileTitle(manifest, tileType, manifest?.name ?? pluginId)} // 每类格子用自己的类型名作标题。
+            minimum={pluginTileMinimum(manifest, tileType)}
+            menuItems={[
+                ...toPluginMenuItems(entries),
+                tileRemoveMenuItem(
+                    removable,
+                    () =>
+                        void tileProps.onCommand({ type: "remove-component", instanceId }).catch((error: unknown) => {
+                            publishMessage({ type: "error", content: commandErrorMessage(error), source: "desktop-tile" });
+                        }),
+                ),
+            ]}
+        >
+            {broken ? (
+                <p className="official-component__error">组件渲染失败</p>
+            ) : (
+                (collapsed) => <PluginTileBody pluginId={pluginId} instanceId={instanceId} tileType={tileType} collapsed={collapsed} revision={pluginRevision(pluginId)} />
+            )}
+        </ComponentTile>
+    );
+};
+
 // 未列出的插件保持可见；Release 没有 Debug 注册入口。
 const pluginVisibility = new Map<string, (context: PluginHostContext) => boolean>([
     ["official.local-clock", ({ preferences }) => preferences?.clockEnabled !== false],
@@ -109,40 +147,15 @@ const pluginRenderers = new Map<string, (props: ComponentTileProps, context: Plu
     ],
     [
         "plugin:slot",
-        (props, { runtime }) => {
-            const pluginId = props.instance.componentId; // 格子所属插件，不按槽入口合并。
-            const broken = pluginScriptFailed(pluginId) || pluginMissingRenderTile(pluginId) || pluginRenderFailed(props.instance.instanceId); // 脚本、注册或作者渲染失败。
-            const removable = runtime?.manifests.find((manifest) => manifest.id === pluginId)?.removable === true; // 清单缺失时不可移除。
-            return (
-                <ComponentTile
-                    key={props.instance.instanceId}
-                    {...props}
-                    title={runtime?.manifests.find((manifest) => manifest.id === pluginId)?.name ?? pluginId}
-                    menuItems={[
-                        tileRemoveMenuItem(
-                            removable,
-                            () =>
-                                void props.onCommand({ type: "remove-component", instanceId: props.instance.instanceId }).catch((error: unknown) => {
-                                    publishMessage({ type: "error", content: commandErrorMessage(error), source: "desktop-tile" });
-                                }),
-                        ),
-                    ]}
-                >
-                    {broken ? (
-                        <p className="official-component__error">组件渲染失败</p>
-                    ) : (
-                        (collapsed) => (
-                            <PluginTileBody
-                                pluginId={pluginId}
-                                instanceId={props.instance.instanceId}
-                                collapsed={collapsed}
-                                revision={pluginRevision(pluginId)}
-                            />
-                        )
-                    )}
-                </ComponentTile>
-            );
-        },
+        (props, { runtime }) => (
+            <PluginTileFrame
+                key={props.instance.instanceId}
+                tileProps={props}
+                pluginId={props.instance.componentId}
+                tileType={pluginTileType(props.instance.state)}
+                runtime={runtime}
+            />
+        ),
     ],
 ]);
 for (const [entry, render] of Array.from(pluginRenderers)) {

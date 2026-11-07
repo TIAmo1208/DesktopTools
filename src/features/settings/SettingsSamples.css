@@ -1,0 +1,45 @@
+/* 设置界面样张页的编排；行、控件与令牌全部复用真实设置页样式。 */
+.settings-samples__toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    max-width: 900px;
+    margin: 0 0 24px;
+    padding: 12px 16px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    background: var(--color-surface);
+}
+
+.settings-samples__toolbar-label {
+    margin-right: 4px;
+    font-weight: 600;
+}
+
+.settings-samples__toolbar-hint {
+    flex: 1 1 280px;
+    color: var(--color-muted);
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+}
+
+.settings-samples__section {
+    max-width: 900px;
+    margin: 0 0 28px;
+}
+
+.settings-samples__heading {
+    margin: 0 0 8px;
+    color: var(--color-muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* 多行输入行与正文顶部对齐，给 78 DIP 的草稿留出空间。 */
+.settings-samples__row--textarea {
+    align-items: flex-start;
+}
+
+.settings-samples__row--textarea .weather-settings__secret-input {
+    flex: 1;
+}

@@ -1,0 +1,255 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://desktop-tools.local/contracts/astrbot-status/snapshot.schema.json",
+  "title": "AstrBot 状态快照 v2",
+  "description": "AstrBot 插件推送、以及拉取接口回读的同一份快照结构。时间戳一律 Unix 秒；拿不到的项必须给 null，不得用 0 或空数组冒充有数据。v1 数据没有 service.probe，按「未知」处理。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "collectedAt",
+    "instance",
+    "service",
+    "platforms",
+    "resources",
+    "messages",
+    "logs",
+    "usage"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2,
+      "description": "结构版本，固定 2。v1 数据没有 service.probe，接收端按「未知」处理，不得当成离线。"
+    },
+    "collectedAt": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "插件采集完成时刻，Unix 秒。"
+    },
+    "instance": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["id", "astrbotVersion"],
+      "description": "实例标识；整段采集失败时为 null。",
+      "properties": {
+        "id": {
+          "type": ["string", "null"],
+          "description": "AstrBot 实例 UUID；取不到为 null。"
+        },
+        "astrbotVersion": {
+          "type": ["string", "null"],
+          "description": "AstrBot 版本号；取不到为 null。"
+        }
+      }
+    },
+    "service": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["online", "startTime", "probe", "versions"],
+      "description": "服务在线状态与版本。整段采集失败时为 null（按「未知」处理）。",
+      "properties": {
+        "online": {
+          "type": ["boolean", "null"],
+          "description": "派生/兼容字段：probe.level 为 ok 时写 true，为 off 时写 false，warn/unknown 或 probe 为 null 时写 null。展示一律以 probe.level 为准，不得只看本字段。"
+        },
+        "startTime": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "进程启动时刻，Unix 秒；仅 probe.level 为 ok 时有值，已就绪时长由消费方现算。"
+        },
+        "probe": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["level", "checkedAt"],
+          "description": "免鉴权探测的四档结论；整段为 null 时按「未知」处理，不得因为 online 为 false 就判离线。",
+          "properties": {
+            "level": {
+              "enum": ["ok", "warn", "off", "unknown"],
+              "description": "ok=在线；warn=探测被拒（401 或其它非 2xx）；off=连接被拒；unknown=超时、响应解析失败或其它未知异常。四档必须区分：未知不等于离线，探测被拒不等于服务停止。"
+            },
+            "checkedAt": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "该次判定的时刻，Unix 秒。"
+            }
+          }
+        },
+        "versions": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["astrbot", "webui", "code"],
+          "properties": {
+            "astrbot": {"type": ["string", "null"]},
+            "webui": {"type": ["string", "null"]},
+            "code": {"type": ["string", "null"]}
+          }
+        }
+      }
+    },
+    "platforms": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["summary", "items"],
+      "description": "平台连接状态。",
+      "properties": {
+        "summary": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["total", "running", "error", "totalErrors"],
+          "properties": {
+            "total": {"type": ["integer", "null"], "minimum": 0},
+            "running": {"type": ["integer", "null"], "minimum": 0},
+            "error": {"type": ["integer", "null"], "minimum": 0},
+            "totalErrors": {"type": ["integer", "null"], "minimum": 0}
+          }
+        },
+        "items": {
+          "type": ["array", "null"],
+          "description": "null=没采到；[]=采到了但一个平台都没配置。",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "type",
+              "displayName",
+              "status",
+              "startedAt",
+              "errorCount",
+              "lastError"
+            ],
+            "properties": {
+              "id": {"type": ["string", "null"]},
+              "type": {"type": ["string", "null"]},
+              "displayName": {"type": ["string", "null"]},
+              "status": {
+                "enum": ["running", "error", "stopped", "unknown", null],
+                "description": "未识别的平台状态一律映射为 unknown（或按本契约给 null）；不得自造新值。"
+              },
+              "startedAt": {"type": ["integer", "null"], "minimum": 0},
+              "errorCount": {"type": ["integer", "null"], "minimum": 0},
+              "lastError": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "required": ["message", "timestamp"],
+                "properties": {
+                  "message": {"type": "string"},
+                  "timestamp": {"type": "integer", "minimum": 0}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "resources": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["cpuPercent", "memory", "threadCount"],
+      "description": "进程资源占用。",
+      "properties": {
+        "cpuPercent": {
+          "type": ["number", "null"],
+          "description": "首次采样（psutil 预热）前给 null，不得写 0。"
+        },
+        "memory": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["processMb", "systemMb"],
+          "properties": {
+            "processMb": {"type": ["number", "null"], "minimum": 0},
+            "systemMb": {"type": ["number", "null"], "minimum": 0}
+          }
+        },
+        "threadCount": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "messages": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["total", "series"],
+      "description": "消息量。",
+      "properties": {
+        "total": {"type": ["integer", "null"], "minimum": 0},
+        "series": {
+          "type": ["array", "null"],
+          "description": "小时趋势点，按 ts 正序；建议只留最近 24 点。null=没采到。",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ts", "count"],
+            "properties": {
+              "ts": {"type": "integer", "minimum": 0},
+              "count": {"type": "integer", "minimum": 0}
+            }
+          }
+        }
+      }
+    },
+    "logs": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["tail"],
+      "description": "实时日志环形缓冲。",
+      "properties": {
+        "tail": {
+          "type": ["array", "null"],
+          "maxItems": 200,
+          "description": "最多 200 条，按时间正序；text 由插件截断到 500 字符。null=没采到。",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ts", "level", "text"],
+            "properties": {
+              "ts": {"type": "integer", "minimum": 0},
+              "level": {"enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]},
+              "text": {"type": "string", "maxLength": 500}
+            }
+          }
+        }
+      }
+    },
+    "usage": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "rangeDays",
+        "rangeTotalTokens",
+        "rangeOutputTokens",
+        "todayTotalTokens",
+        "byProvider",
+        "cost"
+      ],
+      "description": "Token 用量与费用。",
+      "properties": {
+        "rangeDays": {"type": ["integer", "null"], "minimum": 0},
+        "rangeTotalTokens": {"type": ["integer", "null"], "minimum": 0},
+        "rangeOutputTokens": {"type": ["integer", "null"], "minimum": 0},
+        "todayTotalTokens": {"type": ["integer", "null"], "minimum": 0},
+        "byProvider": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["providerId", "totalTokens"],
+            "properties": {
+              "providerId": {"type": ["string", "null"]},
+              "totalTokens": {"type": ["integer", "null"], "minimum": 0}
+            }
+          }
+        },
+        "cost": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["total", "currency", "note"],
+          "description": "无单价表时 total/currency 必须为 null，并在 note 说明。",
+          "properties": {
+            "total": {"type": ["number", "null"], "minimum": 0},
+            "currency": {"type": ["string", "null"]},
+            "note": {"type": ["string", "null"]}
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../bridge/pluginSettings";
+import { clearPluginMenuItems, setPluginMenuItems } from "../../bridge/pluginMenu";
 import {
     adoptPluginManifests,
     loadPluginScript,
@@ -52,6 +53,15 @@ export const pluginMissingRenderTile = (pluginId: string) => {
 /** renderTile 抛错。 */
 export const pluginRenderFailed = (instanceId: string) => renderFailed.has(instanceId);
 
+/** 插件实例无法渲染：脚本失败、缺 renderTile 或本轮 renderTile 抛错。 */
+export const pluginTileFailed = (pluginId: string, instanceId: string) => pluginScriptFailed(pluginId) || pluginMissingRenderTile(pluginId) || pluginRenderFailed(instanceId);
+
+/** 读取实例 state 里保存的格子类型。state 不是对象或字段不是字符串时按未声明处理。 */
+export const pluginTileType = (state: unknown) => {
+    const value = typeof state === "object" && state !== null ? (state as Record<string, unknown>).tileType : undefined; // 类型写在 state 里，不占实例字段。
+    return typeof value === "string" ? value : "";
+};
+
 /** 把命令式渲染失败收成格子既有错误态。 */
 const markPluginRenderFailed = (pluginId: string, instanceId: string) => {
     if (renderFailed.has(instanceId)) return;
@@ -59,7 +69,7 @@ const markPluginRenderFailed = (pluginId: string, instanceId: string) => {
     emitPluginHost(pluginId);
 };
 
-/** 调用最近一次 renderTile 留下的清理函数。 */
+/** 调用最近一次 renderTile 留下的清理函数，并撤下该实例的插件菜单项。 */
 const releasePluginTile = (instanceId: string) => {
     const cleanup = tileCleanups.get(instanceId); // 上一轮作者返回的清理函数。
     tileCleanups.delete(instanceId);
@@ -68,6 +78,7 @@ const releasePluginTile = (instanceId: string) => {
     } catch (error) {
         console.warn(`组件清理失败：${instanceId}`, error);
     }
+    clearPluginMenuItems(instanceId); // 菜单与清理函数同一生命周期。
 };
 
 /** 重读插件设置再交给格子。读失败时按空设置重绘。 */
@@ -86,7 +97,15 @@ const mountPluginTile = (container: HTMLElement, context: PluginShellContext) =>
     if (typeof renderTile !== "function") return;
     releasePluginTile(context.instanceId);
     container.replaceChildren(); // 重挂前清掉上一轮的 DOM，否则作者用 append 就会叠出两份内容。
-    const cleanup = renderTile(container, context); // 作者自行决定容器里的 DOM。
+    const cleanup = renderTile(container, {
+        ...context,
+        menu: {
+            register: (items) => {
+                setPluginMenuItems(context.instanceId, items); // 菜单项归实例，重复注册以最后一次为准。
+                return () => clearPluginMenuItems(context.instanceId);
+            },
+        },
+    }); // 作者自行决定容器里的 DOM。
     if (typeof cleanup === "function") tileCleanups.set(context.instanceId, cleanup);
 };
 
@@ -111,11 +130,13 @@ export const syncPluginScripts = (manifests: readonly { id: string; script?: str
 export const PluginTileBody = ({
     pluginId,
     instanceId,
+    tileType,
     collapsed,
     revision,
 }: {
     pluginId: string;
     instanceId: string;
+    tileType: string;
     collapsed: boolean;
     revision: number;
 }) => {
@@ -136,6 +157,7 @@ export const PluginTileBody = ({
                 mountPluginTile(containerRef.current, {
                     pluginId,
                     instanceId,
+                    tileType,
                     collapsed: collapsedRef.current,
                     settings,
                     saveSettings: (value) => savePluginSettings(pluginId, value),
@@ -177,6 +199,7 @@ export const PluginTileBody = ({
             mountPluginTile(container, {
                 pluginId,
                 instanceId,
+                tileType,
                 collapsed,
                 settings: settingsRef.current.value,
                 saveSettings: (value) => savePluginSettings(pluginId, value),
@@ -191,7 +214,7 @@ export const PluginTileBody = ({
 };
 
 /** 无格子外壳的 plugin:slot，岛与桌面复用同一加载、设置与失败隔离。 */
-export const PluginSlot = ({ manifest, instanceId, collapsed }: { manifest: ComponentManifest; instanceId: string; collapsed: boolean }) => {
+export const PluginSlot = ({ manifest, instanceId, tileType = "", collapsed }: { manifest: ComponentManifest; instanceId: string; tileType?: string; collapsed: boolean }) => {
     const [, setEpoch] = useState(0); // 注册与失败变化触发重绘。
     useEffect(() => {
         const stop = subscribePluginHost((id) => {
@@ -201,10 +224,10 @@ export const PluginSlot = ({ manifest, instanceId, collapsed }: { manifest: Comp
         void syncPluginScripts([manifest], [manifest.id]);
         return stop;
     }, [manifest]);
-    const broken = pluginScriptFailed(manifest.id) || pluginMissingRenderTile(manifest.id) || pluginRenderFailed(instanceId);
+    const broken = pluginTileFailed(manifest.id, instanceId);
     return broken ? (
         <p role="status">组件渲染失败</p>
     ) : (
-        <PluginTileBody pluginId={manifest.id} instanceId={instanceId} collapsed={collapsed} revision={pluginRevision(manifest.id)} />
+        <PluginTileBody pluginId={manifest.id} instanceId={instanceId} tileType={tileType} collapsed={collapsed} revision={pluginRevision(manifest.id)} />
     );
 };

@@ -29,6 +29,15 @@ test("插件行展示元素穿透整行按钮，卸载与开关保留独立命�
     assert.match(rules.find(({ selector }) => selector === ".plugin-settings__row--link > .plugin-settings__hit")?.body ?? "", /position:\s*absolute/);
 });
 
+test("设置条目上下文带上桌面实例与主动拉取入口", () => {
+    const source = readFileSync(new URL("./PluginSettingsPage.tsx", import.meta.url), "utf8");
+    assert.match(source, /const desktopInstanceId = components\?\.find\(\(item\) => item\.componentId === selected\.id\)\?\.instanceId/);
+    assert.match(source, /instanceId=\{desktopInstanceId\}/);
+    assert.match(source, /requestLoopback: instanceId \?/);
+    assert.match(source, /requestLoopback\(instanceId, channelId, method, path\)/);
+    assert.doesNotMatch(source, /peek/i);
+});
+
 test("失效移除与天气删除使用 danger，分段控件仍为 primary", () => {
     const plugin = readFileSync(new URL("./PluginSettingsPage.tsx", import.meta.url), "utf8"); // 插件移除命令。
     const weather = readFileSync(new URL("./WeatherSettings.tsx", import.meta.url), "utf8"); // 天气确认与供应商分段。
@@ -166,6 +175,115 @@ test("不可创建的插件不显示入口，停用时入口禁用", () => {
     assert.equal(page.pluginPowerLabel(false), "停用插件");
 });
 
+test("多类型插件的创建入口展开成类型列表，单类型仍是单个命令", () => {
+    const tileTypes = [
+        { key: "status", name: "连通状态" },
+        { key: "messages", name: "消息数" },
+    ];
+    assert.equal(page.pluginTileTypesExpand(tileTypes), true);
+    assert.equal(page.pluginTileTypesExpand(tileTypes.slice(0, 1)), false);
+    assert.equal(page.pluginTileTypesExpand([]), false);
+    const created: Array<string | undefined> = [];
+    const menu = page.pluginContextMenu(
+        { creatable: true, maxTiles: 2, tileTypes },
+        {
+            used: 0,
+            pluginDisabled: false,
+            onOpenSettings() {},
+            onOpenDirectory() {},
+            onCreate(tileType) {
+                created.push(tileType);
+            },
+            onToggle() {},
+            onUninstall() {},
+        },
+    );
+    const add = menu.find((item) => item.label === "添加到桌面"); // 多类型时不直接创建。
+    assert.equal(add?.onSelect, undefined);
+    assert.deepEqual(
+        add?.children?.map((child) => child.label),
+        ["连通状态", "消息数"],
+    );
+    add?.children?.[1].onSelect?.();
+    assert.deepEqual(created, ["messages"]);
+    const single = page.pluginContextMenu(
+        { creatable: true, maxTiles: 2, tileTypes: tileTypes.slice(0, 1) },
+        {
+            used: 0,
+            pluginDisabled: false,
+            onOpenSettings() {},
+            onOpenDirectory() {},
+            onCreate(tileType) {
+                created.push(tileType);
+            },
+            onToggle() {},
+            onUninstall() {},
+        },
+    );
+    assert.equal(single.find((item) => item.label === "添加到桌面")?.children, undefined, "单类型不展开");
+    single.find((item) => item.label === "添加到桌面")?.onSelect?.();
+    assert.equal(created.at(-1), "status", "单类型直接创建也要带上类型");
+    assert.equal(page.pluginSingleTileType([]), undefined);
+    assert.equal(page.pluginSingleTileType(tileTypes), undefined, "多类型不走单类型直建");
+    assert.equal(page.pluginSingleTileType(tileTypes.slice(0, 1)), "status");
+    assert.deepEqual(page.createTileState("messages"), { tileType: "messages" });
+    assert.deepEqual(page.createTileState(), {}, "没选类型时不写 state");
+});
+
+test("多类型插件的数量上限按类型分别计算", () => {
+    const tileTypes = [
+        { key: "status", name: "连通状态" },
+        { key: "messages", name: "消息数" },
+    ];
+    const components = [
+        { componentId: "plugin.multi", state: { tileType: "status" } }, // 连通状态已用一个。
+        { componentId: "plugin.multi", state: {} }, // 旧实例没有类型，落到默认类型（第一节）。
+        { componentId: "plugin.other", state: { tileType: "messages" } }, // 别的插件的同类不计入。
+    ];
+    const status = page.pluginTypeStatus(components, "plugin.multi", tileTypes, 2);
+    assert.equal(status?.get("status")?.remaining, 0, "默认类型已满");
+    assert.equal(status?.get("messages")?.remaining, 2, "另一类不受影响");
+    assert.equal(page.pluginTightestRemaining(status), 0);
+    assert.equal(page.pluginTypeStatus(components, "plugin.multi", [], 2), undefined, "隐式单类型不分类");
+    assert.equal(page.addToDesktopHint(2, 3, 0), "已达上限（2 个）");
+    assert.equal(page.addToDesktopHint(2, 3, 1), "还可以添加 1 个格子");
+    const created: Array<string | undefined> = [];
+    const menu = page.pluginContextMenu(
+        { creatable: true, maxTiles: 2, tileTypes, componentId: "plugin.multi" },
+        {
+            used: 3,
+            components,
+            pluginDisabled: false,
+            onOpenSettings() {},
+            onOpenDirectory() {},
+            onCreate(tileType) {
+                created.push(tileType);
+            },
+            onToggle() {},
+            onUninstall() {},
+        },
+    );
+    const children = menu.find((item) => item.label === "添加到桌面")?.children ?? [];
+    assert.deepEqual([children[0].disabled, children[1].disabled], [true, false], "只禁用已经满了的那一类");
+    assert.equal(children[0].description, "已达上限（2 个）");
+    children[1].onSelect?.();
+    assert.deepEqual(created, ["messages"]);
+    const single = page.pluginContextMenu(
+        { creatable: true, maxTiles: 1, tileTypes: tileTypes.slice(0, 1), componentId: "plugin.multi" },
+        {
+            used: 1,
+            components: [{ componentId: "plugin.multi", state: { tileType: "status" } }],
+            pluginDisabled: false,
+            onOpenSettings() {},
+            onOpenDirectory() {},
+            onCreate() {},
+            onToggle() {},
+            onUninstall() {},
+        },
+    );
+    assert.equal(single.find((item) => item.label === "添加到桌面")?.disabled, true, "单类型按那一类判断");
+});
+
 test("插件清单只保留 plugin. 前缀并按显示名排序", () => {
     const rows = page.pluginRows([
         { id: "official.clock", name: "时间" },
@@ -241,4 +359,16 @@ test("条目数说明区分停用、失败、加载中、没有条目和条目�
     } finally {
         globalThis.window = previous;
     }
+});
+
+test("共享 token 元数据只在声明齐全时出现", () => {
+    scripts.bindPluginApi("plugin.pairing", {
+        renderTile() {},
+        loopbackCredential: { target: " DesktopTools/astrbot-status ", headerName: "X-Status-Token", title: "共享 token", hint: "粘贴后保存" },
+    });
+    assert.deepEqual(page.pluginLoopbackCredential("plugin.pairing"), { target: "DesktopTools/astrbot-status", headerName: "X-Status-Token", title: "共享 token", hint: "粘贴后保存" });
+    scripts.bindPluginApi("plugin.no-pairing", { renderTile() {} });
+    assert.equal(page.pluginLoopbackCredential("plugin.no-pairing"), undefined);
+    scripts.bindPluginApi("plugin.bad-pairing", { renderTile() {}, loopbackCredential: { target: "" } });
+    assert.equal(page.pluginLoopbackCredential("plugin.bad-pairing"), undefined);
 });

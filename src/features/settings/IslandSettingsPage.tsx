@@ -189,7 +189,7 @@ const IslandPluginEntry = ({ pluginId, entry }: { pluginId: string; entry: Plugi
     useEffect(() => {
         if (!host || typeof entry.render !== "function") return;
         host.replaceChildren();
-        const cleanup = entry.render(host, { pluginId, instanceId: "", collapsed: false, settings, saveSettings: (value) => savePluginSettings(pluginId, value) });
+        const cleanup = entry.render(host, { pluginId, instanceId: "", tileType: "", collapsed: false, settings, saveSettings: (value) => savePluginSettings(pluginId, value) });
         return () => { if (typeof cleanup === "function") cleanup(); };
     }, [entry, host, pluginId, settings]);
 
