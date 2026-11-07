@@ -31,7 +31,10 @@ pub(crate) fn execute_invoke_component_capability(state: &ComponentRuntimeState,
 pub(crate) fn component_runtime_snapshot(state: &ComponentRuntimeState, workspace: &WorkspaceState) -> Result<ComponentRuntimeSnapshot, ComponentRuntimeError>
 {
     let workspace = workspace.snapshot().map_err(|error| ComponentRuntimeError::invalid_instance(error.message))?; // 统一工作区的持久组件集合。
-    state.snapshot(&workspace.components)
+    let snapshot = state.snapshot(&workspace.components)?;
+    let present = workspace.components.iter().map(|component| component.instance_id.clone()).collect::<std::collections::HashSet<_>>(); // 当前布局仍存在的实例。
+    state.loopback().prune(&present); // 实例移除、插件卸载或页面销毁后释放端口并丢弃缓冲。
+    Ok(snapshot)
 }
 
 /// 返回独立 Windowed transport 最近收到的组件宿主事件。

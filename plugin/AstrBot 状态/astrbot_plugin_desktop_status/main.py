@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AstrBot 侧状态采集插件（契约 v1）。
+"""AstrBot 侧状态采集插件（契约 v2）。
 
 - 在 AstrBot 进程内采集服务/平台/资源/消息/日志/Token 用量，按 `契约/snapshot.schema.json` 组装快照，
   周期 POST 到本机接收端（`push_url` 端口 0 表示不推）；
@@ -28,6 +28,7 @@ import socket
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,7 +39,7 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_PAYLOAD_BYTES = 1024 * 1024
 LOG_TEXT_LIMIT = 500
 ERROR_MESSAGE_LIMIT = 500
@@ -329,6 +330,7 @@ class DesktopStatusPlugin(Star):
         self._listen_port = port if port and 0 < port < 65536 else 0
 
         token = conf.get("token")
+        # token 是后台可见的可复制配置项（不是 secret）；插件日志只提示用途，绝不输出该值。
         self._token = token.strip() if isinstance(token, str) else ""
         if not self._token:
             self._token = secrets.token_urlsafe(32)
@@ -429,6 +431,8 @@ class DesktopStatusPlugin(Star):
             "开" if self._push_url else "关",
             self._listen_port or "关",
         )
+        # token 不再设为后台隐藏项：管理员可在 AstrBot 插件配置中查看并复制；这里只提示用途，不输出值。
+        logger.info("[desktop_status] 共享 token 可在 AstrBot 插件配置中查看并复制，需与 Desktop Tools「设置 → 功能格子 → AstrBot 状态」中的值一致。")
 
     async def terminate(self) -> None:
         """停循环、关端口、摘 handler；可重复调用。"""
@@ -910,21 +914,49 @@ class DesktopStatusPlugin(Star):
         return {"id": self._resolve_instance_id(), "astrbotVersion": self._package_version("astrbot")}
 
     def collect_service(self) -> dict:
-        """在线状态与启动时刻来自免鉴权 `/api/stat/start-time`，版本来自 `/api/stat/versions`。"""
-        online: bool | None = None
-        start_time: int | None = None
+        """在线状态与启动时刻来自免鉴权 `/api/stat/start-time`，版本来自 `/api/stat/versions`。
+
+        v2 四档口径：2xx → ok；401 或其它非 2xx → warn；连接被拒 → off；
+        超时、响应解析失败与其它未知异常 → unknown。online 只是由 level 派生的兼容字段。
+        """
         base = self._base_url()
-        status, body = self._http_json(f"{base}/api/stat/start-time")
-        if status is not None:
-            if 200 <= status < 300:
-                online = True
-                start_time = unix_sec((_unwrap_data(body) or {}).get("start_time"))
-            else:
-                # 401/5xx 说明端口有人但不可用；与「端口没人」（status None）区分开
-                online = False
-        if start_time is None and online is True:
-            start_time = self._process_start_time()
-        return {"online": online, "startTime": start_time, "versions": self._collect_versions(base)}
+        url = f"{base}/api/stat/start-time"
+        status, body = self._http_json(url)
+        if status is None:
+            level = self._transport_failure_level(url)
+        elif 200 <= status < 300:
+            # 2xx 但读不到可解析的对象属于「响应解析失败」，不能当成在线。
+            level = "ok" if isinstance(body, dict) else "unknown"
+        else:
+            # 401/5xx 说明端口有人但被拒或不可用；与「端口没人」（off）区分开。
+            level = "warn"
+        start_time: int | None = None
+        if level == "ok":
+            start_time = unix_sec((_unwrap_data(body) or {}).get("start_time"))
+            if start_time is None:
+                # 探活成功但服务没给启动时刻时，用进程自身创建时间兜底（沿用 v1 行为）。
+                start_time = self._process_start_time()
+        online = {"ok": True, "off": False}.get(level)  # 派生/兼容字段，四档展示看 probe.level。
+        return {
+            "online": online,
+            "startTime": start_time,
+            "probe": {"level": level, "checkedAt": int(time.time())},
+            "versions": self._collect_versions(base),
+        }
+
+    @staticmethod
+    def _transport_failure_level(url: str) -> str:
+        """传输层失败时区分「端口没人」与「端口有人但 HTTP 失败」。
+
+        Windows 上连接被拒可能表现为连接超时，因此 TCP 连不上（拒绝或超时）都判「端口没人」；
+        只有端口确实有人监听、但 HTTP 层仍失败时才判未知。
+        """
+        try:
+            parts = urllib.parse.urlsplit(url)
+            with socket.create_connection((parts.hostname or "127.0.0.1", parts.port or 80), timeout=1):
+                return "unknown"  # 端口有人监听但 HTTP 失败（超时等），不能判离线。
+        except OSError:
+            return "off"
 
     def _collect_versions(self, base: str) -> dict | None:
         """版本三字段来自 `/api/stat/versions`（本机返回 `{"status":"ok","data":{...}}`）。"""

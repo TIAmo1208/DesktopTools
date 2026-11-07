@@ -536,3 +536,76 @@ fn probe_service_status_is_authorized_per_instance()
     assert!(result.payload["checkedAt"].as_i64().unwrap() > 0);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+/// loopback-channel 进入能力白名单且与既有能力并存，组合声明仍整份拒绝。
+#[test]
+fn loopback_capability_is_whitelisted_alone()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-plugin-loopback-gate-{}", std::process::id())); // 本测试独占目录。
+    let write = |folder: &str, id: &str, capabilities: &str| {
+        let path = directory.join(folder); // 一个待注册的插件文件夹。
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("main.js"), "var ok = 1;").unwrap();
+        let manifest = format!(
+            r#"[plugin]
+id = {id}
+name = {folder}
+version = 1.0.0
+entry = main.js
+required_capabilities = {capabilities}
+"#
+        );
+        std::fs::write(path.join("manifest.ini"), manifest).unwrap();
+    };
+    write("通道", "plugin.loopback", "loopback-channel");
+    write("探活", "plugin.probe", "probe-service-status");
+    write("组合", "plugin.both", "loopback-channel, probe-service-status");
+    let runtime = ComponentRuntimeState::new(&directory);
+    let manifests = runtime.catalog().manifests.clone(); // 解析后的插件清单。
+    assert_eq!(manifests["plugin.loopback"].required_capabilities, [ComponentCapability::LoopbackChannel]);
+    assert_eq!(manifests["plugin.probe"].required_capabilities, [ComponentCapability::ProbeServiceStatus], "两种能力并存");
+    assert!(!manifests.contains_key("plugin.both"), "组合声明仍整份拒绝");
+    let instance = |instance_id: &str, component_id: &str| ComponentInstanceSnapshot { instance_id: instance_id.to_string(), component_id: component_id.to_string(), monitor_id: "DISPLAY1".to_string(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 20.0, top: 20.0, width: 220.0, height: 116.0 }, state_version: 1, state: json!({}) }; // 当前测试复用的插件实例构造器。
+    let instances = [instance("channel", "plugin.loopback"), instance("probe", "plugin.probe")]; // 两个单能力实例。
+    assert_eq!(runtime.invoke_capability(&instances, "channel", ComponentCapability::ProbeServiceStatus).unwrap_err().code, "component-capability-denied");
+    assert_eq!(runtime.invoke_capability(&instances, "probe", ComponentCapability::LoopbackChannel).unwrap_err().code, "component-capability-denied");
+    assert!(runtime.authorize_capability(&instances, "channel", ComponentCapability::LoopbackChannel).is_ok());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// [tiles.size] 解析类型级默认与最小尺寸；未知类型、非法值与重复行只忽略该行。
+#[test]
+fn plugin_tile_sizes_parse_and_invalid_entries_fall_back()
+{
+    let text = r#"[plugin]
+id = plugin.sized
+name = 尺寸
+version = 1.0.0
+entry = main.js
+creatable = 1
+
+[tiles]
+status = 状态
+logs = 日志
+
+[tiles.size]
+status = 168x170, 168x114
+logs = 0x10
+unknown = 100x100
+status = 1x1
+"#;
+    let mut tile_types = super::parse_plugin_tiles(text).unwrap();
+    super::apply_plugin_tile_sizes(&mut tile_types, text);
+    assert_eq!(tile_types[0].default_size, Some(crate::contracts::TileSize { width: 168, height: 170 }));
+    assert_eq!(tile_types[0].minimum_size, Some(crate::contracts::TileSize { width: 168, height: 114 }));
+    assert_eq!(tile_types[1].default_size, None, "非法尺寸退回公共默认值");
+    assert_eq!(super::tile_default_size(&tile_types, &json!({ "tileType": "status" })), Some(crate::contracts::TileSize { width: 168, height: 170 }));
+    assert_eq!(super::tile_minimum_size(&tile_types, &json!({ "tileType": "status" })), Some(crate::contracts::TileSize { width: 168, height: 114 }));
+    assert_eq!(super::tile_default_size(&tile_types, &json!({})), Some(crate::contracts::TileSize { width: 168, height: 170 }), "缺类型时落到第一节");
+    assert_eq!(super::tile_minimum_size(&tile_types, &json!({ "tileType": "logs" })), None);
+    assert_eq!(super::tile_default_size(&[], &json!({})), None);
+    assert_eq!(super::parse_tile_size_declaration("320x180"), Some((crate::contracts::TileSize { width: 320, height: 180 }, None)));
+    assert_eq!(super::parse_tile_size_declaration(" 320 X 180 , 200x120 "), Some((crate::contracts::TileSize { width: 320, height: 180 }, Some(crate::contracts::TileSize { width: 200, height: 120 }))));
+    assert!(super::parse_tile_size_declaration("320x180, 200x120, 1x1").is_none());
+    assert!(super::parse_tile_size_declaration("320x").is_none());
+}

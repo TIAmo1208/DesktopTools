@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../bridge/components";
+import { requestLoopback } from "../../bridge/loopback";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../bridge/pluginSettings";
 import {
     applyPluginInstall,
@@ -461,6 +462,8 @@ export const PluginSettingsPage = ({
         const failure = scriptlessTheme ? undefined : scriptFailure(selected.id, reloaded); // 脚本失败说明；重新加载成功后不再沿用旧失败。
         const pending = !scriptlessTheme && !pluginDisabled && entries === undefined && !failure && !pluginScriptLoaded(selected.id); // 只有还没加载完才显示加载态。
         const usedTiles = pluginTileCount(components, selected.id); // 已在桌面上的格子数。
+        const desktopInstanceId = components?.find((item) => item.componentId === selected.id)?.instanceId ?? ""; // 设置条目主动拉取用第一个桌面实例。
+        const loopbackCredential = pluginLoopbackCredential(selected.id); // 插件声明的共享 token 配对入口。
         const typeStatus = pluginTypeStatus(components, selected.id, selected.tileTypes, selected.maxTiles); // 每个类型各自的额度。
         const tileRoom = pluginTileRoom(selected.maxTiles, usedTiles); // 没有声明类型时按整体额度判断。
         const allFull = typeStatus ? [...typeStatus.values()].every((room) => room.full) : tileRoom.full; // 声明了类型时全部类型都满才禁用。
@@ -534,6 +537,7 @@ export const PluginSettingsPage = ({
                         ) : null}
                     </p>
                     {selected.description ? <PluginAbout text={selected.description} /> : null}
+                    {loopbackCredential ? <PluginLoopbackPairing pluginId={selected.id} metadata={loopbackCredential} disabled={disabled || pluginDisabled} /> : null}
                     {pending ? (
                         <p className="plugin-settings__status" role="status" aria-busy="true">
                             正在加载插件设置…
@@ -558,6 +562,8 @@ export const PluginSettingsPage = ({
                                     key={entry.id}
                                     pluginId={selected.id}
                                     entry={entry}
+                                    version={selected.version}
+                                    instanceId={desktopInstanceId}
                                     open={openEntryIds.has(entry.id)}
                                     locked={pluginDisabled}
                                     onToggle={() =>
@@ -952,15 +958,119 @@ const PluginConfirmDialog = ({
 };
 
 /** 一条设置条目。停用时只能看见标题。 */
+/** 插件脚本可声明的 loopback 凭据元数据；没有声明时不显示配对入口。 */
+export interface PluginLoopbackCredential {
+    target: string; // Windows Credential Manager 目标。
+    headerName?: string; // 注入与校验使用的头名。
+    title?: string; // 面板标题。
+    hint?: string; // 使用说明。
+}
+
+/** 从已注册外壳读取凭据元数据；格式不合法时不显示入口。 */
+export const pluginLoopbackCredential = (pluginId: string): PluginLoopbackCredential | undefined => {
+    const metadata = (readPluginApi(pluginId) as unknown as { loopbackCredential?: unknown } | undefined)?.loopbackCredential;
+    if (typeof metadata !== "object" || metadata === null) return undefined;
+    const record = metadata as Record<string, unknown>;
+    const target = typeof record.target === "string" ? record.target.trim() : "";
+    if (!target) return undefined;
+    const text = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
+    return { target, headerName: text(record.headerName), title: text(record.title), hint: text(record.hint) };
+};
+
+/**
+ * 配对变化后把版本写进插件设置，借 plugin-settings-changed 通知桌面插件重试注册。
+ * 不新增宿主命令；写入失败由保存/清除流程明确报错。
+ */
+export const bumpPairingVersion = async (pluginId: string): Promise<void> => {
+    const current = await getPluginSettings(pluginId).catch(() => null);
+    const base = current && typeof current === "object" && !Array.isArray(current) ? (current as Record<string, unknown>) : {};
+    const previous = Number(base.pairingVersion);
+    await savePluginSettings(pluginId, { ...base, pairingVersion: Math.max(Date.now(), Number.isFinite(previous) ? previous + 1 : 0) });
+};
+
+/** 共享 token 配对：只写入凭据管理器，已保存的 token 不回显。 */
+const PluginLoopbackPairing = ({ pluginId, metadata, disabled }: { pluginId: string; metadata: PluginLoopbackCredential; disabled: boolean }) => {
+    const [secret, setSecret] = useState(""); // 只有本次输入，保存后立即清空。
+    const [busy, setBusy] = useState(false); // 保存或清除进行中。
+    const [feedback, setFeedback] = useState<{ tone: "ok" | "error"; text: string }>(); // 面板内的可见反馈。
+    const inputId = `loopback-token-${metadata.target.replace(/[^a-zA-Z0-9_-]/g, "-")}`; // 目标里可能有斜杠。
+    const run = (task: Promise<unknown>, success: string) => {
+        setBusy(true);
+        setFeedback(undefined);
+        void task
+            .then(() => bumpPairingVersion(pluginId))
+            .then(() => {
+                setSecret("");
+                setFeedback({ tone: "ok", text: success });
+                publishMessage({ type: "success", content: success, source: "plugin-settings" });
+            })
+            .catch((error: unknown) => {
+                const text = `操作失败：${commandErrorMessage(error)}`;
+                setFeedback({ tone: "error", text });
+                publishMessage({ type: "error", content: text, source: "plugin-settings" });
+            })
+            .finally(() => setBusy(false));
+    };
+    const handleSave = () => {
+        const value = secret.trim();
+        if (!value) {
+            setFeedback({ tone: "error", text: "请先粘贴共享 token" });
+            return;
+        }
+        run(invokeRuntime("set_loopback_credential", { target: metadata.target, secret: value }), "已保存到 Windows 凭据管理器，页面不会回显 token");
+    };
+    const handleClear = () => run(invokeRuntime("clear_loopback_credential", { target: metadata.target }), "已清除保存的共享 token");
+    return (
+        <div className="plugin-settings__pairing">
+            <h3>{metadata.title ?? "共享 token"}</h3>
+            {metadata.hint ? <p className="plugin-settings__pairing-hint">{metadata.hint}</p> : null}
+            <div className="plugin-settings__pairing-form">
+                <label className="plugin-settings__pairing-label" htmlFor={inputId}>
+                    共享 token
+                </label>
+                <input
+                    id={inputId}
+                    className="plugin-settings__pairing-input"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="粘贴 token"
+                    value={secret}
+                    disabled={disabled || busy}
+                    onChange={(event) => setSecret(event.target.value)}
+                    onKeyDown={(event) => {
+                        if (event.key === "Enter") handleSave();
+                    }}
+                />
+                <button className="settings__button" type="button" disabled={disabled || busy} onClick={handleSave} data-button="secondary">
+                    保存
+                </button>
+                <button className="settings__button plugin-settings__pairing-clear" type="button" disabled={disabled || busy} onClick={handleClear} data-button="danger">
+                    清除
+                </button>
+            </div>
+            {feedback ? (
+                <p className={`plugin-settings__pairing-feedback plugin-settings__pairing-feedback--${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}>
+                    {feedback.text}
+                </p>
+            ) : null}
+        </div>
+    );
+};
+
 const PluginEntry = ({
     pluginId,
     entry,
+    version,
+    instanceId,
     open,
     locked,
     onToggle,
 }: {
     pluginId: string;
     entry: PluginSettingsEntry;
+    version?: string; // 清单版本，设置条目可只读展示。
+    instanceId: string; // 第一个桌面实例；主动拉取与实例上下文使用。
     open: boolean; // 当前是否展开。
     locked: boolean; // 插件停用，不允许展开。
     onToggle: () => void;
@@ -976,14 +1086,18 @@ const PluginEntry = ({
         </button>
         {open && !locked && (
             <div className="plugin-settings__entry-body">
-                {typeof entry.render === "function" ? <PluginEntryMount pluginId={pluginId} entry={entry} /> : <p>该插件未提供设置内容。</p>}
+                {typeof entry.render === "function" ? (
+                    <PluginEntryMount pluginId={pluginId} entry={entry} version={version} instanceId={instanceId} />
+                ) : (
+                    <p>该插件未提供设置内容。</p>
+                )}
             </div>
         )}
     </div>
 );
 
 /** 把作者内容挂进宿主容器，折叠或停用时卸掉。 */
-const PluginEntryMount = ({ pluginId, entry }: { pluginId: string; entry: PluginSettingsEntry }) => {
+const PluginEntryMount = ({ pluginId, entry, version, instanceId }: { pluginId: string; entry: PluginSettingsEntry; version?: string; instanceId: string }) => {
     const [settings, setSettings] = useState<unknown>(null); // 最近一次读到的插件设置。
     const [host, setHost] = useState<HTMLDivElement | null>(null); // 作者容器。
 
@@ -1012,11 +1126,13 @@ const PluginEntryMount = ({ pluginId, entry }: { pluginId: string; entry: Plugin
         try {
             cleanup = entry.render(host, {
                 pluginId,
-                instanceId: "",
+                instanceId,
                 tileType: "", // 设置条目不对应实例，没有类型。
                 collapsed: false,
+                pluginVersion: version,
                 settings,
                 saveSettings: (value) => savePluginSettings(pluginId, value),
+                requestLoopback: instanceId ? (channelId, method, path) => requestLoopback(instanceId, channelId, method, path) : undefined,
             });
         } catch (error) {
             console.error(`插件设置条目渲染失败：${pluginId}`, error);
@@ -1028,7 +1144,7 @@ const PluginEntryMount = ({ pluginId, entry }: { pluginId: string; entry: Plugin
         return () => {
             if (typeof cleanup === "function") cleanup();
         };
-    }, [host, entry, pluginId, settings]);
+    }, [host, entry, pluginId, settings, version, instanceId]);
 
     return <div className="plugin-settings__author" ref={setHost} />;
 };

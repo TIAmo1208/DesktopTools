@@ -1,9 +1,9 @@
 name: astrbot_plugin_desktop_status
 display_name: Desktop 状态采集
 author: plugin-dev
-version: 0.1.0
-description: 在 AstrBot 进程内采集服务/平台/资源/消息/日志/Token 用量，按契约 v1 推送快照到本机接收端，并提供只监听 127.0.0.1 的反向接口供接收端拉取与启停平台。
-desc: AstrBot 侧状态采集插件（契约 v1）。采集失败的项一律给 null，不读取任何 AstrBot 凭据。
+version: 0.2.0
+description: 在 AstrBot 进程内采集服务/平台/资源/消息/日志/Token 用量，按契约 v2（service.probe 四档、原始快照经 loopback 通道推送）向本机 Desktop Tools 提供数据，并提供只监听 127.0.0.1 的反向接口供拉取与启停平台。
+desc: AstrBot 侧状态采集插件（契约 v2）。service.probe 用 ok/warn/off/unknown 四档表达在线、探测被拒、离线与未知；采集失败的项一律给 null，不读取任何 AstrBot 凭据。
 repo: https://localhost/desktop-tools/astrbot_plugin_desktop_status
 category: 系统工具
 tags:

@@ -91,17 +91,22 @@ fn pixels_match_theme_alpha_and_dpi()
         let frame = Frame { loading_phase: 0.0, id: 3, kind: "info".into(), loading: false, rect: D2D_RECT_F { left: 2.0, top: 140.0, right: 298.0, bottom: 204.0 }, visual: Visual { top: 140.0, height: 64.0, scale: 1.0, alpha: 1.0, content: 1.0 }, closable: true };
         let pixel = |surface: &Surface, x: f32, y: f32| {
             let mut section = DIBSECTION::default();
-            unsafe { assert_ne!(GetObjectW(surface.bitmap.image.into(), std::mem::size_of::<DIBSECTION>() as i32, Some((&mut section as *mut DIBSECTION).cast())), 0); }
+            unsafe {
+                assert_ne!(GetObjectW(surface.bitmap.image.into(), std::mem::size_of::<DIBSECTION>() as i32, Some((&mut section as *mut DIBSECTION).cast())), 0);
+            }
             let bytes = unsafe { std::slice::from_raw_parts(section.dsBm.bmBits.cast::<u8>(), (surface.size.cx * surface.size.cy * 4) as usize) };
             let offset = (((y * scale) as i32 * surface.size.cx + (x * scale) as i32) * 4) as usize;
             [bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]]
         }; // 真实预乘 BGRA 的指定 DIP 像素。
         surface.draw(&[frame.clone()], &appearance, None, false).unwrap();
         let surface_bgra = pixel(&surface, 140.0, 150.0); // 画板主题表面，正文轨道另取样。
-        let text_region = (36..244).flat_map(|x| (140..204).map(move |y| (x, y))).filter(|(x, y)| {
-            let color = pixel(&surface, *x as f32, *y as f32);
-            color[3] > 200 && color != surface_bgra
-        }).count();
+        let text_region = (36..244)
+            .flat_map(|x| (140..204).map(move |y| (x, y)))
+            .filter(|(x, y)| {
+                let color = pixel(&surface, *x as f32, *y as f32);
+                color[3] > 200 && color != surface_bgra
+            })
+            .count();
         assert!(text_region > 8, "bevel 主题正文应明显区别于表面，DPI={scale}，像素={text_region}");
         let icon_region = (12..28).flat_map(|x| (165..181).map(move |y| (x, y))).filter(|(x, y)| pixel(&surface, *x as f32, *y as f32) != surface_bgra).count();
         assert!(icon_region > 4, "bevel 主题状态图标不应消失，DPI={scale}");
@@ -344,33 +349,33 @@ impl Surface
             if frame.loading
             {
                 let mut original = Default::default(); // 保存原变换，旋转只作用于资源图标。
-                    self.target.GetTransform(&mut original);
-                    let mut rotation = original; // 以图标中心旋转缓存蒙版。
-                    let (sine, cosine) = frame.loading_phase.sin_cos();
-                    rotation.M11 = cosine;
-                    rotation.M12 = sine;
-                    rotation.M21 = -sine;
-                    rotation.M22 = cosine;
-                    rotation.M31 = center.X * (1.0 - cosine) + center.Y * sine;
-                    rotation.M32 = center.Y * (1.0 - cosine) - center.X * sine;
-                    self.target.SetTransform(&rotation);
-                    self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED); // FillOpacityMask 要求此模式，边缘 Alpha 已来自 SVG 栅格化。
-                    self.target.FillOpacityMask(&self.loading_mask, brush, D2D1_OPACITY_MASK_CONTENT_GRAPHICS, Some(&D2D_RECT_F { left: center.X - 8.0, top: center.Y - 8.0, right: center.X + 8.0, bottom: center.Y + 8.0 }), None);
-                    self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                    self.target.SetTransform(&original);
-                }
-                else if frame.kind == "success"
-                {
-                    self.target.DrawLine(point(center.X - 5.0, center.Y), point(center.X - 1.0, center.Y + 4.0), brush, 1.5, &self.stroke);
-                    self.target.DrawLine(point(center.X - 1.0, center.Y + 4.0), point(center.X + 6.0, center.Y - 4.0), brush, 1.5, &self.stroke);
-                }
-                else
-                {
-                    self.target.DrawEllipse(&D2D1_ELLIPSE { point: center, radiusX: 6.5, radiusY: 6.5 }, brush, 1.3, None);
-                    let inverted = frame.kind == "warning" || frame.kind == "error"; // 信息与警告使用不同的点线方向。
-                    self.target.DrawLine(point(center.X, center.Y + if inverted { -3.0 } else { 0.0 }), point(center.X, center.Y + if inverted { 1.0 } else { 4.0 }), brush, 1.5, &self.stroke);
-                    self.target.FillEllipse(&D2D1_ELLIPSE { point: point(center.X, center.Y + if inverted { 3.5 } else { -3.0 }), radiusX: 0.8, radiusY: 0.8 }, brush);
-                }
+                self.target.GetTransform(&mut original);
+                let mut rotation = original; // 以图标中心旋转缓存蒙版。
+                let (sine, cosine) = frame.loading_phase.sin_cos();
+                rotation.M11 = cosine;
+                rotation.M12 = sine;
+                rotation.M21 = -sine;
+                rotation.M22 = cosine;
+                rotation.M31 = center.X * (1.0 - cosine) + center.Y * sine;
+                rotation.M32 = center.Y * (1.0 - cosine) - center.X * sine;
+                self.target.SetTransform(&rotation);
+                self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED); // FillOpacityMask 要求此模式，边缘 Alpha 已来自 SVG 栅格化。
+                self.target.FillOpacityMask(&self.loading_mask, brush, D2D1_OPACITY_MASK_CONTENT_GRAPHICS, Some(&D2D_RECT_F { left: center.X - 8.0, top: center.Y - 8.0, right: center.X + 8.0, bottom: center.Y + 8.0 }), None);
+                self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                self.target.SetTransform(&original);
+            }
+            else if frame.kind == "success"
+            {
+                self.target.DrawLine(point(center.X - 5.0, center.Y), point(center.X - 1.0, center.Y + 4.0), brush, 1.5, &self.stroke);
+                self.target.DrawLine(point(center.X - 1.0, center.Y + 4.0), point(center.X + 6.0, center.Y - 4.0), brush, 1.5, &self.stroke);
+            }
+            else
+            {
+                self.target.DrawEllipse(&D2D1_ELLIPSE { point: center, radiusX: 6.5, radiusY: 6.5 }, brush, 1.3, None);
+                let inverted = frame.kind == "warning" || frame.kind == "error"; // 信息与警告使用不同的点线方向。
+                self.target.DrawLine(point(center.X, center.Y + if inverted { -3.0 } else { 0.0 }), point(center.X, center.Y + if inverted { 1.0 } else { 4.0 }), brush, 1.5, &self.stroke);
+                self.target.FillEllipse(&D2D1_ELLIPSE { point: point(center.X, center.Y + if inverted { 3.5 } else { -3.0 }), radiusX: 0.8, radiusY: 0.8 }, brush);
+            }
         }
         Ok(())
     }

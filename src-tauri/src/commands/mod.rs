@@ -5,6 +5,7 @@ mod component;
 mod desktop_host;
 pub mod desktop_item;
 pub mod folder_portal;
+pub mod loopback;
 pub use desktop_item::get_desktop_item_image;
 pub use desktop_item::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
 pub mod music;
@@ -719,6 +720,45 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let instance_id: String = command_argument(&arguments, "instanceId", "命令参数无效").map_err(serialize_error)?; // 已解码的 instanceId。
             let capability: ComponentCapability = command_argument(&arguments, "capability", "命令参数无效").map_err(serialize_error)?; // 已解码的 capability。
             component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), instance_id, capability).map_err(serialize_error).and_then(serialize_result)
+        }
+        "register_loopback_channel" =>
+        {
+            let instance_id: String = command_argument(&arguments, "instanceId", "通道实例标识无效").map_err(serialize_error)?;
+            let channel_id: String = command_argument(&arguments, "channelId", "通道标识无效").map_err(serialize_error)?;
+            let mode: crate::contracts::LoopbackChannelMode = command_argument(&arguments, "mode", "通道方向无效").map_err(serialize_error)?;
+            let port: Option<u16> = arguments.get("port").cloned().map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("通道端口参数无效")))?;
+            let base_url: Option<String> = arguments.get("baseUrl").cloned().map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("通道基址参数无效")))?;
+            let credential_ref: Option<String> = arguments.get("credentialRef").cloned().map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("通道凭据参数无效")))?;
+            let header_name: Option<String> = arguments.get("headerName").cloned().map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("通道头名参数无效")))?;
+            let request = crate::contracts::RegisterLoopbackChannel { instance_id, channel_id, mode, port, base_url, credential_ref, header_name };
+            loopback::execute_register_loopback_channel(app, &app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), request).map_err(serialize_error).and_then(serialize_result)
+        }
+        "read_loopback_channel" =>
+        {
+            let instance_id: String = command_argument(&arguments, "instanceId", "通道实例标识无效").map_err(serialize_error)?;
+            let channel_id: String = command_argument(&arguments, "channelId", "通道标识无效").map_err(serialize_error)?;
+            let after_sequence: Option<u64> = arguments.get("afterSequence").cloned().map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("通道序号参数无效")))?;
+            loopback::execute_read_loopback_channel(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), instance_id, channel_id, after_sequence).map_err(serialize_error).and_then(serialize_result)
+        }
+        "request_loopback" =>
+        {
+            let instance_id: String = command_argument(&arguments, "instanceId", "通道实例标识无效").map_err(serialize_error)?;
+            let channel_id: String = command_argument(&arguments, "channelId", "通道标识无效").map_err(serialize_error)?;
+            let method: String = command_argument(&arguments, "method", "请求方法无效").map_err(serialize_error)?;
+            let path: String = command_argument(&arguments, "path", "请求路径无效").map_err(serialize_error)?;
+            let body: Option<String> = arguments.get("body").cloned().filter(|value| !value.is_null()).map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("请求体参数无效")))?;
+            loopback::execute_request_loopback(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), instance_id, channel_id, method, path, body).map_err(serialize_error).and_then(serialize_result)
+        }
+        "set_loopback_credential" =>
+        {
+            let target: String = command_argument(&arguments, "target", "凭据目标无效").map_err(serialize_error)?;
+            let secret: String = command_argument(&arguments, "secret", "共享密钥无效").map_err(serialize_error)?;
+            loopback::execute_set_loopback_credential(target, secret).map_err(serialize_error).and_then(serialize_result)
+        }
+        "clear_loopback_credential" =>
+        {
+            let target: String = command_argument(&arguments, "target", "凭据目标无效").map_err(serialize_error)?;
+            loopback::execute_clear_loopback_credential(target).map_err(serialize_error).and_then(serialize_result)
         }
         "get_current_desktop_item_snapshot" => desktop_item::read_desktop_item_snapshot(&app.state::<DesktopItemState>()).map_err(serialize_error).and_then(serialize_result),
         "open_desktop_items" => command_argument(&arguments, "itemIds", "桌面项目打开参数无效").map_err(serialize_error).and_then(|item_ids: Vec<String>| app.state::<DesktopItemState>().open(&item_ids).map_err(serialize_error)).and_then(serialize_result),

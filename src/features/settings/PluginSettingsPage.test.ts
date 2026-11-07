@@ -29,6 +29,15 @@ test("插件行展示元素穿透整行按钮，卸载与开关保留独立命�
     assert.match(rules.find(({ selector }) => selector === ".plugin-settings__row--link > .plugin-settings__hit")?.body ?? "", /position:\s*absolute/);
 });
 
+test("设置条目上下文带上桌面实例与主动拉取入口", () => {
+    const source = readFileSync(new URL("./PluginSettingsPage.tsx", import.meta.url), "utf8");
+    assert.match(source, /const desktopInstanceId = components\?\.find\(\(item\) => item\.componentId === selected\.id\)\?\.instanceId/);
+    assert.match(source, /instanceId=\{desktopInstanceId\}/);
+    assert.match(source, /requestLoopback: instanceId \?/);
+    assert.match(source, /requestLoopback\(instanceId, channelId, method, path\)/);
+    assert.doesNotMatch(source, /peek/i);
+});
+
 test("失效移除与天气删除使用 danger，分段控件仍为 primary", () => {
     const plugin = readFileSync(new URL("./PluginSettingsPage.tsx", import.meta.url), "utf8"); // 插件移除命令。
     const weather = readFileSync(new URL("./WeatherSettings.tsx", import.meta.url), "utf8"); // 天气确认与供应商分段。
@@ -350,4 +359,16 @@ test("条目数说明区分停用、失败、加载中、没有条目和条目�
     } finally {
         globalThis.window = previous;
     }
+});
+
+test("共享 token 元数据只在声明齐全时出现", () => {
+    scripts.bindPluginApi("plugin.pairing", {
+        renderTile() {},
+        loopbackCredential: { target: " DesktopTools/astrbot-status ", headerName: "X-Status-Token", title: "共享 token", hint: "粘贴后保存" },
+    });
+    assert.deepEqual(page.pluginLoopbackCredential("plugin.pairing"), { target: "DesktopTools/astrbot-status", headerName: "X-Status-Token", title: "共享 token", hint: "粘贴后保存" });
+    scripts.bindPluginApi("plugin.no-pairing", { renderTile() {} });
+    assert.equal(page.pluginLoopbackCredential("plugin.no-pairing"), undefined);
+    scripts.bindPluginApi("plugin.bad-pairing", { renderTile() {}, loopbackCredential: { target: "" } });
+    assert.equal(page.pluginLoopbackCredential("plugin.bad-pairing"), undefined);
 });

@@ -1,5 +1,7 @@
 import { parseComponentRuntimeSnapshot } from "../contracts/component";
+import type { LoopbackResponse } from "../contracts/loopback";
 import { parsePluginInstallBatch, parsePluginInstallProgress, type PluginInstallPlan, type PluginInstallProgress } from "../contracts/plugin";
+import type { PluginMenuEntry } from "./pluginMenu";
 
 /** Tauri 的 Err 是字符串，不是 Error。字符串原样用，Error 取 message。 */
 export const commandErrorMessage = (error: unknown) => {
@@ -16,8 +18,13 @@ export interface PluginShellContext {
     instanceId: string; // 当前格子实例；设置条目可以不对应单个格子。
     tileType: string; // 当前实例的格子类型键；没有声明类型或缺失时为空串。
     collapsed: boolean; // 外框实际折叠状态。
+    pluginVersion?: string; // 清单版本；设置条目可只读展示，格子不用它。
     settings: unknown; // 读取命令给出的设置，没有文件时为 null。
     saveSettings: (settings: unknown) => Promise<void>; // 调用保存命令。
+    menu?: {
+        register: (items: readonly PluginMenuEntry[]) => () => void; // 注册格子右键菜单项，返回只撤下本次注册的清理函数。
+    }; // 只在 renderTile 期间使用。
+    requestLoopback?: (channelId: string, method: string, path: string) => Promise<LoopbackResponse>; // 设置条目主动拉取一次；不消费缓冲。
 }
 
 /** 一个插件自己的设置行。 */

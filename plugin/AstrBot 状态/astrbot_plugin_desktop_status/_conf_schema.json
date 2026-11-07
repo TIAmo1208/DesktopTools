@@ -24,11 +24,10 @@
     "default": 8766
   },
   "token": {
-    "description": "双向共享密钥",
-    "hint": "留空时自动生成随机值并写回本配置；与 AstrBot 既有凭据无关，日志中不会输出。",
+    "description": "双向共享密钥（后台可见，可复制）",
+    "hint": "留空时插件自动生成随机值并写回本配置。把这里显示的值复制到 Desktop Tools「设置 → 功能格子 → AstrBot 状态」的共享 token，两侧必须一致；与 AstrBot 既有凭据无关，日志不会输出该值。",
     "type": "string",
-    "default": "",
-    "secret": true
+    "default": ""
   },
   "log_tail": {
     "description": "日志保留条数",

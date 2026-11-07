@@ -409,8 +409,8 @@ fn tile_limit_counts_each_tile_type_separately()
     let path = snapshot_path("tile-limit-per-type"); // 独立测试工作区。
     let bounds = WorkspaceRect { left: 24.0, top: 24.0, width: 360.0, height: 280.0 }; // 新格子提交边界。
     let tile_types = vec![
-        crate::contracts::ComponentTileType { key: "clock".to_string(), name: "时钟".to_string() }, // 第一节即默认类型。
-        crate::contracts::ComponentTileType { key: "date".to_string(), name: "日期".to_string() },
+        crate::contracts::ComponentTileType { key: "clock".to_string(), name: "时钟".to_string(), default_size: None, minimum_size: None }, // 第一节即默认类型。
+        crate::contracts::ComponentTileType { key: "date".to_string(), name: "日期".to_string(), default_size: None, minimum_size: None },
     ];
     let declarations = [ComponentCapabilityDeclaration { component_id: "plugin.multi".into(), creatable: true, removable: true, max_tiles: 1, tile_types: tile_types.clone() }]; // 每类各限 1 个。
     let state = WorkspaceState::load_with_components(path.clone(), &[], &declarations).unwrap();

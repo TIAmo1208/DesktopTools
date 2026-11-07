@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://desktop-tools.local/contracts/astrbot-status/snapshot.schema.json",
-  "title": "AstrBot 状态快照 v1",
-  "description": "AstrBot 插件推送给接收端守护进程、以及接收端回读的同一份快照结构。时间戳一律 Unix 秒；拿不到的项必须给 null，不得用 0 或空数组冒充有数据。",
+  "title": "AstrBot 状态快照 v2",
+  "description": "AstrBot 插件推送、以及拉取接口回读的同一份快照结构。时间戳一律 Unix 秒；拿不到的项必须给 null，不得用 0 或空数组冒充有数据。v1 数据没有 service.probe，按「未知」处理。",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -18,8 +18,8 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 1,
-      "description": "结构版本，固定 1。"
+      "const": 2,
+      "description": "结构版本，固定 2。v1 数据没有 service.probe，接收端按「未知」处理，不得当成离线。"
     },
     "collectedAt": {
       "type": "integer",
@@ -45,17 +45,34 @@
     "service": {
       "type": ["object", "null"],
       "additionalProperties": false,
-      "required": ["online", "startTime", "versions"],
-      "description": "服务在线状态与版本。",
+      "required": ["online", "startTime", "probe", "versions"],
+      "description": "服务在线状态与版本。整段采集失败时为 null（按「未知」处理）。",
       "properties": {
         "online": {
           "type": ["boolean", "null"],
-          "description": "true=在跑，false=探测到不可用，null=没探测到（区分「端口没人」与「探测失败」）。"
+          "description": "派生/兼容字段：probe.level 为 ok 时写 true，为 off 时写 false，warn/unknown 或 probe 为 null 时写 null。展示一律以 probe.level 为准，不得只看本字段。"
         },
         "startTime": {
           "type": ["integer", "null"],
           "minimum": 0,
-          "description": "进程启动时刻，Unix 秒；已就绪时长由接收端现算。"
+          "description": "进程启动时刻，Unix 秒；仅 probe.level 为 ok 时有值，已就绪时长由消费方现算。"
+        },
+        "probe": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["level", "checkedAt"],
+          "description": "免鉴权探测的四档结论；整段为 null 时按「未知」处理，不得因为 online 为 false 就判离线。",
+          "properties": {
+            "level": {
+              "enum": ["ok", "warn", "off", "unknown"],
+              "description": "ok=在线；warn=探测被拒（401 或其它非 2xx）；off=连接被拒；unknown=超时、响应解析失败或其它未知异常。四档必须区分：未知不等于离线，探测被拒不等于服务停止。"
+            },
+            "checkedAt": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "该次判定的时刻，Unix 秒。"
+            }
+          }
         },
         "versions": {
           "type": ["object", "null"],

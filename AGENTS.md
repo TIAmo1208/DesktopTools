@@ -8,7 +8,7 @@ Desktop Tools 是 Windows 桌面内容工作区（Tauri + React）：前端负�
 
 - 使用者文档：根 `README.md` 说明产品定位、当前功能、构建运行与功能边界，不链接内部事实文档。
 - 代码结构：`src/README.md`、`src-tauri/README.md` 说明实际目录、模块职责、入口与依赖方向。
-- 领域事实：`CONTEXT.md` 记录领域语言与不变量；已确认决策见 `docs/adr/`；视觉规范见 `docs/design/视觉规范.md`；验收方法见 `docs/validation/验收流程.md`，本机验收记录写在本机 `build/validation/记录/`（不入库）。
+- 领域事实：`CONTEXT.md` 记录领域语言与不变量；已确认决策见 `docs/adr/`；视觉规范见 `docs/design/视觉规范.md`（设置界面行级细则见 `docs/design/设置界面规范.md`）；验收方法见 `docs/validation/验收流程.md`，本机验收记录写在本机 `build/validation/记录/`（不入库）。
 
 按触发条件读取，不整份套用：
 
@@ -23,8 +23,11 @@ Desktop Tools 是 Windows 桌面内容工作区（Tauri + React）：前端负�
 | 代码风格与注释             | `docs/agents/代码风格.md`          |
 | 前端实现与生命周期约定     | `docs/agents/前端约定.md`          |
 | 设计确认流程               | `docs/design/设计确认流程.md`      |
+| UX/UI 工具调用（Penpot）   | `docs/agents/UI工具调用.md`        |
 | CSS 归属约定               | `docs/design/CSS约定.md`           |
+| 设置界面视觉细则           | `docs/design/设置界面规范.md`      |
 | 主题可覆盖的令牌           | `docs/design/主题变量契约.md`      |
+| AstrBot 格子设计           | `docs/design/AstrBot状态格子.md`   |
 | 执行验收与取证             | `docs/agents/验收取证.md`          |
 | 抓图分级与截图纪律         | `docs/agents/取证工具.md`          |
 

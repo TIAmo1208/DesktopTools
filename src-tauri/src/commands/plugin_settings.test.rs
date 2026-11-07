@@ -22,7 +22,7 @@ fn create_plugin_component_rejects_ineligible_plugins()
 fn resolve_tile_type_follows_the_manifest()
 {
     let mut multi = manifest("plugin.multi", "plugin:slot", true);
-    multi.tile_types = vec![crate::contracts::ComponentTileType { key: "status".to_string(), name: "连通状态".to_string() }, crate::contracts::ComponentTileType { key: "messages".to_string(), name: "消息数".to_string() }];
+    multi.tile_types = vec![crate::contracts::ComponentTileType { key: "status".to_string(), name: "连通状态".to_string(), default_size: None, minimum_size: None }, crate::contracts::ComponentTileType { key: "messages".to_string(), name: "消息数".to_string(), default_size: None, minimum_size: None }];
     assert_eq!(super::resolve_tile_type(&multi, Some("messages")).unwrap(), Some("messages".to_string()));
     assert_eq!(super::resolve_tile_type(&multi, None).unwrap(), Some("status".to_string()), "未给类型时用第一节");
     assert_eq!(super::resolve_tile_type(&multi, Some("")).unwrap(), Some("status".to_string()), "空串按默认类型处理");

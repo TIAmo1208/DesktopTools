@@ -53,3 +53,4 @@ graphflow-out/
 .dsh-switchman/
 .agent-teams/
 .dsh-ops/
+*.zip

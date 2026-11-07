@@ -77,11 +77,16 @@
     border-color: var(--color-border);
 }
 
-/* 禁用轨道和滑块回到弱色，不整体降低透明度。 */
-.settings-switch input:disabled + .settings-switch__track,
-.settings-switch input:disabled + .settings-switch__track::after {
+/* 禁用轨道用次级表面，保留胶囊轮廓。 */
+.settings-switch input:disabled + .settings-switch__track {
     border-color: var(--color-border);
-    background: var(--color-border);
+    background: var(--color-subtle);
+}
+
+/* 禁用滑块保留表面色与细边，避免与轨道同色后看不出开关形态。 */
+.settings-switch input:disabled + .settings-switch__track::after {
+    background: var(--color-surface);
+    box-shadow: 0 0 0 1px var(--color-border);
 }
 
 /* 高对比度模式保留系统选中与边框辨识。 */

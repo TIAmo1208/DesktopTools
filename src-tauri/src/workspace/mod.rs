@@ -328,19 +328,26 @@ impl WorkspaceState
     /// 按清单声明校验创建与移除命令的可操作范围，其他命令不做组件能力校验。
     fn validate_component_capability(&self, layout: &WorkspaceSnapshot, command: &WorkspaceCommand) -> Result<(), WorkspaceError>
     {
-        // 创建、移除或校验用的组件身份与操作；创建时一并带上要写入的实例状态。
-        let (component_id, operation, create_state) = match command
+        // 创建、移除或校验用的组件身份与操作；创建时一并带上要写入的实例状态与提交边界。
+        let (component_id, operation, create_state, create_bounds) = match command
         {
-            WorkspaceCommand::CreateComponent { component_id, state, .. } => (component_id.as_str(), ComponentOperation::Create, Some(state)),
-            WorkspaceCommand::RemoveComponent { instance_id } => (layout.components.iter().find(|component| component.instance_id == *instance_id).ok_or_else(|| WorkspaceError::invalid_command("组件实例不存在"))?.component_id.as_str(), ComponentOperation::Remove, None),
+            WorkspaceCommand::CreateComponent { component_id, bounds, state } => (component_id.as_str(), ComponentOperation::Create, Some(state), Some(*bounds)),
+            WorkspaceCommand::RemoveComponent { instance_id } => (layout.components.iter().find(|component| component.instance_id == *instance_id).ok_or_else(|| WorkspaceError::invalid_command("组件实例不存在"))?.component_id.as_str(), ComponentOperation::Remove, None, None),
             _ => return Ok(()),
         };
         if matches!(operation, ComponentOperation::Create)
         {
+            let tile_types = self.component_tile_types(component_id); // 该清单声明的格子类型。
             // 清单声明的格子数量上限对所有创建入口统一生效；声明了类型时按实例类型分别计数，不限时为 0。
             if let Some(state) = create_state
             {
-                self.enforce_component_tile_limit(component_id, &self.component_tile_types(component_id), state, layout)?;
+                self.enforce_component_tile_limit(component_id, &tile_types, state, layout)?;
+                // 类型级有效下限：声明了更小尺寸时沿用公共底线；声明更大时拒绝低于它的创建。
+                if let (Some(bounds), Some(minimum)) = (create_bounds, crate::component_runtime::tile_minimum_size(&tile_types, state))
+                    && (bounds.width < f64::from(minimum.width) || bounds.height < f64::from(minimum.height))
+                {
+                    return Err(WorkspaceError::invalid_command(format!("该格子类型的最小尺寸为 {} × {} DIP", minimum.width, minimum.height)));
+                }
             }
         }
         if self.component_declares_capability(component_id, operation)
