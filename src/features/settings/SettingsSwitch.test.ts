@@ -28,6 +28,8 @@ test("settings switches submit independently of submenu navigation", async () =>
         assert.match(switchCss, /input:checked \+ \.settings-switch__track::after\s*\{[^}]*inset-inline-start: 22px;[^}]*background: var\(--color-surface\);/s);
         assert.match(switchCss, /input:focus-visible \+ \.settings-switch__track\s*\{[^}]*outline: 2px solid var\(--color-focus\);[^}]*outline-offset: 2px;/s);
         assert.match(switchCss, /@media \(forced-colors: active\)/);
+        assert.match(switchCss, /input:disabled \+ \.settings-switch__track\s*\{[^}]*background: var\(--color-subtle\);/s); // 禁用轨道不再填成边框色。
+        assert.match(switchCss, /input:disabled \+ \.settings-switch__track::after\s*\{[^}]*background: var\(--color-surface\);[^}]*box-shadow: 0 0 0 1px var\(--color-border\);/s); // 禁用滑块与轨道保持可分辨。
         assert.doesNotMatch(switchCss, /clip-path|drop-shadow|width: 16px|height: 18px/);
 
         const variantCss = readFileSync(new URL("../../styles/global.css", import.meta.url), "utf8"); // 同一 data-button 语义层。

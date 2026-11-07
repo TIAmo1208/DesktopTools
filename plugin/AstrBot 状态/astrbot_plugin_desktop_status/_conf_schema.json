@@ -1,0 +1,55 @@
+{
+  "enabled": {
+    "description": "总开关",
+    "hint": "关闭后不采集、不推送、不开反向端口。",
+    "type": "bool",
+    "default": true
+  },
+  "collect_interval_sec": {
+    "description": "采集周期（秒）",
+    "hint": "同一周期内既采集快照又推送。",
+    "type": "int",
+    "default": 5
+  },
+  "push_url": {
+    "description": "接收端推送地址",
+    "hint": "接收端默认监听 http://127.0.0.1:8765/v1/snapshot；端口写 0 表示不推送。",
+    "type": "string",
+    "default": "http://127.0.0.1:8765/v1/snapshot"
+  },
+  "listen_port": {
+    "description": "插件反向端口",
+    "hint": "只监听 127.0.0.1；契约约定 8766，供接收端拉取兜底与启停平台；0 表示不开端口。",
+    "type": "int",
+    "default": 8766
+  },
+  "token": {
+    "description": "双向共享密钥（后台可见，可复制）",
+    "hint": "留空时插件自动生成随机值并写回本配置。把这里显示的值复制到 Desktop Tools「设置 → 功能格子 → AstrBot 状态」的共享 token，两侧必须一致；与 AstrBot 既有凭据无关，日志不会输出该值。",
+    "type": "string",
+    "default": ""
+  },
+  "log_tail": {
+    "description": "日志保留条数",
+    "hint": "内存环形缓冲条数，上限 200（契约 C5）；不落盘。",
+    "type": "int",
+    "default": 200
+  },
+  "error_keywords": {
+    "description": "告警匹配词",
+    "hint": "在最近日志、平台错误与资源异常里匹配；命中结果写进插件日志，快照字段集合不变。",
+    "type": "list",
+    "default": [
+      "Traceback",
+      "ERROR",
+      "Exception",
+      "failed"
+    ]
+  },
+  "pricing": {
+    "description": "单价表（JSON 对象文本）",
+    "hint": "形如 {\"deepseek/deepseek-chat\": {\"inputPerM\": 0.28, \"outputPerM\": 0.42, \"currency\": \"USD\"}}，每百万 token 计价；留空时 cost.total 为 null。",
+    "type": "text",
+    "default": ""
+  }
+}

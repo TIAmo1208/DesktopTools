@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../bridge/components";
+import { requestLoopback } from "../../bridge/loopback";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../bridge/pluginSettings";
 import {
     applyPluginInstall,
@@ -24,7 +25,7 @@ import {
     type PluginSettingsEntry,
 } from "../../bridge/pluginScripts";
 import { applyWorkspaceCommand, getWorkspaceSnapshot, listenWorkspaceSnapshots } from "../../bridge/workspace";
-import type { ComponentInstanceSnapshot, ComponentManifest } from "../../contracts/component";
+import type { ComponentInstanceSnapshot, ComponentManifest, ComponentTileType } from "../../contracts/component";
 import type { PluginInstallPlan } from "../../contracts/plugin";
 import type { ApplicationPreferences } from "../../contracts/settings";
 import { invokeRuntime } from "../../bridge/runtime";
@@ -46,6 +47,7 @@ interface PluginRow {
     name: string; // 清单显示名。
     creatable: boolean; // 清单是否允许创建格子。
     maxTiles: number; // 格子上限。0 表示不限。
+    tileTypes: ComponentTileType[]; // 清单声明的格子类型。空表示隐式单类型，菜单不展开。
     version?: string; // 清单版本。没有就不展示。
     description?: string; // 插件简介。没有就不展示。
     author?: string; // 作者。没有就不拼 @。
@@ -73,6 +75,7 @@ export const PluginSettingsPage = ({
     const [loadedIds, setLoadedIds] = useState<ReadonlySet<string>>(new Set()); // 设置窗口里已经执行成功的脚本。
     const [reloaded, setReloaded] = useState<Readonly<Record<string, string>>>({}); // 重新加载后的结果；ok 表示不再沿用旧失败。
     const [menu, setMenu] = useState<{ pluginId: string; left: number; top: number; anchor: HTMLElement }>(); // 右键菜单锚点。
+    const [typeMenu, setTypeMenu] = useState<{ pluginId: string; tileTypes: ComponentTileType[]; maxTiles: number; left: number; top: number }>(); // 二级页加号展开的类型列表。
     const [confirm, setConfirm] = useState<PluginConfirmRequest>(); // 当前模态确认。
     const [confirming, setConfirming] = useState(false); // 确认命令进行中。
     const [creating, setCreating] = useState(false); // 创建格子进行中。
@@ -317,11 +320,11 @@ export const PluginSettingsPage = ({
         void clipboard.writeText(path).then(() => publishMessage({ type: "success", content: "已复制插件目录", source: "plugin-settings" }), failed);
     };
 
-    /** 在桌面创建一个该插件的格子。失败把错误说出来。 */
-    const handleCreate = (pluginId: string) => {
+    /** 在桌面创建一个该插件的格子。给了类型就写进实例 state。失败把错误说出来。 */
+    const handleCreate = (pluginId: string, tileType?: string) => {
         if (creating) return;
         setCreating(true);
-        void createPluginComponent(pluginId)
+        void createPluginComponent(pluginId, tileType)
             .then(async () => {
                 publishMessage({ type: "success", content: "已在桌面创建插件格子", source: "plugin-settings" });
                 const snapshot = await getWorkspaceSnapshot().catch(() => undefined); // 设置窗口收不到工作区事件时也要更新剩余额度。
@@ -383,15 +386,16 @@ export const PluginSettingsPage = ({
     const menuPlugin = plugins?.find((plugin) => plugin.id === menu?.pluginId); // 右键时仍在列表里的插件。
     const menuUsed = menuPlugin ? pluginTileCount(components, menuPlugin.id) : 0; // 这个插件已经在桌面上的格子。
     const menuItems: DesktopTileMenuItem[] = menuPlugin
-        ? pluginContextMenu(menuPlugin, {
+        ? pluginContextMenu({ ...menuPlugin, componentId: menuPlugin.id }, {
               used: menuUsed,
+              components, // 按类型分别计数要用到每个实例的 state。
               pluginDisabled: disabledIds.includes(menuPlugin.id),
               onOpenSettings: () => setSelectedId(menuPlugin.id),
               onOpenDirectory: () =>
                   void openPluginDirectory(menuPlugin.id).catch((error: unknown) =>
                       publishMessage({ type: "error", content: commandErrorMessage(error), source: "plugin-settings" }),
                   ),
-              onCreate: () => handleCreate(menuPlugin.id),
+              onCreate: (tileType) => handleCreate(menuPlugin.id, tileType),
               busy: creating,
               onToggle: () => handleEnabled(menuPlugin.id, disabledIds.includes(menuPlugin.id)),
               onUninstall: () => menu && handleUninstallRequest(menuPlugin, menu.anchor),
@@ -400,6 +404,22 @@ export const PluginSettingsPage = ({
     const overlays = (
         <>
             {menu && menuItems.length > 0 && <DesktopTileMenu items={menuItems} left={menu.left} top={menu.top} onClose={() => setMenu(undefined)} />}
+            {typeMenu && (
+                <DesktopTileMenu
+                    items={pluginTileTypeMenu(
+                        typeMenu.tileTypes,
+                        creating,
+                        (tileType) => {
+                            setTypeMenu(undefined);
+                            handleCreate(typeMenu.pluginId, tileType);
+                        },
+                        pluginTypeStatus(components, typeMenu.pluginId, typeMenu.tileTypes, typeMenu.maxTiles), // 每类各自的额度。
+                    )}
+                    left={typeMenu.left}
+                    top={typeMenu.top}
+                    onClose={() => setTypeMenu(undefined)}
+                />
+            )}
             {addOpen && (
                 <AddPluginDialog
                     picked={picked}
@@ -442,7 +462,12 @@ export const PluginSettingsPage = ({
         const failure = scriptlessTheme ? undefined : scriptFailure(selected.id, reloaded); // 脚本失败说明；重新加载成功后不再沿用旧失败。
         const pending = !scriptlessTheme && !pluginDisabled && entries === undefined && !failure && !pluginScriptLoaded(selected.id); // 只有还没加载完才显示加载态。
         const usedTiles = pluginTileCount(components, selected.id); // 已在桌面上的格子数。
-        const tileRoom = pluginTileRoom(selected.maxTiles, usedTiles); // 上限满了就不能再加。
+        const desktopInstanceId = components?.find((item) => item.componentId === selected.id)?.instanceId ?? ""; // 设置条目主动拉取用第一个桌面实例。
+        const loopbackCredential = pluginLoopbackCredential(selected.id); // 插件声明的共享 token 配对入口。
+        const typeStatus = pluginTypeStatus(components, selected.id, selected.tileTypes, selected.maxTiles); // 每个类型各自的额度。
+        const tileRoom = pluginTileRoom(selected.maxTiles, usedTiles); // 没有声明类型时按整体额度判断。
+        const allFull = typeStatus ? [...typeStatus.values()].every((room) => room.full) : tileRoom.full; // 声明了类型时全部类型都满才禁用。
+        const tightest = pluginTightestRemaining(typeStatus); // 加号悬停按最紧的一类报数。
         return (
             <>
                 <section className="plugin-settings plugin-settings--detail">
@@ -466,16 +491,26 @@ export const PluginSettingsPage = ({
                             <button
                                 className="settings__button settings__icon-button"
                                 type="button"
-                                disabled={!showCreatePlugin(selected.creatable) || createPluginBlocked(pluginDisabled) || creating || tileRoom.full}
+                                disabled={!showCreatePlugin(selected.creatable) || createPluginBlocked(pluginDisabled) || creating || allFull}
                                 title={
                                     !showCreatePlugin(selected.creatable)
                                         ? "添加到桌面"
                                         : createPluginBlocked(pluginDisabled)
                                           ? "启用后可创建"
-                                          : addToDesktopHint(selected.maxTiles, usedTiles)
+                                          : pluginTileTypesExpand(selected.tileTypes)
+                                            ? "添加到桌面"
+                                            : addToDesktopHint(selected.maxTiles, usedTiles, tightest)
                                 }
                                 aria-label="添加到桌面"
-                                onClick={() => handleCreate(selected.id)}
+                                aria-haspopup={pluginTileTypesExpand(selected.tileTypes) ? "menu" : undefined}
+                                onClick={(event) => {
+                                    if (!pluginTileTypesExpand(selected.tileTypes)) {
+                                        handleCreate(selected.id, pluginSingleTileType(selected.tileTypes)); // 只有一种类型时仍是加号按钮。
+                                        return;
+                                    }
+                                    const rect = event.currentTarget.getBoundingClientRect(); // 下拉贴着按钮下沿。
+                                    setTypeMenu({ pluginId: selected.id, tileTypes: selected.tileTypes, maxTiles: selected.maxTiles, left: rect.left, top: rect.bottom });
+                                }}
                              data-button="icon">
                                 <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: addIcon }} />
                             </button>
@@ -502,6 +537,7 @@ export const PluginSettingsPage = ({
                         ) : null}
                     </p>
                     {selected.description ? <PluginAbout text={selected.description} /> : null}
+                    {loopbackCredential ? <PluginLoopbackPairing pluginId={selected.id} metadata={loopbackCredential} disabled={disabled || pluginDisabled} /> : null}
                     {pending ? (
                         <p className="plugin-settings__status" role="status" aria-busy="true">
                             正在加载插件设置…
@@ -526,6 +562,8 @@ export const PluginSettingsPage = ({
                                     key={entry.id}
                                     pluginId={selected.id}
                                     entry={entry}
+                                    version={selected.version}
+                                    instanceId={desktopInstanceId}
                                     open={openEntryIds.has(entry.id)}
                                     locked={pluginDisabled}
                                     onToggle={() =>
@@ -920,15 +958,119 @@ const PluginConfirmDialog = ({
 };
 
 /** 一条设置条目。停用时只能看见标题。 */
+/** 插件脚本可声明的 loopback 凭据元数据；没有声明时不显示配对入口。 */
+export interface PluginLoopbackCredential {
+    target: string; // Windows Credential Manager 目标。
+    headerName?: string; // 注入与校验使用的头名。
+    title?: string; // 面板标题。
+    hint?: string; // 使用说明。
+}
+
+/** 从已注册外壳读取凭据元数据；格式不合法时不显示入口。 */
+export const pluginLoopbackCredential = (pluginId: string): PluginLoopbackCredential | undefined => {
+    const metadata = (readPluginApi(pluginId) as unknown as { loopbackCredential?: unknown } | undefined)?.loopbackCredential;
+    if (typeof metadata !== "object" || metadata === null) return undefined;
+    const record = metadata as Record<string, unknown>;
+    const target = typeof record.target === "string" ? record.target.trim() : "";
+    if (!target) return undefined;
+    const text = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
+    return { target, headerName: text(record.headerName), title: text(record.title), hint: text(record.hint) };
+};
+
+/**
+ * 配对变化后把版本写进插件设置，借 plugin-settings-changed 通知桌面插件重试注册。
+ * 不新增宿主命令；写入失败由保存/清除流程明确报错。
+ */
+export const bumpPairingVersion = async (pluginId: string): Promise<void> => {
+    const current = await getPluginSettings(pluginId).catch(() => null);
+    const base = current && typeof current === "object" && !Array.isArray(current) ? (current as Record<string, unknown>) : {};
+    const previous = Number(base.pairingVersion);
+    await savePluginSettings(pluginId, { ...base, pairingVersion: Math.max(Date.now(), Number.isFinite(previous) ? previous + 1 : 0) });
+};
+
+/** 共享 token 配对：只写入凭据管理器，已保存的 token 不回显。 */
+const PluginLoopbackPairing = ({ pluginId, metadata, disabled }: { pluginId: string; metadata: PluginLoopbackCredential; disabled: boolean }) => {
+    const [secret, setSecret] = useState(""); // 只有本次输入，保存后立即清空。
+    const [busy, setBusy] = useState(false); // 保存或清除进行中。
+    const [feedback, setFeedback] = useState<{ tone: "ok" | "error"; text: string }>(); // 面板内的可见反馈。
+    const inputId = `loopback-token-${metadata.target.replace(/[^a-zA-Z0-9_-]/g, "-")}`; // 目标里可能有斜杠。
+    const run = (task: Promise<unknown>, success: string) => {
+        setBusy(true);
+        setFeedback(undefined);
+        void task
+            .then(() => bumpPairingVersion(pluginId))
+            .then(() => {
+                setSecret("");
+                setFeedback({ tone: "ok", text: success });
+                publishMessage({ type: "success", content: success, source: "plugin-settings" });
+            })
+            .catch((error: unknown) => {
+                const text = `操作失败：${commandErrorMessage(error)}`;
+                setFeedback({ tone: "error", text });
+                publishMessage({ type: "error", content: text, source: "plugin-settings" });
+            })
+            .finally(() => setBusy(false));
+    };
+    const handleSave = () => {
+        const value = secret.trim();
+        if (!value) {
+            setFeedback({ tone: "error", text: "请先粘贴共享 token" });
+            return;
+        }
+        run(invokeRuntime("set_loopback_credential", { target: metadata.target, secret: value }), "已保存到 Windows 凭据管理器，页面不会回显 token");
+    };
+    const handleClear = () => run(invokeRuntime("clear_loopback_credential", { target: metadata.target }), "已清除保存的共享 token");
+    return (
+        <div className="plugin-settings__pairing">
+            <h3>{metadata.title ?? "共享 token"}</h3>
+            {metadata.hint ? <p className="plugin-settings__pairing-hint">{metadata.hint}</p> : null}
+            <div className="plugin-settings__pairing-form">
+                <label className="plugin-settings__pairing-label" htmlFor={inputId}>
+                    共享 token
+                </label>
+                <input
+                    id={inputId}
+                    className="plugin-settings__pairing-input"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="粘贴 token"
+                    value={secret}
+                    disabled={disabled || busy}
+                    onChange={(event) => setSecret(event.target.value)}
+                    onKeyDown={(event) => {
+                        if (event.key === "Enter") handleSave();
+                    }}
+                />
+                <button className="settings__button" type="button" disabled={disabled || busy} onClick={handleSave} data-button="secondary">
+                    保存
+                </button>
+                <button className="settings__button plugin-settings__pairing-clear" type="button" disabled={disabled || busy} onClick={handleClear} data-button="danger">
+                    清除
+                </button>
+            </div>
+            {feedback ? (
+                <p className={`plugin-settings__pairing-feedback plugin-settings__pairing-feedback--${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}>
+                    {feedback.text}
+                </p>
+            ) : null}
+        </div>
+    );
+};
+
 const PluginEntry = ({
     pluginId,
     entry,
+    version,
+    instanceId,
     open,
     locked,
     onToggle,
 }: {
     pluginId: string;
     entry: PluginSettingsEntry;
+    version?: string; // 清单版本，设置条目可只读展示。
+    instanceId: string; // 第一个桌面实例；主动拉取与实例上下文使用。
     open: boolean; // 当前是否展开。
     locked: boolean; // 插件停用，不允许展开。
     onToggle: () => void;
@@ -944,14 +1086,18 @@ const PluginEntry = ({
         </button>
         {open && !locked && (
             <div className="plugin-settings__entry-body">
-                {typeof entry.render === "function" ? <PluginEntryMount pluginId={pluginId} entry={entry} /> : <p>该插件未提供设置内容。</p>}
+                {typeof entry.render === "function" ? (
+                    <PluginEntryMount pluginId={pluginId} entry={entry} version={version} instanceId={instanceId} />
+                ) : (
+                    <p>该插件未提供设置内容。</p>
+                )}
             </div>
         )}
     </div>
 );
 
 /** 把作者内容挂进宿主容器，折叠或停用时卸掉。 */
-const PluginEntryMount = ({ pluginId, entry }: { pluginId: string; entry: PluginSettingsEntry }) => {
+const PluginEntryMount = ({ pluginId, entry, version, instanceId }: { pluginId: string; entry: PluginSettingsEntry; version?: string; instanceId: string }) => {
     const [settings, setSettings] = useState<unknown>(null); // 最近一次读到的插件设置。
     const [host, setHost] = useState<HTMLDivElement | null>(null); // 作者容器。
 
@@ -980,10 +1126,13 @@ const PluginEntryMount = ({ pluginId, entry }: { pluginId: string; entry: Plugin
         try {
             cleanup = entry.render(host, {
                 pluginId,
-                instanceId: "",
+                instanceId,
+                tileType: "", // 设置条目不对应实例，没有类型。
                 collapsed: false,
+                pluginVersion: version,
                 settings,
                 saveSettings: (value) => savePluginSettings(pluginId, value),
+                requestLoopback: instanceId ? (channelId, method, path) => requestLoopback(instanceId, channelId, method, path) : undefined,
             });
         } catch (error) {
             console.error(`插件设置条目渲染失败：${pluginId}`, error);
@@ -995,7 +1144,7 @@ const PluginEntryMount = ({ pluginId, entry }: { pluginId: string; entry: Plugin
         return () => {
             if (typeof cleanup === "function") cleanup();
         };
-    }, [host, entry, pluginId, settings]);
+    }, [host, entry, pluginId, settings, version, instanceId]);
 
     return <div className="plugin-settings__author" ref={setHost} />;
 };
@@ -1018,8 +1167,56 @@ export const pluginTileRoom = (maxTiles: number, used: number) => {
     return { full, remaining, reason: full ? `已达上限（${maxTiles} 个）` : undefined };
 };
 
-/** 加号按钮的悬停说明。不限时不报个数。 */
-export const addToDesktopHint = (maxTiles: number, used: number) => {
+/** 创建入口展开后的类型列表。显示名是菜单文案，键交给创建命令。每项按自己那一类判断是否已满。 */
+export const pluginTileTypeMenu = (tileTypes: readonly ComponentTileType[], blocked: boolean, onCreate: (tileType: string) => void, typeStatus?: PluginTypeStatus): DesktopTileMenuItem[] =>
+    tileTypes.map((tileType) => {
+        const room = typeStatus?.get(tileType.key); // 该类还能不能再加。
+        const full = room?.full === true; // 只有这一项满了。
+        return { label: tileType.name, disabled: blocked || full, description: full && !blocked ? room?.reason : undefined, onSelect: () => onCreate(tileType.key) };
+    });
+
+/** 类型键到该类剩余额度的映射；隐式单类型返回 undefined，调用方按整体额度处理。 */
+export type PluginTypeStatus = Map<string, ReturnType<typeof pluginTileRoom>>;
+
+/** 按实例的 state.tileType 统计每一类已用数量。缺失类型记到第一节（默认类型）。 */
+export const pluginTypeUsage = (components: readonly { componentId: string; state?: unknown }[] | undefined, pluginId: string, tileTypes: readonly ComponentTileType[]) => {
+    const used = new Map<string, number>(); // 类型键到已用数量。
+    if (!tileTypes.length) return used;
+    const fallback = tileTypes[0].key; // 旧实例按默认类型计。
+    for (const item of components ?? []) {
+        if (item.componentId !== pluginId) continue;
+        const value = typeof item.state === "object" && item.state !== null ? (item.state as Record<string, unknown>).tileType : undefined;
+        const key = typeof value === "string" && value ? value : fallback;
+        used.set(key, (used.get(key) ?? 0) + 1);
+    }
+    return used;
+};
+
+/** 每一类各自的额度状态。隐式单类型返回 undefined。 */
+export const pluginTypeStatus = (components: readonly { componentId: string; state?: unknown }[] | undefined, pluginId: string, tileTypes: readonly ComponentTileType[], maxTiles: number): PluginTypeStatus | undefined => {
+    if (!tileTypes.length) return undefined;
+    const used = pluginTypeUsage(components, pluginId, tileTypes);
+    return new Map(tileTypes.map((tileType) => [tileType.key, pluginTileRoom(maxTiles, used.get(tileType.key) ?? 0)]));
+};
+
+/** 各类剩余额度里最少的一类；全部不限时为 undefined。用于加号按钮的悬停说明。 */
+export const pluginTightestRemaining = (status: PluginTypeStatus | undefined) => {
+    const remaining = [...(status?.values() ?? [])].map((room) => room.remaining).filter((value): value is number => value !== undefined);
+    return remaining.length ? Math.min(...remaining) : undefined;
+};
+
+/** 加一个格子。给了类型就写进实例 state，没给就按隐式单类型创建。 */
+export const createTileState = (tileType?: string) => (tileType ? { tileType } : {});
+
+/** 创建入口是否展开成类型列表：多于一种类型才展开。 */
+export const pluginTileTypesExpand = (tileTypes: readonly ComponentTileType[]) => tileTypes.length > 1;
+
+/** 只有一种类型时直接创建它，让实例也带上类型，插件不必再按空串猜默认值。 */
+export const pluginSingleTileType = (tileTypes: readonly ComponentTileType[]) => (tileTypes.length === 1 ? tileTypes[0].key : undefined);
+
+/** 加号按钮悬停说明。不限时不报个数；声明了类型时报最紧那一类的剩余。 */
+export const addToDesktopHint = (maxTiles: number, used: number, tightest: number | undefined = undefined) => {
+    if (tightest !== undefined) return tightest === 0 ? `已达上限（${maxTiles} 个）` : `还可以添加 ${tightest} 个格子`; // 每类各自计数。
     const room = pluginTileRoom(maxTiles, used);
     if (room.full) return room.reason ?? "已达上限";
     if (room.remaining === undefined) return "添加到桌面";
@@ -1060,34 +1257,41 @@ const PluginAbout = ({ text }: { text: string }) => {
     );
 };
 
-/** 插件行右键菜单。四组用分隔线隔开。不可创建时不出现「添加到桌面」。 */
+/**
+ * 插件行右键菜单。四组用分隔线隔开。不可创建时不出现「添加到桌面」。
+ * 多于一种格子类型时，「添加到桌面」变成二级菜单，逐项列出类型。
+ */
 export const pluginContextMenu = (
-    plugin: { creatable: boolean; maxTiles: number },
+    plugin: { creatable: boolean; maxTiles: number; tileTypes?: readonly ComponentTileType[]; componentId?: string },
     actions: {
         used: number;
+        components?: readonly { componentId: string; state?: unknown }[]; // 已加载的工作区实例，用来按类型分别计数。
         pluginDisabled: boolean;
         onOpenSettings: () => void;
         onOpenDirectory: () => void;
-        onCreate: () => void;
+        onCreate: (tileType?: string) => void;
         busy?: boolean;
         onToggle: () => void;
         onUninstall: () => void;
     },
 ): DesktopTileMenuItem[] => {
-    const room = pluginTileRoom(plugin.maxTiles, actions.used); // 上限是否已经用完。
+    const room = pluginTileRoom(plugin.maxTiles, actions.used); // 没有声明类型时按整体额度判断。
+    const tileTypes = plugin.tileTypes ?? []; // 缺省按隐式单类型处理。
+    const typeStatus = pluginTypeStatus(actions.components, plugin.componentId ?? "", tileTypes, plugin.maxTiles); // 声明了类型时每类各自的额度。
+    const singleRoom = tileTypes.length === 1 ? typeStatus?.get(tileTypes[0].key) : undefined; // 只有一种类型时按那一类判断。
+    const full = singleRoom?.full ?? room.full; // 这个入口还能不能再加。
     const items: DesktopTileMenuItem[] = [
         { label: "打开插件设置", onSelect: actions.onOpenSettings },
         { label: "打开插件目录", onSelect: actions.onOpenDirectory },
     ];
     if (plugin.creatable) {
-        const blocked = room.full || actions.pluginDisabled || actions.busy === true; // 满了、停用或正在创建都不能再加。
-        items.push({
-            label: "添加到桌面",
-            separatorBefore: true,
-            disabled: blocked,
-            description: room.full ? room.reason : actions.pluginDisabled ? "启用后可创建" : undefined,
-            onSelect: actions.onCreate,
-        });
+        const blocked = full || actions.pluginDisabled || actions.busy === true; // 满了、停用或正在创建都不能再加。
+        const reason = full ? (singleRoom?.reason ?? room.reason) : actions.pluginDisabled ? "启用后可创建" : undefined; // 禁用原因。
+        items.push(
+            pluginTileTypesExpand(tileTypes)
+                ? { label: "添加到桌面", separatorBefore: true, disabled: actions.pluginDisabled || actions.busy === true, description: actions.pluginDisabled ? "启用后可创建" : undefined, children: pluginTileTypeMenu(tileTypes, actions.pluginDisabled || actions.busy === true, (tileType) => actions.onCreate(tileType), typeStatus) }
+                : { label: "添加到桌面", separatorBefore: true, disabled: blocked, description: reason, onSelect: () => actions.onCreate(pluginSingleTileType(tileTypes)) },
+        );
     }
     items.push({
         label: actions.pluginDisabled ? "启用插件" : "停用插件",
@@ -1107,6 +1311,7 @@ export const pluginRows = (manifests: readonly ComponentManifest[]): PluginRow[]
             name: manifest.name,
             creatable: manifest.creatable === true,
             maxTiles: manifest.maxTiles ?? 0,
+            tileTypes: manifest.tileTypes ?? [],
             version: manifest.version,
             description: manifest.description,
             author: manifest.author,

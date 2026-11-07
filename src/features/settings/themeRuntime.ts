@@ -50,6 +50,7 @@ export const activateThemeScript = async (active: { id: string; script: string }
         const stop = activate({
             pluginId: id,
             instanceId: "", // 主题没有格子实例。
+            tileType: "", // 主题没有格子类型。
             collapsed: false,
             settings: settings ?? null,
             saveSettings: (value) => savePluginSettings(id, value),

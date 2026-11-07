@@ -785,3 +785,61 @@
     outline: 2px solid var(--color-focus);
     outline-offset: 2px;
 }
+
+/* 共享 token 配对：只写凭据管理器，不回显已保存的值。 */
+.plugin-settings__pairing {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--color-border);
+    background: var(--color-subtle);
+}
+
+.plugin-settings__pairing h3 {
+    margin: 0;
+    font-size: var(--interface-font-size);
+    font-weight: 500;
+}
+
+.plugin-settings__pairing-hint,
+.plugin-settings__pairing-feedback {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+}
+
+.plugin-settings__pairing-form {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 8px;
+}
+
+.plugin-settings__pairing-label {
+    color: var(--color-muted);
+    font-size: max(11px, calc(var(--interface-font-size) - 2px));
+}
+
+.plugin-settings__pairing-input {
+    min-width: 0;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font: inherit;
+}
+
+.plugin-settings__pairing-input:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 1px;
+}
+
+.plugin-settings__pairing-feedback--ok {
+    color: var(--color-active);
+}
+
+.plugin-settings__pairing-feedback--error {
+    color: var(--color-error);
+}

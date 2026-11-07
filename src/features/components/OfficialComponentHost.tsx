@@ -10,6 +10,8 @@ import {
     subscribePluginShell,
     type PluginShellContext,
 } from "../../bridge/pluginScripts";
+import { clearPluginMenuItems, readPluginMenuItems, setPluginMenuItems, subscribePluginMenuItems } from "../../bridge/pluginMenu";
+import { pluginMenuItems as toPluginMenuItems, pluginTileMinimum, pluginTileTitle } from "./pluginTile";
 import type { ComponentInstanceSnapshot, ComponentManifest, ComponentRuntimeSnapshot } from "../../contracts/component";
 import type { DesktopHostMonitor } from "../../contracts/desktopHost";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspaceSnapshot, WorkspaceFocusTarget } from "../../contracts/workspace";
@@ -73,6 +75,12 @@ interface PluginHostContext {
 
 const attempted = new Set<string>(); // 已尝试插入脚本的标识，失败也不重试。
 
+/** 读取实例 state 里保存的格子类型。state 不是对象或字段不是字符串时按未声明处理。 */
+const pluginTileType = (state: unknown) => {
+    const value = typeof state === "object" && state !== null ? (state as Record<string, unknown>).tileType : undefined; // 类型写在 state 里，不占实例字段。
+    return typeof value === "string" ? value : "";
+};
+
 const renderFailed = new Set<string>(); // renderTile 抛错的实例。
 const tileCleanups = new Map<string, () => void>(); // 每个实例最近一次 renderTile 的清理函数。
 const revisions = new Map<string, number>(); // 该插件外壳变化后的重绘代数。
@@ -107,6 +115,9 @@ const pluginMissingRenderTile = (pluginId: string) => {
 /** renderTile 抛错。 */
 const pluginRenderFailed = (instanceId: string) => renderFailed.has(instanceId);
 
+/** 插件实例无法渲染：脚本失败、缺 renderTile 或本轮 renderTile 抛错。 */
+export const pluginTileFailed = (pluginId: string, instanceId: string) => pluginScriptFailed(pluginId) || pluginMissingRenderTile(pluginId) || pluginRenderFailed(instanceId);
+
 /** 把命令式渲染失败收成格子既有错误态。 */
 const markPluginRenderFailed = (pluginId: string, instanceId: string) => {
     if (renderFailed.has(instanceId)) return;
@@ -114,11 +125,12 @@ const markPluginRenderFailed = (pluginId: string, instanceId: string) => {
     emitPluginHost(pluginId);
 };
 
-/** 调用最近一次 renderTile 留下的清理函数。 */
+/** 调用最近一次 renderTile 留下的清理函数，并撤下该实例的插件菜单项。 */
 const releasePluginTile = (instanceId: string) => {
     const cleanup = tileCleanups.get(instanceId); // 上一轮作者返回的清理函数。
     tileCleanups.delete(instanceId);
     cleanup?.();
+    clearPluginMenuItems(instanceId); // 菜单与清理函数同一生命周期。
 };
 
 /** 重读插件设置再交给格子。读失败时按空设置重绘。 */
@@ -137,7 +149,15 @@ const mountPluginTile = (container: HTMLElement, context: PluginShellContext) =>
     if (typeof renderTile !== "function") return;
     releasePluginTile(context.instanceId);
     container.replaceChildren(); // 重挂前清掉上一轮的 DOM，否则作者用 append 就会叠出两份内容。
-    const cleanup = renderTile(container, context); // 作者自行决定容器里的 DOM。
+    const cleanup = renderTile(container, {
+        ...context,
+        menu: {
+            register: (items) => {
+                setPluginMenuItems(context.instanceId, items); // 菜单项归实例，重复注册以最后一次为准。
+                return () => clearPluginMenuItems(context.instanceId);
+            },
+        },
+    });
     if (typeof cleanup === "function") tileCleanups.set(context.instanceId, cleanup);
 };
 
@@ -159,7 +179,7 @@ const syncPluginScripts = (manifests: readonly { id: string; script?: string }[]
 };
 
 /** 把一个插件实例的作者内容挂到外框给出的容器上。 */
-const PluginTileBody = ({ pluginId, instanceId, collapsed, revision }: { pluginId: string; instanceId: string; collapsed: boolean; revision: number }) => {
+const PluginTileBody = ({ pluginId, instanceId, tileType, collapsed, revision }: { pluginId: string; instanceId: string; tileType: string; collapsed: boolean; revision: number }) => {
     const containerRef = useRef<HTMLDivElement>(null); // 作者内容的挂载点。
     const collapsedRef = useRef(collapsed); // 读取返回时使用当前折叠状态。
     const settingsRef = useRef<{ ready: boolean; value: unknown }>({ ready: false, value: null }); // 已读过的设置，折叠时不再等命令。
@@ -177,6 +197,7 @@ const PluginTileBody = ({ pluginId, instanceId, collapsed, revision }: { pluginI
                 mountPluginTile(containerRef.current, {
                     pluginId,
                     instanceId,
+                    tileType,
                     collapsed: collapsedRef.current,
                     settings,
                     saveSettings: (value) => savePluginSettings(pluginId, value),
@@ -209,7 +230,7 @@ const PluginTileBody = ({ pluginId, instanceId, collapsed, revision }: { pluginI
             releasePluginTile(instanceId);
             void subscription.then((unlisten) => unlisten()).catch(() => undefined);
         };
-    }, [pluginId, instanceId, revision]);
+    }, [pluginId, instanceId, tileType, revision]);
 
     useEffect(() => {
         const container = containerRef.current;
@@ -218,6 +239,7 @@ const PluginTileBody = ({ pluginId, instanceId, collapsed, revision }: { pluginI
             mountPluginTile(container, {
                 pluginId,
                 instanceId,
+                tileType,
                 collapsed,
                 settings: settingsRef.current.value,
                 saveSettings: (value) => savePluginSettings(pluginId, value),
@@ -229,6 +251,43 @@ const PluginTileBody = ({ pluginId, instanceId, collapsed, revision }: { pluginI
     }, [collapsed, pluginId, instanceId]);
 
     return <div ref={containerRef} data-plugin-container={instanceId} />;
+};
+
+/** 插件格子外框：合并作者菜单、类型级最小尺寸与移除项。 */
+const PluginTileFrame = ({ tileProps, pluginId, tileType, runtime }: { tileProps: ComponentTileProps; pluginId: string; tileType: string; runtime?: ComponentRuntimeSnapshot }) => {
+    const instanceId = tileProps.instance.instanceId; // 菜单项按实例归属。
+    const [entries, setEntries] = useState(() => readPluginMenuItems(instanceId)); // 最近一轮 renderTile 注册的菜单。
+    useEffect(() => {
+        setEntries(readPluginMenuItems(instanceId)); // 重挂前先对齐当前实例。
+        return subscribePluginMenuItems(instanceId, () => setEntries(readPluginMenuItems(instanceId)));
+    }, [instanceId]);
+    const manifest = runtime?.manifests.find((item) => item.id === pluginId); // 当前插件的类型声明。
+    const broken = pluginTileFailed(pluginId, instanceId); // 脚本、注册或作者渲染失败。
+    const removable = manifest?.removable === true; // 清单缺失时不可移除。
+    return (
+        <ComponentTile
+            key={instanceId}
+            {...tileProps}
+            title={pluginTileTitle(manifest, tileType, manifest?.name ?? pluginId)} // 每类格子用自己的类型名作标题。
+            minimum={pluginTileMinimum(manifest, tileType)}
+            menuItems={[
+                ...toPluginMenuItems(entries),
+                tileRemoveMenuItem(
+                    removable,
+                    () =>
+                        void tileProps.onCommand({ type: "remove-component", instanceId }).catch((error: unknown) => {
+                            publishMessage({ type: "error", content: commandErrorMessage(error), source: "desktop-tile" });
+                        }),
+                ),
+            ]}
+        >
+            {broken ? (
+                <p className="official-component__error">组件渲染失败</p>
+            ) : (
+                (collapsed) => <PluginTileBody pluginId={pluginId} instanceId={instanceId} tileType={tileType} collapsed={collapsed} revision={pluginRevision(pluginId)} />
+            )}
+        </ComponentTile>
+    );
 };
 
 // 未列出的插件保持可见；Release 没有 Debug 注册入口。
@@ -268,40 +327,15 @@ const pluginRenderers = new Map<string, (props: ComponentTileProps, context: Plu
     ],
     [
         "plugin:slot",
-        (props, { runtime }) => {
-            const pluginId = props.instance.componentId; // 格子所属插件，不按槽入口合并。
-            const broken = pluginScriptFailed(pluginId) || pluginMissingRenderTile(pluginId) || pluginRenderFailed(props.instance.instanceId); // 脚本、注册或作者渲染失败。
-            const removable = runtime?.manifests.find((manifest) => manifest.id === pluginId)?.removable === true; // 清单缺失时不可移除。
-            return (
-                <ComponentTile
-                    key={props.instance.instanceId}
-                    {...props}
-                    title={runtime?.manifests.find((manifest) => manifest.id === pluginId)?.name ?? pluginId}
-                    menuItems={[
-                        tileRemoveMenuItem(
-                            removable,
-                            () =>
-                                void props.onCommand({ type: "remove-component", instanceId: props.instance.instanceId }).catch((error: unknown) => {
-                                    publishMessage({ type: "error", content: commandErrorMessage(error), source: "desktop-tile" });
-                                }),
-                        ),
-                    ]}
-                >
-                    {broken ? (
-                        <p className="official-component__error">组件渲染失败</p>
-                    ) : (
-                        (collapsed) => (
-                            <PluginTileBody
-                                pluginId={pluginId}
-                                instanceId={props.instance.instanceId}
-                                collapsed={collapsed}
-                                revision={pluginRevision(pluginId)}
-                            />
-                        )
-                    )}
-                </ComponentTile>
-            );
-        },
+        (props, { runtime }) => (
+            <PluginTileFrame
+                key={props.instance.instanceId}
+                tileProps={props}
+                pluginId={props.instance.componentId}
+                tileType={pluginTileType(props.instance.state)}
+                runtime={runtime}
+            />
+        ),
     ],
 ]);
 for (const [entry, render] of Array.from(pluginRenderers)) {

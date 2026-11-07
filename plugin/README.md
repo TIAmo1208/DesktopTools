@@ -27,19 +27,30 @@ Desktop Tools 支持通过本地插件扩展桌面格子与设置页选项。插
    - 支持通过「选择文件夹」直接安装包含 `manifest.ini` 的插件开发目录。
    - 支持通过「安装压缩包」安装 `.zip` 格式的插件包（清单位于压缩包根目录或仅下一层子目录内）。
 
+## AstrBot 侧插件（随包附带，手动安装）
+
+`AstrBot 状态/astrbot_plugin_desktop_status/` 是给 **AstrBot（Star 插件）** 用的包，不是 Desktop Tools 的格子插件：
+
+- 该目录没有 `manifest.ini`；宿主只扫描插件根下一层含 `manifest.ini` 的文件夹，因此它不会被注册成 Desktop Tools 插件。
+- 用户手动把整个 `astrbot_plugin_desktop_status` 文件夹复制到 AstrBot 数据目录下的 `data/plugins/`，重启 AstrBot 即可加载。安装步骤、配置项（`push_url` 默认 `127.0.0.1:8765`、`listen_port` 默认 `8766`、共享 `token`）、对外接口与安全边界见该目录内的 `README.md`。
+- 插件在 AstrBot 进程内采集服务、平台、资源、消息、日志与 Token 用量，按快照契约 v2（同目录 `snapshot.schema.json`）推送；拿不到的项一律给 `null`，服务状态分在线、离线、探测被拒、未知四档，判定看 `service.probe.level`。
+- 桌面侧由「AstrBot 状态」格子插件经宿主的 `loopback-channel` 能力接收：一条 `mode=listen` 通道绑 `127.0.0.1:8765` 接推送，一条 `mode=request` 通道指向 `http://127.0.0.1:8766` 做拉取兜底与平台启停；双向共用 `X-Status-Token` 头，密钥存放在 Windows 凭据管理器的 `DesktopTools/astrbot-status` 记录里，插件拿不到明文。解析、缓存与过期判定都在插件内，宿主只做传输。推送端口被占用时只走拉取兜底。决策见 `docs/adr/0036-AstrBot状态采集链路.md` 与 `docs/adr/0038-插件loopback通道.md`。
+- 安装、取共享 token、在「设置 → 功能格子 → AstrBot 状态」配对以及常见故障排查，见 [AstrBot 状态插件安装与配对](./AstrBot 状态/AstrBot状态插件安装与配对.md)。
+
 ## 预设示例索引与开发方向
 
-仓库根目录下的 `plugin/` 目录提供主题插件、功能插件和开发示例。安装包通过 `src-tauri/tauri.installer.conf.json` 显式映射分发 `主题-青笺/`、`主题-宋律/`、`主题-夜之城/`、`AstrBot 状态/`、`docs/` 与 `README.md`；`示例/` 下的三个格子/设置示例仅保留在仓库，不进入安装包。运行时只扫描插件根下一层含 `manifest.ini` 的文件夹，不递归扫描 `示例/`，文档目录不注册为插件。
+仓库根目录下的 `plugin/` 目录提供主题插件、功能插件和开发示例。安装包通过 `src-tauri/tauri.installer.conf.json` 显式映射分发 `主题-青笺/`、`主题-宋律/`、`主题-夜之城/`、`AstrBot 状态/`、`docs/` 与 `README.md`；`示例/` 下的四个格子/设置示例仅保留在仓库，不进入安装包。运行时只扫描插件根下一层含 `manifest.ini` 的文件夹，不递归扫描 `示例/`，文档目录不注册为插件。
 
 | 示例目录 | 插件 ID | 适用场景 / 开发方向 |
 |---|---|---|
 | [示例-最小格子](./示例/示例-最小格子) | `plugin.example.minimal` | **纯桌面格子组件**：演示 `renderTile` 挂载静态 DOM、开启定时器及返回注销清理函数。 |
 | [示例-设置条目](./示例/示例-设置条目) | `plugin.example.settings` | **纯设置扩展条目**：`creatable=0`，不导出 `renderTile`，仅导出 `settingsEntries` 演示读取与保存插件自定义设置。 |
 | [示例-格子与设置](./示例/示例-格子与设置) | `plugin.example.combined` | **复合型插件**：同时具备桌面格子与独立设置页条目。演示设置变更驱动格子重新渲染、多实例限制（`maxTiles=2`）及通过 `import.meta.url` 加载独立样式表 `style.css`。 |
+| [示例-多类型格子](./示例/示例-多类型格子) | `plugin.example.multi` | **一插件多格子类型**：清单 `[tiles]` 声明时钟、日期、标签三种类型，创建时先选类型；`renderTile` 按 `context.tileType` 画不同粒度，`maxTiles` 按类型分别计算。 |
 | [主题-青笺](./主题-青笺) | `plugin.theme-qingjian` | **主题插件**：`role=theme`，不含入口脚本。宿主挂载 `theme.css` 覆盖配色令牌，`theme.json` 写入字体、字号、圆角和两组强调色。 |
 | [主题-宋律](./主题-宋律) | `plugin.theme-songlv` | **主题插件**：宣纸浅色与夜墨深色两套宋制配色，青绿承担交互强调色、窑铜用于桌面与菜单边框；自带裁剪过的思源宋体（SIL OFL 1.1），安装后进入外观字体列表。 |
 | [主题-夜之城](./主题-夜之城) | `plugin.theme-nightcity` | **主题加格子一体的插件**：NC 黄与霓虹青的夜之搭配色，深色为主形态、浅色为日间变体；样式表自带 CRT 扫描线与 45° 切角表现层，不打包字体，终端质感由等宽数字、标题字距与悬停冷光叠加实现。同一文件夹里的入口脚本提供「夜之城时钟」格子：NC-TIME 读出配十六进制数据流，只读本机时间，折叠时只保留时间。 |
-| [AstrBot 状态](./AstrBot%20状态) | `plugin.astrbot-status` | **声明宿主能力的功能插件**：清单声明 `required_capabilities = probe-service-status`，通过 `invoke_component_capability` 探活本机 AstrBot，按四档状态轮询并在格子不可见时暂停刷新。 |
+| [AstrBot 状态](./AstrBot%20状态) | `plugin.astrbot-status` | **声明宿主能力的功能插件**：清单只声明 `required_capabilities = loopback-channel`，经宿主的本机 loopback 通道读取 AstrBot 采集插件推送的快照（v2），自己解析、缓存与判过期。格子按功能拆成六个类型（状态、就绪时长、平台连接、资源占用、消息量、运行日志），各自声明默认与最小尺寸，设计见 `docs/design/AstrBot状态格子.md`。 |
 
 ## 快速开始
 
@@ -73,4 +84,4 @@ Desktop Tools 支持通过本地插件扩展桌面格子与设置页选项。插
   - 宿主严格执行内容安全策略 `script-src 'self'`，**严禁使用 `eval`、`new Function` 或内联脚本 `<script>`**。
   - 宿主执行 `style-src 'self'`（未放开 `unsafe-inline`），**内联 `<style>` 标签与 DOM 元素的内联 `style="..."` 属性均会被 CSP 拦截**。插件样式只能来自独立 `.css` 静态资产或通过 JS CSSOM 属性赋值操作。
 - **静态资产路由限制**：宿主本地协议对插件目录提供 `.js`、`.css` 与 `.woff2`/`.woff`/`.ttf`/`.otf` 字体文件的路由，其他类型资源不支持通过 `/plugins/` 协议直接加载（`img-src` 允许 `data:` 图片，但字体 data URL 不可依赖；字体走 `theme.json` 的 `fonts` 声明）。
-- **声明宿主能力**：插件在清单中用 `required_capabilities = probe-service-status` 声明宿主能力（逗号分隔，可用值见[开发指南](./docs/开发指南.md)），运行时只能通过 `invoke_component_capability` 按实例调用；插件无法调用未声明的能力。
+- **声明宿主能力**：插件在清单中用 `required_capabilities` 声明宿主能力，可用值为 `read-host-time`、`read-current-media`、`probe-service-status`、`loopback-channel`，**一次只能声明其中一个**（见[开发指南](./docs/开发指南.md)）；运行时只能按实例调用已声明的能力，插件无法调用未声明的能力。需要读本机 HTTP 数据源时用 `loopback-channel`：宿主只绑 `127.0.0.1`、只收发原始 HTTP、凭据由宿主注入校验，数据解析归插件。

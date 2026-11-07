@@ -8,7 +8,9 @@ use chrono::Utc;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRole, ComponentRuntimeError, ComponentRuntimeSnapshot, ThemeAppearance, ThemeBoot, ThemeFont, ThemeNotification, WorkspaceRect};
+use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentCapabilityDeclaration, ComponentCapabilityResult, ComponentHostEvent, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, ComponentRegistrationFailure, ComponentRegistrationSnapshot, ComponentRole, ComponentRuntimeError, ComponentRuntimeSnapshot, ComponentTileType, ThemeAppearance, ThemeBoot, ThemeFont, ThemeNotification, TileSize, WorkspaceRect};
+
+pub(crate) mod loopback;
 
 /// 官方插件前端注册表当前支持的入口。
 const LOCAL_CLOCK_ENTRY: &str = "official:local-clock";
@@ -39,6 +41,8 @@ pub struct ComponentRuntimeState
     next_event_sequence: AtomicU64,
     /// 独立 Windowed WebView2 transport 可读取的最近宿主事件。
     latest_host_event: Mutex<Option<ComponentHostEvent>>,
+    /// 插件 loopback 通道注册表。
+    loopback: loopback::LoopbackRegistry,
 }
 
 /// 一份可整体替换的清单表。官方清单和插件清单放在一起。
@@ -126,12 +130,7 @@ impl ComponentRuntimeState
     /// 校验实例声明后执行一个已授权宿主能力。
     pub fn invoke_capability(&self, instances: &[ComponentInstanceSnapshot], instance_id: &str, capability: ComponentCapability) -> Result<ComponentCapabilityResult, ComponentRuntimeError>
     {
-        let snapshot = self.snapshot(instances)?; // 能力调用前同步的当前实例注册结果。
-        let registration = snapshot.instances.iter().find(|instance| instance.instance_id == instance_id).ok_or_else(|| ComponentRuntimeError::invalid_instance("插件实例不存在"))?;
-        if registration.status != ComponentLoadStatus::Ready || !registration.authorized_capabilities.contains(&capability)
-        {
-            return Err(ComponentRuntimeError::capability_denied(capability));
-        }
+        self.authorize_capability(instances, instance_id, capability)?; // 能力调用前同步并校验当前实例注册结果。
         let payload = match capability
         {
             ComponentCapability::ReadHostTime => json!({
@@ -139,9 +138,36 @@ impl ComponentRuntimeState
             }),
             ComponentCapability::ReadCurrentMedia => crate::platform::windows::music::snapshot().map_err(|message| ComponentRuntimeError { code: "media-read-failed".to_string(), message })?,
             ComponentCapability::ProbeServiceStatus => crate::commands::probe::probe(&json!({ "service": "astrbot" })),
+            ComponentCapability::LoopbackChannel => json!({}), // 通道数据只从三条通道命令交付，能力调用本身没有载荷。
         }; // 当前授权能力的最小结构化结果。
         crate::log_debug!("插件：宿主能力调用完成，实例={}，能力={capability:?}", instance_id);
         Ok(ComponentCapabilityResult { instance_id: instance_id.to_string(), capability, payload })
+    }
+
+    /// 校验实例存在、已就绪且已声明该能力，返回该实例的注册结果。
+    pub fn authorize_capability(&self, instances: &[ComponentInstanceSnapshot], instance_id: &str, capability: ComponentCapability) -> Result<ComponentRegistrationSnapshot, ComponentRuntimeError>
+    {
+        let snapshot = self.snapshot(instances)?; // 能力校验共用同一份实例注册结果。
+        let registration = snapshot.instances.iter().find(|instance| instance.instance_id == instance_id).cloned().ok_or_else(|| ComponentRuntimeError::invalid_instance("插件实例不存在"))?;
+        if registration.status != ComponentLoadStatus::Ready || !registration.authorized_capabilities.contains(&capability)
+        {
+            return Err(ComponentRuntimeError::capability_denied(capability));
+        }
+        Ok(registration)
+    }
+
+    /// 返回插件 loopback 通道注册表。
+    pub(crate) fn loopback(&self) -> &loopback::LoopbackRegistry { &self.loopback }
+
+    /// 生成一条宿主事件并记为最近事件，由命令层负责外发。
+    pub(crate) fn publish_host_event(&self, kind: &str) -> ComponentHostEvent
+    {
+        let event = ComponentHostEvent { sequence: self.next_event_sequence.fetch_add(1, Ordering::Relaxed), kind: kind.to_string(), unix_millis: Utc::now().timestamp_millis() };
+        if let Ok(mut latest) = self.latest_host_event.lock()
+        {
+            *latest = Some(event.clone()); // 独立 Windowed transport 轮询也能看到这条事件。
+        }
+        event
     }
 
     /// 返回最近一次已发布的插件宿主事件。
@@ -268,7 +294,7 @@ impl ComponentRuntimeState
             crate::log_warn!("插件：清单注册失败，身份={}，原因={}", failure.component_id, failure.message); // 失败只留日志与消息，不占桌面。
         }
         let declarations = capability_declarations(&manifests); // 跟清单一起替换的能力声明。
-        Self { plugin_directory: plugin_directory.to_path_buf(), catalog: Mutex::new(ComponentCatalog { manifests, declarations, failures }), instances: Mutex::new(Vec::new()), revision: AtomicU64::new(1), next_event_sequence: AtomicU64::new(1), latest_host_event: Mutex::new(None) }
+        Self { plugin_directory: plugin_directory.to_path_buf(), catalog: Mutex::new(ComponentCatalog { manifests, declarations, failures }), instances: Mutex::new(Vec::new()), revision: AtomicU64::new(1), next_event_sequence: AtomicU64::new(1), latest_host_event: Mutex::new(None), loopback: loopback::LoopbackRegistry::new() }
     }
 
     /// 将一个持久实例转换为成功或失败的隔离注册结果。
@@ -290,7 +316,7 @@ impl ComponentRuntimeState
 /// 提取已注册清单声明的创建与移除能力，并按插件身份稳定排序。
 fn capability_declarations(manifests: &HashMap<String, ComponentManifest>) -> Vec<ComponentCapabilityDeclaration>
 {
-    let mut declarations = manifests.values().map(|manifest| ComponentCapabilityDeclaration { component_id: manifest.id.clone(), creatable: manifest.creatable, removable: manifest.removable, max_tiles: manifest.max_tiles }).collect::<Vec<_>>(); // 每个成功注册清单对应一项能力声明。
+    let mut declarations = manifests.values().map(|manifest| ComponentCapabilityDeclaration { component_id: manifest.id.clone(), creatable: manifest.creatable, removable: manifest.removable, max_tiles: manifest.max_tiles, tile_types: manifest.tile_types.clone() }).collect::<Vec<_>>(); // 每个成功注册清单对应一项能力声明。
     declarations.sort_by(|first, second| first.component_id.cmp(&second.component_id));
     declarations
 }
@@ -392,6 +418,8 @@ fn load_plugin_packages(directory: &std::path::Path, failures: &mut Vec<Componen
 fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &str) -> Result<ComponentManifest, String>
 {
     let values = parse_plugin_ini(text)?; // 只读取 [plugin] 节。
+    let mut tile_types = parse_plugin_tiles(text)?; // 只读取 [tiles] 节，缺省为空。
+    apply_plugin_tile_sizes(&mut tile_types, text); // [tiles.size] 的可选尺寸声明，非法值退回公共尺寸。
     let name = required_ini(&values, "name")?;
     let author_prefix = values.get("author").map(|value| value.trim()).unwrap_or(""); // 与安装落盘使用同一份作者前缀。
     if folder_name != name && folder_name != plugin_folder_name(author_prefix, &name)
@@ -454,7 +482,7 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     // 主题默认没有格子；带入口脚本时按清单声明放行，供主题自带的格子使用（同一插件里既能换肤又能添格子）。
     let creatable = creatable && (role == ComponentRole::Tile || !script.is_empty());
     let max_tiles = if role == ComponentRole::Theme && !creatable { 0 } else { max_tiles }; // 不能创建的主题忽略格子上限。
-    let manifest = ComponentManifest { id, name, version, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, stylesheet_cache_key, theme_appearance, theme_notification, theme_boot, theme_fonts, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, repository, description, author };
+    let manifest = ComponentManifest { id, name, version, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, stylesheet_cache_key, theme_appearance, theme_notification, theme_boot, theme_fonts, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, tile_types, repository, description, author };
     validate_manifest(&manifest).map_err(|error| error.message)?;
     Ok(manifest)
 }
@@ -559,14 +587,19 @@ pub(crate) fn plugin_max_tiles(plugin_id: &str, raw: Option<&str>) -> u32
     }
 }
 
-/// 已有格子数达到上限时拒绝再创建。0 表示不限。
-pub(crate) fn enforce_plugin_tile_limit(max_tiles: u32, count: usize) -> Result<(), String>
+/// 用户可见的数量上限拒绝原因。
+pub(crate) fn plugin_tile_limit_message(max_tiles: u32) -> String { format!("已达到该插件的格子上限（{max_tiles} 个）") }
+
+/// 该插件还要新建一个格子时，是否已经达到上限。声明了类型时按实例类型分桶计数，未声明时整份清单共用一个桶。
+pub(crate) fn plugin_tile_limit_reached(max_tiles: u32, component_id: &str, tile_types: &[ComponentTileType], state: &serde_json::Value, layout: &crate::contracts::WorkspaceSnapshot) -> bool
 {
-    if max_tiles == 0 || count < max_tiles as usize
+    if max_tiles == 0
     {
-        return Ok(());
+        return false;
     }
-    Err(format!("已达到该插件的格子上限（{max_tiles} 个）"))
+    let bucket = crate::contracts::tile_type_bucket(tile_types, state); // 新格子落在哪一个类型桶里。
+    let count = layout.components.iter().filter(|component| component.component_id == component_id && crate::contracts::tile_type_bucket(tile_types, &component.state) == bucket).count(); // 所有显示器上的同类型格子。
+    count >= max_tiles as usize
 }
 
 /// 名称要能直接作为 Windows 文件夹名。
@@ -842,6 +875,150 @@ fn parse_plugin_ini(text: &str) -> Result<HashMap<String, String>, String>
     Ok(values)
 }
 
+/// 读取 [tiles] 节：每行 `键 = 显示名`，顺序保留，第一节为默认类型。没有该节时为空，存在但没有有效行视为清单无效。
+fn parse_plugin_tiles(text: &str) -> Result<Vec<ComponentTileType>, String>
+{
+    let mut in_tiles = false; // 当前行是否属于 [tiles] 节。
+    let mut declared = false; // 是否出现过 [tiles] 节标题。
+    let mut tile_types: Vec<ComponentTileType> = Vec::new(); // 按清单顺序保留的类型。
+    for line in text.trim_start_matches('\u{feff}').lines()
+    {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';')
+        {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix('[').and_then(|value| value.strip_suffix(']'))
+        {
+            in_tiles = name.trim().eq_ignore_ascii_case("tiles");
+            declared |= in_tiles;
+            continue;
+        }
+        if !in_tiles
+        {
+            continue;
+        }
+        let Some((key, name)) = line.split_once('=')
+        else
+        {
+            return Err("插件清单格式无效".to_string());
+        };
+        let key = key.trim().to_string(); // 写进 state 的值。
+        let name = name.trim().to_string(); // 菜单显示名。
+        if key.is_empty() || key.len() > 32 || !key.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || matches!(character, '-' | '_'))
+        {
+            return Err(format!("插件格子类型键无效：{key}"));
+        }
+        if name.is_empty() || name.chars().count() > 24
+        {
+            return Err(format!("插件格子类型名称无效：{key}"));
+        }
+        if tile_types.iter().any(|tile_type| tile_type.key == key)
+        {
+            return Err(format!("插件重复声明了格子类型：{key}"));
+        }
+        tile_types.push(ComponentTileType { key, name, default_size: None, minimum_size: None });
+    }
+    if declared && tile_types.is_empty()
+    {
+        return Err("插件清单的 [tiles] 没有有效类型".to_string());
+    }
+    Ok(tile_types)
+}
+
+/// 读取 [tiles.size] 节：`类型键 = 默认宽x高, 最小宽x高`，最小可省略。
+/// 未知类型、非法尺寸与重复行只记 WARN 并忽略该行，不拒绝整份清单（ADR-0037）。
+fn apply_plugin_tile_sizes(tile_types: &mut [ComponentTileType], text: &str)
+{
+    let mut in_sizes = false; // 当前行是否属于 [tiles.size] 节。
+    for line in text.trim_start_matches('\u{feff}').lines()
+    {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';')
+        {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix('[').and_then(|value| value.strip_suffix(']'))
+        {
+            in_sizes = name.trim().eq_ignore_ascii_case("tiles.size");
+            continue;
+        }
+        if !in_sizes
+        {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=')
+        else
+        {
+            crate::log_warn!("插件：格子类型尺寸行无效，已忽略，内容={line}");
+            continue;
+        };
+        let key = key.trim(); // 关联已有的类型键，不在这里新声明类型。
+        let Some(tile_type) = tile_types.iter_mut().find(|tile_type| tile_type.key == key)
+        else
+        {
+            crate::log_warn!("插件：格子类型尺寸引用了未声明的类型，已忽略，类型={key}");
+            continue;
+        };
+        if tile_type.default_size.is_some()
+        {
+            crate::log_warn!("插件：格子类型尺寸重复声明，保留首行，类型={key}");
+            continue;
+        }
+        match parse_tile_size_declaration(value)
+        {
+            Some((default_size, minimum_size)) =>
+            {
+                tile_type.default_size = Some(default_size);
+                tile_type.minimum_size = minimum_size;
+            }
+            None => crate::log_warn!("插件：格子类型尺寸无效，已退回公共尺寸，类型={key}，值={value}"),
+        }
+    }
+}
+
+/// 解析 `默认宽x高, 最小宽x高`；最小项可省略，其余语法一律无效。
+fn parse_tile_size_declaration(value: &str) -> Option<(TileSize, Option<TileSize>)>
+{
+    let mut parts = value.split(',').map(str::trim).filter(|part| !part.is_empty());
+    let default_size = parse_tile_size(parts.next()?)?;
+    let minimum_size = match parts.next()
+    {
+        Some(part) => Some(parse_tile_size(part)?),
+        None => None,
+    };
+    parts.next().is_none().then_some((default_size, minimum_size))
+}
+
+/// 解析单个 `宽x高`，DIP 正整数，上限 10000。
+fn parse_tile_size(value: &str) -> Option<TileSize>
+{
+    let (width, height) = value.split_once(['x', 'X'])?;
+    let width: u32 = width.trim().parse().ok()?;
+    let height: u32 = height.trim().parse().ok()?;
+    ((1..=10000).contains(&width) && (1..=10000).contains(&height)).then_some(TileSize { width, height })
+}
+
+/// 按实例 state 的 tileType 选中类型声明；缺省落到第一节，未声明类型时为空。
+fn selected_tile_type<'a>(tile_types: &'a [ComponentTileType], state: &serde_json::Value) -> Option<&'a ComponentTileType>
+{
+    let tile_type = crate::contracts::component_tile_type(state); // 实例保存的类型键。
+    if tile_type.is_empty()
+    {
+        tile_types.first()
+    }
+    else
+    {
+        tile_types.iter().find(|declared| declared.key == tile_type)
+    }
+}
+
+/// 选中类型的默认尺寸；未声明时返回 None，由调用方沿用公共默认尺寸。
+pub(crate) fn tile_default_size(tile_types: &[ComponentTileType], state: &serde_json::Value) -> Option<TileSize> { selected_tile_type(tile_types, state).and_then(|tile_type| tile_type.default_size) }
+
+/// 选中类型的有效下限；未声明时返回 None，由调用方沿用公共最小尺寸。
+pub(crate) fn tile_minimum_size(tile_types: &[ComponentTileType], state: &serde_json::Value) -> Option<TileSize> { selected_tile_type(tile_types, state).and_then(|tile_type| tile_type.minimum_size) }
+
 /// 校验官方插件清单身份、入口、能力和持久化版本。
 fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntimeError>
 {
@@ -880,7 +1057,7 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
     {
         return Err(ComponentRuntimeError::invalid_manifest("插件能力声明无效"));
     }
-    if plugin_slot && (capabilities == HashSet::from([ComponentCapability::ReadHostTime]) || capabilities == HashSet::from([ComponentCapability::ReadCurrentMedia]) || capabilities == HashSet::from([ComponentCapability::ProbeServiceStatus]))
+    if plugin_slot && (capabilities == HashSet::from([ComponentCapability::ReadHostTime]) || capabilities == HashSet::from([ComponentCapability::ReadCurrentMedia]) || capabilities == HashSet::from([ComponentCapability::ProbeServiceStatus]) || capabilities == HashSet::from([ComponentCapability::LoopbackChannel]))
     {
         return Ok(());
     }
