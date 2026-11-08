@@ -368,6 +368,7 @@ export function messagesView(snapshot, nowMs) {
         bars,
         peakText: peak ? `峰值 ${formatNumber(peak.count)}（${formatClock(peak.ts)}）` : "",
         emptyChart: series.length === 0,
+        chartHint: series.length === 0 ? "逐小时趋势未上报" : "", // 趋势缺失时给说明，格子不留一整块空白。
     };
 }
 
@@ -1027,16 +1028,16 @@ function createMessagesContent(content, notice) {
             setHidden(content, false);
             notice.hide();
             setText(total, view.totalText);
-            setHidden(chart, view.emptyChart);
-            setHidden(labels, view.emptyChart);
+            setHidden(chart, false); // 趋势缺失也保留 24 槽骨架，格子不留空白。
+            setHidden(labels, false);
             view.bars.forEach((bar, index) => {
                 const slot = columns[index];
                 setTitle(slot.column, bar.empty ? "" : bar.title);
                 setHidden(slot.fill, bar.empty);
                 if (!bar.empty) setHeight(slot.fill, bar.height);
             });
-            setText(peak, view.peakText);
-            setHidden(peak, !view.peakText);
+            setText(peak, view.peakText || view.chartHint);
+            setHidden(peak, !(view.peakText || view.chartHint));
         },
     };
 }

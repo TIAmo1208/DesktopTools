@@ -68,8 +68,8 @@ test("清单声明 loopback-channel 与六类类型的尺寸", () => {
     for (const key of tiles) assert.match(manifest, new RegExp(`^${key} = `, "m"));
     assert.match(manifest, /^status = 状态$/m, "状态类型显示名与设计文档一致，不再用插件名 AstrBot");
     assert.match(manifest, /^\[tiles\.size\]/m);
-    assert.match(manifest, /^status = 168x114, 168x114$/m); // 状态格单档；默认与最小尺寸都在清单里。
-    assert.match(manifest, /^messages = 420x300, 420x210$/m);
+    assert.match(manifest, /^status = 168x114, 168x70$/m); // 状态格单档：默认与最小尺寸都在清单里。
+    assert.match(manifest, /^messages = 420x300, 380x150$/m);
 });
 
 // 六类格子只走通道命令，不保留旧探活能力调用。

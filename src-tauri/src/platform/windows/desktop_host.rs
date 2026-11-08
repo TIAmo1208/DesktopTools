@@ -1277,7 +1277,9 @@ fn handle_protocol_request(request: Request<Vec<u8>>, app: &AppHandle, command_h
         if let Some(runtime) = app.try_state::<crate::component_runtime::ComponentRuntimeState>()
             && let Some((content_type, bytes)) = read_plugin_asset(runtime.plugin_directory(), relative)
         {
-            return protocol_response(StatusCode::OK, content_type, None, Cow::Owned(bytes));
+            let mut response = protocol_response(StatusCode::OK, content_type, None, Cow::Owned(bytes));
+            response.headers_mut().insert("Cache-Control", wry::http::header::HeaderValue::from_static("no-store")); // 插件文件可能被重装覆盖，禁止 WebView 复用旧缓存。
+            return response;
         }
         crate::log_warn!("插件：资产不存在或路径不受支持，相对路径={relative}");
         return protocol_response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", None, Cow::Borrowed(b"not found"));
@@ -1689,6 +1691,9 @@ pub fn create_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_h
     }
     Ok(hosts)
 }
+
+/// 返回首个正式宿主的 WebView2 环境，供岛复用，避免同进程重复创建环境。
+pub(crate) fn shared_webview_environment() -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment> { NATIVE_HOSTS.with(|hosts| hosts.borrow().first().map(|host| host.webview.environment())) }
 
 /// 保留未变化且页面索引一致的宿主，只创建并导航发生变化的显示器。
 pub fn reconcile_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, monitors: &[DesktopHostMonitor], previous: &[NativeDesktopHost]) -> Result<Vec<NativeDesktopHost>, String>

@@ -242,7 +242,7 @@ impl ToastManager
         let appearance = Appearance::resolve(&preferences, false, true).with_palette(palette); // 系统值随后在窗口线程解析。
         let manager = Arc::new(Self { hwnd: AtomicIsize::new(0), runtime: Mutex::new(Runtime { suppressed: false, queue: ToastState::default(), preferences, appearance, frames: Vec::new(), scale: 1.0, hover_id: None }) }); // HWND 引用的稳定地址。
         let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(|error| error.to_string())?; // 当前模块。
-        let class = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(window_proc), hInstance: HINSTANCE(module.0), lpszClassName: w!("DesktopToolsNativeToast"), ..Default::default() }; // 无不透明背景刷。
+        let class = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(window_proc), hInstance: HINSTANCE(module.0), lpszClassName: w!("DesktopToolsNativeToast"), hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(), ..Default::default() }; // 无不透明背景刷；默认箭头避免沿用上一个窗口的悬停光标。
         if unsafe { RegisterClassExW(&class) } == 0 && unsafe { windows::Win32::Foundation::GetLastError() } != windows::Win32::Foundation::ERROR_CLASS_ALREADY_EXISTS
         {
             return Err("注册 Toast 窗口类失败".into());
@@ -572,6 +572,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 LRESULT(0)
             }
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+            WM_SETCURSOR =>
+            {
+                // 鼠标从桌面格子边缘移入消息时重置光标，不沿用上一个窗口的调节手柄图标。
+                let _ = SetCursor(Some(LoadCursorW(None, IDC_ARROW).unwrap_or_default()));
+                LRESULT(1)
+            }
             WM_MOUSEMOVE =>
             {
                 use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};

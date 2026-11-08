@@ -5,26 +5,32 @@ use std::{
     cell::{Cell, RefCell},
     num::NonZeroIsize,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
+    },
 };
 use tauri::{AppHandle, Emitter, Listener, Manager};
 use windows::{
     Win32::{
-        Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SetLastError, WIN32_ERROR, WPARAM},
+        Foundation::{CloseHandle, ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SetLastError, WIN32_ERROR, WPARAM},
         Graphics::{
             Dwm::{DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DwmEnableBlurBehindWindow},
             Gdi::{CreateRectRgn, DeleteObject, ScreenToClient},
         },
-        System::LibraryLoader::GetModuleHandleW,
+        System::{
+            LibraryLoader::GetModuleHandleW,
+            Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW},
+        },
         UI::{
             Input::KeyboardAndMouse::{GetAsyncKeyState, ReleaseCapture, VK_ESCAPE, VK_LBUTTON},
             WindowsAndMessaging::*,
         },
     },
-    core::{PCWSTR, w},
+    core::{PCWSTR, PWSTR, w},
 };
 use wry::{
-    Rect as WryRect, WebView, WebViewBuilder, dpi,
+    Rect as WryRect, WebView, WebViewBuilder, WebViewBuilderExtWindows, dpi,
     http::{Request, Response},
     raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle},
 };
@@ -54,7 +60,7 @@ impl IslandEdge
         }
     }
 
-    /// 返回显式贴边偏好；拖动落点始终写具体四边，默认居中空串由偏好调用方保留。
+    /// 返回显式贴边偏好；空串由偏好调用方按顶部处理，拖动不强制固化。
     pub fn as_preference(self) -> &'static str
     {
         match self
@@ -78,6 +84,7 @@ pub struct IslandRect
 }
 
 /// 取中心到工作区边界直线的最近距离；等距固定按上、下、左、右优先。
+#[allow(dead_code)] // 贴边方向改由设置决定，保留纯函数供几何测试。
 pub fn snap_edge(center_x: f64, center_y: f64, work: IslandRect) -> IslandEdge
 {
     // 严格小于才替换，保证等距时保留较早的边。
@@ -93,37 +100,42 @@ pub fn snap_edge(center_x: f64, center_y: f64, work: IslandRect) -> IslandEdge
     nearest.0
 }
 
-/// 将距工作区左端（水平边）或顶端（垂直边）的偏移夹紧；尺寸超限时落到起点。
+/// 沿边方向的中心偏移夹紧：0 表示居中，范围是相对居中可移动的半幅距离。
 pub fn clamp_offset(edge: IslandEdge, offset: f64, size: (f64, f64), work: IslandRect) -> f64
 {
-    let available = match edge
+    let span = match edge
     {
-        IslandEdge::Top | IslandEdge::Bottom => work.width - size.0,
-        IslandEdge::Left | IslandEdge::Right => work.height - size.1,
-    }; // 沿边可移动距离；负值表示岛比工作区长。
-    offset.clamp(0.0, available.max(0.0))
+        IslandEdge::Top | IslandEdge::Bottom => (work.width - size.0).max(0.0),
+        IslandEdge::Left | IslandEdge::Right => (work.height - size.1).max(0.0),
+    }; // 沿边可移动总距离；负值表示岛比工作区长。
+    offset.clamp(-span / 2.0, span / 2.0)
 }
 
-/// 将岛贴到指定工作区边；超出工作区的尺寸不缩小，只将对应轴放到起点。
-pub fn place(edge: IslandEdge, offset: f64, size: (f64, f64), work: IslandRect) -> IslandRect
+/// 岛形态到贴边方向的间隔（DIP）：胶囊离边 6，刘海贴边 0。
+pub fn island_margin(form: &str) -> f64 { if form == "notch" { 0.0 } else { 6.0 } }
+
+/// 将岛贴到指定工作区边并在沿边方向居中；`offset` 是相对居中的偏移，`margin` 是贴边方向的间隔。
+pub fn place(edge: IslandEdge, offset: f64, size: (f64, f64), work: IslandRect, margin: f64) -> IslandRect
 {
     let offset = clamp_offset(edge, offset, size, work); // 统一夹紧持久化与实时偏移。
+    let center_x = (work.width - size.0).max(0.0) / 2.0; // 尺寸超限时不居中，保持工作区起点。
+    let center_y = (work.height - size.1).max(0.0) / 2.0;
+    let margin = margin.max(0.0);
     let (left, top) = match edge
     {
-        IslandEdge::Top => (work.left + offset, work.top),
-        IslandEdge::Bottom => (work.left + offset, work.top + (work.height - size.1).max(0.0)),
-        IslandEdge::Left => (work.left, work.top + offset),
-        IslandEdge::Right => (work.left + (work.width - size.0).max(0.0), work.top + offset),
-    }; // 工作区绝对坐标，允许多显示器负坐标。
-    IslandRect { left, top, width: size.0, height: size.1 }
+        IslandEdge::Top => (work.left + center_x + offset, work.top + margin),
+        IslandEdge::Bottom => (work.left + center_x + offset, work.top + (work.height - size.1).max(0.0) - margin),
+        IslandEdge::Left => (work.left + margin, work.top + center_y + offset),
+        IslandEdge::Right => (work.left + (work.width - size.0).max(0.0) - margin, work.top + center_y + offset),
+    }; // 工作区绝对坐标，允许多显示器负坐标；贴边侧固定，另一侧向屏幕中心展开。
+    IslandRect { left: left.max(work.left), top: top.max(work.top), width: size.0, height: size.1 }
 }
 
-/// 按偏好放置；空串忽略旧偏移，始终在顶部居中。
-pub fn place_from_preference(edge: &str, offset: f64, size: (f64, f64), work: IslandRect) -> Option<IslandRect>
+/// 按偏好放置；空串按顶部应用同一偏移，不把空串固化为显式 top。
+pub fn place_from_preference(edge: &str, offset: f64, size: (f64, f64), work: IslandRect, margin: f64) -> Option<IslandRect>
 {
     let parsed = IslandEdge::from_preference(edge)?; // 未知字符串由边界调用方处理错误。
-    let offset = if edge.is_empty() { (work.width - size.0) / 2.0 } else { offset }; // 默认位置不持久化为显式 top。
-    Some(place(parsed, offset, size, work))
+    Some(place(parsed, offset, size, work, margin))
 }
 
 /// 返回指向工作区内部的展开单位向量。
@@ -222,6 +234,7 @@ struct IslandWindow
     monitor: DesktopHostMonitor,          // 主屏当前工作区与缩放。
     geometry: Option<IslandStateRequest>, // 首次状态到达前禁止显示。
     drag: DragProgress,                   // 几何修订使旧移动循环失效。
+    screenshot_hidden: bool,              // 本次隐藏是否因系统截图工具在前台；显示事实直接读 Win32。
 }
 
 /// 一个移动循环最多消费一次当前几何修订；切态会取消尚未完成的落点。
@@ -282,7 +295,10 @@ impl LandingOrder
                 disabled = true;
                 return Err("岛已关闭，不保存落点".into());
             }
-            preferences.island_edge = edge.as_preference().into();
+            if !(preferences.island_edge.is_empty() && edge == IslandEdge::Top)
+            {
+                preferences.island_edge = edge.as_preference().into(); // 默认空边拖动后仍保留空串，不固化为显式 top。
+            }
             preferences.island_offset = offset;
             Ok(())
         });
@@ -298,6 +314,13 @@ impl LandingOrder
 }
 // ponytail: 单岛串行落盘锁；扩展多岛时再按岛身份拆锁。
 static LANDINGS: Mutex<LandingOrder> = Mutex::new(LandingOrder { latest: 0, committed: 0 });
+static ISLAND_HWND: AtomicIsize = AtomicIsize::new(0); // 键盘钩子线程只读取 HWND 数值，不跨线程碰 WebView。
+static SCREENSHOT_SEEN: AtomicBool = AtomicBool::new(false); // 热键后是否已观察到截图工具真正进入前台。
+static SCREENSHOT_PENDING: AtomicBool = AtomicBool::new(false); // 热键已提前隐藏，等待截图工具出现或超时。
+static SCREENSHOT_STARTED_MS: AtomicU64 = AtomicU64::new(0); // 热键触发的毫秒时间，供计时器判断是否超时。
+const SCREENSHOT_TIMER_ID: usize = 0x4953; // 截图隐藏期间的兜底恢复计时器。
+const SCREENSHOT_TIMEOUT_MS: u64 = 1200; // 热键后等待截图工具出现的上限。
+const WM_ISLAND_SCREENSHOT_HOTKEY: u32 = WM_APP + 39; // 钩子线程请求 UI 线程安装截图计时器。
 
 thread_local! {
     static ISLAND: RefCell<Option<IslandWindow>> = const { RefCell::new(None) }; // 仅 Tauri UI 线程访问。
@@ -332,7 +355,8 @@ pub(crate) fn reconcile(app: &AppHandle)
             let preferences = handle.state::<SettingsState>().preferences()?; // 保存后的最新事实。
             if !preferences.island_enabled
             {
-                destroy();
+                // 关闭只隐藏并保留窗口：关闭后立刻重开会重复创建 WebView2，环境交接会卡住 UI 线程；进程退出时统一释放。
+                apply_policy(false);
                 return Ok(());
             }
             if ISLAND.with(|slot| slot.borrow().is_none())
@@ -439,7 +463,9 @@ fn schedule_child_noactivate(hwnd: HWND)
 /// 建窗失败也释放 HWND；开启但页面尚未提交状态时保持隐藏。
 fn create(app: &AppHandle) -> Result<(), String>
 {
+    crate::log_debug!("岛：开始创建原生窗口");
     let monitor = primary_monitor()?; // 从原生 rcWork 获取当前主屏。
+    crate::log_debug!("岛：主屏工作区已读取，显示器={}", monitor.id);
     let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(|error| error.to_string())?; // 当前模块身份。
     let class = WNDCLASSEXW {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -458,7 +484,7 @@ fn create(app: &AppHandle) -> Result<(), String>
         let raw = IslandHandle(NonZeroIsize::new(hwnd.0 as isize).ok_or("岛 HWND 为空")?); // Wry 句柄借用只限本线程。
         let protocol_app = app.clone(); // 协议请求后台分派。
         let island_hwnd = hwnd.0 as isize; // 页面回调仅捕获数值，不跨线程持有原生窗口对象。
-        WebViewBuilder::new()
+        let mut builder = WebViewBuilder::new()
             .with_id("island")
             .with_transparent(true)
             .with_focused(false) // Wry 默认主动 MoveFocus；岛创建时不能抢走前台。
@@ -473,9 +499,17 @@ fn create(app: &AppHandle) -> Result<(), String>
                 }
             })
             .with_initialization_script(&super::desktop_host::native_bridge_script(&format!("http://{ISLAND_PROTOCOL}.localhost")))
-            .with_url(island_page_url(super::desktop_host::boot_epoch(), super::desktop_host::active_theme_stylesheet(app).as_deref()).as_str())
-            .build_as_child(&raw)
-            .map_err(|error| format!("创建岛 WebView 失败：{error}"))
+            .with_url(island_page_url(super::desktop_host::boot_epoch(), super::desktop_host::active_theme_stylesheet(app).as_deref()).as_str());
+        // 复用正式宿主的环境：关闭后再次开启岛时不重复创建 WebView2 环境，避免环境交接卡住 UI 线程。
+        let environment = super::desktop_host::shared_webview_environment();
+        crate::log_debug!("岛：开始创建 WebView2，复用环境={}", environment.is_some());
+        if let Some(environment) = environment
+        {
+            builder = builder.with_environment(environment);
+        }
+        let webview = builder.build_as_child(&raw).map_err(|error| format!("创建岛 WebView 失败：{error}"))?;
+        crate::log_debug!("岛：WebView2 已创建");
+        Ok::<WebView, String>(webview)
     })(); // 任何 WebView 构造失败均销毁占位 HWND。
     let webview = match build
     {
@@ -511,7 +545,8 @@ fn create(app: &AppHandle) -> Result<(), String>
         return Err(format!("岛置顶失败：{error}"));
     }
     crate::log_info!("岛：已创建隐藏窗口，显示器={}，工作区=[{}, {}, {}, {}]，缩放={}", monitor.id, monitor.work_x, monitor.work_y, monitor.work_width, monitor.work_height, monitor.scale_factor);
-    ISLAND.with(|slot| *slot.borrow_mut() = Some(IslandWindow { hwnd, webview: Rc::new(webview), app: app.clone(), monitor, geometry: None, drag: DragProgress::default() }));
+    ISLAND.with(|slot| *slot.borrow_mut() = Some(IslandWindow { hwnd, webview: Rc::new(webview), app: app.clone(), monitor, geometry: None, drag: DragProgress::default(), screenshot_hidden: false }));
+    ISLAND_HWND.store(hwnd.0 as isize, Ordering::Release);
     Ok(())
 }
 
@@ -529,6 +564,9 @@ pub(crate) fn dispatch_script(script: &str)
 /// UI 线程幂等清理，先释放 WebView 再销毁外层 HWND。
 pub(crate) fn destroy()
 {
+    ISLAND_HWND.store(0, Ordering::Release);
+    SCREENSHOT_PENDING.store(false, Ordering::Release);
+    SCREENSHOT_SEEN.store(false, Ordering::Release);
     CLICK_FOREGROUND.with(|state| state.borrow_mut().target = None); // 关闭后不保留旧 HWND 的补偿任务。
     NATIVE_DRAGGING.set(false);
     let resource = ISLAND.with(|slot| slot.borrow_mut().take()); // 先移出，窗口销毁重入时不会重复释放。
@@ -570,6 +608,98 @@ where
     }
 }
 
+/// 系统截图工具的进程名；Windows 10/11 的截图浮层分属不同进程。
+fn is_screenshot_process(name: &str) -> bool { matches!(name, "screenclipper.exe" | "snippingtool.exe" | "screensketch.exe") }
+
+/// 热键隐藏是否应结束：工具已出现后离开前台，或等待超时仍未出现。
+fn screenshot_hotkey_timeout(started_ms: u64, now_ms: u64, seen: bool) -> bool { started_ms != 0 && (seen || now_ms.saturating_sub(started_ms) > SCREENSHOT_TIMEOUT_MS) }
+
+/// 截图热键在系统冻结画面之前先隐藏岛；键盘钩子线程只写原子状态并做一次隐藏。
+pub(crate) fn hide_for_screenshot_hotkey()
+{
+    SCREENSHOT_PENDING.store(true, Ordering::Release);
+    SCREENSHOT_STARTED_MS.store(now_millis(), Ordering::Release);
+    SCREENSHOT_SEEN.store(false, Ordering::Release);
+    let hwnd = ISLAND_HWND.load(Ordering::Acquire);
+    if hwnd != 0
+    {
+        let hwnd = HWND(hwnd as *mut _);
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            // SetTimer 只能由窗口所属 UI 线程安装；这里只请求 UI 线程接管隐藏与计时器。
+            if let Err(error) = PostMessageW(Some(hwnd), WM_ISLAND_SCREENSHOT_HOTKEY, WPARAM(0), LPARAM(0))
+            {
+                crate::log_warn!("岛：截图热键调度 UI 线程失败，等待下一次策略刷新恢复：{error}");
+            }
+        }
+    }
+}
+
+/// 当前毫秒时间；只用于截图热键超时判断，不参与业务时间。
+fn now_millis() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as u64).unwrap_or(0) }
+
+/// 截图热键是否仍处于提前隐藏状态。
+fn screenshot_hotkey_pending() -> bool { SCREENSHOT_PENDING.load(Ordering::Acquire) }
+
+/// 截图隐藏后的兜底恢复：不依赖漏发的前台事件，截图工具未出现或离开前台即恢复。
+fn screenshot_timer_tick()
+{
+    let foreground = screenshot_foreground();
+    if foreground
+    {
+        SCREENSHOT_SEEN.store(true, Ordering::Release);
+        apply_policy(true);
+        return;
+    }
+    let started = SCREENSHOT_STARTED_MS.load(Ordering::Acquire);
+    if screenshot_hotkey_timeout(started, now_millis(), SCREENSHOT_SEEN.load(Ordering::Acquire))
+    {
+        SCREENSHOT_PENDING.store(false, Ordering::Release);
+        SCREENSHOT_SEEN.store(false, Ordering::Release);
+        crate::log_info!("岛：截图工具已离开前台或未出现，按当前偏好恢复岛窗口");
+        apply_policy(true);
+        return;
+    }
+    // 手动打开截图工具时没有热键 started；screenshot_hidden 仍由前台检测设置，计时器同样要兜底。
+    let hidden_for_screenshot = ISLAND.with(|slot| slot.borrow().as_ref().is_some_and(|resource| resource.screenshot_hidden));
+    if !SCREENSHOT_PENDING.load(Ordering::Acquire) && hidden_for_screenshot
+    {
+        apply_policy(true);
+    }
+}
+
+/// 前台是系统截图工具时隐藏岛，避免截图工具触发的置顶刷新把岛拍进截图。
+fn screenshot_foreground() -> bool
+{
+    let window = unsafe { GetForegroundWindow() };
+    if window.0.is_null()
+    {
+        return false;
+    }
+    let mut process = 0u32;
+    unsafe { GetWindowThreadProcessId(window, Some(&mut process)) };
+    if process == 0
+    {
+        return false;
+    }
+    let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process) }
+    {
+        Ok(handle) => handle,
+        Err(_) => return false,
+    };
+    let mut buffer = [0u16; 512]; // 截图工具可执行文件路径足够放下的缓冲。
+    let mut size = buffer.len() as u32;
+    let named = unsafe { QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buffer.as_mut_ptr()), &mut size) };
+    let _ = unsafe { CloseHandle(handle) };
+    if named.is_err()
+    {
+        return false;
+    }
+    let path = String::from_utf16_lossy(&buffer[..size as usize]);
+    let name = path.rsplit('\\').next().unwrap_or_default().to_ascii_lowercase();
+    is_screenshot_process(&name)
+}
+
 /// UI 线程使用相同快照隐藏或无激活恢复；未收首态绝不显示占位窗。
 fn apply_policy(reassert_topmost: bool)
 {
@@ -577,18 +707,70 @@ fn apply_policy(reassert_topmost: bool)
         let slot = slot.borrow(); // 仅计算副作用所需的 Copy 数据，不调用窗口 API。
         let resource = slot.as_ref()?;
         let preferences = resource.app.state::<SettingsState>().preferences().ok()?;
-        let hide = !preferences.island_enabled || resource.geometry.is_none() || suppressed(&super::refresh_policy::foreground_snapshot(), preferences.island_hide_on_fullscreen);
-        Some((resource.hwnd, hide))
+        let foreground = screenshot_foreground();
+        if foreground
+        {
+            SCREENSHOT_SEEN.store(true, Ordering::Release);
+        }
+        else if SCREENSHOT_PENDING.load(Ordering::Acquire) && screenshot_hotkey_timeout(SCREENSHOT_STARTED_MS.load(Ordering::Acquire), now_millis(), SCREENSHOT_SEEN.load(Ordering::Acquire))
+        {
+            // 任何一次策略刷新都能自愈：工具未出现且已超时，清掉提前隐藏状态。
+            SCREENSHOT_PENDING.store(false, Ordering::Release);
+            SCREENSHOT_SEEN.store(false, Ordering::Release);
+        }
+        let screenshot = foreground || screenshot_hotkey_pending();
+        let hide = !preferences.island_enabled || resource.geometry.is_none() || suppressed(&super::refresh_policy::foreground_snapshot(), preferences.island_hide_on_fullscreen) || screenshot;
+        // 钩子线程可能已直接隐藏窗口，显示判定必须读取 Win32 实际状态而不是缓存布尔。
+        let was_visible = unsafe { IsWindowVisible(resource.hwnd).as_bool() };
+        Some((resource.hwnd, hide, was_visible, screenshot, resource.screenshot_hidden, foreground))
     }); // RefCell 借用到此结束，隐藏中重入 finish_drag 也可以取得可变借用。
-    if let Some((hwnd, hide)) = target
+    if let Some((hwnd, hide, was_visible, screenshot, screenshot_hidden, foreground)) = target
     {
+        if screenshot && !screenshot_hidden && hide
+        {
+            if foreground
+            {
+                crate::log_info!("岛：系统截图工具进入前台，隐藏岛窗口");
+            }
+            else
+            {
+                crate::log_info!("岛：截图热键触发，提前隐藏岛窗口");
+            }
+        }
+        else if !screenshot && screenshot_hidden
+        {
+            crate::log_info!("岛：系统截图工具离开前台，按当前偏好恢复岛窗口");
+        }
         unsafe {
-            let _ = ShowWindow(hwnd, if hide { SW_HIDE } else { SW_SHOWNOACTIVATE });
+            // 已可见时不再重复 ShowWindow：截图工具等外部事件只刷新前台事实，不能制造一次重绘。
+            if hide && was_visible
+            {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+            else if !hide && !was_visible
+            {
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            }
             if !hide && reassert_topmost
             {
                 let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
+            if screenshot
+            {
+                let _ = SetTimer(Some(hwnd), SCREENSHOT_TIMER_ID, 300, None);
+            }
+            else
+            {
+                let _ = KillTimer(Some(hwnd), SCREENSHOT_TIMER_ID);
+            }
         }
+        // ShowWindow 可能同步重入，显示状态在原生调用结束后再回写。
+        ISLAND.with(|slot| {
+            if let Some(resource) = slot.borrow_mut().as_mut().filter(|resource| resource.hwnd == hwnd)
+            {
+                resource.screenshot_hidden = screenshot;
+            }
+        });
     }
 }
 
@@ -645,6 +827,7 @@ pub(crate) fn set_state(request: IslandStateRequest) -> Result<(), String>
             slot.as_mut().map(|resource| {
                 resource.geometry = None;
                 resource.drag.invalidate();
+                resource.screenshot_hidden = false;
                 resource.hwnd
             })
         });
@@ -682,10 +865,10 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
         if resource.geometry.is_none()
         {
             let preferences = resource.app.state::<SettingsState>().preferences()?; // 首次状态按偏好落位。
-            let active = request.cards.iter().map(|card| card.rect).reduce(union_box).ok_or("岛区域为空")?;
-            let placed = place_from_preference(&preferences.island_edge, preferences.island_offset, (active.width, active.height), area).ok_or("岛贴边偏好无效")?;
-            request.window_box.left = placed.left - active.left;
-            request.window_box.top = placed.top - active.top;
+            // 按页面提交的窗口盒尺寸落位：刘海窗口已含沿边圆弧区，不能再用卡片联合盒尺寸。
+            let placed = place_from_preference(&preferences.island_edge, preferences.island_offset, (request.window_box.width, request.window_box.height), area, island_margin(&preferences.island_form)).ok_or("岛贴边偏好无效")?;
+            request.window_box.left = placed.left;
+            request.window_box.top = placed.top;
         }
         if request.window_box.width > area.width || request.window_box.height > area.height
         {
@@ -712,6 +895,8 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
             unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), px(rect.left, scale), px(rect.top, scale), px(rect.width, scale), px(rect.height, scale), SWP_NOACTIVATE) }.map_err(|error| format!("设置岛窗口盒失败：{error}"))?;
             stage.set(StateStage::WebView);
             webview.set_bounds(WryRect { position: dpi::PhysicalPosition::new(0, 0).into(), size: dpi::PhysicalSize::new(px(rect.width, scale) as u32, px(rect.height, scale) as u32).into() }).map_err(|error| format!("设置岛 WebView 尺寸失败：{error}"))?;
+            // 每帧提交日志刷屏，排查时再打开。
+            // crate::log_debug!("岛：提交帧 状态={}，窗口盒DIP=[{}, {}, {}, {}]，卡片DIP=[{}]", request.state, rect.left, rect.top, rect.width, rect.height, request.cards.iter().map(|card| format!("[{}, {}, {}, {}]圆角{}", card.rect.left, card.rect.top, card.rect.width, card.rect.height, card.radius)).collect::<Vec<_>>().join("；"));
             if state_changed
             {
                 crate::log_info!("岛：切换状态={}，显示器={}，窗口盒DIP=[{}, {}, {}, {}]，缩放={}", request.state, monitor.id, rect.left, rect.top, rect.width, rect.height, scale);
@@ -752,6 +937,7 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
 pub(crate) struct IslandDragResult
 {
     pub pointer_inside: bool, // 未确认、取消或超时时保守返回 false。
+    pub offset: Option<f64>,  // 本次拖动后的沿边居中偏移；取消、超时或未吸附时为 None。
 }
 
 /// Win32 客户区命中规则：左上含、右下不含，圆角不参与矩形内外事实。
@@ -835,18 +1021,30 @@ fn finish_drag(hwnd: HWND) -> Result<(), String>
     };
     let monitor = primary_monitor()?; // 读取最新工作区也不持有资源借用。
     let scale = monitor.scale_factor;
-    let mut rect = RECT::default(); // HWND 实际屏幕物理坐标。
-    unsafe { GetWindowRect(hwnd, &mut rect) }.map_err(|error| error.to_string())?;
     let active = geometry.cards.iter().map(|card| card.rect).reduce(union_box).ok_or("岛区域为空")?;
-    let left = f64::from(rect.left) / scale + active.left;
-    let top = f64::from(rect.top) / scale + active.top;
     let area = work_dip(&monitor);
-    let edge = snap_edge(left + active.width / 2.0, top + active.height / 2.0, area);
-    let offset = clamp_offset(edge, if matches!(edge, IslandEdge::Top | IslandEdge::Bottom) { left - area.left } else { top - area.top }, (active.width, active.height), area);
-    let placed = place(edge, offset, (active.width, active.height), area);
-    let x = placed.left - active.left; // 联合盒原点随胶囊平移。
-    let y = placed.top - active.top;
-    unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), px(x, scale), px(y, scale), 0, 0, SWP_NOSIZE | SWP_NOACTIVATE) }.map_err(|error| error.to_string())?; // 无借用，重复 WM_EXITSIZEMOVE 会直接返回。
+    let mut window = RECT::default(); // 拖动后的窗口位置；松手不再以鼠标为中心重新定位，避免跳变。
+    unsafe { GetWindowRect(hwnd, &mut window) }.map_err(|error| error.to_string())?;
+    let window_left = f64::from(window.left) / scale; // 物理像素统一换算到 DIP。
+    let window_top = f64::from(window.top) / scale;
+    let center_x = window_left + active.left + active.width / 2.0; // 卡片中心跟随窗口，不跟随鼠标按下点。
+    let center_y = window_top + active.top + active.height / 2.0;
+    let preferences = app.state::<SettingsState>().preferences()?; // 贴边方向只由设置决定，拖动只沿当前边移动。
+    let edge = IslandEdge::from_preference(&preferences.island_edge).unwrap_or(IslandEdge::Top);
+    let raw = match edge
+    {
+        IslandEdge::Top | IslandEdge::Bottom => center_x - (area.left + area.width / 2.0), // 沿边偏移 = 卡片中心相对工作区中心。
+        IslandEdge::Left | IslandEdge::Right => center_y - (area.top + area.height / 2.0),
+    };
+    let card = geometry.cards.first().map(|card| card.rect).ok_or("岛区域为空")?;
+    let notch_extra = if preferences.island_form == "notch" && geometry.state != "expanded" { 24.0 } else { 0.0 };
+    let clamp_size = match edge
+    {
+        IslandEdge::Top | IslandEdge::Bottom => (card.width + notch_extra, card.height),
+        IslandEdge::Left | IslandEdge::Right => (card.width, card.height + notch_extra),
+    };
+    let offset = clamp_offset(edge, raw, clamp_size, area); // 与页面 islandGeometry 的卡片+刘海夹紧口径一致。
+    // 不在这里移动窗口：跨边时旧态尺寸算出的位置会和页面按新边重测的结果打架，吸附位置统一由页面提交。
     let committed = ISLAND.with(|slot| {
         let mut slot = slot.borrow_mut(); // 不把过期原生操作提交给重建后的新窗口。
         let Some(resource) = slot.as_mut().filter(|resource| Rc::ptr_eq(&resource.webview, &webview) && resource.drag.revision == revision)
@@ -854,13 +1052,6 @@ fn finish_drag(hwnd: HWND) -> Result<(), String>
         {
             return false;
         };
-        let Some(geometry) = resource.geometry.as_mut()
-        else
-        {
-            return false;
-        };
-        geometry.window_box.left = x;
-        geometry.window_box.top = y;
         resource.monitor = monitor.clone();
         true
     });
@@ -868,8 +1059,12 @@ fn finish_drag(hwnd: HWND) -> Result<(), String>
     {
         return Ok(());
     }
-    let pointer_inside = cursor_inside_client(hwnd); // 吸附成功后的释放事实先采样，后台磁盘等待期间不重读鼠标。
-    crate::log_info!("岛：拖动吸附，显示器={}，边={}，偏移DIP={}，窗口原点DIP=[{}, {}]", monitor.id, edge.as_preference(), offset, x, y);
+    let pointer_inside = cursor_inside_client(hwnd); // 释放事实先采样，后台磁盘等待期间不重读鼠标。
+    crate::log_info!("岛：拖动落点，显示器={}，边={}，偏移DIP={}", monitor.id, edge.as_preference(), offset);
+    if let Some(done) = done
+    {
+        let _ = done.send(IslandDragResult { pointer_inside, offset: Some(offset) }); // 先释放命令屏障，页面按同一落点重测。
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let result = (|| {
             let state = app.state::<SettingsState>();
@@ -877,18 +1072,13 @@ fn finish_drag(hwnd: HWND) -> Result<(), String>
             if let Some(saved) = saved
             {
                 app.emit("preferences-changed", &saved).map_err(|error| format!("岛落点已保存，但偏好事件发布失败：{error}"))?;
-                return Ok(pointer_inside);
             }
-            Ok::<bool, String>(false) // 过期序号或关闭后丢弃，不误报指针仍在岛内。
+            Ok::<(), String>(())
         })();
         if let Err(error) = &result
         {
             crate::log_warn!("岛：保存拖动位置失败，错误：{error}");
         }
-        if let Some(done) = done
-        {
-            let _ = done.send(IslandDragResult { pointer_inside: result.unwrap_or(false) });
-        } // 保存/广播成功、过期丢弃或错误均释放命令屏障，错误不改变拖动结果。
     });
     Ok(())
 }
@@ -903,6 +1093,16 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
     if message == WM_ISLAND_CHILD_NOACTIVATE
     {
         apply_child_noactivate(hwnd);
+        return LRESULT(0);
+    }
+    if message == WM_ISLAND_SCREENSHOT_HOTKEY
+    {
+        apply_policy(true); // UI 线程安装计时器并回写实际可见性。
+        return LRESULT(0);
+    }
+    if message == WM_TIMER && wparam.0 == SCREENSHOT_TIMER_ID
+    {
+        screenshot_timer_tick();
         return LRESULT(0);
     }
     if message == WM_PARENTNOTIFY && matches!((wparam.0 & 0xffff) as u32, WM_CREATE | WM_DESTROY)

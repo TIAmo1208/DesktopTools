@@ -224,3 +224,31 @@
 .island-settings button:not(:disabled):active {
     opacity: 0.72;
 }
+
+/* 岛形态分段控件沿用天气供应商的选中与悬浮取值。 */
+.island-settings__segmented {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 6px;
+    background: var(--color-background);
+}
+.island-settings__segment {
+    height: 34px;
+    padding: 0 16px;
+    border: 0;
+    border-radius: 4px;
+    color: var(--color-muted);
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
+}
+.island-settings__segment:hover:not(:disabled, .is-active) {
+    color: var(--color-text);
+    background: var(--color-subtle);
+}
+.island-settings__segment.is-active {
+    color: var(--color-text);
+    background: var(--color-surface);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+}

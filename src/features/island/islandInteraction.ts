@@ -5,9 +5,10 @@ export const ISLAND_NO_DRAG = "button, input, select, textarea, a, [contentedita
 
 // ponytail: 双向暂用 180ms 固定延迟，后续由设置页参数项接管，不扩大偏好契约。
 export const ISLAND_HOVER_DELAY_MS = 180;
+export const ISLAND_DRAG_DELAY_MS = 250; // 按住满 250ms 才进入原生拖动，避免单击与拖动手势抢跑。
 export const ISLAND_DRAG_THRESHOLD = 4; // 屏幕 DIP 位移，不按按住时长猜测拖动。
 
-/** hover 只在真实位移越过阈值后进入原生移动循环。 */
+/** 位移越过阈值后取消长按拖动，避免拖动和普通操作抢跑。 */
 export const islandDragMoved = (start: { x: number; y: number }, point: { x: number; y: number }) =>
     Math.hypot(point.x - start.x, point.y - start.y) > ISLAND_DRAG_THRESHOLD;
 

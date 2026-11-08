@@ -46,7 +46,7 @@ src-tauri/
 - `shell/` 负责 Shell 项目身份、真实文件操作、菜单、剪贴板和 Shell OLE 数据对象。
 - `shell/images.rs` 持有独立图像 STA、去重队列和有界 LRU；`platform/windows/shell_image.rs` 在所属线程提取 Shell 缩略图、转换 PNG 及原生拖动位图。`get_desktop_item_image` 校验当前项目身份后请求图像，Shell 变化使缓存和在途结果失效，原生拖动只读取已完成缓存。
 - `host/` 负责逐显示器透明窗口、WebView2、坐标、命中图和桌面接管。
-- `platform/windows/` 集中维护 COM、OLE、DPI、窗口消息和 Windows API 适配。`island.rs` 持有独立岛 HWND 与 WebView，复用桌面协议的页面/插件资产处理器、原生桥和事件转发，但命令只接受岛自身来源；`commands/island.rs` 按偏好返回岛实例与注册投影，不写工作区注册集合或布局。
+- `platform/windows/` 集中维护 COM、OLE、DPI、窗口消息和 Windows API 适配。`island.rs` 持有独立浮岛 HWND 与 WebView，复用桌面协议的页面/插件资产处理器、原生桥和事件转发，但命令只接受浮岛自身来源；`commands/island.rs` 按偏好返回浮岛实例与注册投影，不写工作区注册集合或布局。
 - `platform/windows/drop_content.rs` 探测有界源格式、声明业务白名单、协商效果并提取自有数据；`desktop_host.rs` 在既有 OLE 入口按最高命中目标分流。`app/desktop_drop.rs` 复核实例、功能开关与运行时注册，再交给 `collect/drop.rs` 或 Shell STA；后台不持有原生拖放数据对象。
 - `collect/drop.rs` 负责一次拖入的格式去重、Markdown 追加及资源收入，正文保存使用既有 Windows 原子替换能力，失败保留已保存正文与可追踪的资源路径。
 - `collect/items.rs` 管理根目录独立图片文件与文件映射记录；`collect/transfer.rs` 管理复制导出及内部逐项复制、追加，复用 `references.rs` 改写复制资源的 Markdown 引用。独立图片复制到 `collect` 根目录并使用文件名身份，扫描不递归文档资源目录，映射不复制源文件。编辑窗状态由 `commands/collect.rs` 在两种命令 transport 和 OLE 业务入口通过同一窗口注册锁查询并保护写入，正文追加逐项拒绝编辑中的目标。

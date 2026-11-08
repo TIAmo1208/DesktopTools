@@ -70,7 +70,7 @@ export const IslandSettings = ({
         return (
             <section className="island-settings island-settings--detail">
                 <div className="island-settings__heading">
-                    <button className="island-settings__back" type="button" aria-label="返回岛" title="返回岛" onClick={() => setDetailId(undefined)} data-button="icon">
+                    <button className="island-settings__back" type="button" aria-label="返回浮岛" title="返回浮岛" onClick={() => setDetailId(undefined)} data-button="icon">
                         <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: backIcon }} />
                     </button>
                     <h2>{detail.name}</h2>
@@ -78,15 +78,15 @@ export const IslandSettings = ({
                         <button
                             className="settings__button settings__icon-button"
                             type="button"
-                            aria-label="从岛移除"
-                            title="从岛移除"
+                            aria-label="从浮岛移除"
+                            title="从浮岛移除"
                             disabled={unavailable || !availability?.enabled}
                             onClick={() => toggle(detail.id, false)}
                             data-button="icon"
                         >
                             <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: trashIcon }} />
                         </button>
-                        <SettingsSwitch label={`${detail.name}上岛`} checked={availability?.enabled ?? false} disabled={unavailable} onChange={(checked) => toggle(detail.id, checked)} />
+                        <SettingsSwitch label={`${detail.name}上浮岛`} checked={availability?.enabled ?? false} disabled={unavailable} onChange={(checked) => toggle(detail.id, checked)} />
                     </div>
                 </div>
                 <div className="island-settings__identity">
@@ -108,15 +108,65 @@ export const IslandSettings = ({
         <section className="island-settings">
             <div className="settings__rows">
                 <div className="settings__row">
-                    <label className="settings__row-title" htmlFor="island-enabled">显示岛</label>
-                    <SettingsSwitch id="island-enabled" label="显示岛" checked={preferences?.islandEnabled ?? false} disabled={unavailable} onChange={(checked) => onPreferences({ islandEnabled: checked })} />
+                    <label className="settings__row-title" htmlFor="island-enabled">显示浮岛</label>
+                    <SettingsSwitch id="island-enabled" label="显示浮岛" checked={preferences?.islandEnabled ?? false} disabled={unavailable} onChange={(checked) => onPreferences({ islandEnabled: checked })} />
+                </div>
+                <div className="settings__row">
+                    <span className="settings__row-title">浮岛形态</span>
+                    <div className="island-settings__segmented" role="tablist" aria-label="浮岛形态">
+                        {(
+                            [
+                                ["capsule", "胶囊"],
+                                ["notch", "刘海"],
+                            ] as const
+                        ).map(([value, label]) => (
+                            <button
+                                key={value}
+                                type="button"
+                                role="tab"
+                                aria-selected={(preferences?.islandForm ?? "capsule") === value}
+                                className={`island-settings__segment${(preferences?.islandForm ?? "capsule") === value ? " is-active" : ""}`}
+                                disabled={unavailable}
+                                onClick={() => onPreferences({ islandForm: value })}
+                                data-button="primary"
+                            >
+                                {label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+                <div className="settings__row">
+                    <span className="settings__row-title">显示位置</span>
+                    <div className="island-settings__segmented" role="tablist" aria-label="显示位置">
+                        {(
+                            [
+                                ["top", "上"],
+                                ["bottom", "下"],
+                                ["left", "左"],
+                                ["right", "右"],
+                            ] as const
+                        ).map(([value, label]) => (
+                            <button
+                                key={value}
+                                type="button"
+                                role="tab"
+                                aria-selected={(preferences?.islandEdge || "top") === value}
+                                className={`island-settings__segment${(preferences?.islandEdge || "top") === value ? " is-active" : ""}`}
+                                disabled={unavailable}
+                                onClick={() => onPreferences({ islandEdge: value, islandOffset: 0 })}
+                                data-button="primary"
+                            >
+                                {label}
+                            </button>
+                        ))}
+                    </div>
                 </div>
                 <div className="settings__row">
                     <label className="settings__row-title" htmlFor="island-hide-fullscreen">全屏时隐藏</label>
                     <SettingsSwitch id="island-hide-fullscreen" label="全屏时隐藏" checked={preferences?.islandHideOnFullscreen ?? true} disabled={unavailable} onChange={(checked) => onPreferences({ islandHideOnFullscreen: checked })} />
                 </div>
                 <label className="settings__row island-settings__radius">
-                    <span className="settings__row-title">岛圆角（展开卡）</span>
+                    <span className="settings__row-title">浮岛圆角（展开卡）</span>
                     <input
                         type="number"
                         min={0}
@@ -133,9 +183,9 @@ export const IslandSettings = ({
             </div>
             <h2 className="island-settings__label">卡片</h2>
             {!manifests ? (
-                <p className="island-settings__empty" role="status">正在读取岛卡…</p>
+                <p className="island-settings__empty" role="status">正在读取浮岛卡…</p>
             ) : cards.length === 0 ? (
-                <p className="island-settings__empty">暂无可用岛卡</p>
+                <p className="island-settings__empty">暂无可用浮岛卡</p>
             ) : (
                 <div className="island-settings__list">
                     {cards.map((card) => {
@@ -154,7 +204,7 @@ export const IslandSettings = ({
                                     <small>{card.description || card.id}</small>
                                 </span>
                                 <div className="island-settings__controls">
-                                    <SettingsSwitch label={`${card.name}上岛`} checked={state.enabled} disabled={unavailable} onChange={(checked) => toggle(card.id, checked)} />
+                                    <SettingsSwitch label={`${card.name}上浮岛`} checked={state.enabled} disabled={unavailable} onChange={(checked) => toggle(card.id, checked)} />
                                     <button type="button" aria-label={`${card.name}上移`} title="上移" disabled={unavailable || !state.canMoveUp} onClick={() => move(card.id, -1)} data-button="icon">↑</button>
                                     <button type="button" aria-label={`${card.name}下移`} title="下移" disabled={unavailable || !state.canMoveDown} onClick={() => move(card.id, 1)} data-button="icon">↓</button>
                                 </div>

@@ -116,8 +116,9 @@ pub struct ApplicationPreferences
     pub pause_on_fullscreen: bool,             // 前台全屏或最大化覆盖本屏时暂停刷新。
     pub pause_on_focus: bool,                  // 外部应用获得焦点时暂停全部桌面刷新。
     pub island_radius: u8,                     // 岛展开卡圆角，独立于界面圆角。
-    pub island_enabled: bool,                  // 岛总开关，关闭时不建窗并销毁 WebView。
-    pub island_edge: String,                   // 岛贴边方向，空字符串表示顶部居中。
+    pub island_form: String,                   // 岛形态：capsule 胶囊（离边 6px）或 notch 刘海。
+    pub island_enabled: bool,                  // 岛总开关，关闭时隐藏并保留窗口，退出时释放。
+    pub island_edge: String,                   // 岛贴边方向，空字符串按顶部处理，偏移为 0 时居中。
     pub island_offset: f64,                    // 沿贴边方向的偏移，单位 DIP。
     pub island_hide_on_fullscreen: bool,       // 前台全屏时隐藏岛。
     #[serde(default, deserialize_with = "deserialize_island_card_order")]
@@ -173,6 +174,7 @@ impl Default for ApplicationPreferences
             pause_on_fullscreen: false,
             pause_on_focus: false,
             island_radius: default_island_radius(),
+            island_form: "capsule".to_string(),
             island_enabled: false,
             island_edge: String::new(),
             island_offset: 0.0,
@@ -322,6 +324,10 @@ impl ApplicationPreferences
         {
             validate_appearance(&baseline.accent_color, &baseline.desktop_accent_color, baseline.corner_radius, baseline.island_radius, &baseline.font_family, baseline.font_size)?;
         }
+        if !matches!(self.island_form.as_str(), "capsule" | "notch")
+        {
+            return Err("岛形态必须为 capsule 或 notch".to_string());
+        }
         if !matches!(self.island_edge.as_str(), "" | "top" | "bottom" | "left" | "right")
         {
             return Err("岛贴边方向必须为空或 top、bottom、left、right".to_string());
@@ -364,15 +370,17 @@ mod island_tests
     {
         let defaults: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 缺少岛字段的旧配置。
         assert_eq!(defaults.island_radius, 12);
+        assert_eq!(defaults.island_form, "capsule");
         assert!(!defaults.island_enabled);
         assert_eq!(defaults.island_edge, "");
         assert_eq!(defaults.island_offset, 0.0);
         assert!(defaults.island_hide_on_fullscreen);
         assert!(defaults.island_card_order.is_empty());
         assert!(defaults.validate().is_ok());
-        let selected = ApplicationPreferences { island_radius: 16, island_enabled: true, island_edge: "left".into(), island_offset: -12.5, island_hide_on_fullscreen: false, island_card_order: vec!["official.music".into(), "plugin.clock".into()], ..defaults }; // 非默认岛偏好。
+        let selected = ApplicationPreferences { island_radius: 16, island_form: "notch".into(), island_enabled: true, island_edge: "left".into(), island_offset: -12.5, island_hide_on_fullscreen: false, island_card_order: vec!["official.music".into(), "plugin.clock".into()], ..defaults }; // 非默认岛偏好。
         let value = serde_json::to_value(&selected).unwrap(); // 实际持久化字段名。
         assert_eq!(value["islandRadius"], 16);
+        assert_eq!(value["islandForm"], "notch");
         assert_eq!(value["islandEnabled"], true);
         assert_eq!(value["islandEdge"], "left");
         assert_eq!(value["islandOffset"], -12.5);
@@ -410,6 +418,25 @@ mod island_tests
         {
             assert!(ApplicationPreferences { island_offset: offset, ..Default::default() }.validate().is_ok());
         }
+    }
+
+    /// 岛形态只接受 capsule 与 notch，缺失配置回退胶囊。
+    #[test]
+    fn island_preferences_validate_form()
+    {
+        for form in ["capsule", "notch"]
+        {
+            assert!(ApplicationPreferences { island_form: form.into(), ..Default::default() }.validate().is_ok());
+        }
+        for form in ["", "Capsule", "notch ", "round"]
+        {
+            assert!(ApplicationPreferences { island_form: form.into(), ..Default::default() }.validate().is_err());
+        }
+        let parsed: ApplicationPreferences = serde_json::from_value(serde_json::json!({"islandForm": "round"})).unwrap(); // 字段反序列化不代校验，validate 统一收口。
+        assert!(parsed.validate().is_err());
+        let selected: ApplicationPreferences = serde_json::from_value(serde_json::json!({"islandForm": "notch"})).unwrap();
+        assert_eq!(selected.island_form, "notch");
+        assert!(selected.validate().is_ok());
     }
 
     /// 反序列化去重并丢弃非法项，只保留首次出现的前 32 个岛卡。

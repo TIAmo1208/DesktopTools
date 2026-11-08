@@ -44,9 +44,9 @@ const snapshot = {
     },
 };
 
-test("拖动命令只接受严格的camelCase布尔命中结果", () => {
-    assert.deepEqual(parseIslandDragResult({ pointerInside: true }), { pointerInside: true });
-    assert.deepEqual(parseIslandDragResult({ pointerInside: false }), { pointerInside: false });
+test("拖动命令只接受严格命中事实与新偏移，缺失偏移不回退到旧值", () => {
+    assert.deepEqual(parseIslandDragResult({ pointerInside: true, offset: 12.5 }), { pointerInside: true, offset: 12.5 });
+    assert.deepEqual(parseIslandDragResult({ pointerInside: false, offset: null }), { pointerInside: false, offset: null });
     for (const value of [
         undefined,
         null,
@@ -54,11 +54,15 @@ test("拖动命令只接受严格的camelCase布尔命中结果", () => {
         true,
         [],
         {},
+        { pointerInside: true },
         { pointer_inside: true },
-        { pointerInside: 1 },
-        { pointerInside: "false" },
-        { pointerInside: null },
-        { pointerInside: true, other: false },
+        { pointerInside: 1, offset: null },
+        { pointerInside: "false", offset: null },
+        { pointerInside: null, offset: null },
+        { pointerInside: true, offset: "1" },
+        { pointerInside: true, offset: Number.NaN },
+        { pointerInside: true, offset: Number.POSITIVE_INFINITY },
+        { pointerInside: true, offset: 1, other: false },
     ])
         assert.throws(() => parseIslandDragResult(value));
 });

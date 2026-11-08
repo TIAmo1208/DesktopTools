@@ -28,7 +28,8 @@ fn drag_pointer_result_uses_client_rectangle_and_camel_case()
         assert!(!point_inside_client(POINT { x, y }, rect));
     }
     assert!(!point_inside_client(POINT { x: 0, y: 0 }, RECT::default()));
-    assert_eq!(serde_json::to_value(IslandDragResult { pointer_inside: true }).unwrap(), serde_json::json!({"pointerInside": true}));
+    assert_eq!(serde_json::to_value(IslandDragResult { pointer_inside: true, offset: Some(-12.5) }).unwrap(), serde_json::json!({"pointerInside": true, "offset": -12.5}));
+    assert_eq!(serde_json::to_value(IslandDragResult::default()).unwrap(), serde_json::json!({"pointerInside": false, "offset": null}));
     let (done, saved) = std::sync::mpsc::sync_channel(1);
     drop(done);
     assert!(!wait_for_landing(saved, std::time::Duration::ZERO).pointer_inside); // 取消/失效路径不能误报 true。
@@ -52,10 +53,12 @@ fn landing_wait_exposes_saved_preferences_and_stale_sequence_is_success()
     let worker_state = Arc::clone(&state);
     let worker = std::thread::spawn(move || {
         assert!(order.save(&worker_state, sequence, IslandEdge::Bottom, 1547.0).unwrap().is_some());
-        done.send(IslandDragResult { pointer_inside: true }).unwrap(); // 与生产一致：先更新偏好，再发布完成信号。
+        done.send(IslandDragResult { pointer_inside: true, offset: Some(7.0) }).unwrap(); // 与生产一致：先发布完成信号，后台再保存偏好。
         order
     });
-    assert!(wait_for_landing(saved, std::time::Duration::from_secs(2)).pointer_inside);
+    let landed = wait_for_landing(saved, std::time::Duration::from_secs(2));
+    assert!(landed.pointer_inside);
+    assert_eq!(landed.offset, Some(7.0));
     assert_eq!(state.preferences().unwrap().island_edge, "bottom");
     assert_eq!(state.preferences().unwrap().island_offset, 1547.0);
     let mut order = worker.join().unwrap();
@@ -205,6 +208,30 @@ fn state_request_rejects_invalid_geometry_and_unknown_states()
 }
 
 #[test]
+fn screenshot_hotkey_timeout_turns_pending_into_recovery()
+{
+    assert!(!screenshot_hotkey_timeout(0, 9_999, false)); // 未触发。
+    assert!(!screenshot_hotkey_timeout(1_000, 1_500, false)); // 500ms 内等待截图工具。
+    assert!(screenshot_hotkey_timeout(1_000, 2_201, false)); // 超过 1200ms 未出现。
+    assert!(screenshot_hotkey_timeout(1_000, 1_100, true)); // 工具已出现后离开前台。
+}
+
+#[test]
+fn screenshot_tool_process_names_are_recognized()
+{
+    for name in ["screenclipper.exe", "snippingtool.exe", "screensketch.exe"]
+    // 系统截图浮层的可执行文件名。
+    {
+        assert!(is_screenshot_process(name), "应识别截图工具：{name}");
+    }
+    for name in ["explorer.exe", "screenclip.exe", "snippingtools.exe", ""]
+    // 相近名称不能误伤普通程序。
+    {
+        assert!(!is_screenshot_process(name), "不应把普通程序当截图工具：{name}");
+    }
+}
+
+#[test]
 fn suppression_only_uses_lock_and_exclusive_fullscreen()
 {
     use super::super::refresh_policy::{Coverage, ForegroundSnapshot};
@@ -274,21 +301,39 @@ fn ties_keep_top_bottom_left_right_priority()
 }
 
 #[test]
+fn capsule_keeps_six_dip_margin_and_notch_touches_edge()
+{
+    let area = work(0.0, 0.0, 1000.0, 800.0); // 常规工作区。
+    let size = (100.0, 50.0); // 岛的实际测量尺寸。
+    assert_eq!(island_margin("capsule"), 6.0);
+    assert_eq!(island_margin("notch"), 0.0);
+    assert_eq!(place(IslandEdge::Top, 0.0, size, area, island_margin("capsule")).top, 6.0);
+    assert_eq!(place(IslandEdge::Bottom, 0.0, size, area, island_margin("capsule")).top, 800.0 - 50.0 - 6.0);
+    assert_eq!(place(IslandEdge::Left, 0.0, size, area, island_margin("capsule")).left, 6.0);
+    assert_eq!(place(IslandEdge::Right, 0.0, size, area, island_margin("capsule")).left, 1000.0 - 100.0 - 6.0);
+    assert_eq!(place(IslandEdge::Top, 0.0, size, area, island_margin("notch")).top, 0.0);
+    assert_eq!(place(IslandEdge::Bottom, 0.0, size, area, island_margin("notch")).top, 750.0);
+    assert_eq!(place(IslandEdge::Left, 0.0, size, area, island_margin("notch")).left, 0.0);
+    assert_eq!(place(IslandEdge::Right, 0.0, size, area, island_margin("notch")).left, 900.0);
+}
+
+#[test]
 fn clamps_offsets_at_both_ends_and_places_all_edges()
 {
     let area = work(-200.0, 40.0, 400.0, 300.0); // 带负坐标的工作区。
     let size = (100.0, 50.0); // 岛的实际测量尺寸。
     for edge in [IslandEdge::Top, IslandEdge::Bottom, IslandEdge::Left, IslandEdge::Right]
     {
-        let maximum = if matches!(edge, IslandEdge::Top | IslandEdge::Bottom) { 300.0 } else { 250.0 }; // 沿边最大偏移。
-        assert_eq!(clamp_offset(edge, -10.0, size, area), 0.0);
+        let maximum = if matches!(edge, IslandEdge::Top | IslandEdge::Bottom) { 150.0 } else { 125.0 }; // 相对居中的半幅偏移。
+        assert_eq!(clamp_offset(edge, -999.0, size, area), -maximum);
         assert_eq!(clamp_offset(edge, 999.0, size, area), maximum);
         assert_eq!(clamp_offset(edge, 12.5, size, area), 12.5);
     }
-    assert_eq!(place(IslandEdge::Top, -5.0, size, area), work(-200.0, 40.0, 100.0, 50.0));
-    assert_eq!(place(IslandEdge::Bottom, 999.0, size, area), work(100.0, 290.0, 100.0, 50.0));
-    assert_eq!(place(IslandEdge::Left, 999.0, size, area), work(-200.0, 290.0, 100.0, 50.0));
-    assert_eq!(place(IslandEdge::Right, -5.0, size, area), work(100.0, 40.0, 100.0, 50.0));
+    assert_eq!(place(IslandEdge::Top, 0.0, size, area, 0.0), work(-50.0, 40.0, 100.0, 50.0)); // 沿水平方向居中。
+    assert_eq!(place(IslandEdge::Top, -5.0, size, area, 0.0), work(-55.0, 40.0, 100.0, 50.0));
+    assert_eq!(place(IslandEdge::Bottom, 999.0, size, area, 0.0), work(100.0, 290.0, 100.0, 50.0));
+    assert_eq!(place(IslandEdge::Left, 999.0, size, area, 0.0), work(-200.0, 290.0, 100.0, 50.0));
+    assert_eq!(place(IslandEdge::Right, -5.0, size, area, 0.0), work(100.0, 160.0, 100.0, 50.0));
 }
 
 #[test]
@@ -298,12 +343,12 @@ fn oversized_island_uses_work_origin_without_shrinking()
     for edge in [IslandEdge::Top, IslandEdge::Bottom, IslandEdge::Left, IslandEdge::Right]
     {
         assert_eq!(clamp_offset(edge, 999.0, (100.0, 50.0), area), 0.0);
-        assert_eq!(place(edge, 999.0, (100.0, 50.0), area), work(-100.0, -20.0, 100.0, 50.0));
+        assert_eq!(place(edge, 999.0, (100.0, 50.0), area, 0.0), work(-100.0, -20.0, 100.0, 50.0));
     }
 }
 
 #[test]
-fn preferences_round_trip_and_empty_centers_at_top()
+fn preferences_round_trip_and_empty_uses_top_with_offset()
 {
     for edge in [IslandEdge::Top, IslandEdge::Bottom, IslandEdge::Left, IslandEdge::Right]
     {
@@ -312,9 +357,10 @@ fn preferences_round_trip_and_empty_centers_at_top()
     let area = work(-400.0, 40.0, 1000.0, 600.0); // 默认居中也以工作区起点为基准。
     assert_eq!(IslandEdge::from_preference(""), Some(IslandEdge::Top));
     assert_eq!(IslandEdge::from_preference("TOP"), None);
-    assert_eq!(place_from_preference("", 999.0, (200.0, 50.0), area), Some(work(0.0, 40.0, 200.0, 50.0)));
-    assert_eq!(place_from_preference("top", 0.0, (200.0, 50.0), area), Some(work(-400.0, 40.0, 200.0, 50.0)));
-    assert_eq!(place_from_preference("unknown", 0.0, (200.0, 50.0), area), None);
+    assert_eq!(place_from_preference("", 999.0, (200.0, 50.0), area, 0.0), Some(work(400.0, 40.0, 200.0, 50.0))); // 空边按顶部夹紧偏移。
+    assert_eq!(place_from_preference("", 0.0, (200.0, 50.0), area, 0.0), Some(work(0.0, 40.0, 200.0, 50.0))); // 空边偏移 0 居中。
+    assert_eq!(place_from_preference("top", 0.0, (200.0, 50.0), area, 0.0), Some(work(0.0, 40.0, 200.0, 50.0))); // 显式 top 也水平居中。
+    assert_eq!(place_from_preference("unknown", 0.0, (200.0, 50.0), area, 0.0), None);
 }
 
 #[test]

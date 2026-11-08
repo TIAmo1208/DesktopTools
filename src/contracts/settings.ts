@@ -119,11 +119,12 @@ export interface ApplicationPreferences {
     pauseOnFullscreen: boolean; // 前台全屏或最大化覆盖本屏时暂停刷新。
     pauseOnFocus: boolean; // 外部应用获得焦点时暂停全部桌面刷新。
     islandEnabled: boolean; // 岛总开关。
-    islandEdge: "" | "top" | "bottom" | "left" | "right"; // 空串表示顶部居中默认位。
+    islandEdge: "" | "top" | "bottom" | "left" | "right"; // 空串按顶部处理，偏移为 0 时居中。
     islandOffset: number; // 沿贴边方向的有限 DIP 偏移。
     islandHideOnFullscreen: boolean; // 前台全屏时隐藏岛。
     islandCardOrder: string[]; // 已启用岛卡及展开顺序，最多 32 条。
     islandRadius: number; // 岛展开卡圆角，独立于界面圆角。
+    islandForm: "capsule" | "notch"; // 胶囊离边 6px；刘海贴边并以贴边侧直角衔接。
     disabledPlugins: string[]; // 宿主停用的插件标识，不属于插件自己的设置文件。
 }
 
@@ -213,13 +214,15 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     const musicSpectrumFps = candidate.musicSpectrumFps === undefined ? 30 : candidate.musicSpectrumFps; // 缺失配置使用默认帧率。
     if (typeof musicSpectrumFps !== "number" || !Number.isInteger(musicSpectrumFps) || musicSpectrumFps < 15 || musicSpectrumFps > 60)
         throw new Error("频谱帧率必须为 15 到 60 的整数");
-    const islandEdge = candidate.islandEdge === undefined ? "" : candidate.islandEdge; // 未设置时顶部居中。
+    const islandEdge = candidate.islandEdge === undefined ? "" : candidate.islandEdge; // 未设置时按顶部，偏移默认 0。
     if (islandEdge !== "" && islandEdge !== "top" && islandEdge !== "bottom" && islandEdge !== "left" && islandEdge !== "right")
         throw new Error("岛贴边方向无效");
     const islandOffset = candidate.islandOffset === undefined ? 0 : candidate.islandOffset; // 未设置时无偏移。
     if (typeof islandOffset !== "number" || !Number.isFinite(islandOffset)) throw new Error("岛偏移必须为有限的 DIP 数值");
     const islandRadius = candidate.islandRadius === undefined ? 12 : candidate.islandRadius; // 展开卡默认圆角。
     if (typeof islandRadius !== "number" || !Number.isInteger(islandRadius) || islandRadius < 0 || islandRadius > 16) throw new Error("岛圆角数据无效");
+    const islandForm = candidate.islandForm === undefined ? "capsule" : candidate.islandForm; // 缺失配置使用胶囊形态。
+    if (islandForm !== "capsule" && islandForm !== "notch") throw new Error("岛形态数据无效");
     const cards = candidate.islandCardOrder === undefined ? [] : candidate.islandCardOrder; // 与 Rust Vec<String> 边界一致。
     if (!Array.isArray(cards) || cards.some((card) => typeof card !== "string")) throw new Error("岛卡顺序数据无效");
     const islandCardOrder = [
@@ -257,6 +260,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         islandEdge,
         islandOffset,
         islandRadius,
+        islandForm,
         islandCardOrder,
         disabledPlugins,
     };

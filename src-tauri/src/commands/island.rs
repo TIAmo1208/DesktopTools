@@ -42,7 +42,7 @@ pub(crate) fn execute_begin_island_drag(app: &AppHandle) -> Result<island::Islan
     })
     .map_err(|error| error.to_string())?;
     let saved = receiver.recv().map_err(|error| format!("岛拖动中断：{error}"))??;
-    Ok(island::wait_for_landing(saved, std::time::Duration::from_secs(2))) // 等待仅发生在命令线程，超时返回未确认的 false。
+    Ok(island::wait_for_landing(saved, std::time::Duration::from_secs(2))) // 等待仅发生在命令线程；超时返回 false 与 null，不改变已完成的原生拖动结果。
 }
 
 /// 接收状态名和调用方实测的窗口联合盒及卡片区域，不定义视觉尺寸。

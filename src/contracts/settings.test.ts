@@ -29,12 +29,13 @@ test("主题字段缺省为 null，基线完整校验且不检查插件目录", 
 test("岛偏好默认值、整份保存往返与 Rust 一致的边界", () => {
     const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 从读取到整份提交使用同一个解析结果。
     assert.deepEqual(
-        [defaults.islandEnabled, defaults.islandEdge, defaults.islandOffset, defaults.islandHideOnFullscreen, defaults.islandCardOrder, defaults.islandRadius],
-        [false, "", 0, true, [], 12],
+        [defaults.islandEnabled, defaults.islandForm, defaults.islandEdge, defaults.islandOffset, defaults.islandHideOnFullscreen, defaults.islandCardOrder, defaults.islandRadius],
+        [false, "capsule", "", 0, true, [], 12],
     );
     const selected = parsePreferences({
         ...defaults,
         islandEnabled: true,
+        islandForm: "notch",
         islandEdge: "left",
         islandOffset: -12.5,
         islandHideOnFullscreen: false,
@@ -43,10 +44,13 @@ test("岛偏好默认值、整份保存往返与 Rust 一致的边界", () => {
     });
     assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify({ ...selected, fontSize: 14 }))), { ...selected, fontSize: 14 });
     for (const islandEdge of ["", "top", "bottom", "left", "right"]) assert.equal(parsePreferences({ ...defaults, islandEdge }).islandEdge, islandEdge);
+    for (const islandForm of ["capsule", "notch"]) assert.equal(parsePreferences({ ...defaults, islandForm }).islandForm, islandForm);
     for (const islandRadius of [0, 12, 16]) assert.equal(parsePreferences({ ...defaults, islandRadius }).islandRadius, islandRadius);
     for (const patch of [
         { islandEnabled: null },
         { islandHideOnFullscreen: 1 },
+        { islandForm: "Notch" },
+        { islandForm: null },
         { islandEdge: "Top" },
         { islandEdge: null },
         { islandOffset: NaN },

@@ -1,5 +1,31 @@
 import type { IslandRect, IslandStateRequest } from "../../contracts/island.ts";
 
+/** 两态窗口盒的并集，夹在工作区内；并集是动画期间固定的原生窗口。 */
+export const islandUnionBox = (from: IslandStateRequest, to: IslandStateRequest, work: IslandRect): IslandRect => {
+    const left = Math.max(work.left, Math.min(from.windowBox.left, to.windowBox.left));
+    const top = Math.max(work.top, Math.min(from.windowBox.top, to.windowBox.top));
+    const right = Math.min(work.left + work.width, Math.max(from.windowBox.left + from.windowBox.width, to.windowBox.left + to.windowBox.width));
+    const bottom = Math.min(work.top + work.height, Math.max(from.windowBox.top + from.windowBox.height, to.windowBox.top + to.windowBox.height));
+    return { left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
+};
+
+/** 固定窗口盒的动画帧：窗口取两态并集，内容按原插值在并集内移动，切态不再同时移动原生窗口。 */
+export const islandUnionFrame = (from: IslandStateRequest, to: IslandStateRequest, elapsed: number, edge: string, work: IslandRect): IslandStateRequest => {
+    if (elapsed >= ISLAND_MOTION_MS) return to;
+    const frame = elapsed <= 0 ? from : islandMotionFrame(from, to, elapsed, edge, work); // 起点帧必须按 from 自己的贴边锚点取窗口，否则内容会错位到 to 那一侧。
+    const union = islandUnionBox(from, to, work);
+    const dx = frame.windowBox.left - union.left;
+    const dy = frame.windowBox.top - union.top;
+    const cards = frame.cards.map((card) => {
+        const width = Math.min(card.rect.width, union.width);
+        const height = Math.min(card.rect.height, union.height);
+        const left = Math.min(Math.max(0, card.rect.left + dx), Math.max(0, union.width - width));
+        const top = Math.min(Math.max(0, card.rect.top + dy), Math.max(0, union.height - height));
+        return { ...card, rect: { ...card.rect, left, top, width, height } };
+    });
+    return { state: frame.state, windowBox: union, cards };
+};
+
 export const ISLAND_MOTION_MS = 240; // 有界形变与内容显现共用时长。
 export const ISLAND_FRAME_MS = 1000 / 30; // 先以 30fps 验证原生区域更新成本。
 

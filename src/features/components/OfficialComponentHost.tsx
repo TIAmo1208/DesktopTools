@@ -88,6 +88,7 @@ const PluginTileFrame = ({ tileProps, pluginId, tileType, runtime }: { tileProps
         <ComponentTile
             key={instanceId}
             {...tileProps}
+            scrollable={false} // 插件内容按外框尺寸自适应成固定布局，底部信息不随内容滚出视口。
             title={pluginTileTitle(manifest, tileType, manifest?.name ?? pluginId)} // 每类格子用自己的类型名作标题。
             minimum={pluginTileMinimum(manifest, tileType)}
             menuItems={[

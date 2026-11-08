@@ -19,6 +19,7 @@ html[data-island="true"] #root {
     --fence-text: #202526;
 }
 .island {
+    position: relative; /* 角部补面需要以窗口盒为定位基准，不能只在 paint 内联样式里设置。 */
     display: grid;
     grid-auto-rows: max-content;
     inline-size: max-content;
@@ -39,6 +40,16 @@ html[data-island="true"] #root {
     overflow-y: auto;
     overflow-x: clip;
     scrollbar-width: none;
+}
+/* 刘海的窗口在非展开态沿边各留 12 DIP；padding 让自然布局与提交几何一致，重测时不会丢掉卡片内缩。 */
+.island[data-form="notch"][data-fillets="true"][data-edge="top"],
+.island[data-form="notch"][data-fillets="true"][data-edge="bottom"] {
+    padding-inline: var(--island-notch);
+    max-inline-size: calc(360px + var(--island-notch) * 2);
+}
+.island[data-form="notch"][data-fillets="true"][data-edge="left"],
+.island[data-form="notch"][data-fillets="true"][data-edge="right"] {
+    padding-block: var(--island-notch);
 }
 .island > .island__palette {
     position: absolute;
@@ -117,10 +128,21 @@ html[data-island="true"] #root {
     padding: 8px;
     border-radius: 22px;
 }
+/* 原生移动循环期间给卡片一点拖动反馈；只改背景色，不引入缩放/透明度合成层。 */
+.island[data-dragging="true"] .island-card {
+    background: color-mix(in srgb, var(--fence-surface) 78%, var(--fence-text) 22%);
+}
 .island[data-state="hover"] .island-card {
     block-size: 72px;
     padding: 12px;
     border-radius: 16px;
+}
+/* 左右贴边的 hover 沿用胶囊高度（页面内联写入），内容在卡片内垂直居中。 */
+.island[data-state="hover"][data-edge="left"] .island-card__content,
+.island[data-state="hover"][data-edge="right"] .island-card__content {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }
 .island[data-state="collapsed"] .island-card__content > p {
     block-size: 28px;
@@ -205,6 +227,12 @@ html[data-island="true"] #root {
     display: flex;
     flex: none;
     gap: 4px;
+}
+/* hover 态播放控制下移到第二排，标题行只保留媒体信息。 */
+.island-music__second-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-block-start: 6px;
 }
 .island-music__controls button {
     display: grid;
@@ -351,4 +379,87 @@ html[data-island="true"] #root {
     text-orientation: upright;
     inline-size: max-content;
     block-size: 28px;
+}
+/* 刘海形态：贴边侧为 12 DIP 外凸负圆角，窗口沿边各扩 12px，角部弧面衔接屏幕边。 */
+.island[data-form="notch"] {
+    --island-notch: 12px; /* 外凸圆弧半径；窗口沿边扩大，弧面外新增的是透明像素。 */
+}
+/* 弧面补面无法与卡片矩形描边连续，刘海非展开态统一不画这条 1px 内描边。 */
+.island[data-form="notch"][data-fillets="true"] .island-card::before {
+    border-color: transparent;
+}
+/* 贴边侧两角保持直角；重测回到自然布局时也不能退回到普通圆角。 */
+.island[data-form="notch"][data-fillets="true"][data-edge="top"] .island-card {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+.island[data-form="notch"][data-fillets="true"][data-edge="bottom"] .island-card {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+}
+.island[data-form="notch"][data-fillets="true"][data-edge="left"] .island-card {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+.island[data-form="notch"][data-fillets="true"][data-edge="right"] .island-card {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"]::before,
+.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"]::after {
+    content: "";
+    position: absolute;
+    inline-size: var(--island-notch);
+    block-size: var(--island-notch);
+    background: var(--fence-surface);
+    pointer-events: none;
+}
+/* 每块弧面保留半径圆外的部分，圆内透明，使圆弧向外鼓出并衔接到卡片本体。 */
+.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="top"]::before {
+    left: 0;
+    top: 0;
+    -webkit-mask-image: radial-gradient(circle at 0 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+    mask-image: radial-gradient(circle at 0 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+}
+.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="top"]::after {
+    right: 0;
+    top: 0;
+    -webkit-mask-image: radial-gradient(circle at 100% 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+    mask-image: radial-gradient(circle at 100% 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+}
+.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="bottom"]::before {
+    left: 0;
+    bottom: 0;
+    -webkit-mask-image: radial-gradient(circle at 0 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+    mask-image: radial-gradient(circle at 0 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+}
+.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="bottom"]::after {
+    right: 0;
+    bottom: 0;
+    -webkit-mask-image: radial-gradient(circle at 100% 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+    mask-image: radial-gradient(circle at 100% 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+}
+.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="left"]::before {
+    left: 0;
+    top: 0;
+    -webkit-mask-image: radial-gradient(circle at 100% 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+    mask-image: radial-gradient(circle at 100% 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+}
+.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="left"]::after {
+    left: 0;
+    bottom: 0;
+    -webkit-mask-image: radial-gradient(circle at 100% 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+    mask-image: radial-gradient(circle at 100% 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+}
+.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="right"]::before {
+    right: 0;
+    top: 0;
+    -webkit-mask-image: radial-gradient(circle at 0 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+    mask-image: radial-gradient(circle at 0 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+}
+.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="right"]::after {
+    right: 0;
+    bottom: 0;
+    -webkit-mask-image: radial-gradient(circle at 0 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
+    mask-image: radial-gradient(circle at 0 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
 }

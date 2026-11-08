@@ -6,16 +6,24 @@ export interface IslandSnapshot {
     instances: ComponentInstanceSnapshot[];
 }
 
-/** 原生吸附完成后取样的客户区矩形命中事实，不依赖页面 hover 缓存。 */
+/** 原生拖动完成后的事实：指针是否仍在岛内，以及本次落点的沿边偏移。 */
 export interface IslandDragResult {
     pointerInside: boolean;
+    offset: number | null; // 页面在权威偏好事件到达前按该偏移重测，避免回跳。
 }
 
 /** 拖动返回值严格校验，缺失或未知字段不能被当作成功命中。 */
 export const parseIslandDragResult = (value: unknown): IslandDragResult => {
     const item = record(value);
-    if (Object.keys(item).length !== 1 || !Object.hasOwn(item, "pointerInside") || typeof item.pointerInside !== "boolean") throw new Error("岛拖动结果无效");
-    return { pointerInside: item.pointerInside };
+    if (
+        Object.keys(item).length !== 2 ||
+        !Object.hasOwn(item, "pointerInside") ||
+        typeof item.pointerInside !== "boolean" ||
+        !Object.hasOwn(item, "offset") ||
+        (item.offset !== null && (typeof item.offset !== "number" || !Number.isFinite(item.offset) || Math.abs(item.offset) > 1_000_000))
+    )
+        throw new Error("岛拖动结果无效");
+    return { pointerInside: item.pointerInside, offset: item.offset as number | null };
 };
 
 /** 一次原生提交的屏幕 DIP 矩形。 */

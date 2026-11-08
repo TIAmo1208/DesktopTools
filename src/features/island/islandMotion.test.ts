@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { islandMotionFrame, islandMotionProgress, ISLAND_MOTION_MS, ISLAND_FRAME_MS } from "./islandMotion.ts";
+import { islandMotionFrame, islandMotionProgress, islandUnionBox, islandUnionFrame, ISLAND_MOTION_MS, ISLAND_FRAME_MS } from "./islandMotion.ts";
 import { islandGeometry } from "./islandGeometry.ts";
 import { parseIslandStateRequest } from "../../contracts/island.ts";
 
@@ -47,6 +47,30 @@ test("所有贴边方向与默认中心采样均为合法完整原生请求，�
         }
     }
 });
+test("并集动画期间原生窗口固定，内容只在并集内移动", () => {
+    for (const edge of ["", "top", "bottom", "left", "right"] as const) {
+        const from = islandGeometry("collapsed", collapsed, 22, work, edge, 50);
+        const to = islandGeometry("expanded", expanded, 12, work, edge, 50);
+        for (const [a, b] of [
+            [from, to],
+            [to, from],
+        ] as const) {
+            const union = islandUnionBox(a, b, work);
+            for (let elapsed = 0; elapsed < ISLAND_MOTION_MS; elapsed += 10) {
+                const frame = islandUnionFrame(a, b, elapsed, edge, work);
+                assert.deepEqual(frame.windowBox, union); // 窗口盒在动画期间只取并集，不逐帧移动。
+                for (const card of frame.cards) {
+                    assert.ok(card.rect.left >= 0 && card.rect.top >= 0);
+                    assert.ok(card.rect.left + card.rect.width <= union.width + 1e-6);
+                    assert.ok(card.rect.top + card.rect.height <= union.height + 1e-6);
+                }
+                assert.deepEqual(parseIslandStateRequest(frame), frame);
+            }
+            assert.deepEqual(islandUnionFrame(a, b, ISLAND_MOTION_MS, edge, work), b); // 结束后回到目标态，由调用方提交收缩。
+        }
+    }
+});
+
 test("接近工作区边界时回弹不超工作区", () => {
     const from = islandGeometry("hover", [{ left: 0, top: 0, width: 900, height: 72 }], 16, work, "right", 0);
     const to = islandGeometry("expanded", [{ left: 0, top: 0, width: 1000, height: 800 }], 12, work, "right", 0);
