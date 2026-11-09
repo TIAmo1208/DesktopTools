@@ -101,6 +101,7 @@ pub struct ApplicationPreferences
     pub collect_image_import_mode: String,     // 图片收入方式：copy、move 或 link。
     pub collect_image_preview_width: u16,      // 列表图片宽度，单位 DIP。
     pub music_show_source: bool,               // 音乐控制显示媒体来源。
+    pub music_lyrics_enabled: bool,            // 音乐控制显示歌词，默认开启。
     pub music_spectrum_enabled: bool,          // 音乐控制显示实时频谱，默认关闭。
     pub music_spectrum_device: String,         // 频谱采集设备标识，空字符串表示跟随系统默认。
     pub music_spectrum_bars: u8,               // 频谱段数。
@@ -159,6 +160,7 @@ impl Default for ApplicationPreferences
             collect_image_import_mode: "copy".to_string(),
             collect_image_preview_width: 78,
             music_show_source: true,
+            music_lyrics_enabled: true,
             music_spectrum_enabled: false,
             music_spectrum_device: String::new(),
             music_spectrum_bars: 32,
@@ -497,19 +499,25 @@ mod music_tests
         }
     }
 
-    /// 老配置默认关闭音乐，开关值必须完整通过实际序列化边界。
+    /// 老配置默认关闭音乐、默认显示歌词，开关值必须完整通过实际序列化边界。
     #[test]
     fn music_preference_roundtrip()
     {
         let legacy: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 缺少音乐字段的旧配置。
         assert!(!legacy.music_enabled);
+        assert!(legacy.music_lyrics_enabled);
         for enabled in [false, true]
         {
             let mut preferences = legacy.clone(); // 当前待保存偏好。
             preferences.music_enabled = enabled;
-            let value = serde_json::to_value(preferences).unwrap(); // 实际命令与存储的 JSON 字段。
+            let value = serde_json::to_value(&preferences).unwrap(); // 实际命令与存储的 JSON 字段。
             assert_eq!(value["musicEnabled"], enabled);
             assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap().music_enabled, enabled);
+            let mut lyrics = legacy.clone(); // 显示歌词开关。
+            lyrics.music_lyrics_enabled = enabled;
+            let value = serde_json::to_value(&lyrics).unwrap();
+            assert_eq!(value["musicLyricsEnabled"], enabled);
+            assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap().music_lyrics_enabled, enabled);
         }
     }
 

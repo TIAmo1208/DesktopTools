@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createMusicSource, positionAt, lyricIndex } from "./musicState.ts";
+import { createMusicSource, lyricTickDelay, positionAt, lyricIndex } from "./musicState.ts";
 import { parseMusicDetails } from "../../contracts/music.ts";
 
 const raw = {
@@ -47,6 +47,48 @@ test("第二事实严格拒绝类型、无穷与乱序歌词", () => {
         }),
     );
     assert.deepEqual(parseMusicDetails({ timeline: null, lyrics: [] }), { timeline: undefined, lyrics: [] });
+    const translated = parseMusicDetails({ ...raw, lyrics: [{ startMs: 1000, text: "甲", translation: "A" }] });
+    assert.equal(translated.lyrics[0]?.translation, "A");
+    assert.throws(() => parseMusicDetails({ ...raw, lyrics: [{ startMs: 1000, text: "甲", translation: 1 }] }));
+});
+
+test("逐句刷新在轨道末端或下一句超出时长时停止", () => {
+    const lines = [
+        { startMs: 0, text: "甲" },
+        { startMs: 1000, text: "乙" },
+    ];
+    assert.equal(lyricTickDelay(lines, 0, 5000), 1000);
+    assert.equal(lyricTickDelay(lines, 1000, 5000), undefined);
+    assert.equal(lyricTickDelay(lines, 5000, 5000), undefined);
+    assert.equal(lyricTickDelay([{ startMs: 5001, text: "尾" }], 0, 5000), undefined);
+    assert.equal(lyricTickDelay([], 0, 5000), undefined);
+    assert.equal(lyricTickDelay(lines, 0, Number.NaN), undefined);
+    // 下一句恰在轨末允许最后一次刷新，剩余不足 16ms 时按最小间隔。
+    assert.equal(
+        lyricTickDelay(
+            [
+                { startMs: 0, text: "甲" },
+                { startMs: 5000, text: "乙" },
+            ],
+            0,
+            5000,
+        ),
+        5000,
+    );
+    assert.equal(
+        lyricTickDelay(
+            [
+                { startMs: 0, text: "甲" },
+                { startMs: 1008, text: "乙" },
+            ],
+            1000,
+            5000,
+        ),
+        16,
+    );
+    // 非有限或负位置、零/负/无限时长与空轨道都不调度。
+    for (const position of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1]) assert.equal(lyricTickDelay(lines, position, 5000), undefined);
+    for (const duration of [0, -1, Number.POSITIVE_INFINITY, Number.NaN]) assert.equal(lyricTickDelay(lines, 0, duration), undefined);
 });
 
 test("格子与岛消费者共用一条订阅，最后退订销毁，迟到事实被拒绝", async () => {

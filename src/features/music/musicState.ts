@@ -27,6 +27,14 @@ export const lyricIndex = (lines: readonly LyricLine[], positionMs: number): num
     return low - 1;
 };
 
+/** 下一句刷新延迟；到轨末或下一句超出时长时停止，避免 16ms 空转。 */
+export const lyricTickDelay = (lines: readonly LyricLine[], positionMs: number, durationMs: number): number | undefined => {
+    if (!Number.isFinite(positionMs) || positionMs < 0 || !Number.isFinite(durationMs) || positionMs >= durationMs) return undefined;
+    const next = lines[lyricIndex(lines, positionMs) + 1]?.startMs;
+    if (next === undefined || next > durationMs) return undefined;
+    return Math.max(16, next - positionMs);
+};
+
 type Connect = (
     snapshot: (value: MusicMediaSnapshot | undefined) => void,
     details: (value: MusicDetails) => void,
