@@ -5,7 +5,7 @@ import { executeMusicAction } from "../../bridge/music";
 import { listenSpectrum } from "../../bridge/audio";
 import type { IslandRect, IslandSnapshot, IslandStateRequest } from "../../contracts/island";
 import { PluginSlot, pluginTileType } from "../components/PluginSlot";
-import { useMusicState, positionAt, lyricIndex } from "../music/musicSource";
+import { useMusicState, positionAt, lyricIndex, lyricTickDelay } from "../music/musicSource";
 import { usePreferences } from "../settings/PreferencesProvider";
 import {
     islandAttachedCorner,
@@ -84,8 +84,7 @@ const IslandMusic = ({ mode, side }: { mode: IslandMode; side: boolean }) => {
             if (!music.timeline?.advancing) return;
             const projected = positionAt(music, current);
             if (projected >= music.timeline.durationMs) return;
-            const next = music.lyrics[lyricIndex(music.lyrics, projected) + 1]?.startMs;
-            const delay = mode === "expanded" ? 250 : next === undefined ? undefined : Math.max(16, next - projected);
+            const delay = mode === "expanded" ? 250 : lyricTickDelay(music.lyrics, projected, music.timeline.durationMs);
             if (delay !== undefined) timer = setTimeout(refresh, delay);
         };
         refresh();

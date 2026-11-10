@@ -220,3 +220,10 @@ test("停用插件缺失按空列表，非数组和非字符串条目丢弃", ()
     assert.equal(parsePreferences({ ...base, disabledPlugins: overflow }).disabledPlugins.length, 64);
     assert.equal(parsePreferences({ ...base, disabledPlugins: overflow }).disabledPlugins[0], "plugin.n0");
 });
+
+test("音乐显示歌词默认开启并严格校验布尔设置", () => {
+    const base = { theme: "system", doubleClickToOpen: true }; // 旧配置没有歌词开关。
+    assert.equal(parsePreferences(base).musicLyricsEnabled, true);
+    assert.equal(parsePreferences({ ...base, musicLyricsEnabled: false }).musicLyricsEnabled, false);
+    for (const musicLyricsEnabled of [null, 1, "false"]) assert.throws(() => parsePreferences({ ...base, musicLyricsEnabled }));
+});

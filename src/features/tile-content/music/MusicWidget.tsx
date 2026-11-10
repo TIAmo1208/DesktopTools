@@ -6,7 +6,8 @@ import { MusicControl, type MusicControlMinimumSize } from "./MusicControl";
 
 /** 桌面格子仅消费共享事实，保留既有视觉与动作。 */
 export const MusicWidget = ({ onMinimumSizeChange }: { onMinimumSizeChange: (minimum: MusicControlMinimumSize) => void }) => {
-    const { snapshot, error } = useMusicState(); // 与岛卡使用同一状态源。
+    const music = useMusicState(); // 与岛卡使用同一状态源。
+    const { snapshot, error } = music;
     const failed = useRef(false); // 每个连接故障周期只通知一次。
     const handleFailure = (error: unknown) => {
         const message = error instanceof Error ? error.message : typeof error === "string" ? error : "无法连接媒体控制";
@@ -22,6 +23,9 @@ export const MusicWidget = ({ onMinimumSizeChange }: { onMinimumSizeChange: (min
         <MusicControl
             onMinimumSizeChange={onMinimumSizeChange}
             snapshot={snapshot}
+            lyrics={music.lyrics}
+            timeline={music.timeline}
+            anchorNow={music.anchorNow}
             actions={{
                 previous: () => execute("previous"),
                 playPause: () => execute(snapshot?.playback === "playing" ? "pause" : "play"),

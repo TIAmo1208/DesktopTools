@@ -262,6 +262,15 @@ export const FeatureSettings = ({
                         />
                     </div>
                     <div className="feature-settings__row">
+                        <span>显示歌词</span>
+                        <SettingsSwitch
+                            label="显示歌词"
+                            disabled={unavailable}
+                            checked={preferences?.musicLyricsEnabled ?? true}
+                            onChange={(checked) => onPreferences({ musicLyricsEnabled: checked })}
+                        />
+                    </div>
+                    <div className="feature-settings__row">
                         <span>显示实时频谱</span>
                         <SettingsSwitch
                             label="显示实时频谱"

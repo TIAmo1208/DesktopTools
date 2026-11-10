@@ -104,6 +104,7 @@ export interface ApplicationPreferences {
     collectImageImportMode: "copy" | "move" | "link"; // 图片收入方式。
     collectImagePreviewWidth: number; // 列表图片宽度，单位 DIP。
     musicShowSource: boolean; // 音乐格子显示媒体来源。
+    musicLyricsEnabled: boolean; // 音乐格子显示歌词。
     musicSpectrumEnabled: boolean; // 音乐格子显示实时频谱。
     musicSpectrumDevice: string; // 频谱采集设备标识，空字符串表示跟随系统默认。
     musicSpectrumBars: number; // 频谱段数。
@@ -171,6 +172,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         collectEnabled: true,
         collectAutoSaveOnExit: false,
         musicShowSource: true,
+        musicLyricsEnabled: true,
         musicSpectrumEnabled: false,
         clockHour12: false,
         clockShowSeconds: true,

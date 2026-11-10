@@ -7,4 +7,4 @@ const source = createMusicSource(listenMusicFacts, () => performance.now());
 export const subscribeMusic = source.subscribe;
 export const getMusicState = source.getSnapshot;
 export const useMusicState = () => useSyncExternalStore(subscribeMusic, getMusicState);
-export { positionAt, lyricIndex } from "./musicState";
+export { lyricIndex, lyricTickDelay, positionAt } from "./musicState";

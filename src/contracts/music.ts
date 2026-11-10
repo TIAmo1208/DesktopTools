@@ -24,10 +24,11 @@ export interface MusicTimeline {
     durationMs: number;
     advancing: boolean;
 }
-/** 已按起始毫秒排序、合并同时间戳的逐句歌词。 */
+/** 已按起始毫秒排序、合并同时间戳的逐句歌词；翻译行本轮可选。 */
 export interface LyricLine {
     startMs: number;
     text: string;
+    translation?: string;
 }
 export interface MusicDetails {
     timeline?: MusicTimeline;
@@ -72,7 +73,9 @@ export const parseMusicDetails = (value: unknown): MusicDetails => {
         )
             throw new Error("歌词行无效");
         previous = line.startMs;
-        return { startMs: line.startMs, text: line.text };
+        const translation = "translation" in line ? line.translation : undefined; // 翻译字段只在提供时渲染。
+        if (translation !== undefined && typeof translation !== "string") throw new Error("歌词翻译无效");
+        return { startMs: line.startMs, text: line.text, ...(translation === undefined ? {} : { translation }) };
     });
     return { timeline, lyrics };
 };
