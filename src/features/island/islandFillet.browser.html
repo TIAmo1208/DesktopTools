@@ -39,7 +39,7 @@
             };
             window.addEventListener("error", (event) => failAssertion(event.message || "断言模块加载失败"), true);
             window.addEventListener("unhandledrejection", (event) => failAssertion(String(event.reason)));
-            setTimeout(() => failAssertion("断言总时限 45000ms：页面状态或动画未收敛"), 45000);
+            setTimeout(() => failAssertion("断言总时限 105000ms：页面状态或动画未收敛"), 105000);
         </script>
         <main id="fixture"></main>
         <pre id="result">RUNNING</pre>
@@ -63,9 +63,16 @@
                 Object.assign(document.getElementById("fixture").style, { width: "1920px", height: "1080px" });
                 document.getElementById("result").style.visibility = "hidden";
             }
+            const interactionMode = query.get('mode')?.startsWith('interaction');
+            if (interactionMode) {
+                Object.assign(document.getElementById('fixture').style,{padding:'0px',width:'420px',height:'320px'});
+                const style=document.createElement('style');
+                style.textContent='.island[data-vertical="true"] .island-card{block-size:280px}';
+                document.head.append(style); // 左右hover从长竖胶囊进入较矮展开，确实产生纵向union余量。
+            }
             const slowBridge = query.get("slow") === "1" || query.get("mode") === "edge"; // 模拟真实 IPC 延迟，覆盖提交未落定就被重新测量取消的路径。
             const staticHover = query.get("mode") === "hover"; // 截图/人眼核对用：关闭动画并停在 hover 稳定态。
-            const staticExpanded = ["expanded", "resize"].includes(query.get("mode")); // 关闭动画展开，核对最终装饰不残留补面。
+            const staticExpanded = ["expanded", "resize", "interaction"].includes(query.get("mode")); // 关闭动画展开，核对最终装饰不残留补面。
             const preferences = {
                 theme: "dark",
                 desktopAppearance: { theme: "dark", accentColor: "#2563eb", useWindowsAccentColor: false },
@@ -75,7 +82,7 @@
                 islandEdge: query.get("edge") ?? "top",
                 islandOffset: 0,
                 islandRadius: 12,
-                interfaceAnimations: !staticHover && !staticExpanded,
+                interfaceAnimations: !staticHover && !staticExpanded && query.get("motion") !== "off",
                 followSystemReducedMotion: false,
             };
             const runtime = {
@@ -146,7 +153,7 @@
                             workX: 0,
                             workY: 0,
                             workWidth: 1920,
-                            workHeight: 1040,
+                            workHeight: interactionMode ? 320 : 1040,
                             scaleFactor: 1,
                             dpi: 96,
                         },
@@ -154,9 +161,10 @@
                     },
                 ],
             };
+            const scrollbarCommits = []; // 新交互模式记录提交时是否已显示条，证明时序而非猜测。
             const commits = []; // 页面提交的原生几何，用于核对并集窗口与最终态。
             // 多卡负角验证必须由确定性的时钟与提交握手冻结，不能用静态 hover（它只渲染首卡）冒充。
-            const controlled = ["surface-frame", "seam-frame"].includes(query.get("mode"));
+            const controlled = ["surface-frame", "seam-frame", "interaction", "interaction-scroll", "interaction-dynamic", "interaction-instant"].includes(query.get("mode"));
             let clock = performance.now();
             let frameId = 0;
             const frames = new Map();
@@ -202,6 +210,7 @@
                             return Promise.resolve({ revision: 1, locked: false });
                         case "set_island_state":
                             commits.push(payload?.request);
+                            if(interactionMode)scrollbarCommits.push({state:payload?.request?.state,visible:document.querySelector('.island__scrollbar')?.dataset.visible});
                             if (holdCommit) return new Promise((resolve) => { pendingCommit = resolve; });
                             return slowBridge ? new Promise((resolve) => setTimeout(resolve, 40)) : Promise.resolve();
                         default:
@@ -399,6 +408,154 @@
                 try {
                     const root = await until(() => document.querySelector("main.island"));
                     await until(() => commits.length > 0);
+                    if (interactionMode) {
+                        const move=(point,id=1,buttons=0)=>document.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerType:'mouse',pointerId:id,buttons,clientX:point.x,clientY:point.y}));
+                        const enter=()=>root.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,pointerType:'mouse',relatedTarget:null}));
+                        const key=(value)=>root.dispatchEvent(new KeyboardEvent('keydown',{key:value,bubbles:true}));
+                        const flush=async(state)=>{
+                            await until(()=>root.dataset.state===state);
+                            for(let i=0;i<110&&(root.style.inlineSize||commits.at(-1)?.state!==state);i++)await tick();
+                            return await settledState(state);
+                        };
+                        const windowRect=()=>{const value=commits.at(-1);return {left:value.windowBox.left-value.viewport.left,top:value.windowBox.top-value.viewport.top,width:value.windowBox.width,height:value.windowBox.height};};
+                        // 受控时钟时间线：滚动条必须先独立渐出到0，之后才提交收起并开始卡片形变。
+                        const fadeBeforeCollapse=async(bar)=>{
+                            const frames=[];
+                            const sample=()=>frames.push({opacity:Number.parseFloat(getComputedStyle(bar).opacity),deforming:root.style.inlineSize!=="",state:root.dataset.state});
+                            key('Escape');
+                            for(let index=0;index<240;index++){
+                                sample();
+                                const last=frames.at(-1);
+                                if(last.state==='collapsed'&&!last.deforming&&frames.some((frame)=>frame.deforming))break;
+                                await wait(6);await tick();
+                            }
+                            const deforming=frames.filter((frame)=>frame.deforming);
+                            check(deforming.length>0,'收起必须有形变帧');
+                            check(deforming[0]?.opacity===0,'收起第一形变帧滚动条必须已渐出到0');
+                            check(deforming.every((frame)=>frame.opacity===0),'形变进行中不允许滚动条仍可见');
+                            check(frames.some((frame)=>frame.opacity>0&&!frame.deforming),'渐出必须在形变前独立完成');
+                            check(frames.filter((frame)=>frame.state==='collapsed')[0]?.opacity===0,'提交收起时条必须已经完全不可见');
+                        };
+                        const within=async(probe,milliseconds)=>{const started=Date.now();while(Date.now()-started<milliseconds){if(probe())return true;await tick();await wait(8);}return false;};
+                        enter(); await flush('hover');
+                        if(query.get('mode')==='interaction') {
+                            const box=root.querySelector('.island-card').getBoundingClientRect();
+                            const content={x:box.x+box.width/2,y:box.y+box.height/2};
+                            const frame=windowRect(), margin={x:frame.left+1,y:frame.top+1};
+                            move(margin);await wait(60);move(content);await wait(100);
+                            check(root.dataset.state==='hover','120ms内回到内容应取消透明收起');
+                            move(margin);await wait(150);
+                            check(root.dataset.state==='collapsed','hover透明边距停留120ms后必须收起');
+                            if(root.dataset.state!=='collapsed')key('Escape');
+                            await flush('collapsed');
+                            const capsule=root.querySelector('.island-card').getBoundingClientRect();
+                            enter();
+                            const states=[];const observer=new MutationObserver(()=>states.push(root.dataset.state));
+                            observer.observe(root,{attributes:true,attributeFilter:['data-state']});
+                            for(let i=0;i<5;i++){move({x:capsule.left+1+(i%2),y:capsule.top+1});await wait(100);}
+                            observer.disconnect();
+                            check(root.dataset.state==='collapsed'&&!states.includes('hover'),'门闩必须挡住padding反复进出至少500ms，不能振荡');
+                            if(root.dataset.state!=='collapsed')key('Escape');await flush('collapsed');
+                            root.dispatchEvent(new PointerEvent('pointerout',{bubbles:true,pointerType:'mouse',relatedTarget:null}));
+                            enter();move({x:capsule.x+capsule.width/2,y:capsule.y+capsule.height/2});
+                            await wait(80);check(root.dataset.state==='collapsed','解闩后仍须遵守原180ms进入消抖');
+                            await wait(130);await flush('hover');
+                            key('Enter');await flush('expanded');await wait(30);
+                            check(root.dataset.state==='expanded','切态完成不能拿旧指针位置立即评估透明带');
+                            const expanded=windowRect();
+                            const point=['left','right'].includes(preferences.islandEdge)?{x:expanded.left+expanded.width/2,y:expanded.top+expanded.height-1}:{x:expanded.left+expanded.width-1,y:expanded.top+expanded.height/2};
+                            move(point);await wait(30);
+                            check(root.dataset.state==='collapsed','展开必须只在实际union额外带的pointermove后退回');
+                        } else if(query.get('mode')==='interaction-dynamic') {
+                            // 真实RO路径：卡片高度变化不改request/key，条仍必须随溢出出现并更新thumb/range。
+                            const bar=root.querySelector('.island__scrollbar'),thumb=bar?.querySelector('.island__scrollbar-thumb');
+                            const testStyle=document.createElement('style');
+                            testStyle.textContent='.island[data-state="expanded"] .island-card{block-size:320px}';
+                            document.head.append(testStyle);
+                            key('Enter');await flush('expanded');
+                            check(Boolean(bar)&&Boolean(thumb),'动态场景必须有滚动条覆盖层');
+                            check(root.scrollHeight===root.clientHeight,'卡片高度等于窗口时不应有溢出');
+                            check(bar.dataset.visible!=='true','无溢出时不得显示条');
+                            // 无可见条：收起不得引入渐出等待。
+                            key('Escape');
+                            check(await within(()=>root.dataset.state==='collapsed',100),'无可见条时必须立即提交收起，不得等待渐出');
+                            await flush('collapsed');
+                            key('Enter');await flush('expanded');
+                            const commitsBefore=commits.length;
+                            check(bar.dataset.visible!=='true','再次展开仍无溢出');
+                            // 只提高卡片高度：RO触发重测，但裁剪后request/key不变，条必须从无到有。
+                            testStyle.textContent='.island[data-state="expanded"] .island-card{block-size:500px}';
+                            await until(()=>root.scrollHeight>root.clientHeight,2000);
+                            check(await within(()=>bar.dataset.visible==='true',600),'request不变但出现溢出时必须显示条');
+                            check(commits.length===commitsBefore,'刷新条不得产生重复IPC');
+                            const range500=Number(bar.getAttribute('aria-valuemax'));
+                            check(range500>0,'出条后必须写入滚动范围');
+                            const thumb500=Number.parseFloat(thumb.style.blockSize);
+                            // 继续加高：同一key下thumb高度与范围更新。
+                            testStyle.textContent='.island[data-state="expanded"] .island-card{block-size:600px}';
+                            await until(()=>root.scrollHeight>root.clientHeight+1,2000);
+                            check(await within(()=>Number(bar.getAttribute('aria-valuemax'))>range500,600),'内容继续变高必须更新滚动范围');
+                            check(Number.parseFloat(thumb.style.blockSize)<thumb500,'范围变大后滑块必须变短');
+                            check(commits.length===commitsBefore,'继续加高仍不得新增提交');
+                            // scrollTop改变时thumb位置更新（走真实scroll路径）。
+                            const topBefore=Number.parseFloat(thumb.style.insetBlockStart);
+                            root.scrollTop=120;await wait(40);
+                            check(Number.parseFloat(thumb.style.insetBlockStart)>topBefore,'scrollTop改变必须更新滑块位置');
+                            // 反向请求：同一任务里先收起再展开，排队中的收起必须被取消，不得迟到提交。
+                            key('Escape');key('Enter');
+                            check(await within(()=>Number.parseFloat(getComputedStyle(bar).opacity)>0.99,300),'反向取消后条必须恢复可见');
+                            await wait(300);
+                            check(root.dataset.state==='expanded','渐出中反向请求必须取消迟到的收起');
+                            check(root.style.inlineSize==='','反向取消不得开始收起形变');
+                            check(bar.dataset.visible==='true','反向取消后条必须保持可见');
+                            // 有可见条：先完成独立渐出，再提交收起并开始形变。
+                            await fadeBeforeCollapse(bar);
+                        } else if(query.get('mode')==='interaction-instant') {
+                            // 减少动效：条立即隐藏并立即切态，不得引入渐出等待。
+                            const bar=root.querySelector('.island__scrollbar');
+                            key('Enter');await flush('expanded');
+                            check(Boolean(bar)&&bar.dataset.visible==='true','减少动效下溢出仍必须显示条');
+                            key('Escape');
+                            check(await within(()=>root.dataset.state==='collapsed',100),'减少动效时必须立即提交收起');
+                            check(Number.parseFloat(getComputedStyle(bar).opacity)===0,'减少动效时条必须立即隐藏');
+                            await flush('collapsed');
+                        } else {
+                            holdCommit=true;key('Enter');await until(()=>pendingCommit);
+                            const bar=root.querySelector('.island__scrollbar');
+                            check(root.querySelectorAll('[data-island-debug]').length===6,'DEV参数必须注入6张展开临时卡');
+                            check(Boolean(bar),'展开滚动条覆盖层必须存在');
+                            if(bar)check(getComputedStyle(bar).opacity==='0','展开提交未完成前滚动条必须隐藏');
+                            holdCommit=false;releaseCommit();await flush('expanded');
+                            if(bar) {
+                                check(root.scrollHeight>root.clientHeight,'debug卡必须实际撑出展开溢出');
+                                check(bar.dataset.visible==='true','展开动画和提交结束后才允许条渐入');
+                                check(scrollbarCommits.at(-1)?.visible!=='true','最终展开提交时条仍不得提前出现');
+                                const animation=bar.getAnimations()[0];
+                                check(Boolean(animation),'动画开启时必须有150ms opacity渐入');
+                                if(animation){animation.pause();animation.currentTime=75;const opacity=parseFloat(getComputedStyle(bar).opacity);check(opacity>0&&opacity<1,'渐入中点应处于0和1之间');animation.finish();await wait(20);}
+                                const box=bar.getBoundingClientRect();
+                                move({x:box.x+box.width/2,y:box.y+box.height/2});await wait(30);
+                                check(root.dataset.state==='expanded','滚动条命中矩形必须从展开退回带中扣除');
+                                const thumb=bar.querySelector('.island__scrollbar-thumb');
+                                const thumbBox=thumb.getBoundingClientRect(),before=root.scrollTop;
+                                const oldCapture=bar.setPointerCapture,oldHas=bar.hasPointerCapture,oldRelease=bar.releasePointerCapture;
+                                // 合成PointerEvent无OS活动指针；仅在断言中替换capture平台方法，实际滚动逻辑仍走生产处理器。
+                                bar.setPointerCapture=()=>{};bar.hasPointerCapture=()=>true;bar.releasePointerCapture=()=>{};
+                                try {
+                                    bar.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse',pointerId:41,button:0,buttons:1,clientX:thumbBox.x+3,clientY:thumbBox.y+3}));
+                                    move({x:thumbBox.x+3,y:thumbBox.y+63},41,1);await wait(40);
+                                    document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:41,pointerType:'mouse'}));
+                                    check(root.scrollTop>before,'拖动滑块必须改变原生滚动容器scrollTop');
+                                } finally {bar.setPointerCapture=oldCapture;bar.hasPointerCapture=oldHas;bar.releasePointerCapture=oldRelease;}
+                                const geometry=JSON.stringify(commits.at(-1).windowBox),client=[root.clientWidth,root.clientHeight];
+                                root.scrollTop+=10;root.dispatchEvent(new Event('scroll'));await tick();await wait(30);
+                                check(JSON.stringify(commits.at(-1).windowBox)===geometry&&root.clientWidth===client[0]&&root.clientHeight===client[1],'覆盖条和滚动不得改变保留窗口或内容布局尺寸');
+                                await fadeBeforeCollapse(bar); // 渐出完成后才提交收起并开始形变。
+                            }
+                        }
+                        report(failures.length?`FAIL\n- ${failures.join('\n- ')}`:'PASS 透明命中/门闩/滚动条与DEV卡');
+                        return;
+                    }
                     if (query.get("mode") === "natural-seam") {
                         // 真实rAF路径，不改时钟、不改变背景/描边；MutationObserver在同步paint之后记录同源几何。
                         const records = [];
@@ -797,6 +954,7 @@
                         // 修复轮回归也进入默认清单：宽边界/内容重测四边两形态，加四边双卡负角确定性冻结。
                         const repairCases = ["top", "bottom", "left", "right"].flatMap((edge) => ["notch", "capsule"].map((form) => `mode=resize&edge=${edge}&form=${form}&multi=1`));
                         repairCases.push(...["top", "bottom", "left", "right"].map((edge) => `mode=surface-frame&edge=${edge}&multi=1`));
+                        repairCases.push('mode=interaction&edge=top&form=notch','mode=interaction-scroll&edge=top&form=notch&island-debug=6','mode=interaction-dynamic&edge=top&form=notch','mode=interaction-instant&edge=top&form=notch&island-debug=6&motion=off');
                         for (const scenario of repairCases) {
                             const frame = document.createElement("iframe");
                             frame.style.cssText = "position:absolute;left:-10000px;width:1920px;height:1040px";

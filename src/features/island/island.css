@@ -39,6 +39,7 @@ html[data-island="true"] #root {
 .island[data-state="expanded"] {
     overflow-y: auto;
     overflow-x: clip;
+    overscroll-behavior: contain;
     scrollbar-width: none;
     /* 展开终态保留入态并集窗口：内容仍按目标 margin，透明边距仍归浮岛命中。 */
     /* 并集的透明余量不能通过 grid 默认 stretch 撑宽卡片；多卡仍共用自然内容列。 */
@@ -81,6 +82,28 @@ html[data-island="true"] #root {
     overflow: clip;
     contain: paint; /* 将插件 fixed 内容的绘制边界限制在本卡；浏览器 top-layer 仍须单独验收。 */
 }
+/* 覆盖条固定于页面viewport，不占grid行/列；原生容器仍负责wheel与scrollTop。 */
+.island__scrollbar {
+    position: fixed;
+    z-index: 2;
+    opacity: 0;
+    pointer-events: none;
+    background: transparent;
+    touch-action: none;
+    transition: opacity 150ms linear;
+}
+.island__scrollbar[data-visible="true"] { opacity: 1; pointer-events: auto; }
+.island__scrollbar-thumb {
+    position: absolute;
+    border-radius: 3px; /* 6 DIP 宽滑块的半宽胶囊，不借用界面主题圆角令牌。 */
+    background: color-mix(in srgb, var(--fence-text) 50%, transparent);
+}
+@media (hover: hover) and (pointer: fine) {
+    .island__scrollbar:hover .island__scrollbar-thumb { background: color-mix(in srgb, var(--fence-text) 75%, transparent); }
+}
+.island__scrollbar[data-dragging="true"] .island__scrollbar-thumb,
+.island__scrollbar:active .island__scrollbar-thumb { background: color-mix(in srgb, var(--fence-text) 75%, transparent); }
+.island__scrollbar:focus-visible { outline: 1px solid var(--fence-text); outline-offset: -1px; }
 /* 描边内绘，不占用 44/72 DIP 高度里的媒体与内边距。 */
 .island-card::before {
     content: "";

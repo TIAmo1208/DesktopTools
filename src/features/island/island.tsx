@@ -27,6 +27,9 @@ import {
     islandAfterDrag,
     cancelIslandHover,
     islandHoverTarget,
+    islandHitContour, islandCardDistance, islandContourDistance, islandHitRegion, islandMarginStep, islandScrollGeometry, islandPointInRect, islandDebugCardCount, islandCollapseSettle,
+    ISLAND_MARGIN_DELAY_MS, ISLAND_SCROLLBAR_FADE_MS,
+    type IslandMarginState,
 } from "./islandInteraction";
 import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, islandAttachedCornerAt, islandUnionFrame } from "./islandMotion";
 import "./island.css";
@@ -258,6 +261,126 @@ export const IslandPage = () => {
     const capsuleOrientation = useRef<"horizontal" | "vertical" | undefined>(undefined); // 胶囊高度对应的边方向；同方向换边/换形态可复用。
     const submission = useRef(Promise.resolve()); // 原生提交串行，防止快速切态乱序。
     const sorting = useRef(false); // 不让相邻两次保存用同一旧顺序。
+    const targetGeometry = useRef<IslandStateRequest | undefined>(undefined); // 展开自然目标，不等同于保留union。
+    const inputReady = useRef(false); // 原生拖动后等新几何提交，避免用旧窗口坐标判定。
+    const layoutSettled = useRef(false);
+    const inputGeometryKey = useRef(""); // expanded只在最新目标提交后评估，滚动重测不闪断条。
+    const marginState = useRef<IslandMarginState>({ latch: "open" });
+    const lastMarginInput = useRef<Parameters<typeof islandMarginStep>[1] | undefined>(undefined);
+    const hoverKind = useRef<"enter" | "leave" | "margin" | undefined>(undefined);
+    const hoverVersion = useRef(0);
+    const scrollbar = useRef<HTMLDivElement>(null), scrollbarThumb = useRef<HTMLDivElement>(null);
+    const scrollbarFrame = useRef<ReturnType<typeof islandScrollGeometry> | undefined>(undefined);
+    const scrollbarDrag = useRef<{ id: number; y: number; top: number; range: number; travel: number; capture: HTMLElement } | undefined>(undefined);
+    const collapseWait = useRef<{ token: number; target: IslandMode; timer: ReturnType<typeof setTimeout>; node: HTMLElement; handler: (event: TransitionEvent) => void } | undefined>(undefined);
+    const collapseToken = useRef(0);
+    const animationFlag = useRef(animationsEnabled);
+    animationFlag.current = animationsEnabled;
+    const inputHandlers = useRef({ move: (_: globalThis.PointerEvent) => {}, leave: (_: globalThis.PointerEvent) => {}, up: (_?: globalThis.PointerEvent) => {} });
+    const debugCount = import.meta.env.DEV ? islandDebugCardCount(true, window.location.search) : 0;
+    const stopHoverTimer = () => { cancelIslandHover(hoverTimer); hoverKind.current = undefined; hoverVersion.current++; };
+    const setScrollbarVisible = (visible: boolean, instant = false) => {
+        const node = scrollbar.current;
+        if (!node) return;
+        const duration = !instant && animationFlag.current ? ISLAND_SCROLLBAR_FADE_MS : 0;
+        if (node.dataset.visible === String(visible) && !instant) return;
+        const opacity = Number.parseFloat(getComputedStyle(node).opacity); // 提交旧样式，使CSS过渡起点确定。
+        node.style.transitionDuration = `${duration}ms`;
+        node.dataset.visible = String(visible);
+        node.dataset.phase = duration && opacity !== Number(visible) ? (visible ? "entering" : "leaving") : (visible ? "visible" : "hidden");
+        node.setAttribute("aria-hidden", String(!visible)); node.tabIndex = visible ? 0 : -1;
+    };
+    /** 取消“渐出完成后再收起”的等待；反向请求与卸载后迟到的回调不得再提交状态。 */
+    const cancelCollapseWait = () => {
+        const wait = collapseWait.current;
+        if (!wait) return;
+        collapseWait.current = undefined;
+        collapseToken.current++;
+        clearTimeout(wait.timer);
+        wait.node.removeEventListener("transitionend", wait.handler);
+    };
+    /** 只提交状态本身；滚动条独立渐出的等待由 changeMode 负责，避免形变与渐出重叠。 */
+    const commitMode = (next: IslandMode, retainLatch: boolean) => {
+        stopHoverTimer();
+        marginState.current = { latch: retainLatch ? "blocked" : "open" };
+        lastMarginInput.current = undefined;
+        if (next !== modeRef.current) {
+            targetGeometry.current = undefined; layoutSettled.current = false; inputReady.current = false;
+            setScrollbarVisible(false, !animationFlag.current); // 关闭动效时立即隐藏；开启动效时渐出已在前置等待里完成。
+        }
+        modeRef.current = next; setMode(next);
+    };
+    /**
+     * 收起前先让滚动条独立渐出到 opacity=0，完成后再提交状态并开始卡片形变；
+     * 无可见条或关闭动效时零等待，等待可取消且迟到回调不会执行收起。
+     */
+    const changeMode = (next: IslandMode, retainLatch = false) => {
+        const waiting = collapseWait.current;
+        if (waiting) {
+            if (waiting.target === next) return; // 同一收起请求在途：继续等待渐出，不提前开始形变。
+            cancelCollapseWait();
+            if (modeRef.current === "expanded" && next === "expanded") refreshScrollbar(); // 反向请求撤回渐出，按当前溢出恢复条的可见性。
+        }
+        if (next === modeRef.current) {
+            commitMode(next, retainLatch);
+            return;
+        }
+        const node = scrollbar.current;
+        if (modeRef.current === "expanded" && next !== "expanded" && animationFlag.current && node?.dataset.visible === "true") {
+            const token = ++collapseToken.current;
+            if (import.meta.env.DEV) delete node.dataset.fadeFallback; // 上一轮的兜底标记不沿用到本次收起。
+            /**
+             * transitionend 与兜底计时共用的收口：token 失效时既不隐藏也不提交；
+             * 隐藏是无条件前置（与关闭动效一致的瞬时隐藏），不假定计时器到时条已透明。
+             */
+            const finish = (fallback: boolean) => {
+                const settled = islandCollapseSettle(token, collapseToken.current, {
+                    hide: () => {
+                        setScrollbarVisible(false, true); // 与关闭动效相同的瞬时隐藏。
+                        void getComputedStyle(node).opacity; // 强制样式提交，确保提交状态前条已不可见。
+                    },
+                    commit: () => {
+                        cancelCollapseWait();
+                        commitMode(next, retainLatch);
+                    },
+                });
+                // 兜底触发只在开发构建与断言页留痕，便于下次取证判断是否走了兜底；发布构建无此分支。
+                if (settled && fallback && import.meta.env.DEV && scrollbar.current) scrollbar.current.dataset.fadeFallback = "true";
+            };
+            const handler = (event: TransitionEvent) => {
+                if (event.target !== node || event.propertyName !== "opacity") return;
+                if (Number.parseFloat(getComputedStyle(node).opacity) > 0.001) return; // 忽略渐入或中间帧的迟到通知，只认确实已经不可见。
+                finish(false);
+            };
+            // 兜底只负责到点补一次收口；真正隐藏由 finish 里同一个 hide 完成，不假定时间足够。
+            collapseWait.current = { token, target: next, timer: setTimeout(() => finish(true), ISLAND_SCROLLBAR_FADE_MS + 50), node, handler };
+            node.addEventListener("transitionend", handler);
+            setScrollbarVisible(false); // 独立渐出从这里开始。
+            return;
+        }
+        commitMode(next, retainLatch);
+    };
+    const refreshScrollbar = () => {
+        if (collapseWait.current) return; // 收起渐出期间不得被滚动或重测把条重新显示出来。
+        const element = root.current, frame = currentGeometry.current;
+        if (!element || !frame) { setScrollbarVisible(false); return; }
+        const value = islandScrollGeometry(frame, targetGeometry.current, preferences?.islandEdge ?? "", { mode: modeRef.current, settled: layoutSettled.current, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, scrollTop: element.scrollTop });
+        scrollbarFrame.current = value;
+        if (value.visible && value.track && value.thumb && scrollbar.current && scrollbarThumb.current) {
+            const { track, thumb } = value;
+            Object.assign(scrollbar.current.style, { insetInlineStart: `${track.left}px`, insetBlockStart: `${track.top}px`, inlineSize: `${track.width}px`, blockSize: `${track.height}px` });
+            Object.assign(scrollbarThumb.current.style, { insetInlineStart: `${thumb.left - track.left}px`, insetBlockStart: `${thumb.top - track.top}px`, inlineSize: `${thumb.width}px`, blockSize: `${thumb.height}px` });
+            scrollbar.current.setAttribute("aria-valuemin", "0"); scrollbar.current.setAttribute("aria-valuemax", String(value.maxScroll)); scrollbar.current.setAttribute("aria-valuenow", String(Math.round(element.scrollTop)));
+        }
+        setScrollbarVisible(value.visible);
+    };
+    const endScrollbarDrag = (event?: globalThis.PointerEvent) => {
+        const drag = scrollbarDrag.current;
+        if (!drag || event && event.pointerId !== drag.id) return;
+        scrollbarDrag.current = undefined;
+        if (scrollbar.current) delete scrollbar.current.dataset.dragging;
+        if (drag.capture.hasPointerCapture(drag.id)) drag.capture.releasePointerCapture(drag.id);
+    };
     const recovering = useRef(false); // fail-closed 最多自动补一次常态，持续失败不循环重试。
     useEffect(() => {
         let active = true;
@@ -287,7 +410,7 @@ export const IslandPage = () => {
         return () => {
             active = false;
             mounted.current = false;
-            cancelIslandHover(hoverTimer);
+            stopHoverTimer();
             void subscription.then((stop) => stop()).catch(() => undefined);
         };
     }, []);
@@ -328,6 +451,9 @@ export const IslandPage = () => {
             collapsedBox.current = undefined;
             geometryKey.current = "";
             currentGeometry.current = undefined;
+            targetGeometry.current = undefined; inputReady.current = false; layoutSettled.current = false;
+            inputGeometryKey.current = ""; stopHoverTimer(); marginState.current = { latch: "open" };
+            cancelCollapseWait(); endScrollbarDrag(); setScrollbarVisible(false, true);
             if (orientationChanged) capsuleHeight.current = undefined; // 上下与左右的内容高度不可复用；同方向换边/换形态保留。
             capsuleOrientation.current = nextOrientation;
             pendingOffset.current = undefined; // 旧边/旧形态的拖动落点不再适用。
@@ -550,6 +676,9 @@ export const IslandPage = () => {
                             paintAttached(islandAttachedCorner(request.state, form, request.cards[0]?.radius ?? 0), request);
                             applyViewportMargin(request);
                         }
+                        // 去重只针对原生几何提交：内容变高但裁剪后 request 不变时，滚动指标仍可能变化，
+                        // 同一 key 早退也必须刷新条的可见性、thumb/range 与命中排除矩形，且不产生重复 IPC。
+                        refreshScrollbar();
                         return;
                     }
                     geometryKey.current = key;
@@ -570,6 +699,7 @@ export const IslandPage = () => {
                     const commit = async (value: IslandStateRequest) => {
                         await setIslandState(value);
                         currentGeometry.current = value;
+                        if (!dragging.current) inputReady.current = true;
                     };
                     finish = submission.current
                         .catch(() => undefined)
@@ -623,6 +753,7 @@ export const IslandPage = () => {
                                         if (active) {
                                             clearFillets();
                                             applyViewportMargin(request);
+                                            targetGeometry.current = request;
                                             element.style.setProperty("--island-expanded-inline", `${expandedFrame.windowBox.width}px`);
                                             element.style.setProperty("--island-expanded-block", `${expandedFrame.windowBox.height}px`);
                                             currentGeometry.current = expandedFrame;
@@ -647,7 +778,7 @@ export const IslandPage = () => {
                                 geometryKey.current = "";
                                 console.warn("岛状态提交失败", error);
                                 if (active && mounted.current) {
-                                    setMode("collapsed"); // 原生仍执行 fail-closed，恢复从常态开始。
+                                    changeMode("collapsed"); // 原生仍执行 fail-closed，恢复从常态开始。
                                     if (!recovering.current) {
                                         recovering.current = true;
                                         setDragRevision((value) => value + 1);
@@ -657,6 +788,13 @@ export const IslandPage = () => {
                                 animating = false;
                                 // 成功结束回到自然布局，让常态胶囊继续随内容伸缩、展开态恢复 CSS 滚动。
                                 restoreStyles();
+                                if (active && modeRef.current === mode) {
+                                    inputGeometryKey.current = key;
+                                    if (targetGeometry.current?.state === "expanded") {
+                                        layoutSettled.current = true;
+                                        refreshScrollbar(); // 最终提交并恢复文档流后才显示条。
+                                    }
+                                }
                             }
                         });
                     submission.current = finish;
@@ -668,6 +806,8 @@ export const IslandPage = () => {
                     };
                 } catch (error) {
                     console.warn("岛几何测量失败", error);
+                    // 内容超过工作区等原因提交不了新几何时，条仍要按当前窗口与内容同步。
+                    refreshScrollbar();
                 }
             }
         };
@@ -677,7 +817,7 @@ export const IslandPage = () => {
         };
         const observer = new ResizeObserver(() => measure(false));
         observer.observe(root.current);
-        const handleScroll = () => measure(true); // 展开态滚动必须重新计算可见卡片，不受自触发 resize 跳过影响。
+        const handleScroll = () => { refreshScrollbar(); measure(true); }; // 展开态滚动必须重新计算可见卡片，不受自触发 resize 跳过影响。
         root.current.addEventListener("scroll", handleScroll);
         for (const card of root.current.querySelectorAll(".island-card")) observer.observe(card);
         measureNow(true); // 首帧绘制前完成目标实测与内容冻结，不先闪出最终布局。
@@ -697,29 +837,109 @@ export const IslandPage = () => {
         if (pending === undefined || !preferences) return;
         if ((preferences.islandEdge || "top") === (edge || "top") && Math.abs(preferences.islandOffset - pending) < 0.01) pendingOffset.current = undefined; // 权威落点已到，不再压住后续偏移。
     }, [preferences, edge]);
+    const interactionBusy = () => dragging.current || Boolean(gesture.current) || Boolean(cardDrag.current) || Boolean(scrollbarDrag.current);
     const scheduleHover = (inside: boolean) => {
-        cancelIslandHover(hoverTimer);
-        const target = islandHoverTarget(mode, inside, dragging.current || Boolean(gesture.current) || Boolean(cardDrag.current));
+        const target = islandHoverTarget(modeRef.current, inside, interactionBusy(), marginState.current.latch !== "open");
+        const kind = inside ? "enter" : "leave";
+        if (target && hoverKind.current === kind && hoverTimer.current !== undefined) return;
+        stopHoverTimer();
         if (!target) return;
+        hoverKind.current = kind;
+        const version = hoverVersion.current;
         hoverTimer.current = setTimeout(() => {
-            if (
-                pointerInside.current === inside &&
-                islandHoverTarget(modeRef.current, inside, dragging.current || Boolean(gesture.current) || Boolean(cardDrag.current)) === target
-            )
-                setMode(target);
+            if (version !== hoverVersion.current || !mounted.current) return;
+            hoverTimer.current = undefined; hoverKind.current = undefined;
+            if (pointerInside.current === inside && islandHoverTarget(modeRef.current, inside, interactionBusy(), marginState.current.latch !== "open") === target) changeMode(target);
         }, ISLAND_HOVER_DELAY_MS);
     };
-    const handleLeave = () => {
+    const leaveWindow = () => {
         pointerInside.current = false;
-        cancelIslandHover(hoverTimer);
-        cancelDragHold();
-        if (dragging.current || gesture.current || cardDrag.current) return;
-        if (mode === "expanded") setMode("collapsed");
-        else scheduleHover(false);
+        if (hoverKind.current !== "leave") stopHoverTimer();
+        cancelDragHold(); marginState.current.since = undefined;
+        if (interactionBusy()) return;
+        marginState.current = islandMarginStep(marginState.current, { mode: modeRef.current, region: "outside", now: performance.now(), busy: false, outlineDistance: Infinity, coreDistance: Infinity, leave: true }).state;
+        if (modeRef.current === "expanded") changeMode("collapsed"); else scheduleHover(false);
+    };
+    const handleLeave = (event: PointerEvent<HTMLElement>) => {
+        // 根之外仍可能是union内的body透明区，交给pointermove判定；只把真正离开文档当传统离岛。
+        if (event.relatedTarget instanceof Node && document.documentElement.contains(event.relatedTarget)) return;
+        leaveWindow();
     };
     const handleEnter = () => {
         pointerInside.current = true;
         scheduleHover(true);
+    };
+    // 文档级事件覆盖union余量（它可能在main根之外），但只在pointermove上评估透明区域。
+    inputHandlers.current = {
+        move: (event) => {
+            const drag = scrollbarDrag.current;
+            if (drag) {
+                if (event.pointerId === drag.id && root.current && drag.travel > 0) root.current.scrollTop = drag.top + (event.clientY - drag.y) * drag.range / drag.travel;
+                return;
+            }
+            if (event.pointerType === "touch") return;
+            if (interactionBusy() || !inputReady.current) {
+                marginState.current.since = undefined;
+                if (hoverKind.current === "margin") stopHoverTimer();
+                return;
+            }
+            const element = root.current, frame = currentGeometry.current;
+            if (!element || !frame) return;
+            const point = { x: event.clientX, y: event.clientY };
+            const layout = islandScrollGeometry(frame, targetGeometry.current, preferences?.islandEdge ?? "", { mode: modeRef.current, settled: layoutSettled.current, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, scrollTop: element.scrollTop });
+            if (!islandPointInRect(point, layout.window)) { leaveWindow(); return; }
+            if (modeRef.current === "expanded" && (!layoutSettled.current || inputGeometryKey.current !== geometryKey.current)) return;
+            const cards = Array.from(element.querySelectorAll<HTMLElement>(".island-card")).map((card) => {
+                const box = card.getBoundingClientRect(), style = getComputedStyle(card);
+                return { rect: { left: box.left, top: box.top, width: box.width, height: box.height }, radii: [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius].map(Number.parseFloat) };
+            });
+            if (!cards.length) return;
+            const contour = islandHitContour(cards, layout.window, preferences?.islandEdge ?? "", preferences?.islandForm ?? "capsule", attachedCorner.current ?? 0);
+            const region = islandHitRegion(modeRef.current, point, layout, contour);
+            pointerInside.current = true;
+            const input = { mode: modeRef.current, region, now: performance.now(), busy: false, outlineDistance: islandContourDistance(point, contour), coreDistance: islandCardDistance(point, cards[0]!) };
+            lastMarginInput.current = input;
+            const next = islandMarginStep(marginState.current, input);
+            marginState.current = next.state;
+            if (next.collapse) { changeMode("collapsed", modeRef.current === "hover"); return; }
+            if (modeRef.current === "hover" && region === "transparent" && marginState.current.since !== undefined) {
+                if (hoverKind.current === "margin" && hoverTimer.current !== undefined) return;
+                stopHoverTimer(); hoverKind.current = "margin";
+                const version = hoverVersion.current;
+                const deadline = marginState.current.since + ISLAND_MARGIN_DELAY_MS;
+                hoverTimer.current = setTimeout(() => {
+                    if (version !== hoverVersion.current || !mounted.current || !lastMarginInput.current || marginState.current.since === undefined) return;
+                    hoverTimer.current = undefined; hoverKind.current = undefined;
+                    // setTimeout已达到deadline；受控断言时performance.now可暂停，仍不依赖rAF推进。
+                    const result = islandMarginStep(marginState.current, { ...lastMarginInput.current, mode: modeRef.current, now: Math.max(performance.now(), deadline), busy: interactionBusy() || !inputReady.current });
+                    marginState.current = result.state;
+                    if (result.collapse) changeMode("collapsed", true);
+                }, Math.max(0, Math.ceil(deadline - performance.now())));
+            } else if (modeRef.current !== "expanded") scheduleHover(modeRef.current === "collapsed" ? next.canEnter : region === "content");
+        },
+        leave: () => leaveWindow(),
+        up: (event) => endScrollbarDrag(event),
+    };
+    useEffect(() => {
+        const move = (event: globalThis.PointerEvent) => inputHandlers.current.move(event);
+        const leave = (event: globalThis.PointerEvent) => { if (!event.relatedTarget) inputHandlers.current.leave(event); };
+        const up = (event: globalThis.PointerEvent) => inputHandlers.current.up(event);
+        document.addEventListener("pointermove", move, true); document.addEventListener("pointerout", leave, true);
+        document.addEventListener("pointerup", up, true); document.addEventListener("pointercancel", up, true);
+        return () => {
+            document.removeEventListener("pointermove", move, true); document.removeEventListener("pointerout", leave, true);
+            document.removeEventListener("pointerup", up, true); document.removeEventListener("pointercancel", up, true);
+            stopHoverTimer(); endScrollbarDrag(); cancelCollapseWait();
+        };
+    }, []);
+    const handleScrollbarDown = (event: PointerEvent<HTMLDivElement>) => {
+        const value = scrollbarFrame.current, element = root.current;
+        if (event.button !== 0 || modeRef.current !== "expanded" || !value?.visible || !value.track || !value.thumb || !element) return;
+        event.stopPropagation(); event.preventDefault(); stopHoverTimer(); marginState.current.since = undefined;
+        if (!islandPointInRect({ x: event.clientX, y: event.clientY }, value.thumb) && value.travel > 0) element.scrollTop = (event.clientY - value.track.top - value.thumb.height / 2) * value.maxScroll / value.travel;
+        scrollbarDrag.current = { id: event.pointerId, y: event.clientY, top: element.scrollTop, range: value.maxScroll, travel: value.travel, capture: event.currentTarget };
+        event.currentTarget.dataset.dragging = "true";
+        event.currentTarget.setPointerCapture(event.pointerId);
     };
     /** 取消尚未到点的长按拖动，释放或移动后不得再接管鼠标。 */
     const cancelDragHold = () => {
@@ -729,10 +949,11 @@ export const IslandPage = () => {
     const startNativeDrag = () => {
         if (dragging.current) return;
         cancelDragHold();
-        cancelIslandHover(hoverTimer);
+        stopHoverTimer();
         gesture.current = undefined;
         suppressClick.current = true;
         dragging.current = true;
+        inputReady.current = false; marginState.current = { latch: "open" }; endScrollbarDrag();
         setDragActive(true);
         let releasedInside = false; // 失败、取消或无有效结果时保守收起，不读取 DOM hover 缓存。
         void finishMotion
@@ -747,7 +968,7 @@ export const IslandPage = () => {
             .finally(() => {
                 // 松手后由原生后台保存落点并广播 preferences-changed；页面只按事件重测，避免用旧 offset 先跳到旧位置。
                 // 仅使用原生命令返回的释放事实，不等待可能缺失的 pointerleave 或 :hover 更新。
-                cancelIslandHover(hoverTimer);
+                stopHoverTimer();
                 dragging.current = false;
                 setDragActive(false);
                 if (!mounted.current) return;
@@ -755,7 +976,7 @@ export const IslandPage = () => {
                 geometryKey.current = "";
                 skipMotionOnce.current = true;
                 collapsedBox.current = undefined; // 拖动已改变沿边位置，旧胶囊范围不再参与 hover 并集。
-                setMode(islandAfterDrag(releasedInside));
+                changeMode(islandAfterDrag(releasedInside));
                 window.setTimeout(() => {
                     if (!mounted.current) return;
                     geometryKey.current = "";
@@ -772,7 +993,8 @@ export const IslandPage = () => {
         const intent = islandDragIntent(mode, event.button, Boolean(target.closest(ISLAND_NO_DRAG)), Boolean(target.closest(".island-card")));
         sortDragAllowed.current = intent === "sort";
         if (intent !== "window" || dragging.current) return;
-        cancelIslandHover(hoverTimer);
+        marginState.current.since = undefined;
+        stopHoverTimer();
         cancelDragHold();
         suppressClick.current = false;
         gesture.current = { id: event.pointerId, x: event.screenX, y: event.screenY };
@@ -803,8 +1025,8 @@ export const IslandPage = () => {
             root.current?.contains(hit) &&
             !hit.closest(ISLAND_NO_DRAG)
         ) {
-            cancelIslandHover(hoverTimer);
-            setMode("expanded");
+            stopHoverTimer();
+            changeMode("expanded");
         } else scheduleHover(pointerInside.current);
     };
     const handleReorder = async (from: string, to: string) => {
@@ -824,6 +1046,7 @@ export const IslandPage = () => {
     return (
         <main
             ref={root}
+            id="island-scroll-content"
             className="island"
             style={{ maxBlockSize: work?.height }}
             data-island-page="true"
@@ -846,10 +1069,10 @@ export const IslandPage = () => {
             tabIndex={0}
             aria-label="灵动岛，回车展开，退出键收起"
             onKeyDown={(event) => {
-                if (dragging.current || gesture.current || cardDrag.current) return;
-                cancelIslandHover(hoverTimer);
-                if (event.key === "Escape") setMode("collapsed");
-                else if (event.key === "Enter" && event.target === event.currentTarget) setMode("expanded");
+                if (interactionBusy()) return;
+                stopHoverTimer();
+                if (event.key === "Escape") changeMode("collapsed");
+                else if (event.key === "Enter" && event.target === event.currentTarget) changeMode("expanded");
             }}
         >
             <div ref={palette} className="fence-workspace island__palette" hidden aria-hidden="true" />
@@ -881,7 +1104,7 @@ export const IslandPage = () => {
                             onDragEnd={() => {
                                 sortDragAllowed.current = false;
                                 cardDrag.current = undefined;
-                                if (root.current && !root.current.matches(":hover")) setMode("collapsed");
+                                if (root.current && !root.current.matches(":hover")) changeMode("collapsed");
                             }}
                             onDragOver={(event) => {
                                 if (
@@ -956,6 +1179,30 @@ export const IslandPage = () => {
                     </div>
                 </section>
             )}
+            {import.meta.env.DEV && mode === "expanded" && Array.from({ length: debugCount }, (_, index) => (
+                <section className="island-card" data-island-debug="true" data-island-no-drag="true" key={`island-debug-${index}`} aria-label={`开发临时卡片${index + 1}`}>
+                    <div className="island-card__content"><div style={{ inlineSize: 192, minBlockSize: 112 }}>
+                        <strong>开发临时卡片 {index + 1}</strong><p>仅用于溢出与多卡调试，不保存。</p>
+                    </div></div>
+                </section>
+            ))}
+            <div ref={scrollbar} className="island__scrollbar" data-island-no-drag="true" role="scrollbar" aria-label="展开内容滚动条" aria-controls="island-scroll-content" aria-orientation="vertical" tabIndex={-1}
+                onPointerDown={handleScrollbarDown}
+                onLostPointerCapture={() => endScrollbarDrag()}
+                onTransitionEnd={(event) => {
+                    if (event.target !== event.currentTarget || event.propertyName !== "opacity") return;
+                    const visible = event.currentTarget.dataset.visible === "true", opacity = Number.parseFloat(getComputedStyle(event.currentTarget).opacity);
+                    if (visible ? opacity > 0.999 : opacity < 0.001) event.currentTarget.dataset.phase = visible ? "visible" : "hidden";
+                }}
+                onKeyDown={(event) => {
+                    const element = root.current;
+                    if (!element || scrollbar.current?.dataset.visible !== "true") return;
+                    const next = event.key === "ArrowDown" ? element.scrollTop + 40 : event.key === "ArrowUp" ? element.scrollTop - 40 : event.key === "PageDown" ? element.scrollTop + element.clientHeight : event.key === "PageUp" ? element.scrollTop - element.clientHeight : event.key === "Home" ? 0 : event.key === "End" ? element.scrollHeight : undefined;
+                    if (next === undefined) return;
+                    event.preventDefault(); event.stopPropagation(); element.scrollTop = next;
+                }}>
+                <div ref={scrollbarThumb} className="island__scrollbar-thumb" />
+            </div>
         </main>
     );
 };
