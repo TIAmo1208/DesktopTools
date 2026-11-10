@@ -1,4 +1,5 @@
 import type { IslandRect, IslandStateRequest } from "../../contracts/island.ts";
+import { islandAttachedCorner } from "./islandGeometry.ts";
 
 /** 两态窗口盒的并集，夹在工作区内；并集是动画期间固定的原生窗口。 */
 export const islandUnionBox = (from: IslandStateRequest, to: IslandStateRequest, work: IslandRect): IslandRect => {
@@ -11,7 +12,8 @@ export const islandUnionBox = (from: IslandStateRequest, to: IslandStateRequest,
 
 /** 固定窗口盒的动画帧：窗口取两态并集，内容按原插值在并集内移动，切态不再同时移动原生窗口。 */
 export const islandUnionFrame = (from: IslandStateRequest, to: IslandStateRequest, elapsed: number, edge: string, work: IslandRect): IslandStateRequest => {
-    if (elapsed >= ISLAND_MOTION_MS) return to;
+    // 展开终态保留入态并集，只有其余态在结束时收缩；内容仍使用目标屏幕坐标。
+    if (elapsed >= ISLAND_MOTION_MS && to.state !== "expanded") return to;
     const frame = elapsed <= 0 ? from : islandMotionFrame(from, to, elapsed, edge, work); // 起点帧必须按 from 自己的贴边锚点取窗口，否则内容会错位到 to 那一侧。
     const union = islandUnionBox(from, to, work);
     const dx = frame.windowBox.left - union.left;
@@ -23,7 +25,7 @@ export const islandUnionFrame = (from: IslandStateRequest, to: IslandStateReques
         const top = Math.min(Math.max(0, card.rect.top + dy), Math.max(0, union.height - height));
         return { ...card, rect: { ...card.rect, left, top, width, height } };
     });
-    return { state: frame.state, windowBox: union, cards };
+    return { state: frame.state, windowBox: union, viewport: to.viewport, cards };
 };
 
 export const ISLAND_MOTION_MS = 240; // 有界形变与内容显现共用时长。
@@ -45,13 +47,18 @@ export const islandMotionFrame = (from: IslandStateRequest, to: IslandStateReque
     const bounded = (a: number, b: number, limit: number) => Math.min(limit, Math.max(Math.min(a, b) * 0.94, Math.min(Math.max(a, b) * 1.06, mix(a, b, p))));
     const width = bounded(from.windowBox.width, to.windowBox.width, work.width);
     const height = bounded(from.windowBox.height, to.windowBox.height, work.height);
-    const left =
-        edge === "right"
+    // 沿边轴与真实落位一致：上下贴边沿水平居中、左右贴边沿竖直居中；非沿边轴贴边锚定。
+    const horizontalEdge = edge === "left" || edge === "right";
+    const left = horizontalEdge
+        ? edge === "right"
             ? to.windowBox.left + to.windowBox.width - width
-            : edge === ""
-              ? to.windowBox.left + (to.windowBox.width - width) / 2
-              : to.windowBox.left;
-    const top = edge === "bottom" ? to.windowBox.top + to.windowBox.height - height : to.windowBox.top;
+            : to.windowBox.left
+        : to.windowBox.left + (to.windowBox.width - width) / 2;
+    const top = horizontalEdge
+        ? to.windowBox.top + (to.windowBox.height - height) / 2
+        : edge === "bottom"
+          ? to.windowBox.top + to.windowBox.height - height
+          : to.windowBox.top;
     const windowBox = {
         left: Math.max(work.left, Math.min(left, work.left + work.width - width)),
         top: Math.max(work.top, Math.min(top, work.top + work.height - height)),
@@ -83,5 +90,14 @@ export const islandMotionFrame = (from: IslandStateRequest, to: IslandStateReque
         rect.height = Math.min(rect.height, height - rect.top);
         return { rect, radius: Math.max(0, Math.min(mix(previous.radius, card.radius, shape), rect.width / 2, rect.height / 2)) };
     });
-    return { state: to.state, windowBox, cards };
+    return { state: to.state, windowBox, viewport: to.viewport, cards };
+};
+
+/** 单帧贴边侧的带符号圆角：从最近实际绘制的起点值按形变进度过渡到目标态的贴边角。 */
+export const islandAttachedCornerAt = (start: number, to: IslandStateRequest, elapsed: number, form: "capsule" | "notch"): number => {
+    if (form !== "notch") return 0;
+    const end = islandAttachedCorner(to.state, form, to.cards[0]?.radius ?? 0);
+    if (elapsed >= ISLAND_MOTION_MS) return end;
+    const shape = Math.min(1, Math.max(0, islandMotionProgress(elapsed))); // 回弹只作用外框，贴边角按同一进度插值。
+    return start + (end - start) * shape;
 };

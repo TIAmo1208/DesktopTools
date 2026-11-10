@@ -184,28 +184,33 @@ pub(crate) struct IslandCard
     pub radius: f64,
 }
 
-/// 一次状态切换的完整几何；window_box 为屏幕绝对 DIP 联合盒。
+/// 一次状态切换的完整几何；window_box 为屏幕绝对 DIP 窗口盒，viewport 为固定页面原点视口。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct IslandStateRequest
 {
     pub state: String,
     pub window_box: IslandRect,
+    pub viewport: IslandRect,
     pub cards: Vec<IslandCard>,
 }
 
 impl IslandStateRequest
 {
-    /// IPC 不接受非有限数、无界区域、盒外卡片或未知状态。
+    /// IPC 不接受非有限数、无界区域、盒外卡片、超出视口的窗口或未知状态。
     pub(crate) fn validate(&self) -> Result<(), String>
     {
         if !matches!(self.state.as_str(), "collapsed" | "hover" | "expanded")
         {
             return Err("未知岛状态".into());
         }
-        if !valid_rect(self.window_box) || self.cards.is_empty() || self.cards.len() > 128
+        if !valid_rect(self.window_box) || !valid_rect(self.viewport) || self.viewport.width > 16_384.0 || self.viewport.height > 16_384.0 || self.cards.is_empty() || self.cards.len() > 128
         {
-            return Err("岛窗口盒或卡片数量无效".into());
+            return Err("岛窗口盒、视口或卡片数量无效".into());
+        }
+        if !window_in_viewport(self.window_box, self.viewport)
+        {
+            return Err("岛窗口盒超出固定视口".into());
         }
         for card in &self.cards
         {
@@ -222,8 +227,69 @@ impl IslandStateRequest
     }
 }
 
+/// 规范化只允许量化级位移；原点被真实移动时必须拒绝，让前端按最新工作区重测。
+fn accept_normalized_window(requested: IslandRect, normalized: IslandRect, viewport: IslandRect) -> Result<(), String>
+{
+    if (normalized.left - requested.left).abs() > 0.5 || (normalized.top - requested.top).abs() > 0.5
+    {
+        return Err("岛窗口盒被原生规范化移动，需要按最新工作区重测".into());
+    }
+    if !window_in_viewport(normalized, viewport)
+    {
+        return Err("岛窗口盒在落位后超出固定视口".into());
+    }
+    Ok(())
+}
+
+/// 工作区规范化：窗口左上夹到工作区内；尺寸已先行检查不超过工作区。
+fn clamp_window(window: IslandRect, area: IslandRect) -> IslandRect
+{
+    IslandRect { left: window.left.clamp(area.left, area.left + area.width - window.width), top: window.top.clamp(area.top, area.top + area.height - window.height), width: window.width, height: window.height }
+}
+
+/// 窗口盒必须落在固定视口内（0.5 DIP 容差），页面坐标才不会因落位/夹紧错位。
+fn window_in_viewport(window: IslandRect, viewport: IslandRect) -> bool
+{
+    window.left >= viewport.left - 0.5 && window.top >= viewport.top - 0.5 && window.left + window.width <= viewport.left + viewport.width + 0.5 && window.top + window.height <= viewport.top + viewport.height + 0.5
+}
+
 /// 防止浮点到 Win32 整数转换溢出；实际工作区边界在 UI 线程进一步检查。
 fn valid_rect(rect: IslandRect) -> bool { [rect.left, rect.top, rect.width, rect.height].iter().all(|value| value.is_finite() && value.abs() <= 1_000_000.0) && rect.width > 0.0 && rect.height > 0.0 }
+
+/// 最近一次真正下发的原生尺寸；同一窗口盒的动画帧不能重复触发 SetWindowPos/SetBounds。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct AppliedSurface
+{
+    window: Option<(i32, i32, i32, i32)>, // 外层窗口物理位置与尺寸。
+    child: Option<(i32, i32, i32, i32)>,  // WebView 子窗口相对父窗口的物理位置与尺寸；固定视口随窗口反向偏移。
+}
+
+impl AppliedSurface
+{
+    /// 计算本次需要下发的窗口/子窗口尺寸并返回下一份已应用快照；重复几何不重复调用原生。
+    fn plan(self, window: (i32, i32, i32, i32), child: (i32, i32, i32, i32)) -> (Self, bool, bool)
+    {
+        (Self { window: Some(window), child: Some(child) }, self.window != Some(window), self.child != Some(child))
+    }
+
+    /// 原生移动循环会改变窗口位置：失效窗口缓存，子窗口在下次提交按固定视口重新计算偏移。
+    fn forget_window(&mut self) { self.window = None; }
+}
+
+/// 固定视口的子窗口局部矩形：屏幕位置始终等于 viewport 原点，父窗口移动时用偏移抵消。
+fn child_bounds(window: IslandRect, viewport: IslandRect, scale: f64) -> (i32, i32, i32, i32)
+{
+    let (viewport_left, viewport_width) = px_span(viewport.left, viewport.width, scale);
+    let (viewport_top, viewport_height) = px_span(viewport.top, viewport.height, scale);
+    (viewport_left - px(window.left, scale), viewport_top - px(window.top, scale), viewport_width, viewport_height)
+}
+
+/// 一次取整得到物理起止边；宽高由同一对取整边界相减，避免左右/上下各自四舍五入产生 1px 缝。
+fn px_span(start: f64, length: f64, scale: f64) -> (i32, i32)
+{
+    let first = px(start, scale);
+    (first, (px(start + length, scale) - first).max(1))
+}
 
 /// UI 线程唯一持有的岛资源，不把 WebView 或 HWND 跨线程执行。
 struct IslandWindow
@@ -234,6 +300,7 @@ struct IslandWindow
     monitor: DesktopHostMonitor,          // 主屏当前工作区与缩放。
     geometry: Option<IslandStateRequest>, // 首次状态到达前禁止显示。
     drag: DragProgress,                   // 几何修订使旧移动循环失效。
+    surface: AppliedSurface,              // 最近一次实际下发的原生尺寸，重复帧只更新页面内容。
     screenshot_hidden: bool,              // 本次隐藏是否因系统截图工具在前台；显示事实直接读 Win32。
 }
 
@@ -545,7 +612,7 @@ fn create(app: &AppHandle) -> Result<(), String>
         return Err(format!("岛置顶失败：{error}"));
     }
     crate::log_info!("岛：已创建隐藏窗口，显示器={}，工作区=[{}, {}, {}, {}]，缩放={}", monitor.id, monitor.work_x, monitor.work_y, monitor.work_width, monitor.work_height, monitor.scale_factor);
-    ISLAND.with(|slot| *slot.borrow_mut() = Some(IslandWindow { hwnd, webview: Rc::new(webview), app: app.clone(), monitor, geometry: None, drag: DragProgress::default(), screenshot_hidden: false }));
+    ISLAND.with(|slot| *slot.borrow_mut() = Some(IslandWindow { hwnd, webview: Rc::new(webview), app: app.clone(), monitor, geometry: None, drag: DragProgress::default(), surface: AppliedSurface::default(), screenshot_hidden: false }));
     ISLAND_HWND.store(hwnd.0 as isize, Ordering::Release);
     Ok(())
 }
@@ -827,6 +894,7 @@ pub(crate) fn set_state(request: IslandStateRequest) -> Result<(), String>
             slot.as_mut().map(|resource| {
                 resource.geometry = None;
                 resource.drag.invalidate();
+                resource.surface = AppliedSurface::default();
                 resource.screenshot_hidden = false;
                 resource.hwnd
             })
@@ -853,7 +921,8 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
 {
     request.validate()?;
     let monitor = primary_monitor()?; // 枚举窗口环境也在 RefCell 借用期外。
-    let (hwnd, webview, revision, state_changed) = ISLAND.with(|slot| {
+    let requested = request.window_box; // 页面已使用的权威窗口位置；规范化不能静默移动它，否则页面 margin 与父窗口裁剪错位。
+    let (hwnd, webview, revision, state_changed, surface) = ISLAND.with(|slot| {
         let mut slot = slot.borrow_mut(); // 只校验并取出快照，不调用会泵消息的 API。
         let resource = slot.as_mut().ok_or("岛未开启")?;
         if !resource.app.state::<SettingsState>().preferences()?.island_enabled
@@ -878,23 +947,38 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
         {
             return Err("岛区域不足一个物理像素".into());
         }
-        request.window_box.left = request.window_box.left.clamp(area.left, area.left + area.width - request.window_box.width);
-        request.window_box.top = request.window_box.top.clamp(area.top, area.top + area.height - request.window_box.height);
+        request.window_box = clamp_window(request.window_box, area);
+        // 首次落位或工作区夹紧改变了窗口盒时，固定视口可能不再包含它；拒绝而不是让页面坐标错位。
+        accept_normalized_window(requested, request.window_box, request.viewport)?;
         let state_changed = resource.geometry.as_ref().is_none_or(|previous| previous.state != request.state); // 动画同态帧不重复记录 INFO。
         resource.drag.invalidate(); // 先使旧拖动失效，再执行可能重入的窗口操作。
         resource.geometry = None; // 提交完成前也拒绝按上一态开始拖动。
-        Ok::<_, String>((resource.hwnd, Rc::clone(&resource.webview), resource.drag.revision, state_changed))
+        Ok::<_, String>((resource.hwnd, Rc::clone(&resource.webview), resource.drag.revision, state_changed, resource.surface))
     })?; // 从此开始不持有 ISLAND 的任何借用。
     let scale = monitor.scale_factor;
+    // 本次提交的真实物理尺寸；窗口盒相同的动画帧不再重复下发。
+    let (physical_left, physical_width) = px_span(request.window_box.left, request.window_box.width, scale);
+    let (physical_top, physical_height) = px_span(request.window_box.top, request.window_box.height, scale);
+    let physical = (physical_left, physical_top, physical_width, physical_height);
+    let viewport = request.viewport; // 固定页面原点：子窗口屏幕位置不随父窗口移动。
+    let child = child_bounds(request.window_box, viewport, scale); // 子窗口相对父窗口的位置；父窗口移动时反向偏移。
+    let (next_surface, resize_window, resize_child) = surface.plan(physical, child);
     let stage = std::cell::Cell::new(StateStage::WindowBox); // 多闭包共享阶段，不持有 RefCell 借用。
     let result = run_transition(
         request,
         |request| {
             let rect = request.window_box; // 本次静默态或动画帧对应的物理窗口盒。
             stage.set(StateStage::WindowBox);
-            unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), px(rect.left, scale), px(rect.top, scale), px(rect.width, scale), px(rect.height, scale), SWP_NOACTIVATE) }.map_err(|error| format!("设置岛窗口盒失败：{error}"))?;
+            if resize_window
+            {
+                unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), physical.0, physical.1, physical.2, physical.3, SWP_NOACTIVATE) }.map_err(|error| format!("设置岛窗口盒失败：{error}"))?;
+            }
             stage.set(StateStage::WebView);
-            webview.set_bounds(WryRect { position: dpi::PhysicalPosition::new(0, 0).into(), size: dpi::PhysicalSize::new(px(rect.width, scale) as u32, px(rect.height, scale) as u32).into() }).map_err(|error| format!("设置岛 WebView 尺寸失败：{error}"))?;
+            if resize_child
+            {
+                let bounds = next_surface.child.unwrap_or(child);
+                webview.set_bounds(WryRect { position: dpi::PhysicalPosition::new(bounds.0, bounds.1).into(), size: dpi::PhysicalSize::new(bounds.2.max(1) as u32, bounds.3.max(1) as u32).into() }).map_err(|error| format!("设置岛 WebView 尺寸失败：{error}"))?;
+            }
             // 每帧提交日志刷屏，排查时再打开。
             // crate::log_debug!("岛：提交帧 状态={}，窗口盒DIP=[{}, {}, {}, {}]，卡片DIP=[{}]", request.state, rect.left, rect.top, rect.width, rect.height, request.cards.iter().map(|card| format!("[{}, {}, {}, {}]圆角{}", card.rect.left, card.rect.top, card.rect.width, card.rect.height, card.radius)).collect::<Vec<_>>().join("；"));
             if state_changed
@@ -915,7 +999,12 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
                 update(&mut resource.geometry, &mut resource.drag);
                 if success
                 {
+                    resource.surface = next_surface;
                     resource.monitor = monitor.clone();
+                }
+                else
+                {
+                    resource.surface = AppliedSurface::default(); // 原生操作可能已部分生效，失败后不能沿用缓存尺寸。
                 }
                 Ok(())
             })
@@ -966,6 +1055,7 @@ pub(crate) fn begin_drag() -> Result<std::sync::mpsc::Receiver<IslandDragResult>
         resource.drag.begin()?;
         resource.drag.landing_seq = order.begin()?;
         resource.drag.landing_done = Some(done);
+        resource.surface.forget_window(); // 原生移动循环会改窗口位置，旧缓存盒立即失效，下次提交必须重新定位。
         Ok((resource.hwnd, resource.drag.landing_seq))
     })?;
     CLICK_FOREGROUND.with(|state| state.borrow_mut().target = None); // 原生移动循环不能执行排队的点击补偿。
@@ -1169,7 +1259,7 @@ mod reentrancy_tests
     #[test]
     fn island_state_failure_injection_always_clears_geometry_and_disables_drag()
     {
-        let previous = IslandStateRequest { state: "collapsed".into(), window_box: IslandRect { left: 0.0, top: 0.0, width: 100.0, height: 40.0 }, cards: vec![] }; // 不创建真实 HWND。
+        let previous = IslandStateRequest { state: "collapsed".into(), window_box: IslandRect { left: 0.0, top: 0.0, width: 100.0, height: 40.0 }, viewport: IslandRect { left: -10.0, top: -10.0, width: 120.0, height: 60.0 }, cards: vec![] }; // 不创建真实 HWND。
         for stage in [StateStage::WindowBox, StateStage::WebView, StateStage::Commit]
         {
             let mut geometry = Some(previous.clone());

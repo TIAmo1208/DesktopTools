@@ -89,7 +89,7 @@ fn landing_cancel_and_timeout_are_bounded()
 #[test]
 fn animation_submission_failure_clears_intermediate_and_final_state_can_recover()
 {
-    let final_state = IslandStateRequest { state: "collapsed".into(), window_box: work(0.0, 0.0, 200.0, 44.0), cards: vec![IslandCard { rect: work(0.0, 0.0, 200.0, 44.0), radius: 22.0 }] }; // 合法最终常态可重新恢复。
+    let final_state = IslandStateRequest { state: "collapsed".into(), window_box: work(0.0, 0.0, 200.0, 44.0), viewport: work(-12.0, -12.0, 224.0, 68.0), cards: vec![IslandCard { rect: work(0.0, 0.0, 200.0, 44.0), radius: 22.0 }] }; // 合法最终常态可重新恢复。
     let mut invalid = final_state.clone();
     invalid.cards[0].rect.width = 201.0; // 模拟 overshoot 使卡片越出本帧窗口盒。
     let mut geometry = Some(final_state.clone()); // 上一合法帧不能在下一帧错误后残留。
@@ -130,7 +130,7 @@ fn window_drag_accepts_collapsed_and_hover_only()
 {
     for (state, allowed) in [("collapsed", true), ("hover", true), ("expanded", false), ("unknown", false)]
     {
-        let geometry = IslandStateRequest { state: state.into(), window_box: work(0.0, 0.0, 200.0, 72.0), cards: vec![] };
+        let geometry = IslandStateRequest { state: state.into(), window_box: work(0.0, 0.0, 200.0, 72.0), viewport: work(-12.0, -12.0, 224.0, 96.0), cards: vec![] };
         assert_eq!(can_drag(Some(&geometry)), allowed, "{state}");
     }
     assert!(!can_drag(None));
@@ -172,7 +172,7 @@ fn child_noactivate_style_preserves_bits_and_is_idempotent()
 #[test]
 fn state_request_rejects_invalid_geometry_and_unknown_states()
 {
-    let valid = IslandStateRequest { state: "collapsed".into(), window_box: work(-100.0, 40.0, 200.0, 80.0), cards: vec![IslandCard { rect: work(0.0, 0.0, 200.0, 80.0), radius: 40.0 }] }; // 合法调用方实测区域。
+    let valid = IslandStateRequest { state: "collapsed".into(), window_box: work(-100.0, 40.0, 200.0, 80.0), viewport: work(-112.0, 28.0, 224.0, 104.0), cards: vec![IslandCard { rect: work(0.0, 0.0, 200.0, 80.0), radius: 40.0 }] }; // 合法调用方实测区域。
     assert!(valid.validate().is_ok());
     for state in ["hover", "expanded"]
     {
@@ -201,10 +201,72 @@ fn state_request_rejects_invalid_geometry_and_unknown_states()
     request = valid.clone();
     request.cards.push(valid.cards[0].clone());
     assert!(request.validate().is_err());
+    request = valid.clone();
+    request.viewport.left = valid.window_box.left + 1.0;
+    assert!(request.validate().is_err()); // 窗口超出固定视口。
+    request = valid.clone();
+    request.viewport.width = 20_000.0;
+    assert!(request.validate().is_err()); // 固定视口上限。
+    request = valid.clone();
     request.state = "expanded".into();
     assert!(request.validate().is_ok());
     request.cards = vec![valid.cards[0].clone(); 129];
     assert!(request.validate().is_err());
+}
+
+/// 夹紧后仍在视口内但原点被移动，同样会破坏页面 margin 与父窗口裁剪的对齐，必须拒绝。
+#[test]
+fn normalization_cannot_move_the_page_origin_even_inside_viewport()
+{
+    let viewport = IslandRect { left: 0.0, top: 0.0, width: 420.0, height: 800.0 };
+    let requested = IslandRect { left: 150.0, top: 750.0, width: 120.0, height: 44.0 };
+    let clamped = clamp_window(requested, IslandRect { left: 0.0, top: 0.0, width: 2000.0, height: 760.0 });
+    assert_eq!(clamped.top, 716.0);
+    assert!(window_in_viewport(clamped, viewport)); // 仍在固定视口内。
+    assert!(accept_normalized_window(requested, clamped, viewport).is_err()); // 但原点变化必须拒绝。
+    assert!(accept_normalized_window(requested, requested, viewport).is_ok());
+    assert!(accept_normalized_window(requested, IslandRect { left: 150.0, top: 0.0, width: 120.0, height: 44.0 }, viewport).is_err());
+}
+
+/// 工作区变化后夹紧会把窗口挪出页面提交的固定视口；必须由同一不变量拒绝。
+#[test]
+fn clamp_after_validate_can_break_viewport_and_must_be_rejected()
+{
+    let viewport = IslandRect { left: 1580.0, top: 0.0, width: 420.0, height: 800.0 };
+    let window = IslandRect { left: 1880.0, top: 0.0, width: 120.0, height: 44.0 };
+    assert!(window_in_viewport(window, viewport)); // 页面旧工作区下合法。
+    let clamped = clamp_window(window, IslandRect { left: 0.0, top: 0.0, width: 1000.0, height: 800.0 });
+    assert_eq!(clamped.left, 880.0);
+    assert!(!window_in_viewport(clamped, viewport)); // 新工作区夹紧后必须由后置校验拦下。
+}
+
+/// 窗口落在视口内才允许提交；夹紧后越界必须被同一判定拦下。
+#[test]
+fn window_must_stay_inside_fixed_viewport()
+{
+    let viewport = IslandRect { left: 80.0, top: 20.0, width: 420.0, height: 600.0 };
+    assert!(window_in_viewport(IslandRect { left: 80.0, top: 20.0, width: 420.0, height: 600.0 }, viewport));
+    assert!(window_in_viewport(IslandRect { left: 80.4, top: 20.4, width: 419.2, height: 599.2 }, viewport)); // 半像素容差内。
+    assert!(!window_in_viewport(IslandRect { left: 79.0, top: 20.0, width: 420.0, height: 600.0 }, viewport));
+    assert!(!window_in_viewport(IslandRect { left: 80.0, top: 20.0, width: 421.0, height: 600.0 }, viewport));
+    assert!(!window_in_viewport(IslandRect { left: 80.0, top: 20.0, width: 420.0, height: 601.0 }, viewport));
+}
+
+/// 固定视口下，无论窗口怎么移动，子窗口相对父窗口的偏移都让内容保持同一屏幕位置。
+#[test]
+fn fixed_viewport_keeps_child_screen_origin_across_window_moves()
+{
+    let viewport = IslandRect { left: 80.0, top: 20.0, width: 420.0, height: 600.0 };
+    let first = child_bounds(IslandRect { left: 100.0, top: 50.0, width: 200.0, height: 72.0 }, viewport, 1.0);
+    assert_eq!(first, (-20, -30, 420, 600));
+    let moved = child_bounds(IslandRect { left: 150.0, top: 80.0, width: 148.0, height: 44.0 }, viewport, 1.0);
+    assert_eq!(moved, (-70, -60, 420, 600)); // 窗口右下移动时偏移更负，屏幕原点不变。
+    // 1.5 倍缩放下子窗口位置按物理像素四舍五入，尺寸仍覆盖视口。
+    let scaled = child_bounds(IslandRect { left: 101.0, top: 51.0, width: 200.0, height: 72.0 }, viewport, 1.5);
+    assert_eq!(scaled, (px(80.0, 1.5) - px(101.0, 1.5), px(20.0, 1.5) - px(51.0, 1.5), px(420.0, 1.5), px(600.0, 1.5)));
+    // 负坐标与部分越界也保持同一换算。
+    let negative = child_bounds(IslandRect { left: -100.0, top: 0.0, width: 200.0, height: 72.0 }, viewport, 1.0);
+    assert_eq!(negative.0, px(80.0, 1.0) - px(-100.0, 1.0));
 }
 
 #[test]
@@ -380,4 +442,35 @@ fn union_covers_both_states_including_negative_coordinates()
     assert_eq!(union_box(current, target), work(-200.0, -100.0, 340.0, 200.0));
     assert_eq!(union_box(target, current), union_box(current, target));
     assert_eq!(union_box(current, current), current);
+}
+
+/// 同一窗口盒的动画帧不能重复改原生尺寸；固定视口让子窗口随父窗口反向偏移。
+#[test]
+fn surface_plan_skips_repeated_frames_and_keeps_fixed_child_origin()
+{
+    let first = AppliedSurface::default().plan((10, 20, 300, 72), (-10, -20, 420, 1040));
+    assert!(first.1 && first.2, "首帧必须同时下发窗口与子窗口");
+    assert_eq!(first.0.window, Some((10, 20, 300, 72)));
+    assert_eq!(first.0.child, Some((-10, -20, 420, 1040)));
+    let again = first.0.plan((10, 20, 300, 72), (-10, -20, 420, 1040));
+    assert!(!again.1 && !again.2, "同尺寸动画帧不能再次 SetWindowPos/SetBounds");
+    // 窗口原点移动时，子窗口偏移反向变化以保持内容屏幕位置不变，尺寸不变。
+    let moved = first.0.plan((40, 20, 300, 72), (-40, -20, 420, 1040));
+    assert!(moved.1 && moved.2);
+    assert_eq!(moved.0.child, Some((-40, -20, 420, 1040)));
+    // 窗口收缩也同时改窗口与子窗口偏移。
+    let shrunk = moved.0.plan((60, 20, 148, 44), (-60, -20, 420, 1040));
+    assert!(shrunk.1 && shrunk.2);
+    assert_eq!(shrunk.0.child, Some((-60, -20, 420, 1040)));
+    // 视口变化只改子窗口，窗口不动。
+    let viewport_changed = shrunk.0.plan((60, 20, 148, 44), (-100, -20, 420, 1040));
+    assert!(!viewport_changed.1 && viewport_changed.2);
+    // 拖动只失效窗口缓存；下一份提交即使窗口相同也要重新定位。
+    let mut dragged = viewport_changed.0;
+    dragged.forget_window();
+    let relocated = dragged.plan((60, 20, 148, 44), (-100, -20, 420, 1040));
+    assert!(relocated.1);
+    // 失败收口清空缓存后必须重新下发。
+    let reset = AppliedSurface::default().plan((60, 20, 148, 44), (-100, -20, 420, 1040));
+    assert!(reset.1 && reset.2);
 }

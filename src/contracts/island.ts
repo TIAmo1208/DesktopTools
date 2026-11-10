@@ -34,10 +34,11 @@ export interface IslandRect {
     height: number;
 }
 
-/** 三态几何由页面实测，一次提交全部窗口和局部卡片区域。 */
+/** 三态几何由页面实测，一次提交全部窗口、固定页面视口与局部卡片区域。 */
 export interface IslandStateRequest {
     state: "collapsed" | "hover" | "expanded";
     windowBox: IslandRect;
+    viewport: IslandRect; // 固定页面原点所在的屏幕视口带；父窗口只负责裁剪，内容不随窗口移动。
     cards: { rect: IslandRect; radius: number }[];
 }
 
@@ -61,9 +62,19 @@ const parseRect = (value: unknown): IslandRect => {
 /** 与原生 IslandStateRequest 相同的几何门禁，错误在进入 IPC 前明确拒绝。 */
 export const parseIslandStateRequest = (value: unknown): IslandStateRequest => {
     const item = record(value); // 三态几何请求。
-    if (Object.keys(item).some((key) => !["state", "windowBox", "cards"].includes(key))) throw new Error("岛状态字段无效");
+    if (Object.keys(item).some((key) => !["state", "windowBox", "viewport", "cards"].includes(key))) throw new Error("岛状态字段无效");
     if (item.state !== "collapsed" && item.state !== "hover" && item.state !== "expanded") throw new Error("未知岛状态");
     const windowBox = parseRect(item.windowBox); // 屏幕绝对坐标。
+    const viewport = parseRect(item.viewport); // 固定页面原点所在的视口带。
+    if (viewport.width > 16_384 || viewport.height > 16_384) throw new Error("岛固定视口过大");
+    const tolerance = 0.5; // 原生与页面各自量化，允许半个 DIP 的边界误差。
+    if (
+        windowBox.left < viewport.left - tolerance ||
+        windowBox.top < viewport.top - tolerance ||
+        windowBox.left + windowBox.width > viewport.left + viewport.width + tolerance ||
+        windowBox.top + windowBox.height > viewport.top + viewport.height + tolerance
+    )
+        throw new Error("岛窗口盒超出固定视口");
     if (!Array.isArray(item.cards) || item.cards.length === 0 || item.cards.length > 128 || (item.state === "collapsed" && item.cards.length !== 1))
         throw new Error("岛卡片数量无效");
     const cards = item.cards.map((value) => {
@@ -84,7 +95,7 @@ export const parseIslandStateRequest = (value: unknown): IslandStateRequest => {
             throw new Error("岛卡片区域或圆角无效");
         return { rect, radius };
     });
-    return { state: item.state, windowBox, cards };
+    return { state: item.state, windowBox, viewport, cards };
 };
 
 /** 合成实例没有持久尺寸，不能套用桌面格子的最小宽高门禁。 */

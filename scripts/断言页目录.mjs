@@ -7,6 +7,7 @@ export const 断言页 = [
     "src/features/tile-content/collect-box/collectBox.browser.html", // 收集箱加载、选择、删除与投放。
     "src/features/tiles/contentDrop.browser.html", // 格子内容拖放。
     "src/features/tiles/tileDragPreview.browser.html", // 跨屏格子拖动预览与围栏尺寸。
+    "src/features/island/islandFillet.browser.html", // 浮岛切态圆弧补面与描边。
 ];
 
 // 真机专用页：判定依赖真实执行环境（WebView2 渲染时序、系统 Shell 等），headless Edge 下不能成立。

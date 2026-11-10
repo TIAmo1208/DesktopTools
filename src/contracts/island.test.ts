@@ -92,8 +92,9 @@ test("岛快照复用清单与注册契约，保留零布局实例及顺序", ()
 const request = {
     state: "collapsed",
     windowBox: { left: -100, top: 40, width: 200, height: 44 },
+    viewport: { left: -112, top: 28, width: 224, height: 68 },
     cards: [{ rect: { left: 0, top: 0, width: 200, height: 44 }, radius: 22 }],
-}; // 合法常态屏幕 DIP。
+}; // 合法常态屏幕 DIP 与固定视口。
 test("三态请求与原生几何边界一致，拒绝非有限值、越界和非法数量", () => {
     for (const state of ["collapsed", "hover", "expanded"]) assert.deepEqual(parseIslandStateRequest({ ...request, state }), { ...request, state });
     for (const patch of [
@@ -103,6 +104,10 @@ test("三态请求与原生几何边界一致，拒绝非有限值、越界和�
         { windowBox: { ...request.windowBox, left: Infinity } },
         { windowBox: { ...request.windowBox, width: 0 } },
         { windowBox: { ...request.windowBox, top: 1_000_001 } },
+        { windowBox: { ...request.windowBox, left: -120 } },
+        { viewport: { ...request.viewport, width: 0 } },
+        { viewport: { ...request.viewport, width: 20_000 } },
+        { viewport: { ...request.viewport, top: 100 } },
         { cards: [{ ...request.cards[0], radius: 23 }] },
         { cards: [{ ...request.cards[0], radius: NaN }] },
         { cards: [{ rect: { ...request.cards[0].rect, left: 1 }, radius: 22 }] },

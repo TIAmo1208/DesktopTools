@@ -7,7 +7,16 @@ import type { IslandRect, IslandSnapshot, IslandStateRequest } from "../../contr
 import { PluginSlot, pluginTileType } from "../components/PluginSlot";
 import { useMusicState, positionAt, lyricIndex } from "../music/musicSource";
 import { usePreferences } from "../settings/PreferencesProvider";
-import { islandCornerRadius, islandGeometry, moveIslandCard, visibleIslandRect } from "./islandGeometry";
+import {
+    islandAttachedCorner,
+    islandCardMaskPath,
+    islandCornerRadius,
+    islandFilletPatches,
+    islandSeamMask,
+    islandGeometry,
+    moveIslandCard,
+    visibleIslandRect,
+} from "./islandGeometry";
 import {
     ISLAND_HOVER_DELAY_MS,
     ISLAND_DRAG_DELAY_MS,
@@ -19,14 +28,28 @@ import {
     cancelIslandHover,
     islandHoverTarget,
 } from "./islandInteraction";
-import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, islandMotionFrame, islandUnionFrame } from "./islandMotion";
+import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, islandAttachedCornerAt, islandUnionFrame } from "./islandMotion";
 import "./island.css";
-const PAINTED_STYLE_PROPERTIES = ["position", "left", "top", "inline-size", "block-size", "max-inline-size", "min-block-size", "overflow", "border-radius", "flex"] as const; // paint 写入的内联属性，恢复时只清这些。
+const PAINTED_STYLE_PROPERTIES = [
+    "position",
+    "left",
+    "top",
+    "inline-size",
+    "block-size",
+    "max-inline-size",
+    "min-block-size",
+    "overflow",
+    "border-radius",
+    "flex",
+    "opacity",
+    "filter",
+] as const; // paint 写入的内联属性，恢复时只清这些。
 
 type IslandMode = IslandStateRequest["state"]; // 三态互斥。
 
 /** 岛只消费共享音乐事实，计时器只推进可见投影，不读取媒体或请求歌词。 */
-const IslandMusic = ({ mode, side }: { mode: IslandMode; side: boolean }) => { // side：左右贴边，hover 的播放控制改到第二排。
+const IslandMusic = ({ mode, side }: { mode: IslandMode; side: boolean }) => {
+    // side：左右贴边，hover 的播放控制改到第二排。
     const music = useMusicState();
     const [now, setNow] = useState(() => performance.now()); // 单调时钟用于播放位置投影。
     const [busy, setBusy] = useState(false); // 同一时刻只提交一个播放命令。
@@ -129,18 +152,18 @@ const IslandMusic = ({ mode, side }: { mode: IslandMode; side: boolean }) => { /
                     </p>
                 ) : (
                     <div className="island-music__info">
-                            <div className="island-music__metadata">
-                                <p className="island-music__title" title={media?.title}>
-                                    {media?.title || status}
-                                </p>
-                                <p className="island-music__artist" title={media?.artist}>
-                                    {media?.artist || "\u00a0"}
-                                </p>
-                                <p className="island-music__source" title={media?.source}>
-                                    {failure ? "控制失败，请重试" : media?.source || "\u00a0"}
-                                </p>
-                            </div>
-                            {mode === "expanded" ? controls : null}
+                        <div className="island-music__metadata">
+                            <p className="island-music__title" title={media?.title}>
+                                {media?.title || status}
+                            </p>
+                            <p className="island-music__artist" title={media?.artist}>
+                                {media?.artist || "\u00a0"}
+                            </p>
+                            <p className="island-music__source" title={media?.source}>
+                                {failure ? "控制失败，请重试" : media?.source || "\u00a0"}
+                            </p>
+                        </div>
+                        {mode === "expanded" ? controls : null}
                     </div>
                 )}
                 {mode === "hover" && !side ? controls : null}
@@ -229,7 +252,8 @@ export const IslandPage = () => {
     const pendingOffset = useRef<number | undefined>(undefined); // 本次拖动的新偏移；权威偏好事件前先按它重测，避免回跳。
     const paintedGeometry = useRef<{ state: IslandStateRequest["state"]; width: number; height: number } | undefined>(undefined); // 最近一次已写入的窗口布局，用于忽略 paint 自己触发的 ResizeObserver。
     const [dragActive, setDragActive] = useState(false); // 原生移动循环期间的拖动反馈。
-    const [motionActive, setMotionActive] = useState(false); // 并集动画期间隐藏角部补面，避免弧面脱离卡片漂浮。
+    const surface = useRef<HTMLDivElement>(null); // 卡片与两块外凸圆弧合并后的单层背景。
+    const attachedCorner = useRef<number | undefined>(undefined); // 最近实际绘制的贴边侧带符号圆角，连续切态从这里衔接。
     const capsuleHeight = useRef<number | undefined>(undefined); // 胶囊态卡片高度；左右贴边的 hover 在测量时直接写入，不经过 React 状态以免换边时用到旧值。
     const capsuleOrientation = useRef<"horizontal" | "vertical" | undefined>(undefined); // 胶囊高度对应的边方向；同方向换边/换形态可复用。
     const submission = useRef(Promise.resolve()); // 原生提交串行，防止快速切态乱序。
@@ -311,7 +335,8 @@ export const IslandPage = () => {
         const measureNow = (force = false) => {
             if (animating || dragging.current) return;
             const painted = paintedGeometry.current;
-            if (!force && root.current && painted) {
+            // 展开根是保留union，根尺寸不变不能证明卡片内容未变化；展开RO必须重测自然目标。
+            if (!force && mode !== "expanded" && root.current && painted) {
                 const box = root.current.getBoundingClientRect();
                 // paint 写入的根尺寸会触发 ResizeObserver；它不改变内容，不能借机 restore 成自然布局。
                 if (mode === painted.state && Math.abs(box.width - painted.width) < 0.6 && Math.abs(box.height - painted.height) < 0.6) return;
@@ -320,13 +345,24 @@ export const IslandPage = () => {
             restoreStyles(); // 动画被打断或切态竞争时清掉上一轮内联尺寸，测量必须基于真实文档流。
             {
                 if (!active || !root.current || dragging.current) return;
-                const single = root.current.querySelector<HTMLElement>(".island-card");
-                // 左右贴边的 hover 沿用当前胶囊高度；在测量前直接写入，避免经 React 状态延迟一帧造成高度错乱。
-                if (mode === "hover" && (edge === "left" || edge === "right") && single && capsuleHeight.current !== undefined) {
-                    saveStyle(single);
-                    single.style.blockSize = `${capsuleHeight.current}px`;
+                // 左右贴边的 hover 沿用当前胶囊高度；写成根上的 CSS 变量，restoreStyles 后自然流仍是同一高度。
+                if ((edge === "left" || edge === "right") && mode === "hover" && capsuleHeight.current !== undefined) {
+                    root.current.style.setProperty("--island-capsule-height", `${capsuleHeight.current}px`);
+                } else {
+                    // 换方向或缓存失效时必须移除旧变量，否则下次回到左右 hover 会把旧高度当成有效值。
+                    root.current.style.removeProperty("--island-capsule-height");
                 }
-                const origin = root.current.getBoundingClientRect();
+                // 暂时移除保留窗口的尺寸约束，只测自然内容目标，避免用旧union高度截掉新增内容。
+                // 同一次同步测量内恢复变量和scrollTop，paint自触发的RO重放会由geometryKey去重，不重复提交。
+                const element = root.current;
+                const expandedInline = element.style.getPropertyValue("--island-expanded-inline");
+                const expandedBlock = element.style.getPropertyValue("--island-expanded-block");
+                const scrollTop = element.scrollTop;
+                if (mode === "expanded") {
+                    element.style.removeProperty("--island-expanded-inline");
+                    element.style.removeProperty("--island-expanded-block");
+                }
+                const origin = element.getBoundingClientRect();
                 // 刘海非展开态由根 padding 让出圆弧区；测量时换回内容坐标，几何函数再统一加回 12 DIP。
                 const notchPad = preferences.islandForm === "notch" && mode !== "expanded" ? 12 : 0;
                 const horizontalEdge = edge === "left" || edge === "right";
@@ -342,6 +378,11 @@ export const IslandPage = () => {
                         origin.height,
                     );
                 });
+                if (mode === "expanded") {
+                    if (expandedInline) element.style.setProperty("--island-expanded-inline", expandedInline);
+                    if (expandedBlock) element.style.setProperty("--island-expanded-block", expandedBlock);
+                    element.scrollTop = scrollTop;
+                }
                 if (!measured.length) return;
                 try {
                     const radius = mode === "collapsed" ? 22 : mode === "hover" ? 16 : preferences.islandRadius;
@@ -363,23 +404,107 @@ export const IslandPage = () => {
                     const cards = Array.from(element.querySelectorAll<HTMLElement>(".island-card"));
                     const from = currentGeometry.current;
                     const animate = animationsEnabled && from && from.state !== request.state && !dragging.current && !skipMotionOnce.current;
-                    const paint = (value: IslandStateRequest, _elapsed: number) => {
+                    const form = preferences.islandForm ?? "capsule";
+                    const filletMask = (slot: "start" | "end"): [string, string] => {
+                        switch (edge) {
+                            case "bottom":
+                                return slot === "start" ? ["0%", "0%"] : ["100%", "0%"];
+                            case "left":
+                                return slot === "start" ? ["100%", "0%"] : ["100%", "100%"];
+                            case "right":
+                                return slot === "start" ? ["0%", "0%"] : ["0%", "100%"];
+                            default:
+                                return slot === "start" ? ["0%", "100%"] : ["100%", "100%"];
+                        }
+                    };
+                    // 单层背景按真实DOM卡片生成遮罩；native cards包含透明命中gap，不能直接把它当可见表面绘制。
+                    const paintSurface = (attached: number, value: IslandStateRequest, moving: boolean) => {
+                        const node = surface.current;
+                        if (!node || attached >= -0.01 || !cards.length) {
+                            if (node) node.style.display = "none";
+                            return;
+                        }
+                        const radius = -attached;
+                        const layers: string[] = [];
+                        const positions: string[] = [];
+                        const sizes: string[] = [];
+                        // 直接以surface为局部原点，滚动容器中它可能不等于根的边框原点。
+                        node.style.display = "block";
+                        const origin = node.getBoundingClientRect();
+                        const seamPaths: string[] = [];
+                        const seamBands: IslandRect[] = [];
+                        for (const card of cards) {
+                            const box = card.getBoundingClientRect();
+                            const rect = { left: box.left - origin.left, top: box.top - origin.top, width: box.width, height: box.height };
+                            const style = getComputedStyle(card);
+                            const corners = [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius].map(Number.parseFloat);
+                            const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${rect.width}" height="${rect.height}"><path d="${islandCardMaskPath(rect.width, rect.height, corners)}" fill="#fff"/></svg>`;
+                            layers.push(`url("data:image/svg+xml,${encodeURIComponent(svg)}")`);
+                            positions.push(`${rect.left}px ${rect.top}px`);
+                            sizes.push(`${rect.width}px ${rect.height}px`);
+                            const seam = islandSeamMask(rect, corners, value.windowBox, edge, form, attached, window.devicePixelRatio);
+                            if (seam) { seamPaths.push(seam.path); seamBands.push(...seam.bands); }
+                            for (const patch of islandFilletPatches(rect, value.windowBox, edge, radius)) {
+                                const [x, y] = filletMask(patch.slot);
+                                // 原瓦片尺寸/位置不动；中帧圆心与色标取绝对px，缺覆盖由根尺寸单路径补采样。
+                                const centerX = x === "100%" ? patch.rect.width : 0;
+                                const centerY = y === "100%" ? patch.rect.height : 0;
+                                // 稳态连渐变文本也复用原版，避免等价圆心表达式造成最后1级光栅量化差。
+                                layers.push(moving
+                                    ? `radial-gradient(circle ${patch.radius}px at ${centerX}px ${centerY}px, transparent ${patch.radius - 0.5}px, #000 ${patch.radius}px)`
+                                    : `radial-gradient(circle at ${x} ${y}, transparent ${patch.radius - 0.5}px, #000 ${patch.radius}px)`);
+                                positions.push(`${patch.rect.left}px ${patch.rect.top}px`);
+                                sizes.push(`${patch.rect.width}px ${patch.rect.height}px`);
+                            }
+                        }
+                        if (seamPaths.length) {
+                            // clipPath位于SVG内部，不是CSS mask层的clip-path；单张根尺寸瓦片没有接缝处的小瓦片边界。
+                            const width = value.windowBox.width, height = value.windowBox.height;
+                            const clips = seamBands.map((band) => `<rect x="${band.left}" y="${band.top}" width="${band.width}" height="${band.height}"/>`).join("");
+                            const svg = `<svg xmlns="http://www.w3.org/2000/svg" data-island-seam="true" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs><clipPath id="seam-band" clipPathUnits="userSpaceOnUse">${clips}</clipPath></defs><path d="${seamPaths.join(" ")}" clip-path="url(#seam-band)" fill="#fff"/></svg>`;
+                            layers.push(`url("data:image/svg+xml,${encodeURIComponent(svg)}")`);
+                            positions.push("0px 0px");
+                            sizes.push(`${width}px ${height}px`);
+                        }
+                        // 原三层外缘保持不动，所有负角帧增加一张根尺寸单path补采样（包括分数DPR稳态）；同一surface只填色一次。
+                        node.style.maskImage = layers.join(", ");
+                        node.style.maskPosition = positions.join(", ");
+                        node.style.maskSize = sizes.join(", ");
+                        node.style.maskRepeat = "no-repeat";
+                        node.style.setProperty("-webkit-mask-image", layers.join(", "));
+                        node.style.setProperty("-webkit-mask-position", positions.join(", "));
+                        node.style.setProperty("-webkit-mask-size", sizes.join(", "));
+                        node.style.setProperty("-webkit-mask-repeat", "no-repeat");
+                    };
+                    // 补面与描边状态独立于布局写入；常态自然流下也能单独重放，不锁死内联尺寸。
+                    const paintAttached = (attached: number, value: IslandStateRequest, moving = false) => {
+                        attachedCorner.current = attached;
+                        element.dataset.filleted = attached < -0.01 ? "true" : "false";
+                        paintSurface(attached, value, moving);
+                    };
+                    // 固定视口偏移只定位根节点；展开态不写回卡片内联几何，但仍需要正确 margin。
+                    const applyViewportMargin = (value: IslandStateRequest) => {
+                        element.style.marginInlineStart = `${value.windowBox.left - value.viewport.left}px`;
+                        element.style.marginBlockStart = `${value.windowBox.top - value.viewport.top}px`;
+                    };
+                    const paint = (value: IslandStateRequest, elapsed: number, start?: number) => {
                         paintedGeometry.current = { state: value.state, width: value.windowBox.width, height: value.windowBox.height };
                         saveStyle(element);
                         Object.assign(element.style, {
                             position: "relative",
+                            // 固定页面视口中的窗口偏移；父窗口移动只改变裁剪，内容屏幕位置由 margin 决定。
+                            marginInlineStart: `${value.windowBox.left - value.viewport.left}px`,
+                            marginBlockStart: `${value.windowBox.top - value.viewport.top}px`,
                             inlineSize: `${value.windowBox.width}px`,
                             blockSize: `${value.windowBox.height}px`,
                             maxInlineSize: "none",
                             overflow: "clip",
                         });
-                        const first = value.cards[0];
-                        const arcFit = value.state !== "expanded" && first
-                            ? (edge === "left" || edge === "right"
-                                ? Math.abs(first.rect.top - 12) < 0.5 && Math.abs(first.rect.left) < 0.5
-                                : Math.abs(first.rect.left - 12) < 0.5 && Math.abs(first.rect.top) < 0.5)
-                            : true;
-                        element.dataset.arcFit = arcFit ? "true" : "false";
+                        // 贴边侧角从最近实际绘制的带符号圆角过渡到目标态，连续切态不会先跳回普通圆角再长出补面。
+                        const end = islandAttachedCorner(request.state, form, request.cards[0]?.radius ?? 0);
+                        const attached = elapsed >= ISLAND_MOTION_MS ? end : islandAttachedCornerAt(start ?? end, request, elapsed, form);
+                        // 内容与形变同步淡入并去模糊：起点透明 5px，终点完全清晰；终帧与静态态清空内联值。
+                        const reveal = elapsed >= ISLAND_MOTION_MS ? 1 : Math.min(1, Math.max(0, elapsed / ISLAND_MOTION_MS));
                         cards.forEach((card, index) => {
                             const shape = value.cards[index];
                             if (!shape) return;
@@ -392,13 +517,39 @@ export const IslandPage = () => {
                                 blockSize: `${shape.rect.height}px`,
                                 maxInlineSize: "none",
                                 minBlockSize: "0",
-                                borderRadius: islandCornerRadius(shape.radius, preferences.islandForm ?? "capsule", edge, value.state === "expanded"),
+                                borderRadius: islandCornerRadius(shape.radius, form, edge, attached),
                             });
+                            const content = card.querySelector<HTMLElement>(".island-card__content");
+                            if (!content) return;
+                            saveStyle(content);
+                            if (reveal >= 1) {
+                                content.style.removeProperty("opacity");
+                                content.style.removeProperty("filter");
+                            } else {
+                                content.style.opacity = `${reveal}`;
+                                content.style.filter = `blur(${5 * (1 - reveal)}px)`;
+                            }
                         });
+                        paintAttached(attached, value, elapsed < ISLAND_MOTION_MS);
+                    };
+                    // 展开态不写回内联几何，必须单独收回上一帧的补面与描边抑制，否则会残留贴边弧面。
+                    const clearFillets = () => {
+                        element.dataset.filleted = "false";
+                        attachedCorner.current = undefined; // 展开态没有贴边负圆角，下一次从目标态重新推导。
+                        if (surface.current) surface.current.style.display = "none";
                     };
                     if (key === geometryKey.current) {
-                        // 同一几何被重新测量时仍要把窗口布局写回；否则并集窗口/刘海内缩会退回自然布局。
-                        if (mode === "hover") paint(request, ISLAND_MOTION_MS); // 重放当前目标并集，不能重放可能被中断的动画中间帧。
+                        // 同一几何被重新测量时仍要把窗口布局与补面写回；否则并集窗口/刘海内缩、
+                        // 换边后上次提交被取消等情况会退回自然布局或残留上一贴边的补面。
+                        if (request.state === "expanded") {
+                            clearFillets();
+                            applyViewportMargin(request);
+                        } else if (request.state === "hover") paint(request, ISLAND_MOTION_MS);
+                        else {
+                            // 常态保持自然流，只重放补面、描边与固定视口 margin，不写死卡片内联尺寸。
+                            paintAttached(islandAttachedCorner(request.state, form, request.cards[0]?.radius ?? 0), request);
+                            applyViewportMargin(request);
+                        }
                         return;
                     }
                     geometryKey.current = key;
@@ -414,7 +565,7 @@ export const IslandPage = () => {
                                 Object.assign(content.style, { inlineSize: `${box.width}px`, blockSize: `${box.height}px`, flex: "none" });
                             }
                         });
-                        paint(islandMotionFrame(from, request, 0, edge, work), 0);
+                        paint(from, 0, attachedCorner.current ?? islandAttachedCorner(from.state, form, from.cards[0]?.radius ?? 0)); // 起点帧按起点态自己的窗口与坐标，不能把目标布局画进旧窗口。
                     }
                     const commit = async (value: IslandStateRequest) => {
                         await setIslandState(value);
@@ -428,10 +579,11 @@ export const IslandPage = () => {
                                 const startGeometry = currentGeometry.current ?? from; // 等旧提交落定后再取衔接点。
                                 if (animate && startGeometry) {
                                     // 先把原生窗口一次放大到两态并集，内容保持原位置；动画只在固定窗口内移动内容。
-                                    setMotionActive(true);
+                                    const startAttached =
+                                        attachedCorner.current ?? islandAttachedCorner(startGeometry.state, form, startGeometry.cards[0]?.radius ?? 0); // 从实际绘制值衔接连续切态。
                                     const unionFirst = islandUnionFrame(startGeometry, request, 0, edge, work);
-                                    paint(unionFirst, 0); // 先按当前窗口画出内容，再放大窗口，避免窗口先行出现未定位内容的一帧。
-                                    await commit(unionFirst);
+                                    await commit(unionFirst); // 先放大窗口再写并集布局，避免目标内容被旧窗口裁切出一帧。
+                                    paint(unionFirst, 0, startAttached);
                                     await new Promise<void>((resolve) => {
                                         motionFrame = requestAnimationFrame(() => resolve());
                                     });
@@ -455,15 +607,39 @@ export const IslandPage = () => {
                                         if (frameKey !== previousKey) {
                                             await commit(value);
                                             if (!active) break;
-                                            paint(value, elapsed);
+                                            paint(value, elapsed, startAttached);
                                             previousKey = frameKey;
                                         }
                                     }
                                 }
                                 if (active) {
                                     // 展开态 root 是滚动容器：不写回固定内联几何，保留自然流和 scrollTop。
-                                    if (request.state !== "expanded") paint(request, ISLAND_MOTION_MS);
-                                    await commit(request);
+                                    const grows =
+                                        !from || request.windowBox.width > from.windowBox.width + 0.5 || request.windowBox.height > from.windowBox.height + 0.5;
+                                    if (request.state === "expanded") {
+                                        // 展开终态保留入态并集窗口，不收缩到目标盒；内容仍按目标 margin 落位。
+                                        const expandedFrame = islandUnionFrame(startGeometry ?? from ?? request, request, ISLAND_MOTION_MS, edge, work);
+                                        await commit(expandedFrame);
+                                        if (active) {
+                                            clearFillets();
+                                            applyViewportMargin(request);
+                                            element.style.setProperty("--island-expanded-inline", `${expandedFrame.windowBox.width}px`);
+                                            element.style.setProperty("--island-expanded-block", `${expandedFrame.windowBox.height}px`);
+                                            currentGeometry.current = expandedFrame;
+                                            paintedGeometry.current = {
+                                                state: "expanded",
+                                                width: expandedFrame.windowBox.width,
+                                                height: expandedFrame.windowBox.height,
+                                            };
+                                        }
+                                    } else if (!animate && grows) {
+                                        // 目标比当前窗口大时先提交窗口再绘制，否则旧窗口会裁掉新布局一帧；动画路径的窗口已固定为并集。
+                                        await commit(request);
+                                        if (active) paint(request, ISLAND_MOTION_MS);
+                                    } else {
+                                        paint(request, ISLAND_MOTION_MS);
+                                        await commit(request);
+                                    }
                                     recovering.current = false;
                                 } // 有界动画结束必须补最终态，不受去重键影响。
                             } catch (error) {
@@ -479,7 +655,6 @@ export const IslandPage = () => {
                                 }
                             } finally {
                                 animating = false;
-                                if (mounted.current) setMotionActive(false); // 动画结束或中断后恢复角部补面。
                                 // 成功结束回到自然布局，让常态胶囊继续随内容伸缩、展开态恢复 CSS 滚动。
                                 restoreStyles();
                             }
@@ -658,7 +833,6 @@ export const IslandPage = () => {
             data-state={mode}
             data-vertical={vertical}
             data-fillets={preferences?.islandForm === "notch" && mode !== "expanded" ? "true" : undefined}
-            data-arcs={preferences?.islandForm === "notch" && mode !== "expanded" && !motionActive ? "true" : undefined}
             onPointerEnter={handleEnter}
             onPointerLeave={handleLeave}
             onPointerDownCapture={handlePointerDown}
@@ -679,6 +853,7 @@ export const IslandPage = () => {
             }}
         >
             <div ref={palette} className="fence-workspace island__palette" hidden aria-hidden="true" />
+            <div ref={surface} className="island__surface" aria-hidden="true" />
             {visible.length ? (
                 visible.map((instance) => {
                     const manifest = snapshot!.runtime.manifests.find((item) => item.id === instance.componentId)!;
@@ -760,7 +935,12 @@ export const IslandPage = () => {
                                     <p role="status">组件加载失败</p>
                                 ) : registration?.entry === "plugin:slot" ? (
                                     <div data-island-plugin="true" inert={mode === "collapsed" ? true : undefined}>
-                                        <PluginSlot manifest={manifest} instanceId={instance.instanceId} tileType={pluginTileType(instance.state)} collapsed={mode === "collapsed"} />
+                                        <PluginSlot
+                                            manifest={manifest}
+                                            instanceId={instance.instanceId}
+                                            tileType={pluginTileType(instance.state)}
+                                            collapsed={mode === "collapsed"}
+                                        />
                                     </div>
                                 ) : (
                                     <p role="status">{manifest.name} · 组件入口不可用</p>

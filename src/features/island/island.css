@@ -40,6 +40,14 @@ html[data-island="true"] #root {
     overflow-y: auto;
     overflow-x: clip;
     scrollbar-width: none;
+    /* 展开终态保留入态并集窗口：内容仍按目标 margin，透明边距仍归浮岛命中。 */
+    /* 并集的透明余量不能通过 grid 默认 stretch 撑宽卡片；多卡仍共用自然内容列。 */
+    /* 360只限制下方卡片，根窗口必须容纳合法union（刘海可额外占24 DIP）。 */
+    max-inline-size: none;
+    grid-template-columns: max-content;
+    align-content: start;
+    inline-size: var(--island-expanded-inline, max-content);
+    block-size: var(--island-expanded-block, max-content);
 }
 /* 刘海的窗口在非展开态沿边各留 12 DIP；padding 让自然布局与提交几何一致，重测时不会丢掉卡片内缩。 */
 .island[data-form="notch"][data-fillets="true"][data-edge="top"],
@@ -128,16 +136,25 @@ html[data-island="true"] #root {
     padding: 8px;
     border-radius: 22px;
 }
-/* 原生移动循环期间给卡片一点拖动反馈；只改背景色，不引入缩放/透明度合成层。 */
-.island[data-dragging="true"] .island-card {
+/* 原生移动循环期间给卡片与补面同一点拖动反馈；只改背景色，不引入缩放/透明度合成层。 */
+.island[data-dragging="true"] .island-card,
+.island[data-dragging="true"] .island__surface {
     background: color-mix(in srgb, var(--fence-surface) 78%, var(--fence-text) 22%);
+}
+/* 补面帧只由单层 surface 承载表面色，卡片自身透明，避免两块半透明表面重叠。 */
+.island[data-filleted="true"] .island-card {
+    background: transparent;
 }
 .island[data-state="hover"] .island-card {
     block-size: 72px;
     padding: 12px;
     border-radius: 16px;
 }
-/* 左右贴边的 hover 沿用胶囊高度（页面内联写入），内容在卡片内垂直居中。 */
+/* 左右贴边的 hover 沿用根上记录的胶囊高度；自然流与内联几何一致，restoreStyles 不再造成高度回落。 */
+.island[data-state="hover"][data-edge="left"] .island-card,
+.island[data-state="hover"][data-edge="right"] .island-card {
+    block-size: var(--island-capsule-height, 72px);
+}
 .island[data-state="hover"][data-edge="left"] .island-card__content,
 .island[data-state="hover"][data-edge="right"] .island-card__content {
     display: flex;
@@ -384,8 +401,8 @@ html[data-island="true"] #root {
 .island[data-form="notch"] {
     --island-notch: 12px; /* 外凸圆弧半径；窗口沿边扩大，弧面外新增的是透明像素。 */
 }
-/* 弧面补面无法与卡片矩形描边连续，刘海非展开态统一不画这条 1px 内描边。 */
-.island[data-form="notch"][data-fillets="true"] .island-card::before {
+/* 弧面补面无法与卡片矩形描边连续，绘制外凸负圆角的帧统一不画这条 1px 内描边。 */
+.island[data-filleted="true"] .island-card::before {
     border-color: transparent;
 }
 /* 贴边侧两角保持直角；重测回到自然布局时也不能退回到普通圆角。 */
@@ -405,61 +422,11 @@ html[data-island="true"] #root {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
 }
-.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"]::before,
-.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"]::after {
-    content: "";
+/* 外凸负圆角补面：按卡片贴边角定位，形变时与卡片角同步移动；遮罩保留半径圆外的部分。 */
+.island__surface {
     position: absolute;
-    inline-size: var(--island-notch);
-    block-size: var(--island-notch);
+    inset: 0;
+    display: none;
     background: var(--fence-surface);
     pointer-events: none;
-}
-/* 每块弧面保留半径圆外的部分，圆内透明，使圆弧向外鼓出并衔接到卡片本体。 */
-.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="top"]::before {
-    left: 0;
-    top: 0;
-    -webkit-mask-image: radial-gradient(circle at 0 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-    mask-image: radial-gradient(circle at 0 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-}
-.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="top"]::after {
-    right: 0;
-    top: 0;
-    -webkit-mask-image: radial-gradient(circle at 100% 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-    mask-image: radial-gradient(circle at 100% 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-}
-.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="bottom"]::before {
-    left: 0;
-    bottom: 0;
-    -webkit-mask-image: radial-gradient(circle at 0 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-    mask-image: radial-gradient(circle at 0 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-}
-.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="bottom"]::after {
-    right: 0;
-    bottom: 0;
-    -webkit-mask-image: radial-gradient(circle at 100% 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-    mask-image: radial-gradient(circle at 100% 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-}
-.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="left"]::before {
-    left: 0;
-    top: 0;
-    -webkit-mask-image: radial-gradient(circle at 100% 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-    mask-image: radial-gradient(circle at 100% 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-}
-.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="left"]::after {
-    left: 0;
-    bottom: 0;
-    -webkit-mask-image: radial-gradient(circle at 100% 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-    mask-image: radial-gradient(circle at 100% 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-}
-.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="right"]::before {
-    right: 0;
-    top: 0;
-    -webkit-mask-image: radial-gradient(circle at 0 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-    mask-image: radial-gradient(circle at 0 0, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-}
-.island[data-form="notch"][data-arcs="true"][data-arc-fit="true"][data-edge="right"]::after {
-    right: 0;
-    bottom: 0;
-    -webkit-mask-image: radial-gradient(circle at 0 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
-    mask-image: radial-gradient(circle at 0 100%, transparent calc(var(--island-notch) - 0.5px), #000 var(--island-notch));
 }
