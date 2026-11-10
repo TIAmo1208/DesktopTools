@@ -621,6 +621,17 @@ async function 像素扫描({ png, frame, clip, dpr, baseline, steadyBaseline, v
     return { scanned: true, singleSurfaceRgb, maxSingleSurfaceDelta, expectedAlpha: expected, minAlpha, maxLightWidth, maxDarkAlpha, outsideBandChanged, outsideBandMaxDelta, outsideNewCoverage, steadyChangedBytes, steadyCompared:Boolean(steadyBaseline), bandDefinition:{normalHalfWidthCss:2,inwardStartCss:-1/dpr,inwardEndCss:Math.max(...radii)+1/dpr,clipHalfWidthCss:1+Math.max(.5,.5/dpr)}, baselineCompared:Boolean(baseline), rows };
 }
 
+// 清理被中断的运行遗留的无头 Edge：用户开着可见 Edge 窗口时跳过全局清理，本次实例仍按进程树回收。
+function 清理遗留无头浏览器() {
+    try {
+        const 可见窗口数 = execFileSync("powershell", ["-NoProfile", "-Command", "(Get-Process msedge -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle } | Measure-Object).Count"], { encoding: "utf8", timeout: 15000, windowsHide: true }).trim(); // 用户可见 Edge 窗口数。
+        if (可见窗口数 !== "0") return; // 用户正在用 Edge，交给实例回收处理自己的进程树。
+        execFileSync("taskkill", ["/IM", "msedge.exe", "/F"], { stdio: "ignore", timeout: 15000 }); // 无可见窗口时清掉无头残留。
+    } catch {
+        // 清理失败不影响断言判定；本次实例的回收仍然执行。
+    }
+}
+
 // 主流程：环境预检 → 逐页独立浏览器实例判定 → 汇总退出。
 async function 主流程() {
     const 全部页 = [...断言页, ...真机专用页, ...检查页]; // 断言页 + 真机专用页 + 只核对加载的检查页。
@@ -663,11 +674,15 @@ async function 主流程() {
     return 汇总(记录);
 }
 
+// 启动与收尾各清理一次：覆盖被上游中断、实例树没来得及回收的运行。
+清理遗留无头浏览器();
 let 退出值 = 退出码.失败; // 默认按失败退出，异常路径改走环境问题退出码。
 try {
     退出值 = (await (选项.浮岛像素 ? (选项.自然帧 ? 自然帧取证() : 浮岛像素回归()) : 主流程())) ? 退出码.通过 : 退出码.失败;
 } catch (错误) {
     console.error(`[环境] ${错误.message}`);
     退出值 = 退出码.环境;
+} finally {
+    清理遗留无头浏览器();
 }
 process.exit(退出值);

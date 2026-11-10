@@ -1,0 +1,25 @@
+name: quality
+
+# 最小护栏：类型检查 + 项目全量门禁（含 cargo test）。
+on:
+  push:
+    branches: [main, "Feature/**"]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: 安装依赖
+        run: npm ci
+      - name: 类型检查
+        run: npm run typecheck
+      - name: 全量门禁
+        run: npm test
+        env:
+          TMP: ${{ runner.temp }}

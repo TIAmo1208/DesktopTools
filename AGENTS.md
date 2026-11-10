@@ -41,6 +41,13 @@ Desktop Tools 是 Windows 桌面内容工作区（Tauri + React）：前端负�
 - 本机跑开发版前先退出已安装实例：桌面菜单互斥体 `Local\DesktopTools.DesktopMenu.Instance` 被占用时，开发版按副实例处理并静默退出（exit 0，日志止于「初始化完成」）。
 - 本机 Rust 操作前须把 `TMP` 指向 `build\tmp`，否则 `cl.exe D8050` 阻断构建。命令、全量门禁与构建提速口径见 `docs/agents/构建运行.md`。
 - 浏览器断言与本地服务用完即清：运行前后确认 `127.0.0.1:1420` 无监听；无可见 Edge 窗口时清理无头残留 `taskkill /IM msedge.exe /F`（用户正开着 Edge 时只结束自己起的实例）。中断的断言运行会留下无头 Edge。
+- 提交前守卫：`npm run check:commit`（暂存空白检查 + `npm run typecheck`）；CI（`.github/workflows/quality.yml`）跑 `typecheck` 与 `npm test`。本机 git 执行 shell 钩子会被沙箱拒绝，因此不安装 git hook。
+
+## 工具与环境事实
+
+- 读文件用 `ops_read_files` / `ops_inspect_local_file`：官方 `read` 可能被 dsh-ops 替换；`.dsh` 下是 symlink，读取用其真实路径。
+- 进程与端口用 `tasklist`、`netstat -ano`；`wmic` 与 CIM 查询在本机会挂起到超时。
+- 后台任务句柄不跨回合：长任务在同一回合内前台分块，或增量写 JSONL 落盘，不依赖下一回合的后台结果。
 
 ## 安全边界
 
