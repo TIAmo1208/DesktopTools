@@ -33,6 +33,8 @@ import {
 } from "./islandInteraction";
 import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, islandAttachedCornerAt, islandUnionFrame } from "./islandMotion";
 import "./island.css";
+/** Debug 构建由后端注入的浮岛测试卡：只展示，不写偏好、不进卡片顺序与设置页列表。 */
+const ISLAND_DEBUG_CARD = "official.debug-island";
 const PAINTED_STYLE_PROPERTIES = [
     "position",
     "left",
@@ -417,7 +419,8 @@ export const IslandPage = () => {
     const edge = preferences?.islandEdge ?? "";
     const vertical = mode === "collapsed" && (edge === "left" || edge === "right"); // 仅胶囊态在左右贴边时竖排；hover 与展开保持水平卡片。
     const instances = snapshot?.instances ?? [];
-    const visible = mode === "expanded" ? instances : instances.slice(0, 1);
+    const sortable = instances.filter((instance) => instance.componentId !== ISLAND_DEBUG_CARD); // 测试卡不参与排序与持久化。
+    const visible = mode === "expanded" ? instances : sortable.slice(0, 1); // 测试卡只在展开态出现，胶囊不显示它。
     const edgeKey = useRef(""); // 上次测量的贴边方向，变化时丢弃旧几何缓存。
     const formKey = useRef(""); // 上次测量的岛形态，变化时丢弃旧胶囊高度与并集缓存。
     useLayoutEffect(() => {
@@ -838,8 +841,10 @@ export const IslandPage = () => {
         if ((preferences.islandEdge || "top") === (edge || "top") && Math.abs(preferences.islandOffset - pending) < 0.01) pendingOffset.current = undefined; // 权威落点已到，不再压住后续偏移。
     }, [preferences, edge]);
     const interactionBusy = () => dragging.current || Boolean(gesture.current) || Boolean(cardDrag.current) || Boolean(scrollbarDrag.current);
+    // 常态关闭透明像素检测：门闩只在 hover 与展开态参与判定，常态进入仍是原 180ms 消抖。
+    const hoverLatched = () => modeRef.current !== "collapsed" && marginState.current.latch !== "open";
     const scheduleHover = (inside: boolean) => {
-        const target = islandHoverTarget(modeRef.current, inside, interactionBusy(), marginState.current.latch !== "open");
+        const target = islandHoverTarget(modeRef.current, inside, interactionBusy(), hoverLatched());
         const kind = inside ? "enter" : "leave";
         if (target && hoverKind.current === kind && hoverTimer.current !== undefined) return;
         stopHoverTimer();
@@ -849,7 +854,7 @@ export const IslandPage = () => {
         hoverTimer.current = setTimeout(() => {
             if (version !== hoverVersion.current || !mounted.current) return;
             hoverTimer.current = undefined; hoverKind.current = undefined;
-            if (pointerInside.current === inside && islandHoverTarget(modeRef.current, inside, interactionBusy(), marginState.current.latch !== "open") === target) changeMode(target);
+            if (pointerInside.current === inside && islandHoverTarget(modeRef.current, inside, interactionBusy(), hoverLatched()) === target) changeMode(target);
         }, ISLAND_HOVER_DELAY_MS);
     };
     const leaveWindow = () => {
@@ -857,7 +862,7 @@ export const IslandPage = () => {
         if (hoverKind.current !== "leave") stopHoverTimer();
         cancelDragHold(); marginState.current.since = undefined;
         if (interactionBusy()) return;
-        marginState.current = islandMarginStep(marginState.current, { mode: modeRef.current, region: "outside", now: performance.now(), busy: false, outlineDistance: Infinity, coreDistance: Infinity, leave: true }).state;
+        marginState.current = islandMarginStep(marginState.current, { mode: modeRef.current, region: "outside", now: performance.now(), busy: false, outlineDistance: Infinity, coreDistance: Infinity, leave: true, detect: modeRef.current !== "collapsed" }).state;
         if (modeRef.current === "expanded") changeMode("collapsed"); else scheduleHover(false);
     };
     const handleLeave = (event: PointerEvent<HTMLElement>) => {
@@ -888,6 +893,15 @@ export const IslandPage = () => {
             const point = { x: event.clientX, y: event.clientY };
             const layout = islandScrollGeometry(frame, targetGeometry.current, preferences?.islandEdge ?? "", { mode: modeRef.current, settled: layoutSettled.current, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, scrollTop: element.scrollTop });
             if (!islandPointInRect(point, layout.window)) { leaveWindow(); return; }
+            pointerInside.current = true;
+            // 常态透明边距不承载本次切态语义：透明判定会与既有 180ms 进入、拖动释放重判冲突，
+            // 因此常态不评估透明判定、不写门闩，只保留既有 180ms 进入；逻辑与单测保留以便恢复。
+            if (modeRef.current === "collapsed") {
+                marginState.current.since = undefined;
+                if (hoverKind.current === "margin") stopHoverTimer();
+                scheduleHover(true);
+                return;
+            }
             if (modeRef.current === "expanded" && (!layoutSettled.current || inputGeometryKey.current !== geometryKey.current)) return;
             const cards = Array.from(element.querySelectorAll<HTMLElement>(".island-card")).map((card) => {
                 const box = card.getBoundingClientRect(), style = getComputedStyle(card);
@@ -896,26 +910,30 @@ export const IslandPage = () => {
             if (!cards.length) return;
             const contour = islandHitContour(cards, layout.window, preferences?.islandEdge ?? "", preferences?.islandForm ?? "capsule", attachedCorner.current ?? 0);
             const region = islandHitRegion(modeRef.current, point, layout, contour);
-            pointerInside.current = true;
             const input = { mode: modeRef.current, region, now: performance.now(), busy: false, outlineDistance: islandContourDistance(point, contour), coreDistance: islandCardDistance(point, cards[0]!) };
             lastMarginInput.current = input;
             const next = islandMarginStep(marginState.current, input);
             marginState.current = next.state;
             if (next.collapse) { changeMode("collapsed", modeRef.current === "hover"); return; }
-            if (modeRef.current === "hover" && region === "transparent" && marginState.current.since !== undefined) {
+            // hover 的透明边距与展开的额外带共用同一条 120ms 连续停留计时：进带开始计时，回内容盒取消。
+            const delayRegion: "transparent" | "extra-band" = modeRef.current === "hover" ? "transparent" : "extra-band";
+            if (region === delayRegion && marginState.current.since !== undefined) {
                 if (hoverKind.current === "margin" && hoverTimer.current !== undefined) return;
                 stopHoverTimer(); hoverKind.current = "margin";
                 const version = hoverVersion.current;
                 const deadline = marginState.current.since + ISLAND_MARGIN_DELAY_MS;
                 hoverTimer.current = setTimeout(() => {
-                    if (version !== hoverVersion.current || !mounted.current || !lastMarginInput.current || marginState.current.since === undefined) return;
                     hoverTimer.current = undefined; hoverKind.current = undefined;
+                    if (version !== hoverVersion.current || !mounted.current || !lastMarginInput.current || marginState.current.since === undefined) return;
                     // setTimeout已达到deadline；受控断言时performance.now可暂停，仍不依赖rAF推进。
                     const result = islandMarginStep(marginState.current, { ...lastMarginInput.current, mode: modeRef.current, now: Math.max(performance.now(), deadline), busy: interactionBusy() || !inputReady.current });
                     marginState.current = result.state;
-                    if (result.collapse) changeMode("collapsed", true);
+                    if (result.collapse) changeMode("collapsed", modeRef.current === "hover");
                 }, Math.max(0, Math.ceil(deadline - performance.now())));
-            } else if (modeRef.current !== "expanded") scheduleHover(modeRef.current === "collapsed" ? next.canEnter : region === "content");
+                return;
+            }
+            if (hoverKind.current === "margin") stopHoverTimer(); // 离开延时区：撤销未到点的退回计时。
+            if (modeRef.current === "hover") scheduleHover(region === "content");
         },
         leave: () => leaveWindow(),
         up: (event) => endScrollbarDrag(event),
@@ -1031,7 +1049,7 @@ export const IslandPage = () => {
     };
     const handleReorder = async (from: string, to: string) => {
         if (sorting.current) return;
-        const order = instances.map((instance) => instance.componentId);
+        const order = sortable.map((instance) => instance.componentId);
         const next = moveIslandCard(order, from, to);
         if (next.join("\n") === order.join("\n")) return;
         sorting.current = true;
@@ -1086,10 +1104,15 @@ export const IslandPage = () => {
                             className="island-card"
                             key={instance.instanceId}
                             aria-label={manifest.name}
-                            draggable={mode === "expanded"}
+                            data-island-debug-card={instance.componentId === ISLAND_DEBUG_CARD ? "true" : undefined}
+                            draggable={mode === "expanded" && instance.componentId !== ISLAND_DEBUG_CARD}
                             tabIndex={mode === "expanded" ? 0 : undefined}
                             aria-description={mode === "expanded" ? "拖动卡片调整顺序，或聚焦卡片后使用上下方向键" : undefined}
                             onDragStart={(event) => {
+                                if (instance.componentId === ISLAND_DEBUG_CARD) {
+                                    event.preventDefault(); // 测试卡不参与排序，也不写持久化顺序。
+                                    return;
+                                }
                                 if (
                                     !sortDragAllowed.current ||
                                     islandDragIntent(mode, 0, Boolean((event.target as Element).closest(ISLAND_NO_DRAG)), true) !== "sort"
@@ -1110,7 +1133,7 @@ export const IslandPage = () => {
                                 if (
                                     islandSortTarget(
                                         mode,
-                                        instances.map((item) => item.componentId),
+                                        sortable.map((item) => item.componentId),
                                         cardDrag.current,
                                         instance.componentId,
                                         Boolean((event.target as Element).closest(ISLAND_NO_DRAG)),
@@ -1134,13 +1157,13 @@ export const IslandPage = () => {
                             }}
                             onKeyDown={(event) => {
                                 if (mode !== "expanded" || event.target !== event.currentTarget) return;
-                                const index = instances.indexOf(instance);
-                                const target = instances[index + (event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0)];
+                                const index = sortable.indexOf(instance);
+                                const target = sortable[index + (event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0)];
                                 const to =
                                     target &&
                                     islandSortTarget(
                                         mode,
-                                        instances.map((item) => item.componentId),
+                                        sortable.map((item) => item.componentId),
                                         instance.componentId,
                                         target.componentId,
                                         false,
@@ -1154,6 +1177,11 @@ export const IslandPage = () => {
                             <div className="island-card__content">
                                 {instance.componentId === "official.music-control" ? (
                                     <IslandMusic mode={mode} side={edge === "left" || edge === "right"} />
+                                ) : instance.componentId === ISLAND_DEBUG_CARD ? (
+                                    <div data-island-debug-card="true" style={{ inlineSize: 192, minBlockSize: 168 }}>
+                                        <strong>Debug 浮岛卡</strong>
+                                        <p style={{ margin: "8px 0 0", opacity: 0.78 }}>仅 Debug 构建注入，不写偏好、不进卡片顺序与设置页列表。</p>
+                                    </div>
                                 ) : registration?.status === "failed" ? (
                                     <p role="status">组件加载失败</p>
                                 ) : registration?.entry === "plugin:slot" ? (

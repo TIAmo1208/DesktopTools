@@ -103,16 +103,20 @@ export const islandScrollGeometry = (frame: IslandStateRequest, target: IslandSt
 /** 保留原生矩形命中，只把批准的透明区作为页面侧退回特例。 */
 export const islandHitRegion = (mode: IslandStateRequest["state"], point: IslandPoint, layout: ReturnType<typeof islandScrollGeometry>, contour: IslandContour): IslandHitRegion =>
     !islandPointInRect(point, layout.window) ? "outside" : layout.track && islandPointInRect(point, layout.track) ? "scrollbar" : mode === "expanded" && layout.bands.some((band) => islandPointInRect(point, band)) ? "extra-band" : islandContourDistance(point, contour) <= 1e-8 ? "content" : "transparent";
-/** 120ms连续停留与门闩纯状态机；leave只代理窗外无法继续观察的指针。 */
-export const islandMarginStep = (state: IslandMarginState, input: { mode: IslandStateRequest["state"]; region: IslandHitRegion; now: number; busy: boolean; outlineDistance: number; coreDistance: number; leave?: boolean }) => {
+/** 120ms连续停留与门闩纯状态机；leave只代理窗外无法继续观察的指针，detect=false关闭常态透明检测。 */
+export const islandMarginStep = (state: IslandMarginState, input: { mode: IslandStateRequest["state"]; region: IslandHitRegion; now: number; busy: boolean; outlineDistance: number; coreDistance: number; leave?: boolean; detect?: boolean }) => {
+    // 常态透明边距不承载本次切态语义，且检测会与 180ms 进入、拖动释放重判冲突：关闭检测既不写门闩也不产生切态副作用，逻辑保留以便恢复。
+    if (input.detect === false) return { state: { latch: state.latch } as IslandMarginState, collapse: false, canEnter: false };
     if (input.leave) return { state: { latch: state.latch === "open" ? "open" : "outside" } as IslandMarginState, collapse: false, canEnter: false };
     if (input.busy) return { state: { latch: state.latch } as IslandMarginState, collapse: false, canEnter: false };
-    if (input.mode === "hover") {
-        const since = input.region === "transparent" ? state.since ?? input.now : undefined;
+    if (input.mode === "hover" || input.mode === "expanded") {
+        // hover 的透明边距与展开的额外带共用同一条 120ms 连续停留计时，不另设超时。
+        const delayRegion: IslandHitRegion = input.mode === "hover" ? "transparent" : "extra-band";
+        const since = input.region === delayRegion ? state.since ?? input.now : undefined;
         const collapse = since !== undefined && input.now - since >= ISLAND_MARGIN_DELAY_MS;
-        return { state: { latch: collapse ? "blocked" : state.latch, since: collapse ? undefined : since } as IslandMarginState, collapse, canEnter: false };
+        const latch: IslandMarginState["latch"] = input.mode === "hover" && collapse ? "blocked" : state.latch;
+        return { state: { latch, since: collapse ? undefined : since } as IslandMarginState, collapse, canEnter: false };
     }
-    if (input.mode === "expanded") return { state: { latch: "open" } as IslandMarginState, collapse: input.region === "extra-band", canEnter: false };
     let latch = state.latch;
     if (latch === "blocked" && input.outlineDistance >= ISLAND_REENTRY_MARGIN) latch = "outside";
     if (latch === "outside" && input.coreDistance <= -ISLAND_REENTRY_MARGIN) latch = "open";

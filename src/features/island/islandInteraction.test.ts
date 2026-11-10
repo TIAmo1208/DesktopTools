@@ -319,16 +319,52 @@ test("hover透明边距：连续停留满120ms才收起，途中回到内容盒�
     assert.equal(busy.state.latch, "open");
 });
 
-test("展开态只有额外带触发退回，其余透明边距与滚动条不退回", () => {
-    const base = { mode: "expanded" as const, now: 0, busy: false, outlineDistance: 10, coreDistance: 10 };
-    assert.equal(islandMarginStep({ latch: "open" }, { ...base, region: "extra-band" }).collapse, true);
+test("展开态与hover共用同一条120ms去抖：进带计时、回内容取消、满120ms才退回", () => {
+    const base = { mode: "expanded" as const, region: "extra-band" as const, busy: false, outlineDistance: 10, coreDistance: 10 };
+    let step = islandMarginStep({ latch: "open" }, { ...base, now: 0 });
+    assert.equal(step.collapse, false, "刚进入额外带不能立即退回");
+    assert.equal(step.state.since, 0, "进入额外带开始计时");
+    step = islandMarginStep(step.state, { ...base, now: ISLAND_MARGIN_DELAY_MS - 1 });
+    assert.equal(step.collapse, false, "未满120ms不退回");
+    // 回到内容盒取消计时。
+    step = islandMarginStep(step.state, { ...base, region: "content", now: ISLAND_MARGIN_DELAY_MS });
+    assert.equal(step.collapse, false, "计时内回到内容盒取消");
+    assert.equal(step.state.since, undefined);
+    // 重新进带后从新的时间点计时；满 120ms 才退回。
+    step = islandMarginStep(step.state, { ...base, now: 400 });
+    assert.equal(step.state.since, 400);
+    step = islandMarginStep(step.state, { ...base, now: 519 });
+    assert.equal(step.collapse, false);
+    step = islandMarginStep(step.state, { ...base, now: 520 });
+    assert.equal(step.collapse, true, "连续停留满120ms后退回");
+    assert.equal(step.state.since, undefined);
+    // 其余透明边距与滚动条不触发也不计时；滚动条仍从判定区扣除。
     for (const region of ["content", "transparent", "scrollbar"] as const) {
-        const step = islandMarginStep({ latch: "open" }, { ...base, region });
-        assert.equal(step.collapse, false, `${region} 不应触发展开退回`);
-        assert.equal(step.state.latch, "open");
+        const other = islandMarginStep({ latch: "open" }, { ...base, region, now: 0 });
+        assert.equal(other.collapse, false, `${region} 不应触发展开退回`);
+        assert.equal(other.state.since, undefined, `${region} 不应开始计时`);
     }
-    // 展开态不保留hover计时，收起后再进入也不沿用旧 since。
-    assert.equal(islandMarginStep({ latch: "open", since: 10 }, { ...base, region: "scrollbar" }).state.since, undefined);
+    // 与 hover 共用同一常量，120ms 只有一处定义。
+    assert.equal(ISLAND_MARGIN_DELAY_MS, 120);
+});
+
+test("常态关闭透明检测：detect=false 不写门闩、不产生 collapse/canEnter 副作用", () => {
+    const state: IslandMarginState = { latch: "blocked", since: 5 };
+    for (const region of ["transparent", "content", "extra-band", "scrollbar", "outside"] as const) {
+        const step = islandMarginStep(state, { mode: "collapsed", region, now: 999, busy: false, outlineDistance: 99, coreDistance: -99, detect: false });
+        assert.equal(step.collapse, false, `${region} 不得触发退回`);
+        assert.equal(step.canEnter, false, `${region} 不得安排进入`);
+        assert.deepEqual(step.state, { latch: "blocked" }, `${region} 不得写门闩或计时`);
+    }
+    // 关闭检测时离开窗口也不改门闩（常态不评估透明判定）。
+    assert.deepEqual(
+        islandMarginStep(state, { mode: "collapsed", region: "outside", now: 999, busy: false, outlineDistance: Infinity, coreDistance: Infinity, leave: true, detect: false }).state,
+        { latch: "blocked" },
+    );
+    // 开启检测时逻辑保留：离开轮廓 4 DIP 解闩、回到内容内缩 4 DIP 才安排进入。
+    const open = islandMarginStep({ latch: "blocked" }, { mode: "collapsed", region: "content", now: 0, busy: false, outlineDistance: 4, coreDistance: -4 });
+    assert.equal(open.state.latch, "open");
+    assert.equal(open.canEnter, true);
 });
 
 test("门闩：离开不透明轮廓≥4 DIP才解闩，回到内容需内缩4 DIP才允许再hover", () => {

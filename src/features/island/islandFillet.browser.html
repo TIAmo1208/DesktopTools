@@ -137,6 +137,14 @@
                 runtime.instances.push({ ...runtime.instances[0], componentId, instanceId });
                 island.instances.push({ ...island.instances[0], componentId, instanceId });
             }
+            // 模拟 debug 构建由后端注入的浮岛测试卡：清单与实例都来自快照，页面不做额外注入。
+            if (query.get("debug-island") === "1") {
+                const componentId = "official.debug-island";
+                const instanceId = `island.${componentId}`;
+                runtime.manifests.push({ ...runtime.manifests[0], id: componentId, name: "Debug 浮岛" });
+                runtime.instances.push({ ...runtime.instances[0], componentId, instanceId });
+                island.instances.push({ ...island.instances[0], componentId, instanceId });
+            }
             const desktop = {
                 phase: "ready",
                 committed: true,
@@ -162,6 +170,7 @@
                 ],
             };
             const scrollbarCommits = []; // 新交互模式记录提交时是否已显示条，证明时序而非猜测。
+            const savedPreferences = []; // 记录偏好保存请求，用于断言排序不把 debug 测试卡写进顺序。
             const commits = []; // 页面提交的原生几何，用于核对并集窗口与最终态。
             // 多卡负角验证必须由确定性的时钟与提交握手冻结，不能用静态 hover（它只渲染首卡）冒充。
             const controlled = ["surface-frame", "seam-frame", "interaction", "interaction-scroll", "interaction-dynamic", "interaction-instant"].includes(query.get("mode"));
@@ -213,6 +222,9 @@
                             if(interactionMode)scrollbarCommits.push({state:payload?.request?.state,visible:document.querySelector('.island__scrollbar')?.dataset.visible});
                             if (holdCommit) return new Promise((resolve) => { pendingCommit = resolve; });
                             return slowBridge ? new Promise((resolve) => setTimeout(resolve, 40)) : Promise.resolve();
+                        case "save_preferences":
+                            savedPreferences.push(payload?.preferences);
+                            return Promise.resolve(payload?.preferences);
                         default:
                             return Promise.resolve(undefined);
                     }
@@ -449,23 +461,66 @@
                             if(root.dataset.state!=='collapsed')key('Escape');
                             await flush('collapsed');
                             const capsule=root.querySelector('.island-card').getBoundingClientRect();
+                            const capsuleContent={x:capsule.x+capsule.width/2,y:capsule.y+capsule.height/2};
+                            // 常态关闭透明像素检测：胶囊内移动不再被门闩挡住，按既有180ms进入 hover。
                             enter();
                             const states=[];const observer=new MutationObserver(()=>states.push(root.dataset.state));
                             observer.observe(root,{attributes:true,attributeFilter:['data-state']});
-                            for(let i=0;i<5;i++){move({x:capsule.left+1+(i%2),y:capsule.top+1});await wait(100);}
+                            for(let i=0;i<5;i++){move(capsuleContent);await wait(100);}
                             observer.disconnect();
-                            check(root.dataset.state==='collapsed'&&!states.includes('hover'),'门闩必须挡住padding反复进出至少500ms，不能振荡');
-                            if(root.dataset.state!=='collapsed')key('Escape');await flush('collapsed');
+                            check(root.dataset.state==='hover','常态关闭透明检测后，胶囊内停留必须按180ms正常进入hover');
+                            check(!states.includes('collapsed'),'进入hover后不得因透明判定再次收起，也不得反复切态');
+                            key('Escape');await flush('collapsed');
+                            // 离开 hover 再回来仍是既有 180ms 进入消抖。
                             root.dispatchEvent(new PointerEvent('pointerout',{bubbles:true,pointerType:'mouse',relatedTarget:null}));
-                            enter();move({x:capsule.x+capsule.width/2,y:capsule.y+capsule.height/2});
-                            await wait(80);check(root.dataset.state==='collapsed','解闩后仍须遵守原180ms进入消抖');
+                            enter();move(capsuleContent);
+                            await wait(80);check(root.dataset.state==='collapsed','回到胶囊仍须遵守原180ms进入消抖');
                             await wait(130);await flush('hover');
                             key('Enter');await flush('expanded');await wait(30);
                             check(root.dataset.state==='expanded','切态完成不能拿旧指针位置立即评估透明带');
                             const expanded=windowRect();
                             const point=['left','right'].includes(preferences.islandEdge)?{x:expanded.left+expanded.width/2,y:expanded.top+expanded.height-1}:{x:expanded.left+expanded.width-1,y:expanded.top+expanded.height/2};
-                            move(point);await wait(30);
-                            check(root.dataset.state==='collapsed','展开必须只在实际union额外带的pointermove后退回');
+                            const contentPoint={x:expanded.left+expanded.width/2,y:expanded.top+expanded.height/2};
+                            // 展开额外带与 hover 共用 120ms 去抖：计时内回内容盒取消。
+                            move(point);await wait(60);move(contentPoint);await wait(120);
+                            check(root.dataset.state==='expanded','额外带计时内回到内容盒必须取消退回');
+                            // 进带后连续停留满 120ms 才退回。
+                            move(point);await wait(60);
+                            check(root.dataset.state==='expanded','进入额外带未满120ms不得退回');
+                            await wait(90);
+                            check(root.dataset.state==='collapsed','额外带连续停留满120ms后退回');
+                        } else if(query.get('mode')==='interaction-debugcard') {
+                            // debug 构建由后端注入的浮岛测试卡：展开出现、胶囊不出现、不参与排序持久化。
+                            const debugCards=()=>root.querySelectorAll('.island-card[data-island-debug-card]');
+                            const sortableCards=()=>[...root.querySelectorAll('.island-card:not([data-island-debug-card])')];
+                            key('Enter');await flush('expanded');
+                            check(debugCards().length===1,'debug构建下展开态必须出现测试卡');
+                            check(sortableCards().length>=2,'需要至少两张真实卡片做排序对照');
+                            check(typeof DataTransfer==='function','断言环境必须支持 DataTransfer');
+                            if(typeof DataTransfer==='function'&&sortableCards().length>=2&&debugCards().length===1){
+                                const transfer=new DataTransfer();
+                                const [first,second]=sortableCards();
+                                const debugCard=debugCards()[0];
+                                const press=(card)=>{const box=card.getBoundingClientRect();card.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse',pointerId:9,button:0,buttons:1,clientX:box.x+box.width/2,clientY:box.y+box.height/2}));card.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerType:'mouse',pointerId:9,button:0}));};
+                                // 正控：真实卡片之间拖动必须保存顺序，且顺序里没有测试卡。
+                                press(first);
+                                first.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                                second.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                                second.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                                await wait(80);
+                                check(savedPreferences.length===1,'真实卡片之间拖动必须保存顺序');
+                                check(!(savedPreferences[0]?.islandCardOrder??[]).includes('official.debug-island'),'保存的顺序不得包含测试卡');
+                                // 测试卡不可拖拽，也不是合法落点。
+                                check(debugCard.getAttribute('draggable')!=='true','测试卡不可拖拽');
+                                press(first);
+                                first.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                                debugCard.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                                debugCard.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                                await wait(80);
+                                check(savedPreferences.length===1,'测试卡不得成为排序落点，也不写卡片顺序');
+                            }
+                            key('Escape');await flush('collapsed');
+                            check(debugCards().length===0,'胶囊态不得出现测试卡');
                         } else if(query.get('mode')==='interaction-dynamic') {
                             // 真实RO路径：卡片高度变化不改request/key，条仍必须随溢出出现并更新thumb/range。
                             const bar=root.querySelector('.island__scrollbar'),thumb=bar?.querySelector('.island__scrollbar-thumb');
@@ -954,7 +1009,7 @@
                         // 修复轮回归也进入默认清单：宽边界/内容重测四边两形态，加四边双卡负角确定性冻结。
                         const repairCases = ["top", "bottom", "left", "right"].flatMap((edge) => ["notch", "capsule"].map((form) => `mode=resize&edge=${edge}&form=${form}&multi=1`));
                         repairCases.push(...["top", "bottom", "left", "right"].map((edge) => `mode=surface-frame&edge=${edge}&multi=1`));
-                        repairCases.push('mode=interaction&edge=top&form=notch','mode=interaction-scroll&edge=top&form=notch&island-debug=6','mode=interaction-dynamic&edge=top&form=notch','mode=interaction-instant&edge=top&form=notch&island-debug=6&motion=off');
+                        repairCases.push('mode=interaction&edge=top&form=notch','mode=interaction-scroll&edge=top&form=notch&island-debug=6','mode=interaction-dynamic&edge=top&form=notch','mode=interaction-instant&edge=top&form=notch&island-debug=6&motion=off','mode=interaction-debugcard&edge=top&form=notch&debug-island=1&multi=1');
                         for (const scenario of repairCases) {
                             const frame = document.createElement("iframe");
                             frame.style.cssText = "position:absolute;left:-10000px;width:1920px;height:1040px";

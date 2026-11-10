@@ -40,6 +40,7 @@ Desktop Tools 是 Windows 桌面内容工作区（Tauri + React）：前端负�
 - 设置窗口在开发期加载 `build/frontend` 构建产物，不是 vite 页面；改前端后先 `npm run build` 再重开设置窗，否则看到的是旧 UI。
 - 本机跑开发版前先退出已安装实例：桌面菜单互斥体 `Local\DesktopTools.DesktopMenu.Instance` 被占用时，开发版按副实例处理并静默退出（exit 0，日志止于「初始化完成」）。
 - 本机 Rust 操作前须把 `TMP` 指向 `build\tmp`，否则 `cl.exe D8050` 阻断构建。命令、全量门禁与构建提速口径见 `docs/agents/构建运行.md`。
+- 浏览器断言与本地服务用完即清：运行前后确认 `127.0.0.1:1420` 无监听；无可见 Edge 窗口时清理无头残留 `taskkill /IM msedge.exe /F`（用户正开着 Edge 时只结束自己起的实例）。中断的断言运行会留下无头 Edge。
 
 ## 安全边界
 
