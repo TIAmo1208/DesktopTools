@@ -7,10 +7,11 @@ import {
     islandUnionFrame,
     islandAttachedCornerAt,
     ISLAND_MOTION_MS,
+    ISLAND_EXPAND_STAGGER_MS,
     ISLAND_FRAME_MS,
 } from "./islandMotion.ts";
 import { islandFilletPatches, islandGeometry } from "./islandGeometry.ts";
-import { parseIslandStateRequest } from "../../contracts/island.ts";
+import { parseIslandStateRequest, type IslandStateRequest } from "../../contracts/island.ts";
 
 const work = { left: 0, top: 40, width: 1000, height: 800 };
 const collapsed = [{ left: 0, top: 0, width: 160, height: 44 }];
@@ -196,4 +197,57 @@ test("贴边侧圆角在形变中从实际绘制值连续过渡，补面随进�
             assert.ok(patch.rect.top + patch.rect.height <= frame.windowBox.height + 1e-6);
         }
     }
+});
+
+/** 展开两段：当前卡先完成，其他卡延迟从当前卡展开矩形弹出并落在各自位置。 */
+test("展开两段：其他卡延迟后从当前卡展开矩形弹出", () => {
+    const from = islandGeometry("hover", [expanded[0]!], 16, work, "", 0);
+    const to = islandGeometry("expanded", expanded, 12, work, "", 0);
+    const stagger = ISLAND_EXPAND_STAGGER_MS;
+    const total = ISLAND_MOTION_MS + stagger;
+    const start = islandUnionFrame(from, to, 0, "", work, stagger);
+    const offsetX = to.windowBox.left - start.windowBox.left;
+    const offsetY = to.windowBox.top - start.windowBox.top;
+    assert.deepEqual(start.cards[1]!.rect, { ...to.cards[0]!.rect, left: to.cards[0]!.rect.left + offsetX, top: to.cards[0]!.rect.top + offsetY }); // 起点与当前卡重合。
+    assert.equal(start.cards[0]!.rect.width, from.cards[0]!.rect.width); // 当前卡仍从 hover 尺寸起步。
+    const mid = islandUnionFrame(from, to, stagger + ISLAND_MOTION_MS / 2, "", work, stagger);
+    assert.ok(mid.cards[1]!.rect.top > start.cards[1]!.rect.top, "相位 2 中其他卡应离开当前卡向下弹出");
+    const end = islandUnionFrame(from, to, total, "", work, stagger);
+    assert.deepEqual(parseIslandStateRequest(end), end); // 终点仍是合法原生请求。
+    for (const [index, card] of end.cards.entries()) {
+        assert.equal(card.rect.left, to.cards[index]!.rect.left + offsetX);
+        assert.equal(card.rect.top, to.cards[index]!.rect.top + offsetY);
+        assert.ok(card.rect.left >= 0 && card.rect.top >= 0 && card.rect.left + card.rect.width <= end.windowBox.width + 0.001 && card.rect.top + card.rect.height <= end.windowBox.height + 0.001);
+    }
+    assert.equal(end.cards[1]!.rect.top, start.cards[1]!.rect.top + (to.cards[1]!.rect.top - to.cards[0]!.rect.top)); // 位移量等于槽位差。
+});
+
+/** 并集大于目标窗口时，其他卡锚点必须换算到并集坐标；单卡展开不启用两段。 */
+test("展开两段的并集坐标换算与单卡退化", () => {
+    const viewport = { left: 0, top: 0, width: 1000, height: 800 };
+    const to: IslandStateRequest = {
+        state: "expanded",
+        windowBox: { left: 100, top: 40, width: 360, height: 360 },
+        viewport,
+        cards: [
+            { rect: { left: 0, top: 0, width: 360, height: 232 }, radius: 12 },
+            { rect: { left: 0, top: 240, width: 360, height: 120 }, radius: 12 },
+        ],
+    };
+    const from: IslandStateRequest = {
+        state: "hover",
+        windowBox: { left: 0, top: 40, width: 200, height: 72 },
+        viewport,
+        cards: [{ rect: { left: 20, top: 0, width: 160, height: 72 }, radius: 16 }],
+    };
+    assert.deepEqual(parseIslandStateRequest(from), from);
+    assert.deepEqual(parseIslandStateRequest(to), to);
+    const start = islandUnionFrame(from, to, 0, "", work, ISLAND_EXPAND_STAGGER_MS);
+    const dx = to.windowBox.left - start.windowBox.left;
+    assert.ok(dx > 0, "该用例必须产生非零并集偏移");
+    assert.equal(start.windowBox.left, from.windowBox.left); // 并集向左扩到入态窗口。
+    assert.equal(start.cards[1]!.rect.left, to.cards[0]!.rect.left + dx); // 锚点已换算到并集坐标。
+    assert.equal(start.cards[0]!.rect.left, from.cards[0]!.rect.left + (from.windowBox.left - start.windowBox.left));
+    const single: IslandStateRequest = { ...to, cards: [to.cards[0]!] };
+    assert.deepEqual(islandUnionFrame(from, single, 120, "", work, ISLAND_EXPAND_STAGGER_MS), islandUnionFrame(from, single, 120, "", work)); // 单卡不启用两段。
 });

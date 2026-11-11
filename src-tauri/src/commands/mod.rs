@@ -320,7 +320,7 @@ pub use component::{get_component_runtime_snapshot, invoke_component_capability}
 pub use desktop_host::{begin_desktop_host_input_drag, end_desktop_host_input_drag, exit_desktop_tools, get_desktop_host_snapshot, publish_desktop_host_readiness, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, update_desktop_host_hit_map};
 pub(crate) use desktop_item::refresh_desktop_item_snapshot;
 pub use desktop_item::{delete_desktop_items, get_desktop_item_snapshot, open_desktop_items, paste_desktop_items, rename_desktop_item, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag};
-pub use notifications::{publish_message_notification, sync_message_appearance};
+pub use notifications::{dismiss_island_message, get_island_messages, publish_message_notification, sync_message_appearance};
 
 /// 普通 Tauri 页面读取与桌面宿主相同的锁屏及前台快照。
 #[tauri::command]
@@ -342,6 +342,12 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             island::execute_set_island_state(app, request).map_err(serialize_error).and_then(serialize_result)
         }
         "begin_island_drag" => island::execute_begin_island_drag(app).map_err(serialize_error).and_then(serialize_result),
+        "get_island_messages" => serialize_result(notifications::execute_get_island_messages(app.state::<std::sync::Arc<crate::notifications::ToastManager>>().inner())),
+        "dismiss_island_message" =>
+        {
+            let id: u64 = command_argument(&arguments, "id", "岛消息身份无效").map_err(serialize_error)?; // 队列内消息身份。
+            notifications::execute_dismiss_island_message(app, app.state::<std::sync::Arc<crate::notifications::ToastManager>>().inner(), id).map_err(serialize_error).and_then(serialize_result)
+        }
         "list_audio_output_devices" => serialize_result(audio::list_audio_output_devices()),
         "start_audio_spectrum" =>
         {

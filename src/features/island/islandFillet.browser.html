@@ -215,6 +215,8 @@
                             return Promise.resolve(null);
                         case "get_music_details":
                             return Promise.resolve({ timeline: undefined, lyrics: [] });
+                        case "get_island_messages":
+                            return Promise.resolve([]); // 布局断言不注入消息卡，避免增加卡片数量。
                         case "get_foreground_snapshot":
                             return Promise.resolve({ revision: 1, locked: false });
                         case "set_island_state":
@@ -696,7 +698,7 @@
                         await until(() => pendingCommit);
                         releaseCommit();
                         await wait(0);
-                        // 起点 rAF，再推进8ms到第一份具有两张卡的中间几何，握手放行后不再推进时钟。
+                        // 起点 rAF，再推进8ms到第一份具有两张卡的中间几何；相位 1 内其他卡停在当前卡的展开矩形上。
                         for (let i = 0; i < 20 && !pendingCommit; i++) await tick();
                         await until(() => pendingCommit && commits.at(-1).cards.length >= 2).catch(() => { throw new Error(`R2 握手未到双卡帧：${JSON.stringify({ pending: Boolean(pendingCommit), frames: frames.size, clock, commits: commits.map((item) => [item.state, item.cards.length]) })}`); });
                         releaseCommit();
@@ -715,13 +717,14 @@
                         const seamBands = [...seamDocument.querySelectorAll('clipPath rect')].map((node)=>({left:parseFloat(node.getAttribute('x')),top:parseFloat(node.getAttribute('y')),width:parseFloat(node.getAttribute('width')),height:parseFloat(node.getAttribute('height'))}));
                         const pointContext = document.createElement('canvas').getContext('2d');
                         const seamContains=(x,y)=>seamBands.some((band)=>x>=band.left&&x<=band.left+band.width&&y>=band.top&&y<=band.top+band.height)&&pointContext.isPointInPath(seamPath,x,y);
-                        check(root.dataset.filleted === "true" && cards.length === 2, "R2 冻结帧必须有两张实际卡片与负角表面");
-                        check(paths.length === cards.length, `R2 每张透明卡必须各有一个真实路径层，实际 ${paths.length}/${cards.length}`);
-                        check(Boolean(seamSource) && seamBands.length===cards.length*2, "中间负角帧必须有根尺寸单路径补采样，每张卡两个接缝带");
-                        const seamLayer=cards.length*3;
+                        const visible = cards.filter((card) => Number.parseFloat(getComputedStyle(card).opacity) > 0.01); // 相位 1 只有当前卡可见。
+                        check(root.dataset.filleted === "true" && cards.length === 2 && visible.length === 1, "R2 相位 1 冻结帧应只有当前卡可见并保留负角表面");
+                        check(paths.length === visible.length, `R2 每张可见透明卡必须各有一个真实路径层，实际 ${paths.length}/${visible.length}`);
+                        check(Boolean(seamSource) && seamBands.length===visible.length*2, `中间负角帧必须有根尺寸单路径补采样，每张可见卡两个接缝带，实际=${seamBands.length}/${visible.length*2}`);
+                        const seamLayer=visible.length*3;
                         check(positions[seamLayer]?.every((value)=>Math.abs(value)<0.01) && Math.abs(sizes[seamLayer]?.[0]-root.clientWidth)<0.1 && Math.abs(sizes[seamLayer]?.[1]-root.clientHeight)<0.1, "补采样层必须与surface局部原点一致且是根尺寸，不能退回小瓦片");
                         check(root.querySelectorAll(".island__surface").length === 1 && !transparent(style.backgroundColor), "R2 所有卡片仅共享一次非透明表面填充");
-                        cards.forEach((card, index) => {
+                        visible.forEach((card, index) => {
                             const box = rect(card, surface);
                             const layer = positions[index * 3];
                             const size = sizes[index * 3];
@@ -733,16 +736,10 @@
                             const d = new DOMParser().parseFromString(svg.slice(svg.indexOf(",") + 1), "image/svg+xml").querySelector("path")?.getAttribute("d");
                             check(d === islandCardMaskPath(box.width, box.height, corners), `R2 卡${index}mask边缘须与该卡当前四角同形`);
                             const center = [box.left + box.width / 2, box.top + box.height / 2];
-                            const covering = sizes.filter((size, i) => i<cards.length*3 && center[0] > positions[i][0] && center[0] < positions[i][0] + size[0] && center[1] > positions[i][1] && center[1] < positions[i][1] + size[1]).length + Number(seamContains(...center));
+                            const covering = sizes.filter((size, i) => i<visible.length*3 && center[0] > positions[i][0] && center[0] < positions[i][0] + size[0] && center[1] > positions[i][1] && center[1] < positions[i][1] + size[1]).length + Number(seamContains(...center));
                             check(covering >= 1 && style.maskComposite.split(",").every((part) => part.trim() === "add"), `R2 卡${index}中心mask alpha必须恰为1，单一surface只填色一次`);
                         });
-                        const a = rect(cards[0], surface), b = rect(cards[1], surface);
-                        check(b.top > a.bottom, "R2 冻结帧必须含真实正间隙，不能空集合跳过gap断言");
-                        if (b.top > a.bottom) {
-                            const x = (Math.max(a.left, b.left) + Math.min(a.right, b.right)) / 2;
-                            const y = (a.bottom + b.top) / 2;
-                            check(!sizes.some((size, i) => i<cards.length*3 && x > positions[i][0] && x < positions[i][0] + size[0] && y > positions[i][1] && y < positions[i][1] + size[1]) && !seamContains(x,y), "R2 卡间gap中心不得被虚拟矩形填色");
-                        }
+                        check(Number.parseFloat(getComputedStyle(cards[1]).opacity) === 0, "R2 相位 1 其他卡必须隐藏，等待从当前卡背后弹出");
                         holdCommit = false;
                         releaseCommit();
                         for (let i = 0; i < 80 && root.style.inlineSize; i++) await tick();

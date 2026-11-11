@@ -259,6 +259,7 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
     "workspace-snapshot-changed": "get_current_workspace_snapshot",
     "component-runtime-snapshot-changed": "get_current_component_runtime_snapshot",
     "component-host-event": "get_current_component_host_event",
+    "island-messages-changed": "get_island_messages",
   };
 
   const eventSubscriptions = new Map(); // 已迁移事件的本页订阅，不保留历史消息。
@@ -351,11 +352,15 @@ fn host_event_kind(payload: &str) -> Option<String> { serde_json::from_str::<Val
 /// loopback 数据通知由通道订阅驱动，不要求该屏存在时间消费者；其它组件宿主事件仍按时间消费者过滤。
 fn component_host_event_needs_time_consumers(payload: &str) -> bool { !host_event_kind(payload).is_some_and(|kind| crate::component_runtime::loopback::is_event_kind(&kind)) }
 
+/// 需要转发到原生 WebView 的宿主事件白名单；独立岛与逐屏宿主共用同一份。
+/// 新增事件必须同时写入注入桥的 `eventCommands`，否则岛侧 `listen` 会静默丢弃。
+const FORWARDED_EVENTS: &[&str] = &[crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "music-timeline-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", "island-messages-changed", crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, crate::contracts::PLUGIN_EVENT_CHANNEL];
+
 /// 将现有宿主事件转交 UI 线程的原生 WebView，页面重载后自动使用新的订阅入口。
 pub(crate) fn install_host_events(app: &AppHandle)
 {
     super::refresh_policy::start_events(app);
-    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "music-timeline-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, crate::contracts::PLUGIN_EVENT_CHANNEL]
+    for name in FORWARDED_EVENTS.iter().copied()
     {
         let handle = app.clone(); // 原生窗口所属的 UI 调度器。
         app.listen(name, move |event| {

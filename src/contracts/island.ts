@@ -12,6 +12,18 @@ export interface IslandDragResult {
     offset: number | null; // 页面在权威偏好事件到达前按该偏移重测，避免回跳。
 }
 
+/** 浮岛消息：与原生 Toast 同一队列的只读投影，按到达顺序下发。 */
+export interface IslandMessage {
+    id: number; // 队列内稳定身份，关闭同一条消息时回传。
+    type: "info" | "success" | "warning" | "error";
+    content: string; // 完整正文，三态下的截断由页面决定。
+    source: string; // 来源标识。
+    loading: boolean;
+    receivedAtMs: number; // 到达时刻的墙钟毫秒。
+}
+
+const ISLAND_MESSAGE_TYPES: readonly IslandMessage["type"][] = ["info", "success", "warning", "error"];
+
 /** 拖动返回值严格校验，缺失或未知字段不能被当作成功命中。 */
 export const parseIslandDragResult = (value: unknown): IslandDragResult => {
     const item = record(value);
@@ -24,6 +36,25 @@ export const parseIslandDragResult = (value: unknown): IslandDragResult => {
     )
         throw new Error("岛拖动结果无效");
     return { pointerInside: item.pointerInside, offset: item.offset as number | null };
+};
+
+/** 消息集合严格校验：未知字段、重复身份、空正文与非安全整数都拒绝，坏数据不进入渲染。 */
+export const parseIslandMessages = (value: unknown): IslandMessage[] => {
+    if (!Array.isArray(value) || value.length > 32) throw new Error("岛消息集合无效");
+    const seen = new Set<number>(); // 同一集合内身份必须唯一。
+    return value.map((entry): IslandMessage => {
+        const item = record(entry); // 单条消息投影。
+        const keys = ["id", "type", "content", "source", "loading", "receivedAtMs"];
+        if (Object.keys(item).length !== keys.length || keys.some((key) => !Object.hasOwn(item, key))) throw new Error("岛消息字段无效");
+        const id = item.id;
+        if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0 || seen.has(id)) throw new Error("岛消息身份无效");
+        if (!ISLAND_MESSAGE_TYPES.includes(item.type as IslandMessage["type"])) throw new Error("岛消息类型无效");
+        if (typeof item.content !== "string" || !item.content.trim() || typeof item.source !== "string" || !item.source.trim()) throw new Error("岛消息正文或来源无效");
+        if (typeof item.loading !== "boolean") throw new Error("岛消息加载状态无效");
+        if (typeof item.receivedAtMs !== "number" || !Number.isSafeInteger(item.receivedAtMs) || item.receivedAtMs < 0) throw new Error("岛消息时间无效");
+        seen.add(id);
+        return { id, type: item.type as IslandMessage["type"], content: item.content, source: item.source, loading: item.loading, receivedAtMs: item.receivedAtMs };
+    });
 };
 
 /** 一次原生提交的屏幕 DIP 矩形。 */

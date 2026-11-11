@@ -1,9 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import { getDesktopHostSnapshot } from "../../bridge/desktopHost";
-import { beginIslandDrag, listenIslandSnapshots, saveIslandCardOrder, setIslandState } from "../../bridge/island";
+import { beginIslandDrag, dismissIslandMessage, getIslandMessages, listenIslandMessages, listenIslandSnapshots, saveIslandCardOrder, setIslandState } from "../../bridge/island";
 import { executeMusicAction } from "../../bridge/music";
 import { listenSpectrum } from "../../bridge/audio";
-import type { IslandRect, IslandSnapshot, IslandStateRequest } from "../../contracts/island";
+import type { IslandMessage, IslandRect, IslandSnapshot, IslandStateRequest } from "../../contracts/island";
+import closeIcon from "../../../resources/editor-x.svg?raw";
+import successIcon from "../../../resources/editor-check.svg?raw";
+import infoIcon from "../../../resources/info.svg?raw";
+import errorIcon from "../../../resources/message-error.svg?raw";
+import warningIcon from "../../../resources/message-warning.svg?raw";
 import { PluginSlot, pluginTileType } from "../components/PluginSlot";
 import { useMusicState, positionAt, lyricIndex, lyricTickDelay } from "../music/musicSource";
 import { usePreferences } from "../settings/PreferencesProvider";
@@ -31,7 +36,8 @@ import {
     ISLAND_MARGIN_DELAY_MS, ISLAND_SCROLLBAR_FADE_MS,
     type IslandMarginState,
 } from "./islandInteraction";
-import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, islandAttachedCornerAt, islandUnionFrame } from "./islandMotion";
+import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, ISLAND_EXPAND_STAGGER_MS, ISLAND_EXPAND_MOTION_MS, islandAttachedCornerAt, islandUnionFrame } from "./islandMotion";
+import { islandHoldMessages, islandMessageTime, islandMessageView } from "./islandMessages";
 import "./island.css";
 /** Debug 构建由后端注入的浮岛测试卡：只展示，不写偏好、不进卡片顺序与设置页列表。 */
 const ISLAND_DEBUG_CARD = "official.debug-island";
@@ -48,6 +54,7 @@ const PAINTED_STYLE_PROPERTIES = [
     "flex",
     "opacity",
     "filter",
+    "z-index",
 ] as const; // paint 写入的内联属性，恢复时只清这些。
 
 type IslandMode = IslandStateRequest["state"]; // 三态互斥。
@@ -199,11 +206,56 @@ const IslandMusic = ({ mode, side }: { mode: IslandMode; side: boolean }) => {
 /** 时间格式固定一行，不为无会话另造布局。 */
 const formatTime = (milliseconds: number) => `${Math.floor(milliseconds / 60000)}:${String(Math.floor(milliseconds / 1000) % 60).padStart(2, "0")}`;
 
+/** 消息类型与图标资源一一对应，颜色仍由正文色与主题令牌控制。 */
+const ISLAND_MESSAGE_ICONS: Record<IslandMessage["type"], string> = { info: infoIcon, success: successIcon, warning: warningIcon, error: errorIcon };
+
+/**
+ * 浮岛消息卡：常态只给一行简略，hover 给摘要与关闭，展开给完整正文、来源与时间。
+ * 换行只发生在展开态，其余形态保持单行省略，不改变三态高度规则。
+ */
+const IslandMessageCard = ({ message, mode, onDismiss }: { message: IslandMessage; mode: IslandMode; onDismiss: (id: number) => void }) => {
+    const time = islandMessageTime(message.receivedAtMs, Date.now()); // 到达时刻固定，渲染刷新不改变显示。
+    return (
+        <div className="island-message" data-kind={message.type} data-loading={message.loading ? "true" : undefined}>
+            <span className="island-message__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: ISLAND_MESSAGE_ICONS[message.type] }} />
+            {mode === "collapsed" ? (
+                <p className="island-message__line" title={message.content}>
+                    {message.content}
+                </p>
+            ) : (
+                <div className="island-message__info">
+                    {mode === "expanded" ? (
+                        <p className="island-message__body" title={message.content}>
+                            {message.content}
+                        </p>
+                    ) : (
+                        <p className="island-message__title" title={message.content}>
+                            {message.content}
+                        </p>
+                    )}
+                    <p className="island-message__meta">
+                        {message.source} · {time}
+                    </p>
+                </div>
+            )}
+            {mode === "collapsed" ? null : (
+                <button type="button" data-button="icon" className="island-message__close" aria-label={`关闭${message.source}消息`} onClick={() => onDismiss(message.id)}>
+                    <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: closeIcon }} />
+                </button>
+            )}
+        </div>
+    );
+};
+
 /** 岛独立挂载，不装配工作区、格子外壳或设置入口。 */
 export const IslandPage = () => {
     const { preferences, onPreferences, animationsEnabled } = usePreferences();
     const [snapshot, setSnapshot] = useState<IslandSnapshot>();
     const [failure, setFailure] = useState<string>();
+    const [messages, setMessages] = useState<IslandMessage[]>([]); // 与原生 Toast 同一队列的只读投影。
+    const [messageFailure, setMessageFailure] = useState<string>(); // 消息通道失败只降级，不阻塞岛卡。
+    const heldMessages = useRef<IslandMessage[]>([]); // 阅读期暂存，回到常态清空。
+    const messagesRevision = useRef(0); // 广播代次：关闭失败的补偿读取只在本轮无新事件时应用。
     const [mode, setMode] = useState<IslandMode>("collapsed");
     const modeRef = useRef(mode); // 延时回调读取最新状态，不能覆盖键盘或点击后的展开。
     modeRef.current = mode;
@@ -239,6 +291,7 @@ export const IslandPage = () => {
         };
     }, [preferences]); // 既有偏好事件由 Provider 接收，无需第二份事件订阅。
     const mounted = useRef(false); // 串行原生提交只受页面生命周期约束，不被测量 effect 重建取消。
+    const remeasure = useRef<(force?: boolean) => void>(() => {}); // 消息增减只改内容高度时主动重测，展开态根尺寸固定不会被 RO 观察到。
     const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const dragHold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined); // 按下到进入原生拖动之间的长按计时。
     const dragging = useRef(false); // 原生移动循环期间不切 hover。
@@ -396,6 +449,21 @@ export const IslandPage = () => {
             }
         }, handleFailure);
         void subscription.catch(handleFailure);
+        const messageSubscription = listenIslandMessages(
+            (next) => {
+                if (active) {
+                    messagesRevision.current++;
+                    setMessages(next);
+                    setMessageFailure(undefined);
+                }
+            },
+            (error) => {
+                if (active) setMessageFailure(error instanceof Error ? error.message : String(error)); // 消息通道失败只降级到岛卡。
+            },
+        );
+        void messageSubscription.catch((error: unknown) => {
+            if (active) setMessageFailure(error instanceof Error ? error.message : String(error));
+        });
         void getDesktopHostSnapshot()
             .then((desktop) => {
                 const monitor = desktop.hosts.find((host) => host.monitor.primary)?.monitor;
@@ -413,13 +481,18 @@ export const IslandPage = () => {
             mounted.current = false;
             stopHoverTimer();
             void subscription.then((stop) => stop()).catch(() => undefined);
+            void messageSubscription.then((stop) => stop()).catch(() => undefined);
         };
     }, []);
+    useEffect(() => {
+        heldMessages.current = islandHoldMessages(heldMessages.current, messages, mode); // 阅读期间消失的消息暂留，回到常态清空。
+    }, [mode, messages]);
     const edge = preferences?.islandEdge ?? "";
     const vertical = mode === "collapsed" && (edge === "left" || edge === "right"); // 仅胶囊态在左右贴边时竖排；hover 与展开保持水平卡片。
     const instances = snapshot?.instances ?? [];
     const sortable = instances.filter((instance) => instance.componentId !== ISLAND_DEBUG_CARD); // 测试卡不参与排序与持久化。
-    const visible = mode === "expanded" ? instances : sortable.slice(0, 1); // 测试卡只在展开态出现，胶囊不显示它。
+    const visibleMessages = islandMessageView(messages, heldMessages.current, mode); // 消息优先占用常态胶囊与 hover。
+    const visibleInstances = mode === "expanded" ? instances : visibleMessages.length ? [] : sortable.slice(0, 1); // 测试卡只在展开态出现，胶囊不显示它。
     const edgeKey = useRef(""); // 上次测量的贴边方向，变化时丢弃旧几何缓存。
     const formKey = useRef(""); // 上次测量的岛形态，变化时丢弃旧胶囊高度与并集缓存。
     useLayoutEffect(() => {
@@ -562,6 +635,8 @@ export const IslandPage = () => {
                         const seamPaths: string[] = [];
                         const seamBands: IslandRect[] = [];
                         for (const card of cards) {
+                            // 相位 1 内其他卡完全隐藏，不参与表面遮罩与接缝，避免重复填充与错误补面。
+                            if (Number.parseFloat(getComputedStyle(card).opacity) < 0.01) continue;
                             const box = card.getBoundingClientRect();
                             const rect = { left: box.left - origin.left, top: box.top - origin.top, width: box.width, height: box.height };
                             const style = getComputedStyle(card);
@@ -615,7 +690,7 @@ export const IslandPage = () => {
                         element.style.marginInlineStart = `${value.windowBox.left - value.viewport.left}px`;
                         element.style.marginBlockStart = `${value.windowBox.top - value.viewport.top}px`;
                     };
-                    const paint = (value: IslandStateRequest, elapsed: number, start?: number) => {
+                    const paint = (value: IslandStateRequest, elapsed: number, start?: number, staggerMs = 0) => {
                         paintedGeometry.current = { state: value.state, width: value.windowBox.width, height: value.windowBox.height };
                         saveStyle(element);
                         Object.assign(element.style, {
@@ -632,10 +707,12 @@ export const IslandPage = () => {
                         const end = islandAttachedCorner(request.state, form, request.cards[0]?.radius ?? 0);
                         const attached = elapsed >= ISLAND_MOTION_MS ? end : islandAttachedCornerAt(start ?? end, request, elapsed, form);
                         // 内容与形变同步淡入并去模糊：起点透明 5px，终点完全清晰；终帧与静态态清空内联值。
-                        const reveal = elapsed >= ISLAND_MOTION_MS ? 1 : Math.min(1, Math.max(0, elapsed / ISLAND_MOTION_MS));
                         cards.forEach((card, index) => {
                             const shape = value.cards[index];
                             if (!shape) return;
+                            // 展开相位 2：其他卡延迟 staggerMs 起步，内容与卡片本身同步淡入并去模糊。
+                            const localElapsed = staggerMs > 0 && index > 0 ? Math.max(0, elapsed - staggerMs) : elapsed;
+                            const reveal = localElapsed >= ISLAND_MOTION_MS ? 1 : Math.min(1, Math.max(0, localElapsed / ISLAND_MOTION_MS));
                             saveStyle(card);
                             Object.assign(card.style, {
                                 position: "absolute",
@@ -646,7 +723,9 @@ export const IslandPage = () => {
                                 maxInlineSize: "none",
                                 minBlockSize: "0",
                                 borderRadius: islandCornerRadius(shape.radius, form, edge, attached),
+                                zIndex: String(cards.length - index), // 当前卡压在其他卡之上，其他卡从它背后弹出。
                             });
+                            if (staggerMs > 0 && index > 0) card.style.opacity = `${reveal}`; // 相位 1 内其他卡完全隐藏。
                             const content = card.querySelector<HTMLElement>(".island-card__content");
                             if (!content) return;
                             saveStyle(content);
@@ -680,6 +759,7 @@ export const IslandPage = () => {
                         }
                         // 去重只针对原生几何提交：内容变高但裁剪后 request 不变时，滚动指标仍可能变化，
                         // 同一 key 早退也必须刷新条的可见性、thumb/range 与命中排除矩形，且不产生重复 IPC。
+                        targetGeometry.current = request; // 同尺寸下内容盒可能变化，滚动与命中判定必须用最新实测。
                         refreshScrollbar();
                         return;
                     }
@@ -707,15 +787,23 @@ export const IslandPage = () => {
                         .catch(() => undefined)
                         .then(async () => {
                             if (!active || !mounted.current) return;
+                            let settled = false; // 只有成功补完最终态才允许补测，失败路径保持一次重试，不形成持续提交。
                             try {
                                 const startGeometry = currentGeometry.current ?? from; // 等旧提交落定后再取衔接点。
+                                const staggerMs = request.state === "expanded" && animate && request.cards.length > 1 ? ISLAND_EXPAND_STAGGER_MS : 0; // 展开时其他卡延迟弹出。
+                                const motionTotal = staggerMs > 0 ? ISLAND_EXPAND_MOTION_MS : ISLAND_MOTION_MS; // 展开比其余切态多一段重叠。
                                 if (animate && startGeometry) {
                                     // 先把原生窗口一次放大到两态并集，内容保持原位置；动画只在固定窗口内移动内容。
                                     const startAttached =
                                         attachedCorner.current ?? islandAttachedCorner(startGeometry.state, form, startGeometry.cards[0]?.radius ?? 0); // 从实际绘制值衔接连续切态。
-                                    const unionFirst = islandUnionFrame(startGeometry, request, 0, edge, work);
+                                    const unionFirst = islandUnionFrame(startGeometry, request, 0, edge, work, staggerMs);
+                                    if (staggerMs > 0)
+                                        for (const card of cards.slice(1)) {
+                                            saveStyle(card);
+                                            card.style.opacity = "0"; // 窗口放大前先藏起其他卡，避免自然流露出一帧。
+                                        }
                                     await commit(unionFirst); // 先放大窗口再写并集布局，避免目标内容被旧窗口裁切出一帧。
-                                    paint(unionFirst, 0, startAttached);
+                                    paint(unionFirst, 0, startAttached, staggerMs);
                                     await new Promise<void>((resolve) => {
                                         motionFrame = requestAnimationFrame(() => resolve());
                                     });
@@ -725,21 +813,21 @@ export const IslandPage = () => {
                                     let previousKey = "";
                                     while (active && !forceFinish) {
                                         const elapsed = await new Promise<number>((resolve) => {
-                                            wakeMotion = () => resolve(ISLAND_MOTION_MS);
+                                            wakeMotion = () => resolve(motionTotal);
                                             motionFrame = requestAnimationFrame((now) => {
                                                 wakeMotion = undefined;
                                                 resolve(now - started);
                                             });
                                         });
-                                        if (!active || elapsed >= ISLAND_MOTION_MS || forceFinish) break;
+                                        if (!active || elapsed >= motionTotal || forceFinish) break;
                                         if (elapsed - last < ISLAND_FRAME_MS) continue;
                                         last = elapsed;
-                                        const value = islandUnionFrame(startGeometry, request, elapsed, edge, work);
+                                        const value = islandUnionFrame(startGeometry, request, elapsed, edge, work, staggerMs);
                                         const frameKey = JSON.stringify(value);
                                         if (frameKey !== previousKey) {
                                             await commit(value);
                                             if (!active) break;
-                                            paint(value, elapsed, startAttached);
+                                            paint(value, elapsed, startAttached, staggerMs);
                                             previousKey = frameKey;
                                         }
                                     }
@@ -750,7 +838,7 @@ export const IslandPage = () => {
                                         !from || request.windowBox.width > from.windowBox.width + 0.5 || request.windowBox.height > from.windowBox.height + 0.5;
                                     if (request.state === "expanded") {
                                         // 展开终态保留入态并集窗口，不收缩到目标盒；内容仍按目标 margin 落位。
-                                        const expandedFrame = islandUnionFrame(startGeometry ?? from ?? request, request, ISLAND_MOTION_MS, edge, work);
+                                        const expandedFrame = islandUnionFrame(startGeometry ?? from ?? request, request, motionTotal, edge, work, staggerMs);
                                         await commit(expandedFrame);
                                         if (active) {
                                             clearFillets();
@@ -774,6 +862,7 @@ export const IslandPage = () => {
                                         await commit(request);
                                     }
                                     recovering.current = false;
+                                    settled = true;
                                 } // 有界动画结束必须补最终态，不受去重键影响。
                             } catch (error) {
                                 currentGeometry.current = undefined;
@@ -790,12 +879,13 @@ export const IslandPage = () => {
                                 animating = false;
                                 // 成功结束回到自然布局，让常态胶囊继续随内容伸缩、展开态恢复 CSS 滚动。
                                 restoreStyles();
-                                if (active && modeRef.current === mode) {
+                                if (settled && active && modeRef.current === mode) {
                                     inputGeometryKey.current = key;
                                     if (targetGeometry.current?.state === "expanded") {
                                         layoutSettled.current = true;
                                         refreshScrollbar(); // 最终提交并恢复文档流后才显示条。
                                     }
+                                    if (request.state === "expanded") remeasure.current(true); // 动画期间到达的消息不在本帧快照内，只在展开态结束后补测；其余态保持自然流不再重绘。
                                 }
                             }
                         });
@@ -817,6 +907,7 @@ export const IslandPage = () => {
             cancelAnimationFrame(frame);
             frame = requestAnimationFrame(() => measureNow(force));
         };
+        remeasure.current = measure; // 供消息集合变化等无 DOM 尺寸变化的内容更新主动调用。
         const observer = new ResizeObserver(() => measure(false));
         observer.observe(root.current);
         const handleScroll = () => { refreshScrollbar(); measure(true); }; // 展开态滚动必须重新计算可见卡片，不受自触发 resize 跳过影响。
@@ -826,6 +917,7 @@ export const IslandPage = () => {
         const element = root.current;
         return () => {
             active = false;
+            remeasure.current = () => {}; // 卸载后不再调度测量帧。
             element.removeEventListener("scroll", handleScroll);
             observer.disconnect();
             cancelAnimationFrame(frame);
@@ -834,6 +926,10 @@ export const IslandPage = () => {
             restoreStyles();
         };
     }, [mode, snapshot, preferences, work, edge, animationsEnabled, dragRevision]);
+    useEffect(() => {
+        // 只有展开态的根尺寸被并集固定；消息卡增减不会触发 RO，必须主动重测。
+        if (mode === "expanded") remeasure.current(true);
+    }, [messages, messageFailure, mode]);
     useEffect(() => {
         const pending = pendingOffset.current;
         if (pending === undefined || !preferences) return;
@@ -1060,6 +1156,20 @@ export const IslandPage = () => {
             sorting.current = false;
         }
     };
+    /** 关闭一条消息：先本地移除避免闪烁，后端走与原生关闭按钮相同的离场路径。 */
+    const handleDismissMessage = (id: number) => {
+        heldMessages.current = heldMessages.current.filter((message) => message.id !== id);
+        setMessages((current) => current.filter((message) => message.id !== id));
+        void dismissIslandMessage(id).catch((error: unknown) => {
+            console.warn("岛消息关闭失败", error);
+            const revision = messagesRevision.current; // 补偿读取前记录代次。
+            void getIslandMessages()
+                .then((next) => {
+                    if (messagesRevision.current === revision) setMessages(next); // 期间有新广播时以广播为准。
+                })
+                .catch(() => undefined); // 消息仍在队列时恢复展示，避免本地与后端分叉。
+        });
+    };
     return (
         <main
             ref={root}
@@ -1071,6 +1181,7 @@ export const IslandPage = () => {
             data-form={preferences?.islandForm ?? "capsule"}
             data-edge={edge || "top"}
             data-state={mode}
+            data-animations={animationsEnabled ? "true" : undefined}
             data-vertical={vertical}
             data-fillets={preferences?.islandForm === "notch" && mode !== "expanded" ? "true" : undefined}
             onPointerEnter={handleEnter}
@@ -1093,9 +1204,21 @@ export const IslandPage = () => {
             }}
         >
             <div ref={palette} className="fence-workspace island__palette" hidden aria-hidden="true" />
+            {/* 常驻播报节点：消息卡随内容重建，直接挂 aria-live 时常见读屏器不播报。 */}
+            <p className="island__announcer" role="status" aria-live="polite">
+                {visibleMessages[0] ? `${visibleMessages[0].source}：${visibleMessages[0].content}` : ""}
+            </p>
             <div ref={surface} className="island__surface" aria-hidden="true" />
-            {visible.length ? (
-                visible.map((instance) => {
+            {visibleMessages.length || visibleInstances.length ? (
+                <>
+                    {visibleMessages.map((message) => (
+                        <section className="island-card" key={`island-message-${message.id}`} aria-label={`${message.source}消息`} data-island-message="true">
+                            <div className="island-card__content">
+                                <IslandMessageCard message={message} mode={mode} onDismiss={handleDismissMessage} />
+                            </div>
+                        </section>
+                    ))}
+                    {visibleInstances.map((instance) => {
                     const manifest = snapshot!.runtime.manifests.find((item) => item.id === instance.componentId)!;
                     const registration = snapshot!.runtime.instances.find((item) => item.instanceId === instance.instanceId);
                     return (
@@ -1198,7 +1321,8 @@ export const IslandPage = () => {
                             </div>
                         </section>
                     );
-                })
+                    })}
+                </>
             ) : (
                 <section className="island-card">
                     <div className="island-card__content">
@@ -1206,6 +1330,13 @@ export const IslandPage = () => {
                     </div>
                 </section>
             )}
+            {mode === "expanded" && messageFailure ? (
+                <section className="island-card" data-island-no-drag="true" aria-label="消息通道">
+                    <div className="island-card__content">
+                        <p role="status">消息通道不可用</p>
+                    </div>
+                </section>
+            ) : null}
             {import.meta.env.DEV && mode === "expanded" && Array.from({ length: debugCount }, (_, index) => (
                 <section className="island-card" data-island-debug="true" data-island-no-drag="true" key={`island-debug-${index}`} aria-label={`开发临时卡片${index + 1}`}>
                     <div className="island-card__content"><div style={{ inlineSize: 192, minBlockSize: 112 }}>

@@ -69,7 +69,7 @@ fn native_toast_resource_usage()
     unsafe { windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }.unwrap(); // 与 Tauri/Tao 的 Windows 10 初始化一致。
     sample(None, 0, "未创建窗口", 3);
     let preferences = ApplicationPreferences { follow_system_reduced_motion: false, interface_animations: true, ..Default::default() }; // 固定开启动画，不改变用户设置。
-    let manager = ToastManager::install(preferences, None).unwrap(); // 与产品相同的原生 HWND。
+    let manager = ToastManager::install(None, preferences, None).unwrap(); // 与产品相同的原生 HWND。
     sample(Some(&manager), 0, "空窗口", 3);
     for round in 1..=3
     {

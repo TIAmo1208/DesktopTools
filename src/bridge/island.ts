@@ -1,5 +1,5 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { parseIslandSnapshot, parseIslandStateRequest, parseIslandDragResult, type IslandSnapshot, type IslandStateRequest } from "../contracts/island";
+import { parseIslandMessages, parseIslandSnapshot, parseIslandStateRequest, parseIslandDragResult, type IslandMessage, type IslandSnapshot, type IslandStateRequest } from "../contracts/island";
 import { parsePreferences } from "../contracts/settings";
 import { COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT } from "./components";
 import { getPreferences, savePreferences } from "./settings";
@@ -47,5 +47,45 @@ export const listenIslandSnapshots = async (onSnapshot: (snapshot: IslandSnapsho
         active = false;
         generation++;
         for (const stop of stops) stop();
+    };
+};
+
+/** 浮岛消息与原生 Toast 共用队列；事件载荷是完整投影，不另开增量协议。 */
+export const ISLAND_MESSAGES_CHANGED_EVENT = "island-messages-changed";
+
+/** 首次挂载与广播丢失后的补齐读取。 */
+export const getIslandMessages = async (): Promise<IslandMessage[]> => parseIslandMessages(await invokeRuntime<unknown>("get_island_messages"));
+
+/** 关闭一条消息：后端走与原生关闭按钮相同的离场路径，不另建第二份队列。 */
+export const dismissIslandMessage = async (id: number) => {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error("岛消息身份无效");
+    await invokeRuntime<void>("dismiss_island_message", { id });
+};
+
+/** 先订阅再读一次：事件到达后迟到的首次读取不得覆盖新集合。 */
+export const listenIslandMessages = async (onMessages: (messages: IslandMessage[]) => void, onError: (error: unknown) => void): Promise<UnlistenFn> => {
+    let active = true; // 退订后拒绝迟到交付。
+    let generation = 0; // 每次事件与读取都推进，旧读取直接丢弃。
+    const stop = await listenRuntime<unknown>(ISLAND_MESSAGES_CHANGED_EVENT, (payload) => {
+        if (!active) return;
+        generation++;
+        try {
+            onMessages(parseIslandMessages(payload));
+        } catch (error) {
+            onError(error); // 坏载荷只报告，不覆盖页面已有消息。
+        }
+    });
+    const ticket = ++generation;
+    void getIslandMessages()
+        .then((messages) => {
+            if (active && ticket === generation) onMessages(messages);
+        })
+        .catch((error: unknown) => {
+            if (active && ticket === generation) onError(error);
+        });
+    return () => {
+        active = false;
+        generation++;
+        stop();
     };
 };

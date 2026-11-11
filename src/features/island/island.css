@@ -60,6 +60,26 @@ html[data-island="true"] #root {
 .island[data-form="notch"][data-fillets="true"][data-edge="right"] {
     padding-block: var(--island-notch);
 }
+/* 三态表面不透明度：常态最透，hover 居中，展开最实；正文、图标与描边不受影响。
+   注册成可插值属性，过渡只作用于透明度本身；补面层与卡片背景的显隐切换保持瞬时，不叠加出错误表面。 */
+@property --island-surface-alpha {
+    syntax: "<percentage>";
+    inherits: true;
+    initial-value: 60%;
+}
+.island {
+    --island-surface-alpha: 60%;
+}
+.island[data-state="hover"] {
+    --island-surface-alpha: 75%;
+}
+.island[data-state="expanded"] {
+    --island-surface-alpha: 90%;
+}
+/* 开启动效时透明度随三态插值；关闭动效时保持瞬时切换。 */
+.island[data-animations="true"] {
+    transition: --island-surface-alpha 240ms linear;
+}
 .island > .island__palette {
     position: absolute;
     display: none;
@@ -67,6 +87,18 @@ html[data-island="true"] #root {
     pointer-events: none;
     inline-size: 0;
     block-size: 0;
+}
+/* 读屏播报节点：绝对定位且 1px，不参与卡片测量与滚动高度。 */
+.island__announcer {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    pointer-events: none;
 }
 .island-card {
     position: relative;
@@ -79,6 +111,7 @@ html[data-island="true"] #root {
     border: 0;
     border-radius: var(--island-radius, 12px);
     background: var(--fence-surface);
+    background: rgb(from var(--fence-surface) r g b / var(--island-surface-alpha)); /* 三态透明度覆盖令牌自带 alpha。 */
     overflow: clip;
     contain: paint; /* 将插件 fixed 内容的绘制边界限制在本卡；浏览器 top-layer 仍须单独验收。 */
 }
@@ -451,5 +484,117 @@ html[data-island="true"] #root {
     inset: 0;
     display: none;
     background: var(--fence-surface);
+    background: rgb(from var(--fence-surface) r g b / var(--island-surface-alpha)); /* 补面帧与卡片共用同一三态透明度。 */
     pointer-events: none;
+}
+
+/* 浮岛消息：与音乐卡共用卡片外壳，只在内容层区分三态呈现。 */
+.island-message {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-inline-size: 0;
+}
+.island-message__icon {
+    display: grid;
+    place-items: center;
+    flex: none;
+    inline-size: 20px;
+    block-size: 20px;
+}
+.island-message__icon svg {
+    inline-size: 16px;
+    block-size: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+/* 加载中只用静态透明度提示，不新增动画，避免绕过动效开关。 */
+.island-message[data-loading="true"] .island-message__icon {
+    opacity: 0.6;
+}
+.island-message__info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-inline-size: 0;
+    flex: 1;
+}
+.island-message__title {
+    font-size: 13px;
+    line-height: 16px;
+    block-size: 16px;
+}
+.island-message__meta {
+    font-size: 11px;
+    line-height: 14px;
+    block-size: 14px;
+    opacity: 0.78;
+}
+/* 换行只发生在展开态，其余形态沿用单行省略，不改变三态高度规则。 */
+.island[data-state="expanded"] .island-message__body {
+    font-size: 12px;
+    line-height: 18px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.island-message__close {
+    display: grid;
+    place-items: center;
+    flex: none;
+    inline-size: 28px;
+    block-size: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    color: var(--fence-text);
+    background: transparent;
+    cursor: pointer;
+}
+.island-message__close svg {
+    inline-size: 16px;
+    block-size: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.island-message__close:active {
+    background: color-mix(in srgb, var(--fence-text) 18%, transparent);
+}
+@media (hover: hover) and (pointer: fine) {
+    .island-message__close:hover {
+        background: color-mix(in srgb, var(--fence-text) 12%, transparent);
+    }
+}
+.island[data-state="collapsed"] .island-message__line {
+    font-size: 11px;
+    line-height: 28px;
+    block-size: 28px;
+    min-inline-size: 72px;
+    max-inline-size: 240px;
+}
+.island[data-state="hover"] .island-message__info {
+    block-size: 48px;
+    justify-content: center;
+}
+/* 左右贴边的胶囊沿用音乐卡的竖排：图标在上，正文竖排。 */
+.island[data-vertical="true"] .island-message {
+    flex-direction: column;
+}
+.island[data-vertical="true"] .island-message__line {
+    writing-mode: vertical-rl;
+    text-orientation: upright;
+    inline-size: max-content;
+    block-size: 28px;
+    line-height: 28px;
+    min-inline-size: 48px;
+    max-inline-size: 176px;
+}
+/* 消息卡不参与排序，展开态不显示抓取光标。 */
+.island[data-state="expanded"] .island-card[data-island-message="true"] {
+    cursor: default;
 }
