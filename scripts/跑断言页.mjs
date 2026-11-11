@@ -119,6 +119,54 @@ async function 检查端口() {
     }
 }
 
+// 查找 1420 的监听进程，只用于把环境问题说清楚；查不到时返回空串，不影响判定。
+function 查找端口进程() {
+    try {
+        const 行 = execFileSync("netstat", ["-ano"], { encoding: "utf8", timeout: 5000 })
+            .split(/\r?\n/)
+            .find((项) => /:1420\s/.test(项) && /LISTENING/i.test(项));
+        const pid = 行?.trim().split(/\s+/).pop();
+        if (!pid) return "";
+        const 名称 = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", timeout: 5000 })
+            .split(",")[0]
+            .replaceAll('"', "")
+            .trim();
+        return 名称 && 名称 !== "INFO:" ? `PID ${pid}（${名称}）` : `PID ${pid}`;
+    } catch {
+        return "";
+    }
+}
+
+// 读取开发服务器首页；单次有界请求，失败即报环境问题，不循环重试。
+function 读取首页() {
+    return new Promise((完成, 失败) => {
+        const 请求 = request({ host: "127.0.0.1", port: 1420, path: "/", method: "GET", timeout: 3000 }, (响应) => {
+            let 正文 = "";
+            响应.setEncoding("utf8");
+            响应.on("data", (块) => (正文 += 块));
+            响应.on("end", () => 完成(正文));
+        });
+        请求.on("timeout", () => 请求.destroy(new Error("读取首页超时")));
+        请求.on("error", 失败);
+        请求.end();
+    });
+}
+
+// 1420 有监听不等于它一定是本仓库的 Vite：先核对页面标记，避免把别的服务当成断言页。
+async function 检查开发服务器() {
+    await 检查端口();
+    let 正文 = "";
+    try {
+        正文 = await 读取首页();
+    } catch (错误) {
+        throw new Error(`127.0.0.1:1420 已监听但读取首页失败：${错误.message}`);
+    }
+    if (!正文.includes("Desktop Tools")) {
+        const 占用 = 查找端口进程();
+        throw new Error(`127.0.0.1:1420 被其他进程占用${占用 ? `：${占用}` : ""}，返回页面不含 Desktop Tools 标记；请结束占用后重跑 npm run dev`);
+    }
+}
+
 // 结束一个实例的浏览器进程树并删除它的临时目录；失败不改变判定。
 async function 结束实例(实例) {
     if (实例.pid) {
@@ -340,7 +388,7 @@ function 汇总(记录) {
 
 // 自然rAF仅由显式诊断开关运行，截取Page.screencastFrame并保留真实时间间隔，不声称达到60fps。
 async function 自然帧取证() {
-    await 检查端口();
+    await 检查开发服务器();
     const 目录=resolve('build/validation/浮岛修复/02b-切态接缝',new Date().toISOString().replace(/[:.]/g,'-')+'-natural');
     await mkdir(目录,{recursive:true});
     let 实例,连接;
@@ -389,7 +437,7 @@ async function 自然帧取证() {
 
 // 只在显式--浮岛像素入口执行：保留同一受控帧PNG与像素剖面，其他断言页的默认执行完全不变。
 async function 浮岛像素回归() {
-    await 检查端口();
+    await 检查开发服务器();
     const 目录 = resolve("build/validation/浮岛修复/02b-切态接缝", new Date().toISOString().replace(/[:.]/g, "-"));
     await mkdir(目录, { recursive: true });
     const 记录 = [];
@@ -637,7 +685,7 @@ async function 主流程() {
     const 全部页 = [...断言页, ...真机专用页, ...检查页]; // 断言页 + 真机专用页 + 只核对加载的检查页。
     const 待跑 = 选项.页过滤 ? 全部页.filter((页) => 页.includes(选项.页过滤)) : 全部页; // 本次要跑的页面。
     if (待跑.length === 0) throw new Error(`没有匹配 --页 ${选项.页过滤} 的断言页`);
-    await 检查端口();
+    await 检查开发服务器();
     const 可执行文件 = 定位浏览器(); // Edge 可执行文件；找不到属于环境问题。
     const 记录 = []; // 逐页结果。
 
