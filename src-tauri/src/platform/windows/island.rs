@@ -567,6 +567,11 @@ fn create(app: &AppHandle) -> Result<(), String>
             })
             .with_initialization_script(&super::desktop_host::native_bridge_script(&format!("http://{ISLAND_PROTOCOL}.localhost")))
             .with_url(island_page_url(super::desktop_host::boot_epoch(), super::desktop_host::active_theme_stylesheet(app).as_deref()).as_str());
+        // 开发构建启用本机 CDP 端口；若复用宿主已建环境，该参数按 WebView2 语义被忽略，属预期。
+        #[cfg(debug_assertions)]
+        {
+            builder = builder.with_additional_browser_args(super::desktop_host::DEV_WEBVIEW2_ARGS);
+        }
         // 复用正式宿主的环境：关闭后再次开启岛时不重复创建 WebView2 环境，避免环境交接卡住 UI 线程。
         let environment = super::desktop_host::shared_webview_environment();
         crate::log_debug!("岛：开始创建 WebView2，复用环境={}", environment.is_some());

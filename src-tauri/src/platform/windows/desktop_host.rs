@@ -24,9 +24,13 @@ use windows::Win32::UI::WindowsAndMessaging::{CS_HREDRAW, CS_VREDRAW, CreateWind
 use windows::core::{BOOL, Interface, PCWSTR, w};
 use wry::http::{Request, Response, StatusCode};
 use wry::raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle};
-use wry::{MemoryUsageLevel, PageLoadEvent, Rect as WryRect, WebView, WebViewBuilder, WebViewExtWindows, dpi};
+use wry::{MemoryUsageLevel, PageLoadEvent, Rect as WryRect, WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows, dpi};
 
 use crate::contracts::{DesktopHostMonitor, DesktopItem, HitRegion};
+
+/// 开发构建的 WebView2 参数：保留 wry 默认项，附加本机 CDP 端口；发布构建不暴露调试端口。
+#[cfg(debug_assertions)]
+pub(crate) const DEV_WEBVIEW2_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port=9223";
 
 /// 独立页面向正式应用共享状态发送命令的桥接接口。
 pub type NativeCommandHandler = Arc<dyn Fn(&str, Value) -> Result<Value, Value> + Send + Sync + 'static>;
@@ -1607,7 +1611,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     super::refresh_policy::set_paused(&monitor.id, false);
     crate::log_info!("宿主：页面来源={}，原生命令来源={}", page_url, native_origin);
     // 正式 Windowed WebView2。
-    let webview = WebViewBuilder::new()
+    let builder = WebViewBuilder::new()
         .with_id(&label)
         .with_transparent(true)
         .with_visible(true)
@@ -1652,9 +1656,11 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
             };
             crate::log_debug!("宿主：React 页面加载{}，URL：{}", stage, url);
         })
-        .with_url("about:blank")
-        .build_as_child(&raw_window)
-        .map_err(|error| format!("创建正式 Windowed WebView2 失败: {error}"))?;
+        .with_url("about:blank");
+    // 开发构建启用本机 CDP：保留 wry 默认参数，发布构建不暴露调试端口。
+    #[cfg(debug_assertions)]
+    let builder = builder.with_additional_browser_args(DEV_WEBVIEW2_ARGS);
+    let webview = builder.build_as_child(&raw_window).map_err(|error| format!("创建正式 Windowed WebView2 失败: {error}"))?;
 
     // 正式 WebView2 的原生 Controller。
     let controller = webview.controller();
