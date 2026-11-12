@@ -17,6 +17,7 @@ pub(crate) use shell::shell_parsing_path;
 mod file_system;
 pub(crate) mod island;
 pub mod music;
+pub mod netease_cdp;
 pub mod settings;
 mod shell;
 pub(crate) mod shell_image;

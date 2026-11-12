@@ -269,7 +269,7 @@ pub fn start_monitor(app: tauri::AppHandle)
             let failed = current.get("error").is_some();
             if current["media"].is_null()
             {
-                details::update(None);
+                details::update(None, String::new());
             }
             let mut cache = MEDIA_CACHE.lock().unwrap_or_else(|error| error.into_inner()); // 更新缓存后再广播。
             if cache.as_ref() != Some(&current)
@@ -316,10 +316,12 @@ pub fn start_monitor(app: tauri::AppHandle)
             }
             else
             {
-                match receiver.recv()
+                // 事件驱动为主；30 秒兜底复核一次，覆盖播放器漏发属性事件导致媒体与歌词停在旧曲目的情况。
+                match receiver.recv_timeout(Duration::from_secs(30))
                 {
                     Ok(signal) => MonitorWake::Signal(signal),
-                    Err(_) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => MonitorWake::Deadline,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             };
         }
@@ -437,10 +439,11 @@ pub fn read_current_session(force_properties: bool) -> windows::core::Result<Opt
         Ok(details::Timeline { session_id: session_id.clone(), title: title.clone(), artist: artist.clone(), position_ticks: position.to_string(), end_time_ticks: end.to_string(), last_updated_time_ticks: updated.to_string(), playback_status: status.0, position_ms, duration_ms, advancing })
     })()
     .ok();
-    details::update(timeline);
+    let source = session.SourceAppUserModelId()?.to_string(); // 播放源身份：歌词源按它切换，未知来源走通用兜底。
+    details::update(timeline, source.clone());
     Ok(Some(MusicSnapshot {
         session_id,
-        source: session.SourceAppUserModelId()?.to_string(),
+        source,
         title,
         artist,
         playback,
