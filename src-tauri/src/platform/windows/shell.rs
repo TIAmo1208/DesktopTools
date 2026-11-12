@@ -579,7 +579,6 @@ unsafe extern "system" fn shell_change_window_proc(hwnd: HWND, message: u32, wpa
         let lock = unsafe { SHChangeNotification_Lock(HANDLE(wparam.0 as *mut c_void), lparam.0 as u32, Some(&mut pidls), Some(&mut event)) };
         if !lock.is_invalid() && !sender.is_null()
         {
-            crate::log_debug!("Shell：收到原始变化通知，事件掩码=0x{:08X}", event as u32);
             // 当前通知能够提供的精确变化事实。
             let change = if (event as u32 & (SHCNE_RENAMEITEM.0 | SHCNE_RENAMEFOLDER.0)) != 0 && !pidls.is_null()
             {
@@ -1052,12 +1051,12 @@ pub(crate) fn transfer_data_to_directory(owner: &ShellMenuOwner, data_object: &I
     {
         return Err("桌面文件传输只接受复制或移动效果".to_string());
     }
-    crate::log_info!("[DEBUG-drop-argument] 开始传输，线程={}，目标={}，效果={}，选择数量={}", unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }, directory.unwrap_or("<Desktop>"), drop_effect_name(effect), selected.map_or(0, <[String]>::len));
+    crate::log_debug!("开始传输，线程={}，目标={}，效果={}，选择数量={}", unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }, directory.unwrap_or("<Desktop>"), drop_effect_name(effect), selected.map_or(0, <[String]>::len));
     let destination: IShellItem = if let Some(directory) = directory
     {
         let parsing_path = shell_parsing_path(directory); // Shell 解析接口不接受 Rust canonicalize 产生的 extended-length 前缀。
         unsafe { SHCreateItemFromParsingName(&HSTRING::from(&parsing_path), None) }.map_err(|error| {
-            crate::log_error!("[DEBUG-drop-argument] 创建门户 Shell 目标失败，原路径={}，解析路径={}，HRESULT={:#010x}", directory, parsing_path, error.code().0);
+            crate::log_error!("创建门户 Shell 目标失败，原路径={}，解析路径={}，HRESULT={:#010x}", directory, parsing_path, error.code().0);
             format!("创建门户 Shell 目标失败: {error}")
         })?
     }
@@ -1066,9 +1065,9 @@ pub(crate) fn transfer_data_to_directory(owner: &ShellMenuOwner, data_object: &I
         let desktop_pidl = unsafe { SHGetKnownFolderIDList(&FOLDERID_Desktop, KF_FLAG_DEFAULT.0 as u32, None) }.map(OwnedPidl).map_err(|error| format!("读取用户桌面目标失败: {error}"))?;
         unsafe { SHCreateItemFromIDList(desktop_pidl.0) }.map_err(|error| format!("创建桌面 Shell 目标失败: {error}"))?
     }; // IFileOperation 使用的真实目标目录。
-    crate::log_info!("[DEBUG-drop-argument] 目标 Shell item 已创建，目标={}", directory.unwrap_or("<Desktop>"));
+    crate::log_debug!("目标 Shell item 已创建，目标={}", directory.unwrap_or("<Desktop>"));
     let filesystem_sources = super::drop_target::filesystem_drop_items(data_object); // 已存在文件的逐项传输路径；虚拟剪贴板仍交给 Shell 批量接口。
-    crate::log_info!("[DEBUG-drop-argument] IDataObject 来源提取完成，数量={}，来源={}", filesystem_sources.as_ref().map_or(0, Vec::len), filesystem_sources.as_ref().map(|sources| sources.join(" | ")).unwrap_or_else(|| "<无法提取文件系统来源>".into()));
+    crate::log_debug!("IDataObject 来源提取完成，数量={}，来源={}", filesystem_sources.as_ref().map_or(0, Vec::len), filesystem_sources.as_ref().map(|sources| sources.join(" | ")).unwrap_or_else(|| "<无法提取文件系统来源>".into()));
     if selected.is_some() && filesystem_sources.is_none()
     {
         return Err("投放数据不包含完整文件系统来源".into());
@@ -1086,7 +1085,7 @@ pub(crate) fn transfer_data_to_directory(owner: &ShellMenuOwner, data_object: &I
         let mut operation_error = None; // 逐项执行期间首个整体错误。
         for reference in sources
         {
-            crate::log_info!("[DEBUG-drop-argument] 排队逐项传输，来源={reference}，目标={}", directory.unwrap_or("<Desktop>"));
+            crate::log_debug!("排队逐项传输，来源={reference}，目标={}", directory.unwrap_or("<Desktop>"));
             let before = shell_file_proof(reference).ok(); // 源完整内容只用于判断新结果是否完整，不保存副本。
             let completed = (|| {
                 let source = resolve_shell_item(reference)?; // 每个顶层来源独立执行，目录后代仍由 Shell 管理。
@@ -1148,7 +1147,7 @@ pub(crate) fn transfer_data_to_directory(owner: &ShellMenuOwner, data_object: &I
                     _ => item.compensation_blocked = Some("缺少完整来源或结果安全证据".into()),
                 }
             }
-            crate::log_info!("[DEBUG-drop-argument] 逐项传输完成，来源={}，成功={}，HRESULT={:#010x}，结果={}", item.source_reference, u8::from(item.succeeded), item.result_code, item.result_reference.as_deref().unwrap_or("<无>"));
+            crate::log_debug!("逐项传输完成，来源={}，成功={}，HRESULT={:#010x}，结果={}", item.source_reference, u8::from(item.succeeded), item.result_code, item.result_reference.as_deref().unwrap_or("<无>"));
             completed_items.push(item);
             if aborted
             {

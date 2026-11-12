@@ -654,7 +654,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             crate::platform::windows::refresh_policy::set_paused(&monitor_id, paused);
             ComponentRuntimeState::wake_time_source();
             let _ = app.emit("desktop-refresh-policy-changed", ());
-            crate::log_info!("桌面刷新：显示器={}，状态={}", monitor_id, if paused { "已暂停" } else { "已恢复" });
+            crate::log_debug!("桌面刷新：显示器={}，状态={}", monitor_id, if paused { "已暂停" } else { "已恢复" });
             serialize_result(())
         }
         "sync_message_appearance" =>

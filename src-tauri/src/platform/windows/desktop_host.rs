@@ -816,7 +816,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
         unsafe { OleUninitialize() };
         return Err("正式宿主没有可用的 Shell 桌面投放目标".to_string());
     }
-    crate::log_info!("Shell：宿主 OLE 投放目标已注册，窗口数量：{}", targets.len());
+    crate::log_debug!("Shell：宿主 OLE 投放目标已注册，窗口数量：{}", targets.len());
     Ok((targets, true))
 }
 
@@ -1066,7 +1066,6 @@ pub fn desktop_item_monitor_assignments(items: &[DesktopItem], monitors: &[Deskt
         }
     }; // Explorer 当前项目物理坐标。
     let assignments = match_desktop_item_monitor_assignments(items, monitors, &positions); // Explorer 坐标与当前显示器边界的匹配结果。
-    crate::log_debug!("工作区：Explorer 项目显示器归属已读取，项目={}，匹配={}，显示器={}", items.len(), assignments.len(), monitors.len());
     assignments
 }
 

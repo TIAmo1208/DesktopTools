@@ -983,7 +983,7 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
             // crate::log_debug!("岛：提交帧 状态={}，窗口盒DIP=[{}, {}, {}, {}]，卡片DIP=[{}]", request.state, rect.left, rect.top, rect.width, rect.height, request.cards.iter().map(|card| format!("[{}, {}, {}, {}]圆角{}", card.rect.left, card.rect.top, card.rect.width, card.rect.height, card.radius)).collect::<Vec<_>>().join("；"));
             if state_changed
             {
-                crate::log_info!("岛：切换状态={}，显示器={}，窗口盒DIP=[{}, {}, {}, {}]，缩放={}", request.state, monitor.id, rect.left, rect.top, rect.width, rect.height, scale);
+                crate::log_debug!("岛：切换状态={}，显示器={}，窗口盒DIP=[{}, {}, {}, {}]，缩放={}", request.state, monitor.id, rect.left, rect.top, rect.width, rect.height, scale);
             }
             stage.set(StateStage::Commit);
             Ok(())
