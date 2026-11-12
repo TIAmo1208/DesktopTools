@@ -8,6 +8,9 @@ export const 断言页 = [
     "src/features/tiles/contentDrop.browser.html", // 格子内容拖放。
     "src/features/tiles/tileDragPreview.browser.html", // 跨屏格子拖动预览与围栏尺寸。
     "src/features/island/islandFillet.browser.html", // 浮岛切态圆弧补面与描边。
+    "src/features/island/islandLyrics.browser.html", // 浮岛歌词常态档位、无词回落、四边与展开跳转对齐。
+    "src/features/island/islandMessages.browser.html", // 浮岛消息三态、关闭、阅读期暂存与通道降级。
+    "src/features/tile-content/music/musicLyrics.browser.html", // 桌面音乐格子换句位移、字号颜色过渡与减少动效。
 ];
 
 // 真机专用页：判定依赖真实执行环境（WebView2 渲染时序、系统 Shell 等），headless Edge 下不能成立。

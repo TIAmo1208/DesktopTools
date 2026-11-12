@@ -204,6 +204,31 @@ export const MusicControl = ({
     const translation = index >= 0 ? shownLyrics[index]?.translation : undefined; // 当前句可选翻译。
     const showTranslation = Boolean(translation) && rows > 1; // 只有能多容纳一行时才占位。
     const view = musicLyricsWindow(shownLyrics, index, musicLyricsLineRows(rows, showTranslation)); // 当前句居中的可见窗口。
+    // 换句滚动：整块一次位移，行与行不拆开；当前句的字号与颜色延后 200ms 过渡，其余行立即回落。
+    const lyricsRef = useRef<HTMLDivElement>(null);
+    const previousLyricIndex = useRef<number | undefined>(undefined);
+    useLayoutEffect(() => {
+        const element = lyricsRef.current;
+        const previous = previousLyricIndex.current;
+        previousLyricIndex.current = index; // 布局效应里同步，避免 React 双次渲染把变化判定吃掉。
+        if (!element || previous === undefined || previous === index || !animationsEnabled) return;
+        const direction = index > previous ? 1 : -1; // 前进向上滚，回退向下滚。
+        const rows = Array.from(element.querySelectorAll<HTMLElement>("[data-line-index]"));
+        const step = rows.length > 1 ? Math.abs(rows[1].offsetTop - rows[0].offsetTop) : 18; // 一行歌词的实际步进。
+        // 已播放行先位移、当前与未播放行延迟 80ms；fill=backwards 让延迟段停在起始位移，不回到原位。
+        const animations = rows.flatMap((row) => {
+            const played = Number(row.dataset.lineIndex) < index;
+            return [
+                row.animate([{ transform: `translateY(${direction * step}px)` }, { transform: "none" }], {
+                    duration: played ? 220 : 240,
+                    delay: played ? 0 : 80,
+                    fill: "backwards",
+                    easing: "ease-out",
+                }),
+            ];
+        });
+        return () => animations.forEach((animation) => animation.cancel());
+    }, [index, animationsEnabled]);
     useEffect(() => {
         if (renderedPlacement === "none" || !timeline?.advancing) return;
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -296,6 +321,7 @@ export const MusicControl = ({
             </div>
             {renderedPlacement !== "none" && (
                 <div
+                    ref={lyricsRef}
                     className="music-control__lyrics"
                     data-placement={renderedPlacement}
                     data-leaving={leaving}
@@ -315,7 +341,7 @@ export const MusicControl = ({
                         const current = view.start + offset === view.current; // 当前句加重且更深。
                         return (
                             <Fragment key={line.startMs}>
-                                <p data-current={current} title={line.text}>
+                                <p data-line-index={view.start + offset} data-current={current} title={line.text}>
                                     {line.text}
                                 </p>
                                 {current && showTranslation && line.translation ? (

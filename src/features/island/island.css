@@ -380,15 +380,34 @@ html[data-island="true"] #root {
 .island-music__lyrics {
     display: grid;
     gap: 2px;
+    overflow: clip;
+}
+/* 展开歌词换句时整轨按方向位移；行内字号、颜色与透明度各自过渡。 */
+.island-music__lyrics-track {
+    display: grid;
+    gap: 2px;
+    will-change: transform;
 }
 .island-music__lyrics p {
     font-size: 12px;
     opacity: 0.78;
 }
+.island[data-animations="true"] .island-music__lyrics p {
+    transition:
+        font-size 140ms ease-out 0ms,
+        opacity 140ms ease-out 0ms,
+        color 140ms ease-out 0ms;
+}
 .island-music__lyrics p[data-current="true"] {
     font-size: 13px;
     font-weight: 600;
     opacity: 1;
+}
+.island[data-animations="true"] .island-music__lyrics p[data-current="true"] {
+    transition:
+        font-size 200ms ease-out 80ms,
+        opacity 200ms ease-out 80ms,
+        color 200ms ease-out 80ms;
 }
 .island[data-state="hover"] .island-music__artwork {
     inline-size: 48px;
@@ -424,6 +443,38 @@ html[data-island="true"] #root {
     inline-size: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+.island-music__line[data-motion="off"] .island-music__line-entry {
+    inline-size: 100%;
+    animation: none;
+}
+/* 常态换句：上一句渐出并上移，下一句延迟 60ms 从下方渐入上移到位；两句重叠，位移限制在行盒内。 */
+.island-music__line-entry {
+    display: block;
+    inline-size: max-content;
+    animation: island-line-enter 200ms ease-out 60ms both;
+}
+.island-music__line-entry[data-active="true"] {
+    position: relative;
+}
+.island-music__line-entry[data-leaving="true"] {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    pointer-events: none;
+    animation: island-line-leave 180ms ease-out 0ms both;
+}
+@keyframes island-line-enter {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+}
+@keyframes island-line-leave {
+    to {
+        opacity: 0;
+        transform: translateY(-6px);
+    }
 }
 /* 当前行按内容撑开，超出内容盒的部分由 transform 位移滚动；减少动效时改为单行截断。 */
 .island-music__current {

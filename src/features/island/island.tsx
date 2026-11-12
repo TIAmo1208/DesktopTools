@@ -128,6 +128,47 @@ const IslandMusic = ({ mode, side, motion }: { mode: IslandMode; side: boolean; 
                   animationPlayState: islandScrollPlayState(scroll.paused),
               };
     const lineStyle = { "--island-capsule-line-max": `${lineMax}px`, "--island-lyric-distance": `${scroll.distance}px` } as CSSProperties;
+    // 换句交叉渐变：上一句留在绝对定位层渐出，下一句同时渐入；两句动画重叠，不等上一句结束。
+    const [leavingLine, setLeavingLine] = useState<{ index: number; line: string; style: CSSProperties } | null>(null);
+    const previousLine = useRef<{ index: number; line: string; style: CSSProperties } | null>(null);
+    useLayoutEffect(() => {
+        const prior = previousLine.current;
+        const next = { index: view.index, line: view.line, style: scrollStyle ?? {} };
+        previousLine.current = next;
+        if (!motion || !prior || prior.index === next.index || !prior.line) return;
+        setLeavingLine(prior);
+        const timer = setTimeout(() => setLeavingLine((current) => (current?.index === prior.index ? null : current)), 220); // 渐出 180ms 后卸载。
+        return () => clearTimeout(timer);
+    }, [view.index, view.line, motion]);
+    // 展开歌词：换句时整轨一次位移，行与行不拆开；当前句的字号与颜色延后 200ms 过渡，其余行立即回落。
+    const lyricsTrackRef = useRef<HTMLDivElement>(null);
+    const previousLyricIndex = useRef<number | undefined>(undefined);
+    useLayoutEffect(() => {
+        const track = lyricsTrackRef.current;
+        if (!track) {
+            previousLyricIndex.current = undefined; // 收起后重开不补动画。
+            return;
+        }
+        const previous = previousLyricIndex.current;
+        previousLyricIndex.current = view.index;
+        if (previous === undefined || previous === view.index || !motion) return;
+        const direction = view.index > previous ? 1 : -1; // 前进向上滚，回退向下滚。
+        const rows = Array.from(track.querySelectorAll<HTMLElement>("[data-line-index]"));
+        const step = rows.length > 1 ? Math.abs(rows[1].offsetTop - rows[0].offsetTop) : 20; // 一行歌词的实际步进。
+        // 已播放行先位移、当前与未播放行延迟 80ms；fill=backwards 让延迟段停在起始位移，不回到原位。
+        const animations = rows.flatMap((row) => {
+            const played = Number(row.dataset.lineIndex) < view.index;
+            return [
+                row.animate([{ transform: `translateY(${direction * step}px)` }, { transform: "none" }], {
+                    duration: played ? 220 : 240,
+                    delay: played ? 0 : 80,
+                    fill: "backwards",
+                    easing: "ease-out",
+                }),
+            ];
+        });
+        return () => animations.forEach((animation) => animation.cancel());
+    }, [mode, view.index, motion]);
     useEffect(() => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const refresh = () => {
@@ -201,9 +242,18 @@ const IslandMusic = ({ mode, side, motion }: { mode: IslandMode; side: boolean; 
                 </div>
                 {mode === "collapsed" ? (
                     <p ref={lineRef} className="island-music__line" title={view.line} data-motion={motion ? "on" : "off"} style={lineStyle}>
-                        <span key={scrollKey} className="island-music__current" style={scrollStyle}>
-                            {view.line}
+                        <span key={`active:${view.index}:${view.line}`} className="island-music__line-entry" data-active="true">
+                            <span key={scrollKey} className="island-music__current" style={scrollStyle}>
+                                {view.line}
+                            </span>
                         </span>
+                        {motion && leavingLine ? (
+                            <span key={`leaving:${leavingLine.index}`} className="island-music__line-entry" data-leaving="true" aria-hidden="true">
+                                <span className="island-music__current" style={leavingLine.style}>
+                                    {leavingLine.line}
+                                </span>
+                            </span>
+                        ) : null}
                     </p>
                 ) : (
                     <div className="island-music__info">
@@ -235,11 +285,16 @@ const IslandMusic = ({ mode, side, motion }: { mode: IslandMode; side: boolean; 
                     </div>
                     <IslandSpectrum playing={media?.playback === "playing"} />
                     <div className="island-music__lyrics" aria-live="off">
-                        {ISLAND_LYRIC_OFFSETS.map((offset, slot) => (
-                            <p key={offset} data-current={offset === 0} title={music.lyrics[view.index + offset]?.text}>
-                                {view.slots[slot]}
-                            </p>
-                        ))}
+                        <div ref={lyricsTrackRef} className="island-music__lyrics-track">
+                            {ISLAND_LYRIC_OFFSETS.map((offset, slot) => {
+                                const lineIndex = view.index + offset;
+                                return (
+                                    <p key={lineIndex >= 0 ? `line:${lineIndex}` : `line:${lineIndex}:${slot}`} data-line-index={lineIndex} data-current={offset === 0} title={music.lyrics[lineIndex]?.text}>
+                                        {view.slots[slot]}
+                                    </p>
+                                );
+                            })}
+                        </div>
                     </div>
                 </>
             ) : null}
