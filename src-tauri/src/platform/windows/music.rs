@@ -348,6 +348,28 @@ enum MonitorWake
     Retry,
 }
 
+/// 时间轴投影：真实时间轴按 LastUpdatedTime 外推；网易云等 end 与 LastUpdatedTime 全 0 的播放器在 Playing 时按本地挂钟推进。
+/// 零时间轴的上报位置恒为 0，本地锚点由 `music_details::update` 在事件间延续，这里只给出推进方向与时长。
+fn project_timeline(playing: bool, position_ticks: i64, end_ticks: i64, updated_ticks: i64, now_ms: i64) -> (bool, f64, f64)
+{
+    let zero_timeline = end_ticks == 0 && updated_ticks == 0; // 只发元数据的播放器不填结束时间与最后更新时间。
+    let updated_ms = updated_ticks / 10_000 - 11_644_473_600_000i64; // WinRT 的 1601 纪元转换为 Unix 毫秒。
+    let age = now_ms.saturating_sub(updated_ms);
+    let advancing = playing && (zero_timeline || (updated_ticks > 0 && age >= 0 && end_ticks > 0));
+    let duration_ms = (end_ticks as f64 / 10_000.0).max(0.0);
+    let position_ms = if zero_timeline
+    {
+        // 零时间轴通常 Position 恒为 0；若播放器上报了公开位置，保留它作为跳转锚点（best-effort）。
+        (position_ticks as f64 / 10_000.0).max(0.0)
+    }
+    else
+    {
+        let raw = position_ticks as f64 / 10_000.0 + if advancing { age as f64 } else { 0.0 };
+        if duration_ms > 0.0 { raw.clamp(0.0, duration_ms) } else { raw.max(0.0) }
+    };
+    (advancing, duration_ms, position_ms)
+}
+
 /// 在已经初始化 WinRT 的工作线程读取当前媒体；无会话与 API 故障分别返回。
 pub fn read_current_session(force_properties: bool) -> windows::core::Result<Option<MusicSnapshot>>
 {
@@ -411,11 +433,7 @@ pub fn read_current_session(force_properties: bool) -> windows::core::Result<Opt
         let end = timeline.EndTime()?.Duration;
         let updated = timeline.LastUpdatedTime()?.UniversalTime;
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let updated_ms = updated / 10_000 - 11_644_473_600_000i64; // WinRT 的 1601 纪元转换为 Unix 毫秒。
-        let age = now_ms.saturating_sub(updated_ms);
-        let advancing = status == PlaybackStatus::Playing && updated > 0 && age >= 0 && end > 0;
-        let duration_ms = (end as f64 / 10_000.0).max(0.0);
-        let position_ms = (position as f64 / 10_000.0 + if advancing { age as f64 } else { 0.0 }).clamp(0.0, duration_ms);
+        let (advancing, duration_ms, position_ms) = project_timeline(status == PlaybackStatus::Playing, position, end, updated, now_ms);
         Ok(details::Timeline { session_id: session_id.clone(), title: title.clone(), artist: artist.clone(), position_ticks: position.to_string(), end_time_ticks: end.to_string(), last_updated_time_ticks: updated.to_string(), playback_status: status.0, position_ms, duration_ms, advancing })
     })()
     .ok();
@@ -592,6 +610,28 @@ pub fn execute_action(action: &str, expected_session: &str) -> Result<(), String
 #[cfg(test)]
 mod empty_session_tests
 {
+    /// 零时间轴播放器在 Playing 时按本地挂钟推进；真实时间轴保持原有外推与夹紧。
+    #[test]
+    fn timeline_projection_handles_zero_and_real_timelines()
+    {
+        // 网易云：position/end/lastUpdated 全 0。锚点由音乐事实层延续，这里只要求 Playing 时 advancing 为真。
+        assert_eq!(super::project_timeline(true, 0, 0, 0, 1_000_000), (true, 0.0, 0.0));
+        assert_eq!(super::project_timeline(false, 0, 0, 0, 1_000_000), (false, 0.0, 0.0));
+        // 零时间轴若上报了公开 Position，保留为跳转锚点。
+        assert_eq!(super::project_timeline(true, 50_000_000, 0, 0, 1_000_000), (true, 0.0, 5_000.0));
+        // 真实时间轴：位置 10s、总长 100s、LastUpdatedTime 比 now 早 2s → 外推到 12s。
+        let updated = (998_000i64 + 11_644_473_600_000) * 10_000;
+        let (advancing, duration, position) = super::project_timeline(true, 100_000_000, 1_000_000_000, updated, 1_000_000);
+        assert!(advancing);
+        assert_eq!(duration, 100_000.0);
+        assert!((position - 12_000.0).abs() < 0.001);
+        // 暂停不再外推；外推不越过总时长。
+        assert!(!super::project_timeline(false, 100_000_000, 1_000_000_000, updated, 1_000_000).0);
+        assert_eq!(super::project_timeline(true, 999_000_000, 1_000_000_000, updated, 1_000_000).2, 100_000.0);
+        // updated 为 0 但 end 有效：不猜测推进。
+        assert!(!super::project_timeline(true, 0, 1_000_000_000, 0, 1_000_000).0);
+    }
+
     /// 有限收敛在连续相同快照时提前停止，变化持续时最多执行到 3 秒检查。
     #[test]
     fn convergence_stops_after_stability_or_final_deadline()

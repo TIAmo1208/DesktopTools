@@ -41,10 +41,43 @@ struct Details
     key: String,
     generation: u64,
     lyrics: Vec<LyricLine>,
+    reported_position_ms: Option<f64>, // 上一事件上报的公开 Position，用于识别零时间轴跳转。
 }
 static DETAILS: OnceLock<Mutex<Details>> = OnceLock::new();
 fn details_state() -> &'static Mutex<Details> { DETAILS.get_or_init(|| Mutex::new(Details::default())) }
 static REQUESTED: Mutex<Option<u64>> = Mutex::new(None); // 已发起取词的代次，关闭或丢弃后可重新请求。
+
+/// 时间轴缺失：网易云等只发元数据的播放器把 end 与 LastUpdatedTime 都报为 0。
+fn zero_timeline(end_time_ticks: &str, last_updated_time_ticks: &str) -> bool { end_time_ticks == "0" && last_updated_time_ticks == "0" }
+
+/// 按锚点投影位置：时长未知（0）时不夹紧，避免零时长把播放位置钉在 0；已知时长仍夹在轨道内。
+fn projected_position(position_ms: f64, duration_ms: f64, elapsed_ms: f64, advancing: bool) -> f64
+{
+    let value = position_ms + if advancing { elapsed_ms.max(0.0) } else { 0.0 };
+    if duration_ms > 0.0 { value.clamp(0.0, duration_ms) } else { value.max(0.0) }
+}
+
+/// 零时间轴在事件间延续本地外推锚点：公开 Position 变化视为跳转锚点（含跳回 0）；暂停冻结在投影位置，恢复从冻结位置继续；切歌或真实时间轴直接采用上报值。
+fn carry_zero_timeline(previous: Option<&Timeline>, previous_reported_ms: Option<f64>, elapsed_ms: f64, mut incoming: Timeline, changed: bool) -> Timeline
+{
+    if changed || !zero_timeline(&incoming.end_time_ticks, &incoming.last_updated_time_ticks)
+    {
+        return incoming;
+    }
+    // 网易云等 Position 恒 0 的播放器无法检测拖动跳转；只有相对上一事件变化时才采纳为锚点。
+    if let Some(previous_reported_ms) = previous_reported_ms
+    {
+        if (incoming.position_ms - previous_reported_ms).abs() > 0.5
+        {
+            return incoming;
+        }
+    }
+    if let Some(previous) = previous
+    {
+        incoming.position_ms = projected_position(previous.position_ms, previous.duration_ms, elapsed_ms, previous.advancing);
+    }
+    incoming
+}
 
 /// 读取缓存时重投影，恢复页面不会从过期的位置继续。
 pub fn snapshot() -> serde_json::Value
@@ -53,10 +86,8 @@ pub fn snapshot() -> serde_json::Value
     let mut timeline = state.timeline.clone();
     if let Some(value) = &mut timeline
     {
-        if value.advancing
-        {
-            value.position_ms = (value.position_ms + state.sampled.map(|v| v.elapsed().as_secs_f64() * 1000.0).unwrap_or_default()).min(value.duration_ms);
-        }
+        let elapsed = state.sampled.map(|v| v.elapsed().as_secs_f64() * 1000.0).unwrap_or_default();
+        value.position_ms = projected_position(value.position_ms, value.duration_ms, elapsed, value.advancing);
     }
     serde_json::json!({ "timeline": timeline, "lyrics": state.lyrics })
 }
@@ -66,13 +97,19 @@ pub fn update(timeline: Option<Timeline>)
 {
     let key = timeline.as_ref().map(|v| format!("{}\0{}\0{}\0{}", v.session_id, v.title, v.artist, v.end_time_ticks)).unwrap_or_default();
     let mut state = details_state().lock().unwrap_or_else(|e| e.into_inner());
-    if state.key != key
+    let changed = state.key != key;
+    let elapsed = state.sampled.map(|v| v.elapsed().as_secs_f64() * 1000.0).unwrap_or_default();
+    let previous = state.timeline.clone();
+    let previous_reported = state.reported_position_ms;
+    let reported = timeline.as_ref().map(|value| value.position_ms);
+    if changed
     {
         state.generation += 1;
         state.key = key;
         state.lyrics.clear();
     }
-    state.timeline = timeline;
+    state.timeline = timeline.map(|incoming| carry_zero_timeline(previous.as_ref(), previous_reported, elapsed, incoming, changed));
+    state.reported_position_ms = reported;
     state.sampled = Some(Instant::now());
 }
 
@@ -483,6 +520,40 @@ mod tests
 
     /// 生成一条指定时长与同步词的候选，默认标题、艺人与待匹配参数一致。
     fn candidate(duration: f64, lyrics: Option<&str>) -> Candidate { Candidate { track_name: "歌".into(), artist_name: "人".into(), duration, synced_lyrics: lyrics.map(str::to_string) } }
+
+    /// 生成一条时间轴事实，用于零时间轴延续与真实时间轴隔离的断言。
+    fn timeline(session: &str, title: &str, end: &str, updated: &str, position_ms: f64, duration_ms: f64, advancing: bool) -> Timeline { Timeline { session_id: session.into(), title: title.into(), artist: "人".into(), position_ticks: "0".into(), end_time_ticks: end.into(), last_updated_time_ticks: updated.into(), playback_status: if advancing { 4 } else { 5 }, position_ms, duration_ms, advancing } }
+
+    #[test]
+    fn zero_timeline_projection_uses_local_clock_and_freezes_on_pause()
+    {
+        assert!(zero_timeline("0", "0"));
+        assert!(!zero_timeline("0", "134000000000000000"));
+        assert!(!zero_timeline("10000000", "0"));
+        // 时长未知时不夹紧，避免零时长把位置钉在 0；已知时长仍夹在轨道内。
+        assert_eq!(projected_position(0.0, 0.0, 1_500.0, true), 1_500.0);
+        assert_eq!(projected_position(0.0, 0.0, 1_500.0, false), 0.0);
+        assert_eq!(projected_position(9_000.0, 10_000.0, 2_000.0, true), 10_000.0);
+
+        // 零时间轴事件间延续本地锚点：暂停冻结在投影位置，恢复后从冻结位置继续。
+        let playing = timeline("1", "歌", "0", "0", 0.0, 0.0, true);
+        let paused = carry_zero_timeline(Some(&playing), Some(0.0), 1_500.0, timeline("1", "歌", "0", "0", 0.0, 0.0, false), false);
+        assert!(!paused.advancing);
+        assert_eq!(paused.position_ms, 1_500.0);
+        let resumed = carry_zero_timeline(Some(&paused), Some(0.0), 900.0, timeline("1", "歌", "0", "0", 0.0, 0.0, true), false);
+        assert!(resumed.advancing);
+        assert_eq!(resumed.position_ms, 1_500.0);
+        // 公开 Position 相对上一事件变化（best-effort 跳转锚点）时重置本地锚点；网易云恒 0 时只能继续外推。
+        let seeked = carry_zero_timeline(Some(&resumed), Some(0.0), 900.0, timeline("1", "歌", "0", "0", 7_000.0, 0.0, true), false);
+        assert_eq!(seeked.position_ms, 7_000.0);
+        // 跳回 0 同样是公开 Position 变化，按新位置重置而不是继续外推。
+        assert_eq!(carry_zero_timeline(Some(&seeked), Some(7_000.0), 900.0, timeline("1", "歌", "0", "0", 0.0, 0.0, true), false).position_ms, 0.0);
+        // 切歌重置为 0；真实时间轴直接采用上报位置，不被本地锚点污染。
+        assert_eq!(carry_zero_timeline(Some(&resumed), Some(0.0), 900.0, timeline("2", "新歌", "0", "0", 0.0, 0.0, true), true).position_ms, 0.0);
+        assert_eq!(carry_zero_timeline(Some(&resumed), Some(0.0), 900.0, timeline("3", "真实", "10000000", "134000000000000000", 3_000.0, 1_000.0, true), true).position_ms, 3_000.0);
+        // 真实时间轴在同曲重读时不被本地锚点改写。
+        assert_eq!(carry_zero_timeline(Some(&resumed), Some(0.0), 900.0, timeline("1", "歌", "10000000", "134000000000000000", 3_000.0, 1_000.0, true), false).position_ms, 3_000.0);
+    }
 
     #[test]
     fn music_lyrics_match_simplified_and_traditional()
