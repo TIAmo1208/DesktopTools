@@ -88,19 +88,30 @@ const IslandMusic = ({ mode, side, motion }: { mode: IslandMode; side: boolean; 
         animationsEnabled: motion,
     });
     const lineMax = islandCapsuleLineLimit(vertical, view.hasLine); // 固定档位（胶囊档位减固定件），只随有无同步词与贴边变化。
+    const overflowRef = useRef(0); // 与渲染值同步的测量缓存，同一尺寸不重复写状态。
     useLayoutEffect(() => {
         const box = lineRef.current;
         const content = box?.firstElementChild as HTMLElement | null | undefined;
-        if (!box || !content) {
-            setOverflow((value) => (value === 0 ? value : 0));
-            return;
-        }
-        const boxRect = box.getBoundingClientRect();
-        const contentRect = content.getBoundingClientRect();
-        // 只读尺寸，不写布局：滚动是 transform，既不触发浮岛测量，也不提交窗口。
-        const next = islandScrollDistance(vertical ? contentRect.height : contentRect.width, vertical ? boxRect.height : boxRect.width);
-        setOverflow((value) => (value === next ? value : next)); // 文本或档位变化才更新，滚动过程不触发。
-    });
+        const update = () => {
+            if (!box || !content) {
+                overflowRef.current = 0;
+                setOverflow((value) => (value === 0 ? value : 0));
+                return;
+            }
+            const boxRect = box.getBoundingClientRect();
+            const contentRect = content.getBoundingClientRect();
+            // 只读尺寸，不写布局：滚动是 transform，既不触发浮岛测量，也不提交窗口。
+            const next = islandScrollDistance(vertical ? contentRect.height : contentRect.width, vertical ? boxRect.height : boxRect.width);
+            if (overflowRef.current === next) return;
+            overflowRef.current = next;
+            setOverflow(next);
+        };
+        update();
+        const observer = new ResizeObserver(update); // 换句、换档位或窗口宽度变化时重测。
+        if (box) observer.observe(box);
+        if (content) observer.observe(content);
+        return () => observer.disconnect();
+    }, [view.index, view.hasLine, vertical, lineMax]);
     // 换句/切歌/跳转/换边时重建动画并按新偏移对齐；无词循环的暂停不重建，保持循环相位。
     const scrollKey = islandScrollKey({ sessionId: music.timeline?.sessionId ?? "", index: view.index, vertical, plan: scroll });
     const animationName = islandScrollAnimationName(scroll.kind, vertical);
