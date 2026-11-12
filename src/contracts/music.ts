@@ -21,7 +21,7 @@ export interface MusicTimeline {
     lastUpdatedTimeTicks: string;
     playbackStatus: number;
     positionMs: number;
-    durationMs: number;
+    durationMs: number; // 歌曲总时长；0 表示播放器不提供时长（未知），负数无效。
     advancing: boolean;
 }
 /** 已按起始毫秒排序、合并同时间戳的逐句歌词；翻译行本轮可选。 */
@@ -52,7 +52,8 @@ export const parseMusicDetails = (value: unknown): MusicDetails => {
         if (
             !Number.isInteger(raw.playbackStatus) ||
             Number(raw.positionMs) < 0 ||
-            Number(raw.durationMs) < Number(raw.positionMs) ||
+            Number(raw.durationMs) < 0 ||
+            (Number(raw.durationMs) > 0 && Number(raw.durationMs) < Number(raw.positionMs)) ||
             typeof raw.advancing !== "boolean"
         )
             throw new Error("时间轴投影无效");

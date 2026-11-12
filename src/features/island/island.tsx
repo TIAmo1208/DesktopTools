@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { getDesktopHostSnapshot } from "../../bridge/desktopHost";
 import { beginIslandDrag, dismissIslandMessage, getIslandMessages, listenIslandMessages, listenIslandSnapshots, saveIslandCardOrder, setIslandState } from "../../bridge/island";
 import { executeMusicAction } from "../../bridge/music";
@@ -10,7 +10,7 @@ import infoIcon from "../../../resources/info.svg?raw";
 import errorIcon from "../../../resources/message-error.svg?raw";
 import warningIcon from "../../../resources/message-warning.svg?raw";
 import { PluginSlot, pluginTileType } from "../components/PluginSlot";
-import { useMusicState, positionAt, lyricIndex, lyricTickDelay } from "../music/musicSource";
+import { useMusicState, musicProgressRange, positionAt } from "../music/musicSource";
 import { usePreferences } from "../settings/PreferencesProvider";
 import {
     islandAttachedCorner,
@@ -38,6 +38,7 @@ import {
 } from "./islandInteraction";
 import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, ISLAND_EXPAND_STAGGER_MS, ISLAND_EXPAND_MOTION_MS, islandAttachedCornerAt, islandUnionFrame } from "./islandMotion";
 import { islandHoldMessages, islandMessageTime, islandMessageView } from "./islandMessages";
+import { ISLAND_LYRIC_OFFSETS, islandCapsuleLineLimit, islandLyricView, islandMusicTickDelay, islandPlaybackStatus, islandScrollAnimationName, islandScrollDistance, islandScrollKey, islandScrollPlan, islandScrollPlayState } from "./islandLyrics";
 import "./island.css";
 /** Debug 构建由后端注入的浮岛测试卡：只展示，不写偏好、不进卡片顺序与设置页列表。 */
 const ISLAND_DEBUG_CARD = "official.debug-island";
@@ -60,27 +61,62 @@ const PAINTED_STYLE_PROPERTIES = [
 type IslandMode = IslandStateRequest["state"]; // 三态互斥。
 
 /** 岛只消费共享音乐事实，计时器只推进可见投影，不读取媒体或请求歌词。 */
-const IslandMusic = ({ mode, side }: { mode: IslandMode; side: boolean }) => {
-    // side：左右贴边，hover 的播放控制改到第二排。
+const IslandMusic = ({ mode, side, motion }: { mode: IslandMode; side: boolean; motion: boolean }) => {
+    // side：左右贴边，hover 的播放控制改到第二排；motion：有效动效开关，关闭时常态胶囊改为单行截断。
     const music = useMusicState();
     const [now, setNow] = useState(() => performance.now()); // 单调时钟用于播放位置投影。
     const [busy, setBusy] = useState(false); // 同一时刻只提交一个播放命令。
     const [failure, setFailure] = useState(false); // 命令失败留在固定内容槽，不撑高。
     const [failedArtwork, setFailedArtwork] = useState<string>(); // 失效图片不显示破图。
+    const [overflow, setOverflow] = useState(0); // 常态胶囊当前行的溢出像素，决定滚动距离。
+    const lineRef = useRef<HTMLParagraphElement>(null);
     const media = music.snapshot;
     const position = positionAt(music, now);
-    const index = lyricIndex(music.lyrics, position);
-    const status = !media
-        ? "未在播放"
-        : media.playback === "playing"
-          ? "正在播放"
-          : media.playback === "paused"
-            ? "已暂停"
-            : media.playback === "stopped"
-              ? "已停止"
-              : "播放状态未知";
-    const fallback = [media?.title, media?.artist].filter(Boolean).join(" · ") || status;
-    const line = music.lyrics[index]?.text || fallback;
+    const progress = musicProgressRange(music.timeline, music.lyrics, position); // 真实时长→歌词末行；未知时给空条与占位。
+    const view = islandLyricView(music.lyrics, position, media); // 常态一行与展开三行共用同一当前句。
+    const status = islandPlaybackStatus(media);
+    const vertical = mode === "collapsed" && side; // 竖排只在常态且左右贴边时生效，与 data-vertical 一致。
+    const currentLine = music.lyrics[view.index];
+    // 常态胶囊滚动计划：有词按播放进度、无词回落循环；偏移由合成层动画推进，不写布局。
+    const scroll = islandScrollPlan({
+        distance: overflow,
+        hasLine: view.hasLine,
+        lineStartMs: currentLine?.startMs,
+        lineEndMs: music.lyrics[view.index + 1]?.startMs ?? music.timeline?.durationMs,
+        positionMs: position,
+        advancing: music.timeline?.advancing === true,
+        animationsEnabled: motion,
+    });
+    const lineMax = islandCapsuleLineLimit(vertical, view.hasLine); // 固定档位（胶囊档位减固定件），只随有无同步词与贴边变化。
+    useLayoutEffect(() => {
+        const box = lineRef.current;
+        const content = box?.firstElementChild as HTMLElement | null | undefined;
+        if (!box || !content) {
+            setOverflow((value) => (value === 0 ? value : 0));
+            return;
+        }
+        const boxRect = box.getBoundingClientRect();
+        const contentRect = content.getBoundingClientRect();
+        // 只读尺寸，不写布局：滚动是 transform，既不触发浮岛测量，也不提交窗口。
+        const next = islandScrollDistance(vertical ? contentRect.height : contentRect.width, vertical ? boxRect.height : boxRect.width);
+        setOverflow((value) => (value === next ? value : next)); // 文本或档位变化才更新，滚动过程不触发。
+    });
+    // 换句/切歌/跳转/换边时重建动画并按新偏移对齐；无词循环的暂停不重建，保持循环相位。
+    const scrollKey = islandScrollKey({ sessionId: music.timeline?.sessionId ?? "", index: view.index, vertical, plan: scroll });
+    const animationName = islandScrollAnimationName(scroll.kind, vertical);
+    const scrollStyle: CSSProperties | undefined =
+        animationName === undefined
+            ? undefined
+            : {
+                  animationName,
+                  animationDuration: `${scroll.durationMs}ms`,
+                  animationDelay: scroll.kind === "progress" ? `${-scroll.delayMs}ms` : "0ms",
+                  animationTimingFunction: "linear",
+                  animationIterationCount: scroll.kind === "loop" ? "infinite" : 1,
+                  animationFillMode: "both",
+                  animationPlayState: islandScrollPlayState(scroll.paused),
+              };
+    const lineStyle = { "--island-capsule-line-max": `${lineMax}px`, "--island-lyric-distance": `${scroll.distance}px` } as CSSProperties;
     useEffect(() => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const refresh = () => {
@@ -88,10 +124,8 @@ const IslandMusic = ({ mode, side }: { mode: IslandMode; side: boolean }) => {
             if (document.hidden || window.__DESKTOP_TOOLS_NATIVE__?.isRefreshPaused?.()) return;
             const current = performance.now();
             setNow(current);
-            if (!music.timeline?.advancing) return;
-            const projected = positionAt(music, current);
-            if (projected >= music.timeline.durationMs) return;
-            const delay = mode === "expanded" ? 250 : lyricTickDelay(music.lyrics, projected, music.timeline.durationMs);
+            // 常态逐句对齐、展开推进进度；暂停、hover 与轨道末端不安排下一次刷新。
+            const delay = islandMusicTickDelay(mode, music, music.lyrics, current);
             if (delay !== undefined) timer = setTimeout(refresh, delay);
         };
         refresh();
@@ -155,11 +189,10 @@ const IslandMusic = ({ mode, side }: { mode: IslandMode; side: boolean }) => {
                     )}
                 </div>
                 {mode === "collapsed" ? (
-                    <p className="island-music__line" title={line}>
-                        <span className="island-music__reserve" aria-hidden="true">
-                            {fallback}
+                    <p ref={lineRef} className="island-music__line" title={view.line} data-motion={motion ? "on" : "off"} style={lineStyle}>
+                        <span key={scrollKey} className="island-music__current" style={scrollStyle}>
+                            {view.line}
                         </span>
-                        <span className="island-music__current">{line}</span>
                     </p>
                 ) : (
                     <div className="island-music__info">
@@ -183,17 +216,17 @@ const IslandMusic = ({ mode, side }: { mode: IslandMode; side: boolean }) => {
             {mode === "expanded" ? (
                 <>
                     <div className="island-music__timeline">
-                        <progress aria-label="播放进度" max={music.timeline?.durationMs || 1} value={position} />
+                        <progress aria-label="播放进度" max={progress.max} value={progress.value} />
                         <div>
                             <time>{formatTime(position)}</time>
-                            <time>{formatTime(music.timeline?.durationMs ?? 0)}</time>
+                            <time>{progress.totalMs > 0 ? formatTime(progress.totalMs) : "--:--"}</time>
                         </div>
                     </div>
                     <IslandSpectrum playing={media?.playback === "playing"} />
                     <div className="island-music__lyrics" aria-live="off">
-                        {[-1, 0, 1].map((offset) => (
-                            <p key={offset} data-current={offset === 0} title={music.lyrics[index + offset]?.text}>
-                                {offset === 0 ? line : music.lyrics[index + offset]?.text || "\u00a0"}
+                        {ISLAND_LYRIC_OFFSETS.map((offset, slot) => (
+                            <p key={offset} data-current={offset === 0} title={music.lyrics[view.index + offset]?.text}>
+                                {view.slots[slot]}
                             </p>
                         ))}
                     </div>
@@ -1298,7 +1331,7 @@ export const IslandPage = () => {
                         >
                             <div className="island-card__content">
                                 {instance.componentId === "official.music-control" ? (
-                                    <IslandMusic mode={mode} side={edge === "left" || edge === "right"} />
+                                    <IslandMusic mode={mode} side={edge === "left" || edge === "right"} motion={animationsEnabled} />
                                 ) : instance.componentId === ISLAND_DEBUG_CARD ? (
                                     <div data-island-debug-card="true" style={{ inlineSize: 192, minBlockSize: 168 }}>
                                         <strong>Debug 浮岛卡</strong>

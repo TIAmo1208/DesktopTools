@@ -41,10 +41,45 @@ struct Details
     key: String,
     generation: u64,
     lyrics: Vec<LyricLine>,
+    reported_position_ms: Option<f64>, // 上一事件上报的公开 Position，用于识别零时间轴跳转。
+    source: String,                    // 当前会话的播放源身份，歌词源按它切换。
+    derived_duration_ms: Option<f64>,  // 歌词源给出的时长，仅补播放器不报时长时的量程。
 }
 static DETAILS: OnceLock<Mutex<Details>> = OnceLock::new();
 fn details_state() -> &'static Mutex<Details> { DETAILS.get_or_init(|| Mutex::new(Details::default())) }
 static REQUESTED: Mutex<Option<u64>> = Mutex::new(None); // 已发起取词的代次，关闭或丢弃后可重新请求。
+
+/// 时间轴缺失：网易云等只发元数据的播放器把 end 与 LastUpdatedTime 都报为 0。
+fn zero_timeline(end_time_ticks: &str, last_updated_time_ticks: &str) -> bool { end_time_ticks == "0" && last_updated_time_ticks == "0" }
+
+/// 按锚点投影位置：时长未知（0）时不夹紧，避免零时长把播放位置钉在 0；已知时长仍夹在轨道内。
+fn projected_position(position_ms: f64, duration_ms: f64, elapsed_ms: f64, advancing: bool) -> f64
+{
+    let value = position_ms + if advancing { elapsed_ms.max(0.0) } else { 0.0 };
+    if duration_ms > 0.0 { value.clamp(0.0, duration_ms) } else { value.max(0.0) }
+}
+
+/// 零时间轴在事件间延续本地外推锚点：公开 Position 变化视为跳转锚点（含跳回 0）；暂停冻结在投影位置，恢复从冻结位置继续；切歌或真实时间轴直接采用上报值。
+fn carry_zero_timeline(previous: Option<&Timeline>, previous_reported_ms: Option<f64>, elapsed_ms: f64, mut incoming: Timeline, changed: bool) -> Timeline
+{
+    if changed || !zero_timeline(&incoming.end_time_ticks, &incoming.last_updated_time_ticks)
+    {
+        return incoming;
+    }
+    // 网易云等 Position 恒 0 的播放器无法检测拖动跳转；只有相对上一事件变化时才采纳为锚点。
+    if let Some(previous_reported_ms) = previous_reported_ms
+    {
+        if (incoming.position_ms - previous_reported_ms).abs() > 0.5
+        {
+            return incoming;
+        }
+    }
+    if let Some(previous) = previous
+    {
+        incoming.position_ms = projected_position(previous.position_ms, previous.duration_ms, elapsed_ms, previous.advancing);
+    }
+    incoming
+}
 
 /// 读取缓存时重投影，恢复页面不会从过期的位置继续。
 pub fn snapshot() -> serde_json::Value
@@ -53,26 +88,33 @@ pub fn snapshot() -> serde_json::Value
     let mut timeline = state.timeline.clone();
     if let Some(value) = &mut timeline
     {
-        if value.advancing
-        {
-            value.position_ms = (value.position_ms + state.sampled.map(|v| v.elapsed().as_secs_f64() * 1000.0).unwrap_or_default()).min(value.duration_ms);
-        }
+        value.duration_ms = effective_duration(value.duration_ms, state.derived_duration_ms);
+        let elapsed = state.sampled.map(|v| v.elapsed().as_secs_f64() * 1000.0).unwrap_or_default();
+        value.position_ms = projected_position(value.position_ms, value.duration_ms, elapsed, value.advancing);
     }
     serde_json::json!({ "timeline": timeline, "lyrics": state.lyrics })
 }
 
 /// 读取线程写入新锚点，切歌立即清除旧歌词并递增请求代次。
-pub fn update(timeline: Option<Timeline>)
+pub fn update(timeline: Option<Timeline>, source: String)
 {
-    let key = timeline.as_ref().map(|v| format!("{}\0{}\0{}\0{}", v.session_id, v.title, v.artist, v.end_time_ticks)).unwrap_or_default();
+    let key = timeline.as_ref().map(|v| format!("{}\0{}\0{}\0{}\0{}", source, v.session_id, v.title, v.artist, v.end_time_ticks)).unwrap_or_default();
     let mut state = details_state().lock().unwrap_or_else(|e| e.into_inner());
-    if state.key != key
+    let changed = state.key != key;
+    let elapsed = state.sampled.map(|v| v.elapsed().as_secs_f64() * 1000.0).unwrap_or_default();
+    let previous = state.timeline.clone();
+    let previous_reported = state.reported_position_ms;
+    let reported = timeline.as_ref().map(|value| value.position_ms);
+    if changed
     {
         state.generation += 1;
         state.key = key;
         state.lyrics.clear();
+        state.derived_duration_ms = None;
     }
-    state.timeline = timeline;
+    state.timeline = timeline.map(|incoming| carry_zero_timeline(previous.as_ref(), previous_reported, elapsed, incoming, changed));
+    state.reported_position_ms = reported;
+    state.source = source;
     state.sampled = Some(Instant::now());
 }
 
@@ -83,9 +125,91 @@ fn lyrics_enabled(app: &tauri::AppHandle) -> bool
     app.try_state::<crate::app::settings::SettingsState>().and_then(|state| state.preferences().ok()).map(|preferences| preferences.music_lyrics_enabled).unwrap_or(true)
 }
 
+/// 一次调试轮询的结果：不适用、读到位置、读取失败。
+#[derive(Clone, Copy, PartialEq)]
+enum CdpPoll
+{
+    Skipped,
+    Read,
+    Failed,
+}
+
+/// 网易云调试端口轮询：仅在网易云零时间轴会话生效；成功以真实位置重锚并推送，失败保持本地外推。
+fn poll_netease_position(app: &tauri::AppHandle) -> CdpPoll
+{
+    let (source, zero_timeline_session) = {
+        let state = details_state().lock().unwrap_or_else(|e| e.into_inner());
+        (state.source.clone(), state.timeline.as_ref().is_some_and(|timeline| timeline.end_time_ticks == "0" && timeline.last_updated_time_ticks == "0"))
+    };
+    if !is_netease_source(&source) || !zero_timeline_session
+    {
+        return CdpPoll::Skipped; // 不是网易云零时间轴会话，不进入退避。
+    }
+    let Some(reading) = crate::platform::windows::netease_cdp::read_position()
+    else
+    {
+        return CdpPoll::Failed; // 端口未开或页面未就绪，交给本地锚点继续。
+    };
+    let mut state = details_state().lock().unwrap_or_else(|e| e.into_inner());
+    if state.source != source
+    {
+        return CdpPoll::Read;
+    }
+    let details = &mut *state; // 拆成字段借用，位置与时长可以同时读写。
+    let Some(timeline) = details.timeline.as_mut()
+    else
+    {
+        return CdpPoll::Read;
+    };
+    // 暂停或页面位置未变时不重复广播；时长变化同样需要推送。
+    let position_changed = (timeline.position_ms - reading.position_ms).abs() >= 20.0;
+    let duration_changed = reading.duration_ms > 0.0 && (details.derived_duration_ms.unwrap_or(0.0) - reading.duration_ms).abs() >= 20.0;
+    if !position_changed && !duration_changed
+    {
+        return CdpPoll::Read;
+    }
+    timeline.position_ms = reading.position_ms;
+    if reading.duration_ms > 0.0
+    {
+        details.derived_duration_ms = Some(reading.duration_ms);
+    }
+    details.sampled = Some(Instant::now()); // 以调试端口读数为新锚点，前端继续本地投影。
+    drop(state);
+    let _ = app.emit(EVENT, snapshot());
+    CdpPoll::Read
+}
+
+/// 后台轮询调试端口，前端只被动接收推送；端口长期未开时退避到五秒。
+pub fn start_cdp_poller(app: &tauri::AppHandle)
+{
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if STARTED.set(()).is_err()
+    {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let mut failures = 0u32;
+        let mut last: Option<CdpPoll> = None;
+        loop
+        {
+            std::thread::sleep(if failures >= 3 { Duration::from_secs(5) } else { Duration::from_secs(1) });
+            let outcome = poll_netease_position(&app);
+            // 只在可用性变化时记录，避免每秒刷日志。
+            if matches!(outcome, CdpPoll::Read | CdpPoll::Failed) && last != Some(outcome)
+            {
+                crate::log_debug!("歌词跟随：网易云调试端口{}", if outcome == CdpPoll::Read { "已接管播放位置" } else { "不可用，回退本地外推" });
+            }
+            last = Some(outcome);
+            failures = if outcome == CdpPoll::Failed { failures.saturating_add(1) } else { 0 };
+        }
+    });
+}
+
 /// 每代至多取词一次，网络不阻塞媒体线程；迟到响应不得污染下一首。
 pub fn publish(app: &tauri::AppHandle)
 {
+    start_cdp_poller(app); // 位置轮询独立于取词开关，关闭歌词也要跟进度。
     if !lyrics_enabled(app)
     {
         // 关闭取词：清空歌词并让在途请求失效，但时间轴仍要持续广播。
@@ -96,6 +220,7 @@ pub fn publish(app: &tauri::AppHandle)
             state.generation += 1; // 迟到响应不得写回关闭后的缓存。
         }
         state.lyrics.clear();
+        state.derived_duration_ms = None;
         *requested = None; // 重新开启后允许再次取词。
         drop(requested);
         drop(state);
@@ -110,6 +235,7 @@ pub fn publish(app: &tauri::AppHandle)
         return;
     };
     let generation = state.generation;
+    let source = state.source.clone(); // 取词线程按播放源切换歌词源，不能借用正在释放的锁内引用。
     let mut requested = REQUESTED.lock().unwrap_or_else(|e| e.into_inner());
     if *requested == Some(generation)
     {
@@ -119,7 +245,8 @@ pub fn publish(app: &tauri::AppHandle)
     drop(state);
     let app = app.clone();
     std::thread::spawn(move || {
-        let lyrics = fetch_lyrics(&timeline).unwrap_or_default();
+        let fetched = fetch_lyrics(&timeline, &source).unwrap_or_default();
+        crate::log_debug!("歌词：来源={}，行数={}，时长毫秒={:?}", source, fetched.lines.len(), fetched.duration_ms); // 只记数量与时长，不记正文。
         if !lyrics_enabled(&app)
         {
             // 关闭期间丢弃的结果必须释放该代请求，重新开启后才会再次取词。
@@ -135,7 +262,9 @@ pub fn publish(app: &tauri::AppHandle)
         {
             return;
         }
-        state.lyrics = lyrics;
+        let FetchedLyrics { lines, duration_ms } = fetched;
+        state.lyrics = lines;
+        state.derived_duration_ms = duration_ms;
         drop(state);
         let _ = app.emit(EVENT, snapshot());
     });
@@ -272,7 +401,8 @@ fn query_title_stripped(text: &str) -> String
     strip_title_suffix(&base, false).trim().to_string()
 }
 
-/// 查询用标题：先统一简体再取主标题。
+/// 查询用标题：先统一简体再取主标题；仅测试直接使用，生产走 `query_title_stripped`。
+#[cfg(test)]
 fn query_title(text: &str) -> String { query_title_stripped(&to_simplified(text)) }
 
 /// 匹配用艺人：统一简体，只保留字母数字，忽略空格与标点。
@@ -371,13 +501,45 @@ fn request_candidates(client: &reqwest::blocking::Client, params: &[(&str, &str)
     Ok(serde_json::from_str(&body)?)
 }
 
-fn fetch_lyrics(timeline: &Timeline) -> Result<Vec<LyricLine>, Box<dyn std::error::Error>>
+/// 取词结果：歌词行与歌词源给出的曲目时长（仅补播放器不报时长时的量程）。
+#[derive(Default)]
+struct FetchedLyrics
+{
+    lines: Vec<LyricLine>,
+    duration_ms: Option<f64>,
+}
+
+/// 播放器已上报的真实时长优先；不报时用歌词源时长兜底，仍未知保持 0。
+fn effective_duration(declared_ms: f64, derived_ms: Option<f64>) -> f64
+{
+    if declared_ms.is_finite() && declared_ms > 0.0 { declared_ms } else { derived_ms.filter(|value| value.is_finite() && *value > 0.0).unwrap_or(0.0) }
+}
+
+/// 歌词入口：按当前播放源选择歌词源；未登记来源与取词失败都回退 LRCLIB。
+fn fetch_lyrics(timeline: &Timeline, source: &str) -> Result<FetchedLyrics, Box<dyn std::error::Error>>
 {
     if timeline.title.trim().is_empty() || timeline.artist.trim().is_empty()
     {
-        return Ok(vec![]);
+        return Ok(FetchedLyrics::default());
     }
     let client = reqwest::blocking::Client::builder().user_agent("DesktopTools/0.4.2 (music lyrics)").timeout(Duration::from_secs(10)).build()?;
+    // 网易云只发元数据、不填时间轴，中文曲库在 LRCLIB 覆盖偏低；按其公开 web 接口取词，失败再回退。
+    if is_netease_source(source)
+    {
+        match fetch_netease_lyrics(&client, timeline)
+        {
+            Ok(Some((lines, duration_ms))) if !lines.is_empty() => return Ok(FetchedLyrics { lines, duration_ms: Some(duration_ms) }),
+            Ok(_) =>
+            {}
+            Err(error) => crate::log_debug!("歌词：网易云接口失败，回退 LRCLIB，原因={}", error),
+        }
+    }
+    Ok(FetchedLyrics { lines: fetch_lrclib_lyrics(&client, timeline)?, duration_ms: None })
+}
+
+/// LRCLIB：按标题与艺人匹配；有时长取 ±2 秒内最接近者，无时长只接受唯一解析结构。
+fn fetch_lrclib_lyrics(client: &reqwest::blocking::Client, timeline: &Timeline) -> Result<Vec<LyricLine>, Box<dyn std::error::Error>>
+{
     let simplified_title = to_simplified(&timeline.title);
     let simplified_artist = to_simplified(&timeline.artist);
     let traditional_title = to_traditional(&timeline.title);
@@ -415,7 +577,7 @@ fn fetch_lyrics(timeline: &Timeline) -> Result<Vec<LyricLine>, Box<dyn std::erro
             {
                 params.push(("artist_name", artist.as_str()));
             }
-            let lines = match_lyrics(request_candidates(&client, &params)?, &timeline.title, &timeline.artist, duration);
+            let lines = match_lyrics(request_candidates(client, &params)?, &timeline.title, &timeline.artist, duration);
             if !lines.is_empty()
             {
                 return Ok(lines);
@@ -432,9 +594,120 @@ fn fetch_lyrics(timeline: &Timeline) -> Result<Vec<LyricLine>, Box<dyn std::erro
         {
             params.push(("artist_name", artist.as_str()));
         }
-        candidates.extend(request_candidates(&client, &params)?);
+        candidates.extend(request_candidates(client, &params)?);
     }
     Ok(match_lyrics(candidates, &timeline.title, &timeline.artist, 0.0))
+}
+
+/// 网易云的播放源身份；判定与调试端口模块共用。
+fn is_netease_source(source: &str) -> bool { crate::platform::windows::netease_cdp::is_netease_source(source) }
+
+#[derive(Deserialize)]
+struct NeteaseSearch
+{
+    result: Option<NeteaseSearchResult>,
+}
+
+#[derive(Deserialize)]
+struct NeteaseSearchResult
+{
+    songs: Option<Vec<NeteaseSong>>,
+}
+
+#[derive(Deserialize)]
+struct NeteaseSong
+{
+    id: i64,
+    name: String,
+    #[serde(default)]
+    artists: Vec<NeteaseArtist>,
+    #[serde(default)]
+    duration: Option<f64>, // 搜索结果自带的毫秒时长，播放器不报时长时补量程。
+}
+
+#[derive(Deserialize)]
+struct NeteaseArtist
+{
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct NeteaseLyric
+{
+    lrc: Option<NeteaseLrc>,
+}
+
+#[derive(Deserialize)]
+struct NeteaseLrc
+{
+    lyric: String,
+}
+
+/// 在网易云搜索结果里按标题与艺人收敛候选；同名不同艺人不猜，交给回退源。
+fn select_netease_songs<'a>(songs: &'a [NeteaseSong], title: &str, artist: &str) -> Vec<&'a NeteaseSong>
+{
+    let target_title = normalize_title(title);
+    let target_artist = normalize_artist(artist);
+    if target_title.is_empty() || target_artist.is_empty()
+    {
+        return vec![];
+    }
+    songs
+        .iter()
+        .filter(|song| {
+            if normalize_title(&song.name) != target_title
+            {
+                return false;
+            }
+            let names = song.artists.iter().map(|artist| artist.name.as_str()).collect::<Vec<_>>().join("/");
+            let candidate = normalize_artist(&names);
+            candidate == target_artist || (target_artist.chars().count() >= 2 && candidate.contains(target_artist.as_str())) || (candidate.chars().count() >= 2 && target_artist.contains(candidate.as_str()))
+        })
+        .collect()
+}
+
+/// 读取有界响应体，避免不可信响应占用内存。
+fn read_body(response: reqwest::blocking::Response) -> Result<String, Box<dyn std::error::Error>>
+{
+    use std::io::Read;
+    let mut body = String::new();
+    response.take(2 * 1024 * 1024).read_to_string(&mut body)?;
+    Ok(body)
+}
+
+/// 网易云公开 web 接口：先搜索候选，再按 id 取同步歌词；不登录、不解密。
+fn fetch_netease_lyrics(client: &reqwest::blocking::Client, timeline: &Timeline) -> Result<Option<(Vec<LyricLine>, f64)>, Box<dyn std::error::Error>>
+{
+    let keyword = format!("{} {}", to_simplified(timeline.title.trim()), to_simplified(timeline.artist.trim()));
+    let response = client
+        .get("https://music.163.com/api/search/get")
+        .header(reqwest::header::REFERER, "https://music.163.com/")
+        .query(&[("s", keyword.as_str()), ("type", "1"), ("limit", "10")])
+        .send()?
+        .error_for_status()?;
+    let search: NeteaseSearch = serde_json::from_str(&read_body(response)?)?;
+    let Some(songs) = search.result.and_then(|result| result.songs)
+    else
+    {
+        return Ok(None);
+    };
+    // 同名同艺人常有多个版本，第一条可能无词；按搜索顺序取到第一条有同步词的为止，最多 5 条。
+    for song in select_netease_songs(&songs, &timeline.title, &timeline.artist).into_iter().take(5)
+    {
+        let response = client
+            .get("https://music.163.com/api/song/lyric")
+            .header(reqwest::header::REFERER, "https://music.163.com/")
+            .query(&[("id", song.id.to_string()), ("lv", "1".to_string()), ("tv", "-1".to_string())])
+            .send()?
+            .error_for_status()?;
+        let lyric: NeteaseLyric = serde_json::from_str(&read_body(response)?)?;
+        let lines = parse_lrc(&to_simplified(&lyric.lrc.map(|lrc| lrc.lyric).unwrap_or_default()));
+        if !lines.is_empty()
+        {
+            return Ok(Some((lines, song.duration.unwrap_or(0.0))));
+        }
+    }
+    Ok(None)
 }
 
 /// 支持多标签与小数秒，忽略元信息、无标签行与非法时间。
@@ -483,6 +756,40 @@ mod tests
 
     /// 生成一条指定时长与同步词的候选，默认标题、艺人与待匹配参数一致。
     fn candidate(duration: f64, lyrics: Option<&str>) -> Candidate { Candidate { track_name: "歌".into(), artist_name: "人".into(), duration, synced_lyrics: lyrics.map(str::to_string) } }
+
+    /// 生成一条时间轴事实，用于零时间轴延续与真实时间轴隔离的断言。
+    fn timeline(session: &str, title: &str, end: &str, updated: &str, position_ms: f64, duration_ms: f64, advancing: bool) -> Timeline { Timeline { session_id: session.into(), title: title.into(), artist: "人".into(), position_ticks: "0".into(), end_time_ticks: end.into(), last_updated_time_ticks: updated.into(), playback_status: if advancing { 4 } else { 5 }, position_ms, duration_ms, advancing } }
+
+    #[test]
+    fn zero_timeline_projection_uses_local_clock_and_freezes_on_pause()
+    {
+        assert!(zero_timeline("0", "0"));
+        assert!(!zero_timeline("0", "134000000000000000"));
+        assert!(!zero_timeline("10000000", "0"));
+        // 时长未知时不夹紧，避免零时长把位置钉在 0；已知时长仍夹在轨道内。
+        assert_eq!(projected_position(0.0, 0.0, 1_500.0, true), 1_500.0);
+        assert_eq!(projected_position(0.0, 0.0, 1_500.0, false), 0.0);
+        assert_eq!(projected_position(9_000.0, 10_000.0, 2_000.0, true), 10_000.0);
+
+        // 零时间轴事件间延续本地锚点：暂停冻结在投影位置，恢复后从冻结位置继续。
+        let playing = timeline("1", "歌", "0", "0", 0.0, 0.0, true);
+        let paused = carry_zero_timeline(Some(&playing), Some(0.0), 1_500.0, timeline("1", "歌", "0", "0", 0.0, 0.0, false), false);
+        assert!(!paused.advancing);
+        assert_eq!(paused.position_ms, 1_500.0);
+        let resumed = carry_zero_timeline(Some(&paused), Some(0.0), 900.0, timeline("1", "歌", "0", "0", 0.0, 0.0, true), false);
+        assert!(resumed.advancing);
+        assert_eq!(resumed.position_ms, 1_500.0);
+        // 公开 Position 相对上一事件变化（best-effort 跳转锚点）时重置本地锚点；网易云恒 0 时只能继续外推。
+        let seeked = carry_zero_timeline(Some(&resumed), Some(0.0), 900.0, timeline("1", "歌", "0", "0", 7_000.0, 0.0, true), false);
+        assert_eq!(seeked.position_ms, 7_000.0);
+        // 跳回 0 同样是公开 Position 变化，按新位置重置而不是继续外推。
+        assert_eq!(carry_zero_timeline(Some(&seeked), Some(7_000.0), 900.0, timeline("1", "歌", "0", "0", 0.0, 0.0, true), false).position_ms, 0.0);
+        // 切歌重置为 0；真实时间轴直接采用上报位置，不被本地锚点污染。
+        assert_eq!(carry_zero_timeline(Some(&resumed), Some(0.0), 900.0, timeline("2", "新歌", "0", "0", 0.0, 0.0, true), true).position_ms, 0.0);
+        assert_eq!(carry_zero_timeline(Some(&resumed), Some(0.0), 900.0, timeline("3", "真实", "10000000", "134000000000000000", 3_000.0, 1_000.0, true), true).position_ms, 3_000.0);
+        // 真实时间轴在同曲重读时不被本地锚点改写。
+        assert_eq!(carry_zero_timeline(Some(&resumed), Some(0.0), 900.0, timeline("1", "歌", "10000000", "134000000000000000", 3_000.0, 1_000.0, true), false).position_ms, 3_000.0);
+    }
 
     #[test]
     fn music_lyrics_match_simplified_and_traditional()
@@ -601,5 +908,52 @@ mod tests
         assert_eq!(near, vec![LyricLine { start_ms: 2000, text: "乙".into() }]);
         let reversed = match_lyrics(vec![candidate(100.0, Some("[00:02]乙")), candidate(100.005, Some("[00:01]甲"))], "歌", "人", 100.0);
         assert_eq!(reversed, near);
+    }
+}
+
+#[cfg(test)]
+mod netease_tests
+{
+    use super::*;
+
+    /// 只有网易云的播放源身份走专用歌词源，其余来源走通用兜底。
+    #[test]
+    fn netease_source_detection_covers_cloudmusic_only()
+    {
+        assert!(is_netease_source("cloudmusic.exe"));
+        assert!(is_netease_source("CloudMusic.EXE"));
+        assert!(!is_netease_source("QQMusic.exe"));
+        assert!(!is_netease_source("Spotify.exe"));
+        assert!(!is_netease_source(""));
+    }
+
+    /// 搜索候选按标题与艺人收敛；同名同艺人的多个版本都保留，交给取词循环逐个尝试。
+    #[test]
+    fn netease_song_selection_keeps_all_matching_versions()
+    {
+        let song = |id: i64, name: &str, artist: &str, duration: Option<f64>| NeteaseSong { id, name: name.into(), artists: vec![NeteaseArtist { name: artist.into() }], duration };
+        let songs = vec![
+            song(1, "晴天", "周杰伦", Some(269_117.0)),
+            song(2, "晴天 (Live)", "周杰伦", Some(300_000.0)),
+            song(3, "晴天", "孙燕姿", Some(200_000.0)),
+            song(4, "晴天", "周杰伦", Some(236_818.0)),
+        ];
+        let ids = |title: &str, artist: &str| select_netease_songs(&songs, title, artist).iter().map(|song| song.id).collect::<Vec<_>>();
+        assert_eq!(ids("晴天", "周杰伦"), vec![1, 4]);
+        assert_eq!(ids("晴天 (Live)", "周杰伦"), vec![2]);
+        assert_eq!(ids("晴天", "孙燕姿"), vec![3]);
+        assert!(ids("晴天", "张学友").is_empty());
+        assert_eq!(ids("晴天（电视剧片尾曲）", "周杰伦"), vec![1, 4]);
+    }
+
+    /// 播放器不报时长时用歌词源时长兜底；已上报的真实时长优先，非法值不参与。
+    #[test]
+    fn derived_duration_only_fills_missing_timeline()
+    {
+        assert_eq!(effective_duration(0.0, Some(236_818.0)), 236_818.0);
+        assert_eq!(effective_duration(100_000.0, Some(236_818.0)), 100_000.0);
+        assert_eq!(effective_duration(0.0, Some(0.0)), 0.0);
+        assert_eq!(effective_duration(0.0, None), 0.0);
+        assert_eq!(effective_duration(0.0, Some(f64::NAN)), 0.0);
     }
 }

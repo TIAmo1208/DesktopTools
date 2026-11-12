@@ -409,22 +409,66 @@ html[data-island="true"] #root {
     block-size: 28px;
     border-radius: 50%;
 }
+/* 常态胶囊内容盒：固定为档位值（胶囊档位减 52 固定件），换句不改变尺寸，超出部分在盒内滚动。 */
 .island[data-state="collapsed"] .island-music__line {
     position: relative;
     font-size: 11px;
     line-height: 28px;
     block-size: 28px;
-    min-inline-size: 72px;
-    max-inline-size: 240px;
-}
-.island-music__reserve {
-    visibility: hidden;
-}
-.island-music__current {
-    position: absolute;
-    inset: 0;
+    inline-size: var(--island-capsule-line-max, 116px);
+    min-inline-size: 0;
+    max-inline-size: var(--island-capsule-line-max, 116px);
     overflow: clip;
+}
+.island-music__line[data-motion="off"] .island-music__current {
+    inline-size: 100%;
+    overflow: hidden;
     text-overflow: ellipsis;
+}
+/* 当前行按内容撑开，超出内容盒的部分由 transform 位移滚动；减少动效时改为单行截断。 */
+.island-music__current {
+    display: block;
+    inline-size: max-content;
+    will-change: transform;
+}
+/* 常态胶囊滚动：只位移合成层，不参与浮岛测量与窗口提交；进度档向左/向上推进，循环档往返。 */
+@keyframes island-lyric-scroll-x {
+    from {
+        transform: translate3d(0, 0, 0);
+    }
+    to {
+        transform: translate3d(calc(-1 * var(--island-lyric-distance, 0px)), 0, 0);
+    }
+}
+@keyframes island-lyric-scroll-y {
+    from {
+        transform: translate3d(0, 0, 0);
+    }
+    to {
+        transform: translate3d(0, calc(-1 * var(--island-lyric-distance, 0px)), 0);
+    }
+}
+@keyframes island-lyric-loop-x {
+    0% {
+        transform: translate3d(0, 0, 0);
+    }
+    50% {
+        transform: translate3d(calc(-1 * var(--island-lyric-distance, 0px)), 0, 0);
+    }
+    100% {
+        transform: translate3d(0, 0, 0);
+    }
+}
+@keyframes island-lyric-loop-y {
+    0% {
+        transform: translate3d(0, 0, 0);
+    }
+    50% {
+        transform: translate3d(0, calc(-1 * var(--island-lyric-distance, 0px)), 0);
+    }
+    100% {
+        transform: translate3d(0, 0, 0);
+    }
 }
 .island[data-state="collapsed"] [data-island-plugin] > p {
     block-size: 28px;
@@ -441,9 +485,6 @@ html[data-island="true"] #root {
 .island[data-vertical="true"] .island-music__line {
     writing-mode: vertical-rl;
     text-orientation: upright;
-    min-inline-size: 48px;
-    max-inline-size: 176px;
-    inline-size: max-content;
     block-size: 28px;
     line-height: 28px;
 }

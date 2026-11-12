@@ -1,6 +1,7 @@
 {
   "id": "official.music-control",
   "name": "音乐控制",
+  "description": "歌词：网易云按其公开 web 接口取词，其余播放器用 LRCLIB；都取不到时回落歌名与艺人。进度：播放器向系统发布播放位置时直接跟随（如 QQ 音乐）；网易云不发布位置，客户端以 --remote-debugging-port=9222 启动时按调试端口读取，否则按本地计时外推，拖动或跳转不会立即对齐。总时长：优先系统上报，其次歌词源返回的时长，都没有时显示 --:--。",
   "entry": "official:music-control",
   "requiredCapabilities": ["read-current-media"],
   "creatable": true,
