@@ -59,6 +59,13 @@
     gap: 8px;
     margin-top: 12px;
 }
+/* 恢复默认只填草稿，提示尚未写入。 */
+.grid-settings__notice {
+    margin: 8px 0 0;
+    color: var(--color-muted);
+    font-size: 12px;
+    line-height: 18px;
+}
 /* 键盘焦点。 */
 .grid-settings :is(button, input):focus-visible {
     outline: 2px solid var(--color-focus);

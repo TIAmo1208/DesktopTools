@@ -994,6 +994,7 @@ const PluginLoopbackPairing = ({ pluginId, metadata, disabled }: { pluginId: str
     const [secret, setSecret] = useState(""); // 只有本次输入，保存后立即清空。
     const [busy, setBusy] = useState(false); // 保存或清除进行中。
     const [feedback, setFeedback] = useState<{ tone: "ok" | "error"; text: string }>(); // 面板内的可见反馈。
+    const [confirmClear, setConfirmClear] = useState(false); // 清除凭据不可恢复，先要一次二次确认。
     const inputId = `loopback-token-${metadata.target.replace(/[^a-zA-Z0-9_-]/g, "-")}`; // 目标里可能有斜杠。
     const run = (task: Promise<unknown>, success: string) => {
         setBusy(true);
@@ -1046,9 +1047,35 @@ const PluginLoopbackPairing = ({ pluginId, metadata, disabled }: { pluginId: str
                 <button className="settings__button" type="button" disabled={disabled || busy} onClick={handleSave} data-button="secondary">
                     保存
                 </button>
-                <button className="settings__button plugin-settings__pairing-clear" type="button" disabled={disabled || busy} onClick={handleClear} data-button="danger">
-                    清除
-                </button>
+                {confirmClear ? (
+                    <>
+                        <button
+                            className="settings__button plugin-settings__pairing-clear"
+                            type="button"
+                            disabled={disabled || busy}
+                            onClick={() => {
+                                setConfirmClear(false);
+                                handleClear();
+                            }}
+                            data-button="danger"
+                        >
+                            确认清除
+                        </button>
+                        <button className="settings__button" type="button" disabled={disabled || busy} onClick={() => setConfirmClear(false)} data-button="secondary">
+                            取消
+                        </button>
+                    </>
+                ) : (
+                    <button
+                        className="settings__button plugin-settings__pairing-clear"
+                        type="button"
+                        disabled={disabled || busy}
+                        onClick={() => setConfirmClear(true)}
+                        data-button="danger"
+                    >
+                        清除
+                    </button>
+                )}
             </div>
             {feedback ? (
                 <p className={`plugin-settings__pairing-feedback plugin-settings__pairing-feedback--${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}>

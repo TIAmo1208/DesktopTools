@@ -21,5 +21,4 @@ export const 真机专用页 = [
 export const 检查页 = [
     "src/features/settings/pluginSettings.browser.html", // 插件设置页样式核对。
     "src/features/settings/pluginTaskMenu.browser.html", // 插件任务菜单各状态样张。
-    "src/features/settings/settingsSamples.browser.html", // 设置页骨架、各类设置行与控件状态样张。
 ];

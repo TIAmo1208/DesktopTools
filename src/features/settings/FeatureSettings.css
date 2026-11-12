@@ -221,11 +221,17 @@
     pointer-events: none;
 }
 
-/* 菜单箭头沿用系统图标和固定轨道。 */
+/* 菜单箭头使用 resources 的 Lucide SVG 与固定轨道。 */
 .feature-settings__chevron {
+    display: grid;
+    place-items: center;
     flex: 0 0 38px;
-    text-align: center;
-    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+}
+
+/* 箭头图标与导航栏同一尺寸。 */
+.feature-settings__chevron svg {
+    width: 16px;
+    height: 16px;
 }
 
 /* 整行导航悬停背景：指针落在命中层或穿透后的名称上同样高亮。 */
@@ -261,8 +267,13 @@
     border-radius: 4px;
     color: var(--color-text);
     background: transparent;
-    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
     cursor: pointer;
+}
+
+/* 返回图标与二级页标题同行，尺寸取下限 16px。 */
+.feature-settings__back svg {
+    width: 16px;
+    height: 16px;
 }
 /* 返回、说明与命令同一行，尺寸和间距沿用插件二级页头。 */
 .feature-settings__heading {

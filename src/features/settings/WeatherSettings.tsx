@@ -633,15 +633,6 @@ export const WeatherSettings = ({
                         <li key={item.source} className="weather-settings__item">
                             <div
                                 className="weather-settings__item-row"
-                                role="button"
-                                tabIndex={0}
-                                title="显示详情"
-                                onClick={() => openForm(item.source, false)}
-                                onKeyDown={(event) => {
-                                    if (event.key !== "Enter" && event.key !== " ") return;
-                                    event.preventDefault();
-                                    openForm(item.source, false);
-                                }}
                                 onContextMenu={(event) => {
                                     event.preventDefault();
                                     setMenu({
@@ -651,6 +642,15 @@ export const WeatherSettings = ({
                                     });
                                 }}
                             >
+                                {/* 整行命中层：行只作容器，指针与键盘的进入动作都落在这一层。 */}
+                                <button
+                                    type="button"
+                                    className="weather-settings__item-hit"
+                                    title="显示详情"
+                                    aria-label={`打开 ${WEATHER_SOURCES[item.source].name} 的天气来源设置`}
+                                    onClick={() => openForm(item.source, false)}
+                                    data-button="row-hit"
+                                />
                                 <span className="weather-settings__item-main">
                                     <span>{WEATHER_SOURCES[item.source].name}</span>
                                     <small>{item.address}</small>

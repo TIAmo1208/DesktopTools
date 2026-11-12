@@ -214,10 +214,6 @@
 }
 
 /* 移除是破坏性操作，沿用插件卸载的告警色。 */
-.island-settings__trash {
-    color: var(--color-error);
-}
-
 /* 头部开关只留轨道，开/关二字不占位，无障碍名仍在输入上。 */
 .island-settings__commands .settings-switch {
     flex-basis: 40px;

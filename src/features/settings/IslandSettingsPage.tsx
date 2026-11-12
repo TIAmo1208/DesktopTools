@@ -7,10 +7,6 @@ import type { ComponentManifest } from "../../contracts/component";
 import type { ApplicationPreferences } from "../../contracts/settings";
 import backIcon from "../../../resources/weather-back.svg?raw";
 import chevronIcon from "../../../resources/weather-chevron-right.svg?raw";
-import trashIcon from "../../../resources/weather-trash.svg?raw";
-
-/** 移除图标按二级页图标基线放大到 18，按钮命中区仍由 CSS 固定 32。 */
-const trashIcon18 = trashIcon.replace("<svg ", '<svg width="18" height="18" ');
 import { DesktopTileMenu, type DesktopTileMenuItem } from "../tiles/DesktopTileMenu";
 import { SettingsAbout } from "./SettingsAbout";
 import { SettingsSwitch } from "./SettingsSwitch";
@@ -84,15 +80,13 @@ export const IslandSettings = ({
                     </div>
                     <div className="island-settings__commands">
                         <button
-                            className="settings__button settings__icon-button island-settings__trash"
+                            className="settings__button island-settings__remove"
                             type="button"
-                            aria-label="从浮岛移除"
-                            title="从浮岛移除"
                             disabled={unavailable || !availability?.enabled}
                             onClick={() => toggle(detail.id, false)}
-                            data-button="icon"
+                            data-button="ghost"
                         >
-                            <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: trashIcon18 }} />
+                            从浮岛移除
                         </button>
                         <SettingsSwitch label={`${detail.name}上浮岛`} checked={availability?.enabled ?? false} disabled={unavailable} onChange={(checked) => toggle(detail.id, checked)} />
                     </div>

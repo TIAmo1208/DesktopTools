@@ -20,6 +20,15 @@ interface AppearanceSettingsProps {
 
 // 常用强调色作为直观色块，不以颜色名称代替预览。
 const ACCENTS = ["#2563eb", "#0078d4", "#087f5b", "#b42318", "#9f42b5", "#986400"];
+// 色块的提示与可访问名称用颜色名，不把 hex 当名称。
+const ACCENT_NAMES: Record<string, string> = {
+    "#2563eb": "蓝",
+    "#0078d4": "天蓝",
+    "#087f5b": "绿",
+    "#b42318": "红",
+    "#9f42b5": "紫",
+    "#986400": "金",
+};
 
 /** 主题色、圆角和字体的完整可编辑设置行。 */
 export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThemeSelection }: AppearanceSettingsProps) => {
@@ -54,16 +63,18 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
         setFontSize(String(preferences?.fontSize ?? 13));
     }, [preferences, disabled]);
     const unavailable = disabled || !preferences; // 加载或保存期间阻止新提交。
+    const themeActive = Boolean(preferences?.themePluginId); // 主题生效时这几项外观由主题写入。
+    const fromTheme = themeActive ? <span className="appearance-settings__from-theme">由主题设置</span> : null; // 行标签上的来源提示。
 
     return (
         <fieldset className="appearance-settings" disabled={unavailable} aria-label="外观偏好">
             <section className="appearance-settings__group" aria-labelledby="global-theme-title">
                 <div className="appearance-settings__row">
                     <span className="appearance-settings__label appearance-settings__label--inline">
-                        <label htmlFor="interface-theme-plugin">主题</label>
+                        <label htmlFor="interface-theme-plugin">外观主题包</label>
                         <SettingsInfo
-                            label="主题"
-                            description="主题对整个应用生效：桌面网格、设置界面与自绘菜单。可设置字体、字号、圆角与两组强调色。切回默认主题会还原原有外观。"
+                            label="外观主题包"
+                            description="主题包对整个应用生效：桌面网格、设置界面与自绘菜单。可设置字体、字号、圆角与两组强调色。切回默认会还原原有外观。"
                         />
                     </span>
                     <select
@@ -93,6 +104,7 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                 ] as const
             ).map(([scope, title]) => {
                 const appearance = scope === "desktop" ? preferences?.desktopAppearance : preferences; // 当前分组的已保存外观。
+                const short = scope === "desktop" ? "桌面网格" : "界面菜单"; // 行标签上的作用域前缀，滚动后仍能分辨。
                 /** 仅更新当前分组，保留另一组及已保存的自定义颜色。 */
                 const handleAppearance = (patch: Partial<DesktopAppearance>) => {
                     if (!preferences) return;
@@ -105,7 +117,7 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                         </h2>
                         <div className="appearance-settings__row">
                             <label className="appearance-settings__label" htmlFor={`${scope}-theme`}>
-                                深浅模式
+                                {short}：深浅模式
                             </label>
                             <select
                                 id={`${scope}-theme`}
@@ -119,7 +131,7 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                             </select>
                         </div>
                         <div className="appearance-settings__row">
-                            <span className="appearance-settings__label">使用 Windows 主题色</span>
+                            <span className="appearance-settings__label">{short}：使用 Windows 主题色</span>
                             <SettingsSwitch
                                 label={`${title}：使用 Windows 主题色`}
                                 checked={appearance?.useWindowsAccentColor ?? false}
@@ -128,7 +140,7 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                             />
                         </div>
                         <div className="appearance-settings__row">
-                            <span className="appearance-settings__label">主题色</span>
+                            <span className="appearance-settings__label">{short}：强调色</span>
                             <div className="appearance-settings__colors">
                                 {ACCENTS.map((color) => (
                                     <button
@@ -137,18 +149,19 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                                         type="button"
                                         disabled={appearance?.useWindowsAccentColor}
                                         style={{ backgroundColor: color }}
-                                        title={color}
-                                        aria-label={`${title}：主题色 ${color}`}
+                                        title={ACCENT_NAMES[color] ?? color}
+                                        aria-label={`${short}：强调色 ${ACCENT_NAMES[color] ?? color}`}
                                         aria-pressed={appearance?.accentColor.toLowerCase() === color}
                                         onClick={() => handleAppearance({ accentColor: color })}
-                                     data-button="icon" />
+                                        data-button="icon"
+                                    />
                                 ))}
                                 <input
                                     className="appearance-settings__color"
                                     type="color"
                                     disabled={appearance?.useWindowsAccentColor}
-                                    aria-label={`${title}：自定义主题色`}
-                                    title="自定义主题色"
+                                    aria-label={`${short}：自定义强调色`}
+                                    title="自定义强调色"
                                     value={appearance?.accentColor ?? "#2563eb"}
                                     onChange={(event) => handleAppearance({ accentColor: event.currentTarget.value })}
                                 />
@@ -157,73 +170,92 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                     </section>
                 );
             })}
-            <div className="appearance-settings__row">
-                <label className="appearance-settings__label" htmlFor="appearance-radius">
-                    圆角
-                </label>
-                <input
-                    id="appearance-radius"
-                    className="appearance-settings__number"
-                    type="number"
-                    min={0}
-                    max={12}
-                    step={1}
-                    value={radius}
-                    onChange={(event) => setRadius(event.currentTarget.value)}
-                    onBlur={(event) => {
-                        const value = event.currentTarget.valueAsNumber; // 当前已结束编辑的圆角。
-                        if (Number.isInteger(value) && value >= 0 && value <= 12) {
-                            if (value !== preferences?.cornerRadius) onPreferences({ cornerRadius: value });
-                        } else setRadius(String(preferences?.cornerRadius ?? 6));
-                    }}
-                    onKeyDown={(event) => {
-                        if (event.key === "Enter") event.currentTarget.blur();
-                    }}
-                />
-                <span>px</span>
-            </div>
-            <div className="appearance-settings__row">
-                <label className="appearance-settings__label" htmlFor="appearance-font">
-                    字体
-                </label>
-                <select
-                    id="appearance-font"
-                    className="appearance-settings__font"
-                    value={preferences?.fontFamily ?? "Segoe UI Variable"}
-                    onChange={(event) => onPreferences({ fontFamily: event.currentTarget.value })}
-                >
-                    {themeFontOptions(manifests).map((font) => (
-                        <option key={font} value={font}>
-                            {font}
-                        </option>
-                    ))}
-                </select>
-            </div>
-            <div className="appearance-settings__row">
-                <label className="appearance-settings__label" htmlFor="appearance-font-size">
-                    字体大小
-                </label>
-                <input
-                    id="appearance-font-size"
-                    className="appearance-settings__number"
-                    type="number"
-                    min={12}
-                    max={18}
-                    step={1}
-                    value={fontSize}
-                    onChange={(event) => setFontSize(event.currentTarget.value)}
-                    onBlur={(event) => {
-                        const value = event.currentTarget.valueAsNumber; // 当前已结束编辑的界面字号。
-                        if (Number.isInteger(value) && value >= 12 && value <= 18) {
-                            if (value !== preferences?.fontSize) onPreferences({ fontSize: value });
-                        } else setFontSize(String(preferences?.fontSize ?? 13));
-                    }}
-                    onKeyDown={(event) => {
-                        if (event.key === "Enter") event.currentTarget.blur();
-                    }}
-                />
-                <span>px</span>
-            </div>
+            {themeActive && (
+                <div className="appearance-settings__theme-status" role="status">
+                    <p>当前外观由「{selectedTheme.name}」决定：强调色、圆角、字体与字号由主题写入，主题生效期间的手工修改会被下一次切换覆盖。</p>
+                    <button
+                        type="button"
+                        className="appearance-settings__restore"
+                        onClick={() => onThemeSelection(null)}
+                        disabled={unavailable}
+                        data-button="ghost"
+                    >
+                        恢复我原来的外观
+                    </button>
+                </div>
+            )}
+            <section className="appearance-settings__group" aria-labelledby="shared-appearance-title">
+                <h2 className="appearance-settings__heading" id="shared-appearance-title">
+                    通用
+                </h2>
+                <div className="appearance-settings__row">
+                    <label className="appearance-settings__label" htmlFor="appearance-radius">
+                        圆角{fromTheme}
+                    </label>{" "}
+                    <input
+                        id="appearance-radius"
+                        className="appearance-settings__number"
+                        type="number"
+                        min={0}
+                        max={12}
+                        step={1}
+                        value={radius}
+                        onChange={(event) => setRadius(event.currentTarget.value)}
+                        onBlur={(event) => {
+                            const value = event.currentTarget.valueAsNumber; // 当前已结束编辑的圆角。
+                            if (Number.isInteger(value) && value >= 0 && value <= 12) {
+                                if (value !== preferences?.cornerRadius) onPreferences({ cornerRadius: value });
+                            } else setRadius(String(preferences?.cornerRadius ?? 6));
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                    />
+                    <span>px</span>
+                </div>
+                <div className="appearance-settings__row">
+                    <label className="appearance-settings__label" htmlFor="appearance-font">
+                        字体{fromTheme}
+                    </label>
+                    <select
+                        id="appearance-font"
+                        className="appearance-settings__font"
+                        value={preferences?.fontFamily ?? "Segoe UI Variable"}
+                        onChange={(event) => onPreferences({ fontFamily: event.currentTarget.value })}
+                    >
+                        {themeFontOptions(manifests).map((font) => (
+                            <option key={font} value={font}>
+                                {font}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+                <div className="appearance-settings__row">
+                    <label className="appearance-settings__label" htmlFor="appearance-font-size">
+                        字体大小{fromTheme}
+                    </label>
+                    <input
+                        id="appearance-font-size"
+                        className="appearance-settings__number"
+                        type="number"
+                        min={12}
+                        max={18}
+                        step={1}
+                        value={fontSize}
+                        onChange={(event) => setFontSize(event.currentTarget.value)}
+                        onBlur={(event) => {
+                            const value = event.currentTarget.valueAsNumber; // 当前已结束编辑的界面字号。
+                            if (Number.isInteger(value) && value >= 12 && value <= 18) {
+                                if (value !== preferences?.fontSize) onPreferences({ fontSize: value });
+                            } else setFontSize(String(preferences?.fontSize ?? 13));
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                    />
+                    <span>px</span>
+                </div>
+            </section>
         </fieldset>
     );
 };
