@@ -6,8 +6,13 @@ import { loadPluginScript, pluginScriptLoaded, readPluginApi, subscribePluginShe
 import type { ComponentManifest } from "../../contracts/component";
 import type { ApplicationPreferences } from "../../contracts/settings";
 import backIcon from "../../../resources/weather-back.svg?raw";
+import chevronIcon from "../../../resources/weather-chevron-right.svg?raw";
 import trashIcon from "../../../resources/weather-trash.svg?raw";
+
+/** 移除图标按二级页图标基线放大到 18，按钮命中区仍由 CSS 固定 32。 */
+const trashIcon18 = trashIcon.replace("<svg ", '<svg width="18" height="18" ');
 import { DesktopTileMenu, type DesktopTileMenuItem } from "../tiles/DesktopTileMenu";
+import { SettingsAbout } from "./SettingsAbout";
 import { SettingsSwitch } from "./SettingsSwitch";
 import { islandCardAvailability, moveIslandCard, sortIslandCardManifests, updateIslandCardOrder } from "./islandSettings";
 import "./IslandSettingsPage.css";
@@ -73,10 +78,13 @@ export const IslandSettings = ({
                     <button className="island-settings__back" type="button" aria-label="返回浮岛" title="返回浮岛" onClick={() => setDetailId(undefined)} data-button="icon">
                         <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: backIcon }} />
                     </button>
-                    <h2>{detail.name}</h2>
+                    <div className="island-settings__identity">
+                        <h2>{detail.name}</h2>
+                        <p className="island-settings__meta">{availability?.enabled ? "已启用" : "已停用"}</p>
+                    </div>
                     <div className="island-settings__commands">
                         <button
-                            className="settings__button settings__icon-button"
+                            className="settings__button settings__icon-button island-settings__trash"
                             type="button"
                             aria-label="从浮岛移除"
                             title="从浮岛移除"
@@ -84,15 +92,12 @@ export const IslandSettings = ({
                             onClick={() => toggle(detail.id, false)}
                             data-button="icon"
                         >
-                            <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: trashIcon }} />
+                            <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: trashIcon18 }} />
                         </button>
                         <SettingsSwitch label={`${detail.name}上浮岛`} checked={availability?.enabled ?? false} disabled={unavailable} onChange={(checked) => toggle(detail.id, checked)} />
                     </div>
                 </div>
-                <div className="island-settings__identity">
-                    <strong>{detail.id}</strong>
-                    <span>{detail.description || "此卡片未提供描述"}</span>
-                </div>
+                <SettingsAbout text={detail.description || ""} />
                 {entries.length ? (
                     <div className="island-settings__entries">
                         {entries.map((entry) => <IslandPluginEntry key={entry.id} pluginId={detail.id} entry={entry} />)}
@@ -208,7 +213,7 @@ export const IslandSettings = ({
                                     <button type="button" aria-label={`${card.name}上移`} title="上移" disabled={unavailable || !state.canMoveUp} onClick={() => move(card.id, -1)} data-button="icon">↑</button>
                                     <button type="button" aria-label={`${card.name}下移`} title="下移" disabled={unavailable || !state.canMoveDown} onClick={() => move(card.id, 1)} data-button="icon">↓</button>
                                 </div>
-                                <span className="island-settings__chevron" aria-hidden="true">›</span>
+                                <span className="island-settings__chevron" aria-hidden="true" dangerouslySetInnerHTML={{ __html: chevronIcon }} />
                                 <button className="island-settings__hit" type="button" aria-label={`打开${card.name}卡片设置`} onClick={() => setDetailId(card.id)} data-button="row-hit" />
                             </div>
                         );

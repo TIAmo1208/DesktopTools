@@ -1,7 +1,9 @@
 /* 岛设置一级页与二级页保持设置内容宽度。 */
 .island-settings {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 18px;
+    min-width: 0;
     max-width: 900px;
 }
 
@@ -63,7 +65,7 @@
 
 /* 副行使用弱化文本并省略超宽内容。 */
 .island-settings__copy small {
-    overflow: clip;
+    overflow: hidden;
     color: var(--color-muted);
     font-size: 12px;
     text-overflow: ellipsis;
@@ -101,8 +103,18 @@
     pointer-events: none;
     position: relative;
     z-index: 1;
+    display: grid;
+    flex: 0 0 16px;
+    place-items: center;
+    width: 16px;
+    height: 16px;
     color: var(--color-muted);
-    font-size: 20px;
+}
+
+/* 箭头使用共享图标，和插件列表行同一尺寸。 */
+.island-settings__chevron svg {
+    width: 16px;
+    height: 16px;
 }
 
 /* 覆盖式整行命中按钮位于内容下方。 */
@@ -118,18 +130,46 @@
     display: none;
 }
 
-/* 卡片二级页头为返回、标题和右侧命令。 */
+/* 二级页只用网格间距，页头不再叠加下边距。 */
+.island-settings--detail {
+    gap: 12px;
+}
+
+.island-settings--detail .island-settings__heading {
+    margin-bottom: 0;
+}
+
+/* 卡片二级页头为返回、身份与右侧命令，和功能格子、插件二级页同一行高。 */
 .island-settings__heading {
     display: flex;
     align-items: center;
     gap: 12px;
+    min-height: 38px;
+    margin-bottom: 16px;
 }
 
-/* 二级页标题沿用 18px 基线。 */
+/* 二级页标题沿用 18px 基线并与 38px 行高对齐。 */
 .island-settings__heading h2 {
     margin: 0;
     font-size: 18px;
     font-weight: 600;
+    line-height: 38px;
+}
+
+/* 身份区占满标题与命令之间的空间。 */
+.island-settings__identity {
+    display: grid;
+    flex: 1;
+    gap: 2px;
+    min-width: 0;
+}
+
+/* 启停状态与插件页信息行同一样式。 */
+.island-settings__meta {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: 12px;
+    line-height: 18px;
 }
 
 /* 返回图标命令使用统一尺寸。 */
@@ -151,26 +191,42 @@
     height: 16px;
 }
 
-/* 移除与上岛开关整体靠右。 */
+/* 移除与上岛开关整体靠右，和标题同一中线。 */
 .island-settings__commands {
     display: flex;
     align-items: center;
     gap: 8px;
+    height: 38px;
     margin-inline-start: auto;
 }
 
-/* 身份与描述形成二级页第二行。 */
-.island-settings__identity {
-    display: grid;
-    gap: 4px;
-    color: var(--color-muted);
-    font-size: 12px;
+/* 头部图标命令与 16px 箭头、22px 开关同高。 */
+.island-settings__commands > .settings__icon-button {
+    width: 32px;
+    min-height: 32px;
+    height: 32px;
+    padding: 0;
 }
 
-/* 身份主行保持正文色。 */
-.island-settings__identity strong {
-    color: var(--color-text);
-    font-size: 13px;
+/* 图标居箱体正中。 */
+.island-settings__commands > .settings__icon-button svg {
+    display: block;
+}
+
+/* 移除是破坏性操作，沿用插件卸载的告警色。 */
+.island-settings__trash {
+    color: var(--color-error);
+}
+
+/* 头部开关只留轨道，开/关二字不占位，无障碍名仍在输入上。 */
+.island-settings__commands .settings-switch {
+    flex-basis: 40px;
+    width: 40px;
+    gap: 0;
+}
+
+.island-settings__commands .settings-switch > span:not(.settings-switch__track) {
+    display: none;
 }
 
 /* 无卡或无设置条目的稳定空态。 */

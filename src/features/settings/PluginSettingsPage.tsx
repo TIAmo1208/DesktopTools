@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../bridge/components";
 import { requestLoopback } from "../../bridge/loopback";
+import { SettingsAbout } from "./SettingsAbout";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../bridge/pluginSettings";
 import {
     applyPluginInstall,
@@ -536,7 +537,7 @@ export const PluginSettingsPage = ({
                             </button>
                         ) : null}
                     </p>
-                    {selected.description ? <PluginAbout text={selected.description} /> : null}
+                    {selected.description ? <SettingsAbout text={selected.description} /> : null}
                     {loopbackCredential ? <PluginLoopbackPairing pluginId={selected.id} metadata={loopbackCredential} disabled={disabled || pluginDisabled} /> : null}
                     {pending ? (
                         <p className="plugin-settings__status" role="status" aria-busy="true">
@@ -1233,29 +1234,6 @@ export const pluginIdentity = (author: string | undefined, id: string) => (autho
 /** 头部启停按钮。停用时写启动，启用时写停用。 */
 export const pluginPowerLabel = (pluginDisabled: boolean) => (pluginDisabled ? "启动插件" : "停用插件");
 
-/** 简介超出一行才给出展开。收起后仍可再展开。 */
-const PluginAbout = ({ text }: { text: string }) => {
-    const textRef = useRef<HTMLSpanElement>(null); // 用来量是否超出一行。
-    const [open, setOpen] = useState(false); // 展开后显示全文。
-    const [overflow, setOverflow] = useState(false); // 收起时是否放不下。
-    useLayoutEffect(() => {
-        const node = textRef.current;
-        if (!node || open) return;
-        setOverflow(node.scrollWidth > node.clientWidth + 1);
-    }, [text, open]);
-    return (
-        <p className="plugin-settings__about">
-            <span ref={textRef} className={open ? "plugin-settings__about-text plugin-settings__about-text--open" : "plugin-settings__about-text"}>
-                {text}
-            </span>
-            {overflow || open ? (
-                <button className="plugin-settings__about-toggle" type="button" onClick={() => setOpen((current) => !current)} data-button="ghost">
-                    {open ? "收起" : "展开"}
-                </button>
-            ) : null}
-        </p>
-    );
-};
 
 /**
  * 插件行右键菜单。四组用分隔线隔开。不可创建时不出现「添加到桌面」。
