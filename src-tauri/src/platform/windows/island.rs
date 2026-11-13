@@ -665,7 +665,7 @@ where
             let app = app.clone(); // 分派时读取同一运行时。
             move |command, arguments| {
                 let runtime = app.try_state::<Arc<crate::host::DesktopHostRuntime>>().ok_or_else(|| serde_json::json!({"code": "desktop-host-starting", "message": "桌面宿主正在启动"}))?;
-                crate::commands::dispatch_native_command(&app, &runtime, command, arguments)
+                crate::commands::dispatch_native_command(&app, &runtime, crate::commands::NativeCommandSource::DesktopHost, command, arguments)
             }
         });
         respond(super::desktop_host::handle_desktop_request(request, &app, &handler, &format!("http://{ISLAND_PROTOCOL}.localhost"), None));

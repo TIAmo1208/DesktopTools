@@ -2,6 +2,6 @@
     "$schema": "../gen/schemas/desktop-schema.json",
     "identifier": "default",
     "description": "Desktop Tools main window capability",
-    "windows": ["main", "collect-editor-*"],
+    "windows": ["main", "collect-editor-*", "popup-layer"],
     "permissions": ["core:default"]
 }

@@ -180,7 +180,7 @@ impl DesktopHostRuntime
                         "message": "桌面宿主正在启动"
                     })
                 })?;
-                dispatch_native_command(&command_app, runtime, command, arguments)
+                dispatch_native_command(&command_app, runtime, crate::commands::NativeCommandSource::DesktopHost, command, arguments)
             })
         };
         let monitors = enumerate_desktop_monitors()?; // 当前全部显示器物理状态。
@@ -657,7 +657,7 @@ impl DesktopHostRuntime
         let command_handler: NativeCommandHandler = {
             let command_app = app.clone(); // 新宿主本地协议使用的应用句柄。
             let command_runtime = Arc::clone(self); // 新宿主本地协议使用的正式运行时。
-            Arc::new(move |command, arguments| crate::commands::dispatch_native_command(&command_app, &command_runtime, command, arguments))
+            Arc::new(move |command, arguments| crate::commands::dispatch_native_command(&command_app, &command_runtime, crate::commands::NativeCommandSource::DesktopHost, command, arguments))
         }; // 重建后全部 WebView2 共用的命令边界。
         let previous_hosts = {
             let data = self.data.lock().map_err(|_| "桌面宿主状态暂时不可用".to_string())?; // 复用前的原生宿主身份。

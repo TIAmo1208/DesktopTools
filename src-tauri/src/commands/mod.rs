@@ -328,10 +328,31 @@ pub(crate) fn get_foreground_snapshot() -> crate::platform::windows::refresh_pol
 pub(crate) use workspace::reconcile_workspace_environment;
 pub use workspace::{apply_workspace_command, apply_workspace_interaction, get_workspace_snapshot, inspect_workspace_backup, list_workspace_auto_snapshots, redo_workspace, restore_workspace_backup, undo_workspace, write_workspace_backup};
 
+/// 原生命令的协议来源；同一套命令面按来源收窄，不把宿主能力暴露给其他窗口。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeCommandSource
+{
+    /// 桌面宿主页面（逐屏宿主与独立岛）。
+    DesktopHost,
+    /// 设置窗口页面。
+    Settings,
+}
+
+/// 判断命令是否属于桌面层浮层命令；这些命令只服务宿主页面。
+pub(crate) fn is_popup_layer_command(command: &str) -> bool { matches!(command, "open_popup_layer" | "dismiss_popup_layer" | "update_popup_layer_payload") }
+
+/// 判断协议来源能否调用浮层命令；设置窗口只保留只读与设置命令。
+pub(crate) fn popup_layer_command_allowed(source: NativeCommandSource) -> bool { source == NativeCommandSource::DesktopHost }
+
 /// 路由独立 Windowed WebView2 transport 到正式应用命令边界。
-pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRuntime, command: &str, arguments: Value) -> Result<Value, Value>
+pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRuntime, source: NativeCommandSource, command: &str, arguments: Value) -> Result<Value, Value>
 {
     use tauri::Emitter;
+    // 置顶弹层只服务桌面层浮层：设置窗口与弹层页面自身都不得替换、关闭或改写宿主请求。
+    if is_popup_layer_command(command) && !popup_layer_command_allowed(source)
+    {
+        return Err(serialize_error(DesktopHostError::invalid_readiness("弹层命令不接受设置窗口调用")));
+    }
     // 当前本地 transport 命令的统一 JSON 结果。
     let result: Result<Value, Value> = match command
     {
@@ -708,6 +729,22 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         {
             let request = command_argument(&arguments, "request", "门户菜单参数无效").map_err(serialize_error)?; // 两种传输使用相同请求结构。
             folder_portal::execute_show_folder_portal_menu(&app.state::<DesktopItemState>(), runtime, request).map_err(serialize_error).and_then(serialize_result)
+        }
+        "open_popup_layer" =>
+        {
+            let request = command_argument(&arguments, "request", "弹层请求参数无效").map_err(serialize_error)?; // 宿主页面与弹层页面共用同一请求结构。
+            crate::platform::windows::popup_layer::execute_open(app, request).map_err(serialize_error).and_then(serialize_result)
+        }
+        "update_popup_layer_payload" =>
+        {
+            let request_id: u64 = command_argument(&arguments, "requestId", "弹层请求身份无效").map_err(serialize_error)?;
+            let payload = arguments.get("payload").cloned().unwrap_or(serde_json::Value::Null); // 载荷结构由弹层页面按种类校验。
+            crate::platform::windows::popup_layer::execute_update_payload(app, request_id, payload).map_err(serialize_error).and_then(serialize_result)
+        }
+        "dismiss_popup_layer" =>
+        {
+            let request_id: Option<u64> = arguments.get("requestId").cloned().map(serde_json::from_value).transpose().map_err(|error| serialize_error(error.to_string()))?; // 省略时结束当前请求。
+            crate::platform::windows::popup_layer::execute_dismiss(app, request_id).map_err(serialize_error).and_then(serialize_result)
         }
         "rename_folder_portal_item" =>
         {

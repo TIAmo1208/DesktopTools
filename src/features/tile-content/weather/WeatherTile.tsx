@@ -6,8 +6,6 @@ import {
     listenWeatherConfiguration,
     listenWeatherForecast,
     listWeatherSources,
-    searchWeatherCities,
-    validateWeatherCity,
 } from "../../../bridge/weather";
 import { openCollectLink } from "../../../bridge/collect";
 import { openSettingsWindow } from "../../../bridge/desktopHost";
@@ -15,7 +13,6 @@ import type { ComponentInstanceSnapshot } from "../../../contracts/component";
 import {
     parseWeatherTileBinding,
     parseWeatherTileConfig,
-    SOURCE_CITY_CHECK,
     weatherAttribution,
     WEATHER_SOURCES,
     type WeatherCity,
@@ -23,8 +20,7 @@ import {
     type WeatherSource,
     type WeatherSourceStatus,
 } from "../../../contracts/weather";
-import { WeatherCityDialog, type WeatherCityDialogState } from "../../weather/WeatherCityDialog";
-import { WeatherSourcePicker } from "../../weather/WeatherSourcePicker";
+import { openPopupWeatherCity, openPopupWeatherSource } from "../../popup-layer/openPopupRequest";
 import { usePreferences } from "../../settings/PreferencesProvider";
 import { ComponentTile, type ComponentTileProps } from "../../components/ComponentTile";
 import type { DesktopTileMenuItem } from "../../tiles/DesktopTileMenu";
@@ -559,15 +555,13 @@ const WeatherContent = ({
 
 export const WeatherTile = (props: ComponentTileProps) => {
     const [city, setCity] = useState<WeatherCity>();
-    const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
-    const [cityOpen, setCityOpen] = useState(false);
+    const popupOpen = useRef(false); // 同一时刻只打开一个天气弹层，避免重复请求。
     const [sources, setSources] = useState<WeatherSourceStatus[]>([]); // 设置中已配置的来源，缺失状态与菜单共用。
     const [citiesFor, setCitiesFor] = useState<Partial<Record<WeatherSource, WeatherCity[]>>>({}); // 按来源缓存已读取的城市列表，未读取的来源缺项。
     const [readiness, setReadiness] = useState<"loading" | "loaded">("loading"); // 首次读取完成前不误判为无已配置来源。
     const { preferences } = usePreferences();
     const [displayMode, setDisplayMode] = useState<WeatherMode>("summary");
     const busy = useRef(false); // 防止连续菜单操作交错提交。
-    const cityBusy = useRef(false); // 城市弹窗动作串行，避免确认与验证交错。
     const instance = useRef({ active: false, generation: 0 }); // 卸载或换源后拒绝旧回调。
     const state = props.instance.state && typeof props.instance.state === "object" ? (props.instance.state as Record<string, unknown>) : {};
     const savedMode = state.weatherMode;
@@ -588,8 +582,6 @@ export const WeatherTile = (props: ComponentTileProps) => {
     const cityIdRef = useRef(cityId); // 菜单监听读取最新城市标识，不因标识变化重建监听。
     cityIdRef.current = cityId;
     const config = useMemo(() => (source && cityId ? { source, cityId } : undefined), [source, cityId]);
-    const [cityDialog, setCityDialog] = useState<WeatherCityDialogState>({ checks: [], status: "", failure: false }); // 城市弹窗状态只在本次弹窗内有效。
-    const [cityBusyState, setCityBusyState] = useState(false); // 弹窗控件按渲染值禁用。
     const headerHeight = !props.appearance || props.appearance.titleMode === "fixed" ? 28 : 0;
     const sizeFor = (mode: WeatherMode) => ({
         width: Math.ceil(weatherSizes[mode].width * fontScale + 24),
@@ -650,9 +642,6 @@ export const WeatherTile = (props: ComponentTileProps) => {
     const listedCities = source ? citiesFor[source] : undefined; // undefined 表示该来源的城市列表尚未成功读取。
     const cityAbsent = listedCities !== undefined && !listedCities.some((item) => item.id === cityId); // 已读取且确实不含当前城市。
     const missing = readiness === "loaded" ? weatherMissingState(source, cityId, sources, Boolean(cityId && cityAbsent)) : undefined;
-    useEffect(() => {
-        if (cityOpen) setCityDialog({ checks: [], status: "", failure: false }); // 打开或换源后不保留上一次选择与验证。
-    }, [cityOpen, source]);
     const handleMode = async (mode: WeatherMode, fixed: boolean, resize: boolean) => {
         if (busy.current) return;
         busy.current = true;
@@ -703,65 +692,63 @@ export const WeatherTile = (props: ComponentTileProps) => {
                 setCityId(undefined); // 城市标识随旧来源一起失效，必须重新选择。
                 setCity(undefined); // 旧城市对象一并清空，避免继续按新来源读取。
             })
-            .catch(() => undefined)
-            .finally(() => setSourcePickerOpen(false));
+            .catch(() => undefined);
     const handleCity = (next: WeatherCity) =>
-        commitState({ weatherSource: source, weatherCityId: next.id }, "天气城市保存失败").then(() => {
-            setCityId(next.id);
-            setCity(next);
-            setCityOpen(false);
-        });
+        commitState({ weatherSource: source, weatherCityId: next.id }, "天气城市保存失败")
+            .then(() => {
+                setCityId(next.id);
+                setCity(next);
+            })
+            .catch(() => undefined); // 失败说明已由 commitState 发出，不重复提示。
+
+    /** 城市选择在置顶弹层里完成：弹层负责搜索与验证，确认后才写回本格子。 */
+    const openCityPopup = () => {
+        if (popupOpen.current) return;
+        const activeSource = source; // 打开时的来源，确认后仍按它写入。
+        if (!activeSource) return;
+        popupOpen.current = true;
+        void openPopupWeatherCity({ title: "添加新城市或地区", type: "add", source: activeSource, city })
+            .then(async (picked) => {
+                if (!picked) return;
+                await addWeatherCity(activeSource, picked); // 确认才写入该来源城市列表。
+                await handleCity(picked);
+            })
+            .catch((error: unknown) =>
+                publishMessage({ type: "error", content: error instanceof Error ? error.message : "天气城市保存失败", source: "desktop-tile" }),
+            )
+            .finally(() => {
+                popupOpen.current = false;
+            });
+    };
+    /** 来源选择在置顶弹层里完成：选中即提交本格子的来源并清空城市标识。 */
+    const openSourcePopup = () => {
+        if (popupOpen.current) return;
+        popupOpen.current = true;
+        void openPopupWeatherSource({ sources, current: source })
+            .then((next) => {
+                if (next) return handleSource(next);
+                return undefined;
+            })
+            .catch((error: unknown) =>
+                publishMessage({ type: "error", content: error instanceof Error ? error.message : "天气来源保存失败", source: "desktop-tile" }),
+            )
+            .finally(() => {
+                popupOpen.current = false;
+            });
+    };
 
     /** 缺失状态的主按键只进入本格子已有的选择流程，不自作主张改选来源或城市。 */
     const handleMissingAction = (target: WeatherMissing) => {
         if (target === "city-removed" || target === "no-city") {
-            setCityOpen(true);
+            openCityPopup();
         } else if (target === "no-sources") {
             void openSettingsWindow().catch((error: unknown) =>
                 publishMessage({ type: "error", content: error instanceof Error ? error.message : "设置窗口打开失败", source: "desktop-tile" }),
             );
         } else {
-            setSourcePickerOpen(true);
+            openSourcePopup();
         }
     };
-    /** 城市弹窗动作串行：忙碌期间拒绝重复提交，失败原因留在弹窗状态行。 */
-    const runCityAction = async (action: () => Promise<void>) => {
-        if (cityBusy.current) return;
-        cityBusy.current = true;
-        setCityBusyState(true);
-        setCityDialog((current) => ({ ...current, status: "", failure: false }));
-        try {
-            await action();
-        } catch (error) {
-            setCityDialog((current) => ({ ...current, failure: true, status: error instanceof Error ? error.message : "天气城市操作失败" }));
-        } finally {
-            cityBusy.current = false;
-            setCityBusyState(false);
-        }
-    };
-    /** 改选城市只作废上一次验证，确认前不写入城市列表。 */
-    const handleCitySelect = (next?: WeatherCity) => setCityDialog((current) => ({ ...current, city: next, checks: [], status: "", failure: false }));
-    /** 按来源搜索候选位置；搜索结果只服务本次弹窗，不写入城市列表。 */
-    const searchCities = async (query: string) => {
-        try {
-            return await searchWeatherCities(source as WeatherSource, query);
-        } catch (error) {
-            setCityDialog((current) => ({ ...current, failure: true, status: error instanceof Error ? error.message : "城市搜索失败" }));
-            return [];
-        }
-    };
-    /** 按来源验证所选城市；验证只给出可用性结论，不写入城市列表。 */
-    const validateCity = (target: WeatherCity) =>
-        runCityAction(async () => {
-            const settled = await validateWeatherCity(source as WeatherSource, target); // 后端可能按来源归一化候选城市，回填同一份结果。
-            setCityDialog((current) => ({ ...current, city: settled, checks: [SOURCE_CITY_CHECK], status: "验证通过" }));
-        });
-    /** 确认时才写入该来源城市列表，并把城市标识绑定到当前格子。 */
-    const confirmCity = (target: WeatherCity) =>
-        runCityAction(async () => {
-            await addWeatherCity(source as WeatherSource, target);
-            await handleCity(target);
-        });
     const details = city?.fxLink ? () => void openCollectLink(city.fxLink).catch(() => undefined) : undefined; // 详情链接为空的来源保持禁用。
     const menuItems = useMemo<DesktopTileMenuItem[]>(
         () => [
@@ -782,7 +769,7 @@ export const WeatherTile = (props: ComponentTileProps) => {
                 children: !source
                     ? [{ label: "未选择 API", heading: true }]
                     : [
-                          { label: "添加新城市或地区", onSelect: () => setCityOpen(true) },
+                          { label: "添加新城市或地区", onSelect: () => openCityPopup() },
                           ...sourceCities.map((item, index) => ({
                               label: item.name,
                               separatorBefore: index === 0,
@@ -847,22 +834,6 @@ export const WeatherTile = (props: ComponentTileProps) => {
                         fixedMode={fixedMode}
                         onModeChange={setDisplayMode}
                     />
-                    {sourcePickerOpen && (
-                        <WeatherSourcePicker sources={sources} onSelect={(next) => void handleSource(next)} onClose={() => setSourcePickerOpen(false)} />
-                    )}
-                    {cityOpen && source && (
-                        <WeatherCityDialog
-                            title="添加新城市或地区"
-                            type="add"
-                            state={cityDialog}
-                            busy={cityBusyState}
-                            onSearch={searchCities}
-                            onSelect={handleCitySelect}
-                            onValidate={validateCity}
-                            onConfirm={confirmCity}
-                            onClose={() => setCityOpen(false)}
-                        />
-                    )}
                 </>
             )}
         </ComponentTile>

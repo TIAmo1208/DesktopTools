@@ -74,7 +74,9 @@ impl Default for LogConfig
         {
             eprintln!("日志文件输出已关闭：{error}");
         }
-        Self { file_level: LogLevel::Info, console_level: if cfg!(debug_assertions) { LogLevel::Debug } else { LogLevel::None }, file_output: directory.is_ok(), directory: directory.unwrap_or_default(), flush_interval: Duration::from_secs(10) }
+        // 诊断开关：设置该环境变量后文件日志也记录 DEBUG，用于排查只在真机出现的问题。
+        let file_level = if std::env::var_os("DESKTOP_TOOLS_LOG_DEBUG").is_some() { LogLevel::Debug } else { LogLevel::Info };
+        Self { file_level, console_level: if cfg!(debug_assertions) { LogLevel::Debug } else { LogLevel::None }, file_output: directory.is_ok(), directory: directory.unwrap_or_default(), flush_interval: Duration::from_secs(10) }
     }
 }
 
