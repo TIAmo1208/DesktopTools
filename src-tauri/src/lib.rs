@@ -33,6 +33,12 @@ use workspace::WorkspaceState;
 /// 创建并运行 Desktop Tools 正式应用。
 pub fn run()
 {
+    // 低完整性进程无法写入用户日志目录，也无法附着 Explorer 桌面层；先提示并退出，不进入 Tauri 初始化。
+    if let Err(message) = crate::platform::windows::integrity::ensure_startup_integrity()
+    {
+        eprintln!("启动失败：{message}");
+        std::process::exit(1);
+    }
     if let Err(error) = tools::log::init(tools::log::LogConfig::default())
         && cfg!(debug_assertions)
     {
