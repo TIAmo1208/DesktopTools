@@ -17,10 +17,10 @@ mod workspace;
 use app::ApplicationState;
 use commands::get_desktop_item_image;
 use commands::sync_message_appearance;
-use commands::{dismiss_island_message, get_island_messages};
 use commands::{apply_plugin_install, apply_plugin_installs, cancel_plugin_install, choose_plugin_directory, create_plugin_component, get_plugin_settings, open_plugin_directory, open_plugin_repository, prepare_plugin_install_from_archive, prepare_plugin_install_from_folder, resolved_plugin_directory, save_plugin_settings, uninstall_plugin};
 use commands::{apply_workspace_command, apply_workspace_interaction, begin_desktop_host_input_drag, delete_desktop_items, end_desktop_host_input_drag, execute_music_action, exit_desktop_tools, get_application_snapshot, get_component_runtime_snapshot, get_current_music_session, get_desktop_host_snapshot, get_desktop_item_snapshot, get_workspace_snapshot, inspect_workspace_backup, invoke_component_capability, list_workspace_auto_snapshots, open_desktop_items, open_settings_window, paste_desktop_items, publish_desktop_host_readiness, publish_message_notification, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, redo_workspace, rename_desktop_item, restore_workspace_backup, set_application_status, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag, undo_workspace, update_desktop_host_hit_map, write_workspace_backup};
 use commands::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
+use commands::{dismiss_island_message, get_island_messages};
 use component_runtime::ComponentRuntimeState;
 use host::DesktopHostRuntime;
 use notifications::ToastManager;
@@ -33,6 +33,12 @@ use workspace::WorkspaceState;
 /// 创建并运行 Desktop Tools 正式应用。
 pub fn run()
 {
+    // 低完整性进程无法写入用户日志目录，也无法附着 Explorer 桌面层；先提示并退出，不进入 Tauri 初始化。
+    if let Err(message) = crate::platform::windows::integrity::ensure_startup_integrity()
+    {
+        eprintln!("启动失败：{message}");
+        std::process::exit(1);
+    }
     if let Err(error) = tools::log::init(tools::log::LogConfig::default())
         && cfg!(debug_assertions)
     {
@@ -114,6 +120,9 @@ pub fn run()
             commands::folder_portal::set_folder_portal_clipboard,
             commands::folder_portal::paste_folder_portal_items,
             commands::folder_portal::show_folder_portal_menu,
+            platform::windows::popup_layer::get_popup_layer_request,
+            platform::windows::popup_layer::set_popup_layer_frame,
+            platform::windows::popup_layer::finish_popup_layer,
             commands::folder_portal::rename_folder_portal_item,
             commands::folder_portal::prepare_folder_portal_drag,
             commands::collect::get_collect_items,

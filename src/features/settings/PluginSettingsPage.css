@@ -243,41 +243,6 @@
     display: none;
 }
 
-/* 简介默认一行。展开后恢复换行。 */
-.plugin-settings__about {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    margin: 4px 0 0;
-    color: var(--color-muted);
-    font-size: 12px;
-    line-height: 18px;
-}
-
-/* 收起时只留一行。 */
-.plugin-settings__about-text {
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-}
-
-/* 展开后显示全文。 */
-.plugin-settings__about-text--open {
-    white-space: normal;
-}
-
-/* 展开和收起不另做一档颜色。 */
-.plugin-settings__about-toggle {
-    flex: none;
-    padding: 0;
-    border: 0;
-    color: var(--color-text);
-    background: transparent;
-    font: inherit;
-    cursor: pointer;
-}
-
 /* 头部三个命令贴右，和标题同一行高。 */
 .plugin-settings__commands {
     display: flex;

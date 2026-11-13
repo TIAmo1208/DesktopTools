@@ -1,0 +1,45 @@
+/* 说明文本：默认一行，超出后由按钮展开全文；插件与浮岛卡片二级页共用。 */
+.settings-about {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+    max-width: 100%;
+    margin: 4px 0 0;
+    color: var(--color-muted);
+    font-size: 12px;
+    line-height: 18px;
+}
+
+/* 收起时只留一行。 */
+.settings-about__text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* 说明正文可选中复制；设置外壳默认禁止选中，这里按正文例外放开。 */
+.settings .settings-about__text {
+    user-select: text;
+    cursor: text;
+}
+
+/* 展开后显示全文。 */
+.settings-about__text--open {
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+/* 展开和收起不另做一档颜色。 */
+.settings-about__toggle {
+    flex: none;
+    padding: 0;
+    border: 0;
+    color: var(--color-text);
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
+}

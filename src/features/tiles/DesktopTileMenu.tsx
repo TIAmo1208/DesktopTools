@@ -1,6 +1,7 @@
-import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { listenRuntime } from "../../bridge/runtime";
 
+import { TileMenuList } from "./TileMenuList";
 import "./DesktopTileMenu.css";
 
 /** Portal 菜单仍归所属格子所有，悬停只影响该格子的临时展开。 */
@@ -143,107 +144,78 @@ export const DesktopTileMenu = ({
         ]?.focus();
     };
 
-    /** 一级与二级使用相同命令表面，不复制状态规则。 */
-    const renderItems = (entries: DesktopTileMenuItem[], nested: boolean) =>
-        entries.map((item, index) => (
-            <Fragment key={item.label}>
-                {item.separatorBefore && <li className="desktop-tile-menu__separator" role="separator" aria-hidden="true" />}
-                <li
-                    role="none"
-                    onPointerEnter={() => {
-                        clearTimeout(timer.current);
-                        if (!nested) timer.current = setTimeout(() => setActive(item.children && !item.disabled ? index : undefined), 200);
-                    }}
-                >
-                    {item.heading ? (
-                        <span className="desktop-tile-menu__heading">{item.label}</span>
-                    ) : (
-                        <button
-                            type="button"
-                            role={item.checked === undefined ? "menuitem" : item.radio ? "menuitemradio" : "menuitemcheckbox"}
-                            className={item.danger ? "desktop-tile-menu__danger" : undefined}
-                            aria-checked={item.checked}
-                            disabled={item.disabled && item.closeOnSelect !== false}
-                            aria-disabled={item.disabled}
-                            title={item.description}
-                            aria-description={item.description}
-                            aria-haspopup={item.children ? "menu" : undefined}
-                            aria-expanded={item.children ? active === index : undefined}
-                            data-expanded={!nested && active === index ? "true" : undefined}
-                            onKeyDown={(event) => {
-                                if (event.key !== "ArrowRight" || !item.children || item.disabled) return;
-                                event.preventDefault();
-                                event.stopPropagation();
-                                clearTimeout(timer.current);
-                                focusChild.current = true;
-                                setActive(index);
-                                if (active === index) child.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-                            }}
-                            onClick={() => {
-                                if (item.disabled) return;
-                                clearTimeout(timer.current);
-                                if (item.children) {
-                                    focusChild.current = true;
-                                    setActive(index);
-                                    return;
-                                }
-                                if (item.closeOnSelect !== false) onClose();
-                                item.onSelect?.();
-                            }}
-                        >
-                            <span className="desktop-tile-menu__check" aria-hidden="true">
-                                {item.checked ? (item.radio ? "●" : "✓") : ""}
-                            </span>
-                            {item.label}
-                            {item.children && (
-                                <svg className="desktop-tile-menu__arrow" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-                                    <path d="m6 4 4 4-4 4" fill="none" stroke="currentColor" />
-                                </svg>
-                            )}
-                        </button>
-                    )}
-                </li>
-            </Fragment>
-        ));
+    /** 一级悬停延时展开，二级不再嵌套展开。 */
+    const handleEnterItem = (index: number, nested: boolean) => {
+        clearTimeout(timer.current);
+        if (nested) return;
+        const item = items[index]; // 当前父项。
+        timer.current = setTimeout(() => setActive(item?.children && !item.disabled ? index : undefined), 200);
+    };
+
+    /** 选中命令：父项展开子菜单，普通项先关闭再执行。 */
+    const handleSelect = (index: number, entries: DesktopTileMenuItem[], nested: boolean) => {
+        const item = entries[index]; // 当前选中项。
+        if (!item || item.disabled) return;
+        clearTimeout(timer.current);
+        if (item.children) {
+            if (nested) return; // 二级菜单不再嵌套。
+            focusChild.current = true;
+            setActive(index);
+            if (active === index) child.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+            return;
+        }
+        if (item.closeOnSelect !== false) onClose();
+        item.onSelect?.();
+    };
+
+    /** 父项方向键右开子菜单；展开后焦点进入二级。 */
+    const handleItemKeyDown = (event: KeyboardEvent<HTMLElement>, index: number, entries: DesktopTileMenuItem[], nested: boolean) => {
+        const item = entries[index];
+        if (event.key !== "ArrowRight" || !item.children || item.disabled || nested) return;
+        event.preventDefault();
+        event.stopPropagation();
+        clearTimeout(timer.current);
+        focusChild.current = true;
+        setActive(index);
+        if (active === index) child.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    };
 
     return (
         <>
-            <menu
-                ref={root}
-                className="desktop-tile-menu"
-                role="menu"
-                aria-label="格子菜单"
+            <TileMenuList
+                items={items}
+                label="格子菜单"
+                menuRef={root}
                 style={position}
-                data-hit-id="tile-menu"
-                data-hit-kind="component"
-                data-hit-priority="100"
-                onPointerEnter={() => onHoverChange?.(true)}
-                onPointerLeave={handlePointerLeave}
+                activeIndex={active}
+                attributes={{ "data-hit-id": "tile-menu", "data-hit-kind": "component", "data-hit-priority": "100" }}
+                onEnterItem={(index) => handleEnterItem(index, false)}
+                onEnterGroup={() => onHoverChange?.(true)}
+                onLeaveGroup={handlePointerLeave}
                 onPointerDown={(event) => event.stopPropagation()}
+                onSelect={(index) => handleSelect(index, items, false)}
+                onItemKeyDown={(event, index) => handleItemKeyDown(event, index, items, false)}
                 onKeyDown={(event) => handleKeyDown(event, false)}
-            >
-                {renderItems(items, false)}
-            </menu>
+            />
             {active !== undefined && items[active]?.children && (
-                <menu
-                    ref={child}
-                    className="desktop-tile-menu"
-                    role="menu"
-                    aria-label={items[active].label}
+                <TileMenuList
+                    items={items[active].children}
+                    label={items[active].label}
+                    nested
+                    menuRef={child}
                     style={childPosition}
-                    data-hit-id="tile-submenu"
-                    data-hit-kind="component"
-                    data-hit-priority="101"
-                    onPointerEnter={() => {
+                    attributes={{ "data-hit-id": "tile-submenu", "data-hit-kind": "component", "data-hit-priority": "101" }}
+                    onEnterItem={() => clearTimeout(timer.current)}
+                    onEnterGroup={() => {
                         clearTimeout(timer.current);
                         onHoverChange?.(true);
                     }}
-                    onPointerLeave={handlePointerLeave}
+                    onLeaveGroup={handlePointerLeave}
                     onPointerDown={(event) => event.stopPropagation()}
+                    onSelect={(index) => handleSelect(index, items[active].children ?? [], true)}
+                    onItemKeyDown={(event, index) => handleItemKeyDown(event, index, items[active].children ?? [], true)}
                     onKeyDown={(event) => handleKeyDown(event, true)}
-                >
-                    {renderItems(items[active].children, true)}
-                </menu>
+                />
             )}
         </>
     );

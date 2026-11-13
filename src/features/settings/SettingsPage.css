@@ -67,16 +67,13 @@
         visibility 0ms linear 0ms;
 }
 
-/* Windows 内置 Fluent 图标字体。插件导航改用 resources 里的 SVG。 */
+/* 侧栏图标统一取 resources 的 Lucide SVG，与导航同一尺寸。 */
 .settings__icon {
+    display: grid;
+    place-items: center;
     flex: 0 0 20px;
     width: 20px;
     height: 20px;
-    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
-    font-size: 18px;
-    font-weight: 400;
-    line-height: 20px;
-    text-align: center;
 }
 
 /* 资源 SVG 导航图标，颜色跟随当前文字色。 */
@@ -237,8 +234,12 @@
     border: 0;
     color: var(--color-text);
     background: transparent;
-    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
-    font-size: 12px;
+}
+
+/* 窗口命令图标按系统标题栏的视觉重量取 10px。 */
+.settings__window-icon svg {
+    width: 10px;
+    height: 10px;
 }
 /* 窗口命令指针反馈。 */
 .settings__window-controls button:hover {
@@ -319,8 +320,13 @@
     border-radius: 4px;
     color: var(--color-text);
     background: transparent;
-    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
     cursor: pointer;
+}
+
+/* 返回图标与标题同行，尺寸取下限 16px。 */
+.settings__back svg {
+    width: 16px;
+    height: 16px;
 }
 
 /* 二级导航入口的悬停反馈。 */

@@ -546,3 +546,26 @@ fn encoded_pidl_reference_round_trips()
 
     assert_eq!(encoded_pidl_reference(parsed.0), reference);
 }
+
+/// 菜单弹出期间 owner 临时进入置顶带，Drop 后立即复原，不改变 owner 语义。
+#[test]
+fn menu_owner_is_topmost_only_while_menu_is_open()
+{
+    super::initialize_shell_apartment().unwrap();
+    {
+        let owner = super::ShellMenuOwner::create().unwrap(); // 与正式菜单同一个专用 owner。
+        assert!(!super::menu_owner_topmost(owner.hwnd), "新建 owner 不应处于置顶带");
+        {
+            let guard = super::MenuOwnerTopmost::new(owner.hwnd);
+            assert!(super::menu_owner_topmost(owner.hwnd), "菜单跟踪期间 owner 必须置顶");
+            drop(guard);
+        }
+        assert!(!super::menu_owner_topmost(owner.hwnd), "菜单结束后 owner 必须离开置顶带");
+        // 重复进入与退出保持同一事实，不复用上一次的状态。
+        let guard = super::MenuOwnerTopmost::new(owner.hwnd);
+        assert!(super::menu_owner_topmost(owner.hwnd));
+        drop(guard);
+        assert!(!super::menu_owner_topmost(owner.hwnd));
+    }
+    super::uninitialize_shell_apartment();
+}

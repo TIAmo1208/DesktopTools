@@ -13,6 +13,7 @@
             import { createWorkspaceDropTarget } from "../../workspace/surface/workspaceDropTarget.ts";
             import { collectHitRegions } from "../../workspace/surface/workspaceSurfaceProjection.ts";
             import "../../../styles/global.css";
+            import "../../../styles/fenceTokens.css"; // 与 DesktopWorkspace.tsx 的加载顺序一致：围栏令牌在工作区布局之前。
             import "../../workspace/surface/DesktopWorkspace.css";
 
             const params = new URLSearchParams(location.search); // 同一回归页覆盖设计窄版与独立主题。

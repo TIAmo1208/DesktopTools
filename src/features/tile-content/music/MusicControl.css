@@ -256,7 +256,7 @@
         opacity 180ms ease-out;
 }
 
-/* 单行截断，不做整段滚动；当前句变化时只过渡颜色与字号。 */
+/* 单行截断；换句时整块按方向位移，当前句字号与颜色过渡（离开 120ms、进入 180ms）。 */
 .music-control__lyrics p {
     margin: 0;
     overflow: hidden;
@@ -266,9 +266,13 @@
     white-space: nowrap;
     text-overflow: ellipsis;
     opacity: 0.62;
+}
+
+.music-control[data-animations="on"] .music-control__lyrics p {
     transition:
-        opacity 120ms ease-out,
-        font-size 120ms ease-out;
+        opacity 140ms ease-out 0ms,
+        font-size 140ms ease-out 0ms,
+        color 140ms ease-out 0ms;
 }
 
 /* 当前句只靠字号更大与颜色更深区分，不加粗。 */
@@ -278,6 +282,13 @@
     height: 17px;
     opacity: 1;
     font-weight: 400;
+}
+
+.music-control[data-animations="on"] .music-control__lyrics p[data-current="true"] {
+    transition:
+        opacity 200ms ease-out 80ms,
+        font-size 200ms ease-out 80ms,
+        color 200ms ease-out 80ms;
 }
 
 /* 翻译跟随当前句，仅在能多容纳一行时出现。 */

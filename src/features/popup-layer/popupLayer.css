@@ -1,0 +1,127 @@
+/* 弹层页面：整页透明，只有浮层本体可见；窗口尺寸由原生侧按内容收敛。 */
+html[data-popup-layer="true"],
+html[data-popup-layer="true"] body {
+    margin: 0;
+    overflow: hidden;
+    background: transparent;
+}
+
+/* 弹层根节点铺满窗口，不额外产生滚动。 */
+.popup-layer {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+}
+
+/* 隐藏测量副本：二级菜单内容在窗口显示前就要确定尺寸。 */
+.popup-layer__probe {
+    position: fixed;
+    left: 0;
+    top: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* 菜单尺寸由测量与锚点可用空间决定，不再按窗口视口收敛。 */
+.popup-layer .desktop-tile-menu {
+    max-width: none;
+    max-height: none;
+}
+
+/* 弹窗类浮层居中，不跟随光标。 */
+.popup-layer__dialog {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+}
+
+/* 弹层里的天气浮层不再铺满桌面，遮罩改为透明；面板尺寸固定，避免按窗口收缩。 */
+.popup-layer .weather-city__overlay,
+.popup-layer .weather-source__overlay {
+    background: transparent;
+}
+
+.popup-layer .weather-city {
+    width: 400px;
+    height: 352px;
+    max-width: none;
+    max-height: none;
+}
+
+.popup-layer .weather-source {
+    width: 400px;
+    max-width: none;
+    max-height: 352px;
+}
+
+/* 确认框：与收集箱删除确认同一视觉密度，命令分列两端。 */
+.popup-confirm {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 360px;
+    padding: 16px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    color: var(--color-text);
+    background: var(--color-surface);
+    box-shadow: 2px 3px 8px rgb(0 0 0 / 32%);
+    outline: none;
+}
+
+/* 顶部问句与正文使用同一字号阶梯。 */
+.popup-confirm__title {
+    margin: 0;
+    font-size: 14px;
+    line-height: 20px;
+}
+
+.popup-confirm__body {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: 12px;
+    line-height: 18px;
+}
+
+/* 命令行：取消在左，主命令在右。 */
+.popup-confirm__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.popup-confirm__actions button {
+    min-width: 72px;
+    padding: 4px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--surface-radius);
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    cursor: default;
+}
+
+.popup-confirm__actions button:hover:enabled {
+    background: var(--menu-hover, rgb(127 127 127 / 16%));
+}
+
+/* 破坏性命令使用错误色。 */
+.popup-confirm__actions .popup-confirm__danger {
+    border-color: var(--color-error);
+    color: var(--color-error);
+}
+
+/* 弹层自身出错时不要把异常渲染成空窗口。 */
+.popup-layer__failure {
+    box-sizing: border-box;
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    padding: 12px;
+    color: var(--color-error);
+    font: var(--interface-font-size) var(--interface-font);
+}

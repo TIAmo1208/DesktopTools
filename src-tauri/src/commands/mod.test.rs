@@ -133,3 +133,19 @@ fn native_transport_decodes_typed_readiness_arguments()
     assert_eq!(report.hit_regions.len(), 1);
     assert!(command_argument::<FrontendHostReadiness>(&json!({}), "report", "页面准备参数无效").is_err());
 }
+
+/// 浮层命令只接受桌面宿主来源：设置窗口即使走同一 transport 也不能打开、关闭或改写弹层。
+#[test]
+fn popup_layer_commands_are_limited_to_desktop_hosts()
+{
+    for command in ["open_popup_layer", "dismiss_popup_layer", "update_popup_layer_payload"]
+    {
+        assert!(super::is_popup_layer_command(command));
+        assert!(!super::popup_layer_command_allowed(super::NativeCommandSource::Settings), "设置窗口不得调用 {command}");
+        assert!(super::popup_layer_command_allowed(super::NativeCommandSource::DesktopHost));
+    }
+    for command in ["get_preferences", "get_popup_layer_request", "finish_popup_layer"]
+    {
+        assert!(!super::is_popup_layer_command(command), "{command} 不属于宿主浮层命令");
+    }
+}

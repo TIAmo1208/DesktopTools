@@ -1,15 +1,6 @@
 /* 正式透明宿主中的完整围栏工作区。 */
+/* 围栏令牌（含 --color-accent 派生）在 src/styles/fenceTokens.css，桌面工作区与浮岛共用同一份。 */
 .fence-workspace {
-    --color-accent: var(--desktop-accent, #2563eb);
-    --color-focus: var(--color-accent);
-    --fence-border: rgb(210 224 227 / 38%);
-    --fence-surface: rgb(32 38 40 / 58%);
-    --fence-text: #e8eff0;
-    --fence-active: #45c98c;
-    --fence-warning: #e8a33f;
-    --fence-error: #f08a80;
-    --fence-muted: #a8b4b6;
-    --fence-focus-border: var(--color-accent);
     font-family: var(--interface-font);
     font-size: var(--interface-font-size);
     position: relative;
@@ -54,28 +45,4 @@
     list-style: none;
 }
 
-/* 桌面独立浅色主题围栏变量。 */
-:root[data-desktop-theme="light"] .fence-workspace {
-    color-scheme: light;
-    --fence-border: rgb(55 66 69 / 22%);
-    --fence-surface: rgb(185 185 185 / 58%);
-    --fence-text: #202526;
-    --fence-active: #0b7a52;
-    --fence-warning: #b4770f;
-    --fence-error: #a32118;
-    --fence-muted: #5c6668;
-    --fence-item-text-shadow: none;
-    --fence-focus-border: var(--color-focus);
-}
-
-/* 桌面独立深色主题围栏变量。 */
-:root[data-desktop-theme="dark"] .fence-workspace {
-    color-scheme: dark;
-    --fence-border: rgb(210 224 227 / 38%);
-    --fence-surface: rgb(32 38 40 / 58%);
-    --fence-text: #e8eff0;
-    --fence-active: #45c98c;
-    --fence-warning: #e8a33f;
-    --fence-error: #f08a80;
-    --fence-muted: #a8b4b6;
-}
+/* 桌面独立浅色/深色主题围栏变量在 src/styles/fenceTokens.css，不在此处重复声明。 */

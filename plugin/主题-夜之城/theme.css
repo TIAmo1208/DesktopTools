@@ -1,4 +1,6 @@
 /* 夜之城主题：NC 黄 × 霓虹青 × 近黑夜蓝。特效开关由插件写入文档根的 data-nightcity-* 属性。 */
+/* 本表的表现层（扫描线、切角、悬停冷光、等宽数字）一律用 :where(html:not([data-island="true"])) 门控： */
+/* 浮岛是贴壁纸的透明独立表面，只接收配色令牌，不接收任何主题装饰。 */
 
 /* ---------- 界面调色板：浅色为日间变体 ---------- */
 
@@ -137,13 +139,13 @@
 
 /* ---------- 字面效果 ---------- */
 
-/* 等宽数字：数字列在走秒与读数时不抖动。 */
-:root {
+/* 等宽数字：数字列在走秒与读数时不抖动。浮岛不接收该表现层。 */
+:where(html:not([data-island="true"])):root {
     font-variant-numeric: tabular-nums;
 }
 
 /* 关闭等宽数字时回到默认字形。 */
-:root[data-nightcity-mono="off"] {
+:where(html:not([data-island="true"])):root[data-nightcity-mono="off"] {
     font-variant-numeric: normal;
 }
 
@@ -152,8 +154,8 @@
     font-family: "Cascadia Mono", Consolas, "SF Mono", "JetBrains Mono", monospace;
 }
 
-/* 页面标题拉成终端标题的字距。 */
-h1 {
+/* 页面标题拉成终端标题的字距；插件卡里出现的标题同样不接收该表现层。 */
+:where(html:not([data-island="true"])) h1 {
     letter-spacing: 0.12em;
 }
 
@@ -199,19 +201,19 @@ h1 {
     }
 }
 
-/* 悬停冷光只给可用按钮，禁用与整行命中层不参与。 */
+/* 悬停冷光只给可用按钮，禁用与整行命中层不参与；浮岛上的按钮不套用主题特效。 */
 @media (hover: hover) and (pointer: fine) {
-    button:not([data-button="row-hit"]):hover:not(:disabled) {
+    :where(html:not([data-island="true"])) button:not([data-button="row-hit"]):hover:not(:disabled) {
         text-shadow: 0 0 6px rgb(0 240 255 / 45%);
     }
 
     /* 浅色下冷光收敛，避免白底发糊。 */
-    :root[data-theme="light"] button:not([data-button="row-hit"]):hover:not(:disabled) {
+    :where(html:not([data-island="true"])):root[data-theme="light"] button:not([data-button="row-hit"]):hover:not(:disabled) {
         text-shadow: 0 0 5px rgb(0 120 160 / 35%);
     }
 
     /* 关闭悬停冷光时仍保持禁用按钮无反馈。 */
-    :root[data-nightcity-glow="off"] button:not([data-button="row-hit"]):hover:not(:disabled) {
+    :where(html:not([data-island="true"])):root[data-nightcity-glow="off"] button:not([data-button="row-hit"]):hover:not(:disabled) {
         text-shadow: none;
     }
 }
@@ -219,10 +221,11 @@ h1 {
 /* ---------- 45° 切角 ---------- */
 
 /* 交互控件只切左上、右下；切角量由插件设置限制为 0–12px。整行命中层与结构表面不参与。 */
-button:not([data-button="row-hit"]),
-input:not([type="checkbox"]):not([type="radio"]),
-select,
-textarea {
+/* 浮岛按钮由宿主卡片与浮岛样式表绘制，不套用主题切角。 */
+:where(html:not([data-island="true"])) button:not([data-button="row-hit"]),
+:where(html:not([data-island="true"])) input:not([type="checkbox"]):not([type="radio"]),
+:where(html:not([data-island="true"])) select,
+:where(html:not([data-island="true"])) textarea {
     border-start-start-radius: var(--nightcity-bevel, 6px);
     border-start-end-radius: 0;
     border-end-start-radius: 0;
@@ -234,18 +237,18 @@ textarea {
 }
 
 /* 关闭切角时所有参与控件回到直角，不保留部分切角。 */
-:root[data-nightcity-bevel="off"] button:not([data-button="row-hit"]),
-:root[data-nightcity-bevel="off"] input:not([type="checkbox"]):not([type="radio"]),
-:root[data-nightcity-bevel="off"] select,
-:root[data-nightcity-bevel="off"] textarea {
+:where(html:not([data-island="true"])):root[data-nightcity-bevel="off"] button:not([data-button="row-hit"]),
+:where(html:not([data-island="true"])):root[data-nightcity-bevel="off"] input:not([type="checkbox"]):not([type="radio"]),
+:where(html:not([data-island="true"])):root[data-nightcity-bevel="off"] select,
+:where(html:not([data-island="true"])):root[data-nightcity-bevel="off"] textarea {
     border-radius: 0;
     corner-shape: round;
 }
 
 /* ---------- CRT 叠加 ---------- */
 
-/* 全屏叠加只画线与网格，不铺底，鼠标穿透。 */
-#root::after {
+/* 全屏叠加只画线与网格，不铺底，鼠标穿透；浮岛窗口不接收这层装饰。 */
+:where(html:not([data-island="true"])) #root::after {
     content: "";
     position: fixed;
     inset: 0;
@@ -273,12 +276,12 @@ html[data-desktop-host="true"][data-desktop-theme="light"] {
         repeating-linear-gradient(0deg, rgb(0 120 160 / 3%) 0 1px, transparent 1px 96px);
 }
 
-:root[data-nightcity-scan="off"] #root::after {
+:where(html:not([data-island="true"])):root[data-nightcity-scan="off"] #root::after {
     display: none;
 }
 
 @media (max-width: 768px) {
-    #root::after {
+    :where(html:not([data-island="true"])) #root::after {
         display: none;
     }
 }
@@ -429,43 +432,43 @@ html[data-desktop-host="true"][data-desktop-theme="light"] {
 }
 
 /* 文本输入、下拉与多行输入：切角由上方统一规则负责，不改变复选/开关几何。 */
-input:not([type="checkbox"]):not([type="radio"]),
-select,
-textarea {
+:where(html:not([data-island="true"])) input:not([type="checkbox"]):not([type="radio"]),
+:where(html:not([data-island="true"])) select,
+:where(html:not([data-island="true"])) textarea {
     caret-color: var(--color-focus);
     font-family: var(--interface-font);
 }
 
 /* 文本字段悬停先给青色边框，复选与开关仍被排除。 */
 @media (hover: hover) and (pointer: fine) {
-    input:not([type="checkbox"]):not([type="radio"]):hover:not(:disabled),
-    select:hover:not(:disabled),
-    textarea:hover:not(:disabled) {
+    :where(html:not([data-island="true"])) input:not([type="checkbox"]):not([type="radio"]):hover:not(:disabled),
+    :where(html:not([data-island="true"])) select:hover:not(:disabled),
+    :where(html:not([data-island="true"])) textarea:hover:not(:disabled) {
         border-color: color-mix(in srgb, var(--color-ready) 58%, var(--color-border));
     }
 }
 
 /* 文本字段聚焦用强调色描边与冷光，不覆盖 G8 开关和 B1 复选焦点。 */
-input:not([type="checkbox"]):not([type="radio"]):focus-visible,
-select:focus-visible,
-textarea:focus-visible {
+:where(html:not([data-island="true"])) input:not([type="checkbox"]):not([type="radio"]):focus-visible,
+:where(html:not([data-island="true"])) select:focus-visible,
+:where(html:not([data-island="true"])) textarea:focus-visible {
     outline: none;
     border-color: var(--color-focus);
     box-shadow: 0 0 0 1px var(--color-focus), 0 0 10px color-mix(in srgb, var(--color-focus) 35%, transparent);
 }
 
 /* 原生勾选类控件仍跟随界面强调色，不接管外观几何。 */
-input[type="checkbox"],
-input[type="radio"] {
+:where(html:not([data-island="true"])) input[type="checkbox"],
+:where(html:not([data-island="true"])) input[type="radio"] {
     accent-color: var(--color-focus);
 }
 
 /* 按钮状态：颜色过渡加按下时的亮度反馈，切角由 corner-shape 负责；整行命中层不参与。 */
-button:not([data-button="row-hit"]) {
+:where(html:not([data-island="true"])) button:not([data-button="row-hit"]) {
     transition: background-color var(--interface-transition-duration, 0ms) ease-out, border-color var(--interface-transition-duration, 0ms) ease-out, color var(--interface-transition-duration, 0ms) ease-out;
 }
 
 /* 按下只压亮度：transform 会让按钮成为绝对定位后代的包含块，命中面会随之错位。 */
-button:not([data-button="row-hit"]):active:not(:disabled) {
+:where(html:not([data-island="true"])) button:not([data-button="row-hit"]):active:not(:disabled) {
     filter: brightness(0.94);
 }

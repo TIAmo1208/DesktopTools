@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>浮岛设置样式核对</title>
+    <body>
+        <div id="root" style="max-width: 880px; margin: 0 auto; padding: 24px"></div>
+        <script type="module">
+            // 全部动态导入，把模块加载失败显式写到页面上，便于在浏览器里定位。
+            try {
+                const React = await import("react");
+                const { createRoot } = await import("react-dom/client");
+                const { mockIPC, mockWindows } = await import("@tauri-apps/api/mocks");
+                const { IslandSettings } = await import("./IslandSettingsPage.tsx");
+                await import("../../styles/global.css");
+
+                // 替代宿主偏好：只保留浮岛页读取的字段。
+                const preferences = {
+                    islandEnabled: true,
+                    islandForm: "capsule",
+                    islandEdge: "top",
+                    islandHideOnFullscreen: true,
+                    islandRadius: 12,
+                    islandOffset: 0,
+                    islandCardOrder: ["official.music-control", "official.local-clock"],
+                };
+                const manifest = (id, name, description) => ({
+                    id,
+                    name,
+                    description,
+                    entry: `official:${id.split(".")[1]}`,
+                    script: "",
+                    requiredCapabilities: [],
+                    creatable: true,
+                    removable: true,
+                    island: true,
+                    maxTiles: 0,
+                    tileTypes: [],
+                    persistenceVersion: 1,
+                });
+                // 与真实音乐卡同文的长描述，用来核对一级页省略与二级页折叠。
+                const snapshot = {
+                    revision: 1,
+                    manifests: [
+                        manifest(
+                            "official.music-control",
+                            "音乐控制",
+                            "歌词：网易云按其公开 web 接口取词，其余播放器用 LRCLIB；都取不到时回落歌名与艺人。进度：播放器向系统发布播放位置时直接跟随（如 QQ 音乐）；网易云不发布位置，客户端以 --remote-debugging-port=9222 启动时按调试端口读取，否则按本地计时外推，拖动或跳转不会立即对齐。总时长：优先系统上报，其次歌词源返回的时长，都没有时显示 --:--。",
+                        ),
+                        manifest("official.local-clock", "本地时间", "显示时间与日期"),
+                    ],
+                    instances: [],
+                    failures: [],
+                };
+
+                mockWindows("main");
+                mockIPC((command) => {
+                    switch (command) {
+                        case "get_preferences":
+                            return preferences;
+                        case "get_component_runtime_snapshot":
+                            return snapshot;
+                        default:
+                            return null;
+                    }
+                });
+
+                const root = createRoot(document.getElementById("root"));
+                root.render(React.createElement(IslandSettings, { preferences, disabled: false, onPreferences: () => {} }));
+                // 查询参数 detail=1 直接进入第一张卡的二级页，便于截图核对。
+                const params = new URLSearchParams(location.search);
+                if (params.get("detail")) {
+                    setTimeout(() => {
+                        document.querySelector(".island-settings__hit")?.click();
+                        if (params.get("open")) setTimeout(() => document.querySelector(".settings-about__toggle")?.click(), 300);
+                    }, 400);
+                }
+            } catch (error) {
+                document.body.textContent = String(error);
+            }
+        </script>
+    </body>
+</html>

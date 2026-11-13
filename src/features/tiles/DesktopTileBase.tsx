@@ -1,11 +1,11 @@
 import { createContext, useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentPropsWithRef, type PointerEvent, type ReactNode } from "react";
-import { createPortal } from "react-dom";
 
 import type { TileAppearance, TileAppearanceChange } from "../../contracts/tile";
 import { useDesktopTileGeometry, type DesktopTileGeometryOptions } from "./useDesktopTileGeometry";
 import { useDesktopTileExpansion } from "./useDesktopTileExpansion";
 import { usePreferences } from "../settings/PreferencesProvider";
-import { DesktopTileMenu, DesktopTileMenuHoverContext, type DesktopTileMenuItem } from "./DesktopTileMenu";
+import { DesktopTileMenuHoverContext, type DesktopTileMenuItem } from "./DesktopTileMenu";
+import { openTileMenu } from "../popup-layer/openTileMenu";
 import "./DesktopTileBase.css";
 
 /** 标题只读取外壳的瞬时可见状态与保存的按钮偏好。 */
@@ -103,6 +103,8 @@ export const DesktopTileBase = ({
         setMenu(undefined);
         trigger.current?.focus({ preventScroll: true });
     }, []); // 关闭整组菜单。
+    const items = useRef<{ normal: DesktopTileMenuItem[]; sorting: DesktopTileMenuItem[] }>({ normal: [], sorting: [] }); // 弹层菜单打开与复选刷新读取的命令表。
+    const menuGeneration = useRef(0); // 弹层请求代次，旧请求的迟到结果不得清掉新菜单状态。
 
     useLayoutEffect(() => {
         const element = surface.current;
@@ -188,11 +190,25 @@ export const DesktopTileBase = ({
     useEffect(() => {
         const element = surface.current; // 菜单键与排序按钮的共同请求目标。
         const handleOpen = (event: Event) => {
-            const detail = (event as CustomEvent).detail as { left: number; top: number; sorting?: boolean; trigger?: HTMLElement }; // 本地界面请求。
+            const detail = (event as CustomEvent).detail as { left: number; top: number; sorting?: boolean; trigger?: HTMLElement; keyboard?: boolean }; // 本地界面请求。
             event.stopPropagation();
             window.dispatchEvent(new Event("desktop-tile-menu-opening"));
             trigger.current = detail.trigger ?? element;
-            setMenu({ left: detail.left, top: detail.top, sorting: detail.sorting === true });
+            const sorting = detail.sorting === true; // 排序按钮与格子右键菜单共用同一入口。
+            setMenu({ left: detail.left, top: detail.top, sorting });
+            const generation = ++menuGeneration.current; // 本次请求身份。
+            // 菜单在置顶弹层里呈现；命令闭包仍留在本格子。
+            openTileMenu(
+                items.current[sorting ? "sorting" : "normal"],
+                { left: detail.left, top: detail.top },
+                {
+                    focusFirst: detail.keyboard === true, // 键盘打开才把焦点放到第一项。
+                    onSettled: () => {
+                        if (menuGeneration.current === generation) handleClose(); // 只有最新请求能收尾。
+                    },
+                    refresh: () => items.current[sorting ? "sorting" : "normal"],
+                },
+            );
         };
         element?.addEventListener("desktop-tile-menu", handleOpen);
         return () => element?.removeEventListener("desktop-tile-menu", handleOpen);
@@ -253,6 +269,7 @@ export const DesktopTileBase = ({
                         : []),
               ]
             : []; // 无标题时不提供会失去恢复入口的命令。
+    items.current = { normal: [...commonItems, ...menuItems], sorting: sortItems ?? [] }; // 每次渲染刷新，弹层打开与复选刷新都读这一份。
 
     return (
         <DesktopTileMenuHoverContext.Provider value={expansion.onMenuHoverChange}>
@@ -311,7 +328,7 @@ export const DesktopTileBase = ({
                             event.stopPropagation();
                             const bounds = event.currentTarget.getBoundingClientRect(); // 键盘菜单使用格子位置。
                             event.currentTarget.dispatchEvent(
-                                new CustomEvent("desktop-tile-menu", { detail: { left: bounds.left + 12, top: bounds.top + 28 } }),
+                                new CustomEvent("desktop-tile-menu", { detail: { left: bounds.left + 12, top: bounds.top + 28, keyboard: true } }),
                             );
                             return;
                         }
@@ -340,17 +357,6 @@ export const DesktopTileBase = ({
                             />
                         ))}
                 </section>
-                {menu &&
-                    surface.current &&
-                    createPortal(
-                        <DesktopTileMenu
-                            items={menu.sorting && sortItems ? sortItems : [...commonItems, ...menuItems]}
-                            left={menu.left}
-                            top={menu.top}
-                            onClose={handleClose}
-                        />,
-                        surface.current.closest(".fence-workspace") ?? document.body,
-                    )}
             </DesktopTileContext.Provider>
         </DesktopTileMenuHoverContext.Provider>
     );

@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>桌面音乐格子歌词换句动画回归检查</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            background: #d6c3bb;
+        }
+        #fixture {
+            position: relative;
+            padding: 24px;
+            width: 520px;
+            height: 360px;
+            background: linear-gradient(120deg, #d8c3b8 0%, #e7d7cd 45%, #c9a89f 100%);
+        }
+        #result {
+            position: fixed;
+            left: 8px;
+            bottom: 8px;
+            margin: 0;
+            padding: 8px;
+            background: #000c;
+            color: #7dff9b;
+            font: 12px/1.5 monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+    <body>
+        <script>
+            // 模块加载失败、未处理异常与隐藏页面也必须有界写出结论。
+            const failAssertion = (reason) => {
+                const result = document.getElementById("result");
+                if (result && !/^(PASS|FAIL)/.test(result.textContent)) {
+                    result.textContent = `FAIL\n- ${reason}`;
+                    document.body.dataset.phase = "fail";
+                }
+            };
+            window.addEventListener("error", (event) => failAssertion(event.message || "断言模块加载失败"), true);
+            window.addEventListener("unhandledrejection", (event) => failAssertion(String(event.reason)));
+            setTimeout(() => failAssertion("断言总时限 60000ms：页面状态或动画未收敛"), 60000);
+        </script>
+        <main id="fixture"></main>
+        <pre id="result">RUNNING</pre>
+        <script type="module">
+            // 桌面格子歌词换句：整块位移 180ms，离开当前句 120ms、进入 180ms，减少动效直接切换。
+            const 偏好 = { theme: "dark", doubleClickToOpen: true, desktopAppearance: { theme: "dark", accentColor: "#2563eb", useWindowsAccentColor: false }, interfaceAnimations: true, followSystemReducedMotion: false, musicLyricsEnabled: true, musicSpectrumEnabled: false };
+            const 监听 = new Map();
+            const 推送 = (事件, 载荷) => {
+                for (const 处理 of [...(监听.get(事件) ?? [])]) 处理(载荷);
+            };
+            window.__DESKTOP_TOOLS_NATIVE__ = {
+                invoke(命令) {
+                    switch (命令) {
+                        case "get_preferences":
+                            return Promise.resolve({ ...偏好 });
+                        case "get_windows_accent_color":
+                            return Promise.resolve("#2563eb");
+                        case "get_foreground_snapshot":
+                            return Promise.resolve({ revision: 1, locked: false });
+                        case "list_audio_output_devices":
+                            return Promise.resolve([]);
+                        default:
+                            return Promise.resolve(undefined);
+                    }
+                },
+                listen(事件, 处理) {
+                    const 组 = 监听.get(事件) ?? [];
+                    组.push(处理);
+                    监听.set(事件, 组);
+                    return Promise.resolve(() => {
+                        const 位置 = 组.indexOf(处理);
+                        if (位置 >= 0) 组.splice(位置, 1);
+                    });
+                },
+                isRefreshPaused() {
+                    return false;
+                },
+            };
+
+            const 等待 = (毫秒) => new Promise((resolve) => setTimeout(resolve, 毫秒));
+            const 直到 = async (探针, 说明 = "等待状态收敛", 超时 = 6000) => {
+                const 起点 = Date.now();
+                while (Date.now() - 起点 < 超时) {
+                    const 值 = 探针();
+                    if (值) return 值;
+                    await 等待(16);
+                }
+                throw new Error(`${说明}超时（${超时}ms）`);
+            };
+            const 标题 = "测试歌曲标题";
+            const 艺人 = "测试艺人";
+            const 歌词 = [
+                { startMs: 0, text: "第一句歌词用来占位并验证首句之前的回落与展开三行槽位" },
+                { startMs: 10000, text: "第二句歌词足够长以便普通行与当前句的字号颜色过渡" },
+                { startMs: 20000, text: "第三句歌词收尾" },
+            ];
+            const 时间轴 = (位置毫秒) => ({ sessionId: "tile-session", title: 标题, artist: 艺人, positionTicks: "0", endTimeTicks: "0", lastUpdatedTimeTicks: "0", playbackStatus: 4, positionMs: 位置毫秒, durationMs: 180000, advancing: false });
+
+            const [音乐模块, React模块, 根模块, 偏好模块, 样式模块] = await Promise.all([
+                import("./MusicControl.tsx"),
+                import("react"),
+                import("react-dom/client"),
+                import("../../settings/PreferencesProvider.tsx"),
+                import("../../../styles/global.css"),
+            ]);
+            void 样式模块; // 只要求样式表加载完成，不读导出。
+            const { MusicControl } = 音乐模块;
+            const React = React模块.default;
+            const { createRoot } = 根模块;
+            const { PreferencesProvider } = 偏好模块;
+
+            let 更新位置;
+            const 应用 = () => {
+                const [位置, 设位置] = React.useState(12000);
+                更新位置 = 设位置;
+                return React.createElement(MusicControl, {
+                    snapshot: { title: 标题, artist: 艺人, source: "测试播放器", playback: "playing", canPrevious: true, canPlayPause: true, canNext: true },
+                    lyrics: 歌词,
+                    timeline: 时间轴(位置),
+                    anchorNow: performance.now(),
+                    actions: { previous: async () => {}, playPause: async () => {}, next: async () => {} },
+                    onFailure: () => {},
+                });
+            };
+            const 根节点 = createRoot(document.getElementById("fixture"));
+            根节点.render(React.createElement(PreferencesProvider, null, React.createElement(应用)));
+
+            const result = document.getElementById("result");
+            const 失败 = [];
+            const report = (文本) => {
+                if (!result.textContent.startsWith("FAIL")) result.textContent = 文本;
+                document.body.dataset.phase = result.textContent.startsWith("FAIL") ? "fail" : "pass";
+            };
+            const 断言 = (条件, 说明) => {
+                if (!条件) 失败.push(说明);
+            };
+            const 控制 = () => document.querySelector(".music-control");
+            const 歌词区 = () => document.querySelector(".music-control__lyrics");
+            const 行 = () => [...document.querySelectorAll(".music-control__lyrics p")];
+            const 当前行 = () => document.querySelector(".music-control__lyrics p[data-current='true']");
+            const 时长 = (节点) => getComputedStyle(节点).transitionDuration;
+            // 计算样式会把相同取值的过渡时长压成单个值，按分量逐项比较。
+            const 过渡一致 = (节点, 毫秒) => String(时长(节点)).split(",").every((值) => 值.trim() === 毫秒);
+            const 延迟一致 = (节点, 秒) => String(getComputedStyle(节点).transitionDelay).split(",").every((值) => 值.trim() === 秒);
+            // 轮询两段位移：已播放行 220ms/延迟 0，当前与未播放行 240ms/延迟 80ms。
+            const 有滚动动画 = async () => {
+                for (let 次 = 0; 次 < 16; 次 += 1) {
+                    const 当前下标 = Number(当前行()?.dataset.lineIndex);
+                    let 已播放 = false;
+                    let 未播放 = false;
+                    for (const 行节点 of document.querySelectorAll(".music-control__lyrics p[data-line-index]")) {
+                        const 下标 = Number(行节点.dataset.lineIndex);
+                        for (const 项 of 行节点.getAnimations()) {
+                            const 时长 = Number(项.effect?.getTiming().duration);
+                            const 延迟 = Number(项.effect?.getTiming().delay);
+                            if (下标 < 当前下标 && 时长 === 220 && 延迟 === 0) 已播放 = true;
+                            if (下标 >= 当前下标 && 时长 === 240 && 延迟 === 80) 未播放 = true;
+                        }
+                    }
+                    if (已播放 && 未播放) return { 已播放, 未播放 };
+                    await 等待(25);
+                }
+                return { 已播放: false, 未播放: false };
+            };
+
+            const 运行 = async () => {
+                await 直到(() => 控制() && 歌词区(), "音乐控件挂载");
+                await 直到(() => 行().length > 0, "歌词行渲染");
+                await 等待(120);
+                断言(控制().dataset.animations === "on", `动画开启时 data-animations 应为 on，实际 ${控制().dataset.animations}`);
+                断言(当前行()?.textContent === 歌词[1].text, `当前句应为第二句，实际 ${当前行()?.textContent}`);
+                断言(过渡一致(当前行(), "0.2s") && 延迟一致(当前行(), "0.08s"), `进入当前句应延后 80ms、200ms 过渡，实际 ${时长(当前行())}/${getComputedStyle(当前行()).transitionDelay}`);
+                const 其余 = 行().find((节点) => 节点 !== 当前行());
+                断言(其余 && 过渡一致(其余, "0.14s") && 延迟一致(其余, "0s"), `其余句应 140ms、不延迟，实际 ${其余 ? `${时长(其余)}/${getComputedStyle(其余).transitionDelay}` : "不存在"}`);
+
+                更新位置(22000);
+                await 直到(() => 当前行()?.textContent === 歌词[2].text, "换句后当前句更新");
+                const 分段 = await 有滚动动画();
+                断言(分段.已播放 && 分段.未播放, `换句位移应分已播放/未播放两段，实际 已播放=${分段.已播放} 未播放=${分段.未播放}`);
+
+                偏好.interfaceAnimations = false;
+                推送("preferences-changed", { ...偏好 });
+                await 直到(() => 控制()?.dataset.animations === "off", "动效关闭生效");
+                更新位置(12000);
+                await 直到(() => 当前行()?.textContent === 歌词[1].text, "动效关闭后换句");
+                await 等待(60);
+                断言(过渡一致(当前行(), "0s"), `动效关闭时不得保留过渡，实际 ${时长(当前行())}`);
+                断言([...document.querySelectorAll(".music-control__lyrics p[data-line-index]")].every((节点) => 节点.getAnimations().length === 0), "动效关闭时不得产生位移与过渡动画");
+
+                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : "PASS 桌面音乐格子换句位移/字号颜色过渡与减少动效");
+            };
+
+            运行().catch((错误) => {
+                report(`FAIL\n- ${错误 instanceof Error ? 错误.message : String(错误)}`);
+            });
+        </script>
+    </body>
+</html>

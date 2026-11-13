@@ -567,6 +567,11 @@ fn create(app: &AppHandle) -> Result<(), String>
             })
             .with_initialization_script(&super::desktop_host::native_bridge_script(&format!("http://{ISLAND_PROTOCOL}.localhost")))
             .with_url(island_page_url(super::desktop_host::boot_epoch(), super::desktop_host::active_theme_stylesheet(app).as_deref()).as_str());
+        // 开发构建启用本机 CDP 端口；若复用宿主已建环境，该参数按 WebView2 语义被忽略，属预期。
+        #[cfg(debug_assertions)]
+        {
+            builder = builder.with_additional_browser_args(super::desktop_host::DEV_WEBVIEW2_ARGS);
+        }
         // 复用正式宿主的环境：关闭后再次开启岛时不重复创建 WebView2 环境，避免环境交接卡住 UI 线程。
         let environment = super::desktop_host::shared_webview_environment();
         crate::log_debug!("岛：开始创建 WebView2，复用环境={}", environment.is_some());
@@ -660,7 +665,7 @@ where
             let app = app.clone(); // 分派时读取同一运行时。
             move |command, arguments| {
                 let runtime = app.try_state::<Arc<crate::host::DesktopHostRuntime>>().ok_or_else(|| serde_json::json!({"code": "desktop-host-starting", "message": "桌面宿主正在启动"}))?;
-                crate::commands::dispatch_native_command(&app, &runtime, command, arguments)
+                crate::commands::dispatch_native_command(&app, &runtime, crate::commands::NativeCommandSource::DesktopHost, command, arguments)
             }
         });
         respond(super::desktop_host::handle_desktop_request(request, &app, &handler, &format!("http://{ISLAND_PROTOCOL}.localhost"), None));
@@ -983,7 +988,7 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
             // crate::log_debug!("岛：提交帧 状态={}，窗口盒DIP=[{}, {}, {}, {}]，卡片DIP=[{}]", request.state, rect.left, rect.top, rect.width, rect.height, request.cards.iter().map(|card| format!("[{}, {}, {}, {}]圆角{}", card.rect.left, card.rect.top, card.rect.width, card.rect.height, card.radius)).collect::<Vec<_>>().join("；"));
             if state_changed
             {
-                crate::log_info!("岛：切换状态={}，显示器={}，窗口盒DIP=[{}, {}, {}, {}]，缩放={}", request.state, monitor.id, rect.left, rect.top, rect.width, rect.height, scale);
+                crate::log_debug!("岛：切换状态={}，显示器={}，窗口盒DIP=[{}, {}, {}, {}]，缩放={}", request.state, monitor.id, rect.left, rect.top, rect.width, rect.height, scale);
             }
             stage.set(StateStage::Commit);
             Ok(())

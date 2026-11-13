@@ -1,7 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import applicationIcon from "../../../resources/application.png";
-import pluginNavIcon from "../../../resources/settings-plugin.svg?raw";
+import settingsBackIcon from "../../../resources/settings-back.svg?raw";
+import settingsChevronIcon from "../../../resources/settings-chevron-right.svg?raw";
+import settingsCloseIcon from "../../../resources/settings-close.svg?raw";
+import settingsDiagnosticsIcon from "../../../resources/settings-diagnostics.svg?raw";
+import settingsDoubleClickIcon from "../../../resources/settings-double-click.svg?raw";
+import settingsFolderOpenIcon from "../../../resources/settings-folder-open.svg?raw";
+import settingsGridIcon from "../../../resources/settings-grid.svg?raw";
+import settingsHouseIcon from "../../../resources/settings-house.svg?raw";
+import settingsInfoIcon from "../../../resources/info.svg?raw";
+import settingsIslandIcon from "../../../resources/settings-island.svg?raw";
+import settingsLogIcon from "../../../resources/settings-log.svg?raw";
+import settingsMaximizeIcon from "../../../resources/settings-maximize.svg?raw";
+import settingsMenuIcon from "../../../resources/settings-menu.svg?raw";
+import settingsMinimizeIcon from "../../../resources/settings-minimize.svg?raw";
+import settingsMonitorIcon from "../../../resources/settings-monitor.svg?raw";
+import settingsPaletteIcon from "../../../resources/settings-palette.svg?raw";
+import settingsPerformanceIcon from "../../../resources/settings-performance.svg?raw";
+import settingsPluginIcon from "../../../resources/settings-plugin.svg?raw";
+import settingsPowerIcon from "../../../resources/settings-power.svg?raw";
+import settingsRefreshIcon from "../../../resources/settings-refresh.svg?raw";
+import settingsWorkspaceIcon from "../../../resources/settings-workspace.svg?raw";
 import { getDesktopHostSnapshot } from "../../bridge/desktopHost";
 import { getSettings, openLogs, resolvedConfigDirectory, savePreferences, setAutostart, settingsErrorMessage } from "../../bridge/settings";
 import { applyWorkspaceCommand, getWorkspaceSnapshot, listenWorkspaceSnapshots } from "../../bridge/workspace";
@@ -23,16 +43,16 @@ import { MessageNotificationHost } from "../notifications/MessageNotificationHos
 import { publishMessage } from "../notifications/messageNotification";
 import "./SettingsPage.css";
 
-// 设置页导航沿用 Windows 图标字体；插件项改用 resources 里的 SVG。
+// 设置页图标统一取 resources 下的 Lucide SVG，不再使用系统图标字体。
 const PAGES = [
-    { id: "general", label: "常规", icon: "\uE80F" },
-    { id: "appearance", label: "外观", icon: "\uE790" },
-    { id: "features", label: "功能格子", icon: "\uE80A" },
-    { id: "island", label: "浮岛", icon: "\uE7F4" },
-    { id: "plugins", label: "插件", icon: "" },
-    { id: "performance", label: "性能", icon: "\uE9D9" },
-    { id: "diagnostics", label: "诊断与维护", icon: "\uE90F" },
-    { id: "about", label: "关于", icon: "\uE946" },
+    { id: "general", label: "常规", icon: settingsHouseIcon },
+    { id: "appearance", label: "外观", icon: settingsPaletteIcon },
+    { id: "features", label: "功能格子", icon: settingsGridIcon },
+    { id: "island", label: "浮岛", icon: settingsIslandIcon },
+    { id: "plugins", label: "插件", icon: settingsPluginIcon },
+    { id: "performance", label: "性能", icon: settingsPerformanceIcon },
+    { id: "diagnostics", label: "诊断与维护", icon: settingsDiagnosticsIcon },
+    { id: "about", label: "关于", icon: settingsInfoIcon },
 ] as const;
 
 // 宿主实际阶段对应的用户可见状态。
@@ -55,6 +75,7 @@ export const SettingsPage = () => {
     const [host, setHost] = useState<DesktopHostSnapshot>(); // 最近读取的实际宿主状态。
     const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(); // 当前工作区映射快照。
     const [busy, setBusy] = useState(false); // 配置变更的控件禁用状态。
+    const [commandFailure, setCommandFailure] = useState<{ message: string; retry: () => void }>(); // 页面内错误与就地重试。
     const [directoryDraft, setDirectoryDraft] = useState<string>(); // 尚未保存的配置目录输入。
     const [resolvedDirectory, setResolvedDirectory] = useState<string>(); // 本次启动实际使用的配置目录。
     const pending = useRef(false); // 阻止同一事件循环中的重复命令。
@@ -165,8 +186,11 @@ export const SettingsPage = () => {
         setBusy(true);
         try {
             await command();
+            setCommandFailure(undefined);
         } catch (error: unknown) {
-            publishMessage({ type: "error", content: settingsErrorMessage(error), source: "settings-command" });
+            const message = settingsErrorMessage(error); // 同一原因同时进页面内错误与外层消息。
+            setCommandFailure({ message, retry: () => void handleCommand(command) });
+            publishMessage({ type: "error", content: message, source: "settings-command" });
         } finally {
             pending.current = false;
             setBusy(false);
@@ -272,9 +296,9 @@ export const SettingsPage = () => {
                 <div className="settings__window-controls">
                     {(
                         [
-                            ["minimize", "最小化", "\uE921"],
-                            ["maximize", "最大化或还原", "\uE922"],
-                            ["close", "关闭设置", "\uE8BB"],
+                            ["minimize", "最小化", settingsMinimizeIcon],
+                            ["maximize", "最大化或还原", settingsMaximizeIcon],
+                            ["close", "关闭设置", settingsCloseIcon],
                         ] as const
                     ).map(([action, label, icon]) => (
                         <button
@@ -288,7 +312,7 @@ export const SettingsPage = () => {
                                 )
                             }
                         >
-                            {icon}
+                            <span className="settings__window-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: icon }} />
                         </button>
                     ))}
                 </div>
@@ -305,10 +329,9 @@ export const SettingsPage = () => {
                     aria-label={collapsed ? "展开导航" : "收起导航"}
                     aria-expanded={!collapsed}
                     onClick={() => setCollapsed(!collapsed)}
-                 data-button="secondary">
-                    <span className="settings__icon" aria-hidden="true">
-                        {"\uE700"}
-                    </span>
+                    data-button="secondary"
+                >
+                    <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsMenuIcon }} />
                 </button>
                 <nav className="settings__navigation" aria-label="设置分类">
                     {PAGES.map((entry) => (
@@ -320,14 +343,9 @@ export const SettingsPage = () => {
                             title={entry.label}
                             aria-label={entry.label}
                             onClick={() => handlePageChange(entry.id)}
-                         data-button="row-hit">
-                            <span
-                                className={`settings__icon${entry.id === "plugins" ? " settings__icon--svg" : ""}`}
-                                aria-hidden="true"
-                                dangerouslySetInnerHTML={entry.id === "plugins" ? { __html: pluginNavIcon } : undefined}
-                            >
-                                {entry.id === "plugins" ? null : entry.icon}
-                            </span>
+                            data-button="row-hit"
+                        >
+                            <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.icon }} />
                             <span className="settings__navigation-label">{entry.label}</span>
                         </button>
                     ))}
@@ -336,8 +354,15 @@ export const SettingsPage = () => {
             <main className="settings__content" aria-labelledby="settings-title" aria-busy={busy}>
                 {page === "appearance" && gridDetail ? (
                     <div className="settings__heading">
-                        <button className="settings__back" type="button" title="返回外观" aria-label="返回外观" onClick={() => setGridDetail(undefined)} data-button="icon">
-                            {"\uE72B"}
+                        <button
+                            className="settings__back"
+                            type="button"
+                            title="返回外观"
+                            aria-label="返回外观"
+                            onClick={() => setGridDetail(undefined)}
+                            data-button="icon"
+                        >
+                            <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsBackIcon }} />
                         </button>
                         <h1 id="settings-title">{gridDetail === "desktopGrid" ? "桌面网格" : "围栏内网格"}</h1>
                     </div>
@@ -349,6 +374,14 @@ export const SettingsPage = () => {
                     <p className="settings__status" role="status">
                         正在读取设置…
                     </p>
+                )}
+                {commandFailure && (
+                    <div className="settings__error" role="alert">
+                        <span>{commandFailure.message}</span>
+                        <button className="settings__button" type="button" disabled={busy} onClick={commandFailure.retry} data-button="secondary">
+                            重试
+                        </button>
+                    </div>
                 )}
                 {page === "general" && (
                     <div className="settings__rows">
@@ -376,7 +409,8 @@ export const SettingsPage = () => {
                                 aria-label="复制配置目录"
                                 disabled={busy || !preferences}
                                 onClick={handleCopyConfigDirectory}
-                             data-button="icon">
+                                data-button="icon"
+                            >
                                 <span className="settings__directory-icon settings__directory-icon--copy" aria-hidden="true" />
                             </button>
                             <button
@@ -393,7 +427,8 @@ export const SettingsPage = () => {
                                         setDirectoryDraft(selected);
                                     })
                                 }
-                             data-button="icon">
+                                data-button="icon"
+                            >
                                 <span className="settings__directory-icon settings__directory-icon--folder" aria-hidden="true" />
                             </button>
                             <button
@@ -403,21 +438,21 @@ export const SettingsPage = () => {
                                 aria-label="恢复默认目录"
                                 disabled={busy || !preferences}
                                 onClick={() => setDirectoryDraft("%APPDATA%\\TIAmo\\DesktopTools")}
-                             data-button="icon">
+                                data-button="icon"
+                            >
                                 <span className="settings__directory-icon settings__directory-icon--reset" aria-hidden="true" />
                             </button>
                             <button
                                 type="submit"
                                 className="settings__button"
                                 disabled={busy || !preferences || directoryDraft === undefined || !directoryDraft.trim()}
-                             data-button="secondary">
+                                data-button="secondary"
+                            >
                                 保存
                             </button>
                         </form>
                         <div className="settings__row">
-                            <span className="settings__icon" aria-hidden="true">
-                                {"\uE7E8"}
-                            </span>
+                            <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsPowerIcon }} />
                             <label className="settings__row-title" htmlFor="autostart">
                                 开机自动启动
                             </label>
@@ -435,9 +470,11 @@ export const SettingsPage = () => {
                             />
                         </div>
                         <div className="settings__row">
-                            <span className="settings__icon" aria-hidden="true">
-                                {"\uE8B0"}
-                            </span>
+                            <span
+                                className="settings__icon settings__icon--svg"
+                                aria-hidden="true"
+                                dangerouslySetInnerHTML={{ __html: settingsDoubleClickIcon }}
+                            />
                             <label className="settings__row-title" htmlFor="double-click">
                                 双击打开项目
                             </label>
@@ -465,11 +502,19 @@ export const SettingsPage = () => {
                                 ["fenceGrid", "围栏内网格"],
                             ] as const
                         ).map(([kind, label]) => (
-                            <button key={kind} className="settings__row settings__row--link" type="button" onClick={() => setGridDetail(kind)} data-button="row-hit">
+                            <button
+                                key={kind}
+                                className="settings__row settings__row--link"
+                                type="button"
+                                onClick={() => setGridDetail(kind)}
+                                data-button="row-hit"
+                            >
                                 <span className="settings__row-title">{label}</span>
-                                <span className="settings__icon" aria-hidden="true">
-                                    {"\uE76C"}
-                                </span>
+                                <span
+                                    className="settings__icon settings__icon--svg"
+                                    aria-hidden="true"
+                                    dangerouslySetInnerHTML={{ __html: settingsChevronIcon }}
+                                />
                             </button>
                         ))}
                     </div>
@@ -553,24 +598,26 @@ export const SettingsPage = () => {
                 {page === "diagnostics" && (
                     <div className="settings__rows">
                         <div className="settings__row">
-                            <span className="settings__icon" aria-hidden="true">
-                                {"\uE9D9"}
-                            </span>
+                            <span
+                                className="settings__icon settings__icon--svg"
+                                aria-hidden="true"
+                                dangerouslySetInnerHTML={{ __html: settingsWorkspaceIcon }}
+                            />
                             <span className="settings__row-title">桌面工作区</span>
                             <span className="settings__value">{host ? PHASE_LABELS[host.phase] : "未获取"}</span>
                         </div>
                         <div className="settings__row">
-                            <span className="settings__icon" aria-hidden="true">
-                                {"\uE7F4"}
-                            </span>
+                            <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsMonitorIcon }} />
                             <span className="settings__row-title">显示器</span>
                             <span className="settings__value">{host ? `${host.hosts.length} 台` : "未获取"}</span>
                         </div>
                         {host?.hosts.map((entry) => (
                             <div className="settings__row" key={entry.monitor.id}>
-                                <span className="settings__icon" aria-hidden="true">
-                                    {"\uE950"}
-                                </span>
+                                <span
+                                    className="settings__icon settings__icon--svg"
+                                    aria-hidden="true"
+                                    dangerouslySetInnerHTML={{ __html: settingsMonitorIcon }}
+                                />
                                 <span className="settings__row-title">{entry.monitor.name}</span>
                                 <span className="settings__value">
                                     {entry.monitor.width} × {entry.monitor.height} · {Math.round(entry.monitor.scaleFactor * 100)}%
@@ -578,21 +625,31 @@ export const SettingsPage = () => {
                             </div>
                         ))}
                         <div className="settings__row">
-                            <span className="settings__icon" aria-hidden="true">
-                                {"\uE8B7"}
-                            </span>
+                            <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsLogIcon }} />
                             <span className="settings__row-title">应用日志</span>
-                            <button type="button" className="settings__button" disabled={busy} onClick={() => void handleCommand(openLogs)} data-button="secondary">
-                                <span className="settings__icon" aria-hidden="true">
-                                    {"\uE8DA"}
-                                </span>
+                            <button
+                                type="button"
+                                className="settings__button"
+                                disabled={busy}
+                                onClick={() => void handleCommand(openLogs)}
+                                data-button="secondary"
+                            >
+                                <span
+                                    className="settings__icon settings__icon--svg"
+                                    aria-hidden="true"
+                                    dangerouslySetInnerHTML={{ __html: settingsFolderOpenIcon }}
+                                />
                                 打开目录
                             </button>
                         </div>
-                        <button type="button" className="settings__button settings__refresh" disabled={busy} onClick={() => void handleRefresh()} data-button="secondary">
-                            <span className="settings__icon" aria-hidden="true">
-                                {"\uE72C"}
-                            </span>
+                        <button
+                            type="button"
+                            className="settings__button settings__refresh"
+                            disabled={busy}
+                            onClick={() => void handleRefresh()}
+                            data-button="secondary"
+                        >
+                            <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsRefreshIcon }} />
                             刷新状态
                         </button>
                     </div>

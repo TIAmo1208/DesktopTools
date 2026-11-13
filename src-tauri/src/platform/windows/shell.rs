@@ -36,7 +36,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::Shell::{ILFindLastID, SHBindToParent};
 use windows::Win32::UI::Shell::{KF_FLAG_DEFAULT, SHGetKnownFolderPath};
-use windows::Win32::UI::WindowsAndMessaging::{AppendMenuW, CREATESTRUCTW, CreatePopupMenu, CreateWindowExW, DI_NORMAL, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, EndMenu, GWLP_USERDATA, GetForegroundWindow, GetWindowLongPtrW, HICON, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOWNORMAL, SetForegroundWindow, SetWindowLongPtrW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_ACTIVATEAPP, WM_APP, WM_CANCELMODE, WM_CLOSE, WM_DESTROY, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE, WM_NULL, WNDCLASSW, WS_POPUP};
+use windows::Win32::UI::WindowsAndMessaging::{AppendMenuW, CREATESTRUCTW, CreatePopupMenu, CreateWindowExW, DI_NORMAL, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, EndMenu, GWL_EXSTYLE, GWLP_USERDATA, GetForegroundWindow, GetWindowLongPtrW, HICON, HWND_NOTOPMOST, HWND_TOPMOST, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_ACTIVATEAPP, WM_APP, WM_CANCELMODE, WM_CLOSE, WM_DESTROY, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE, WM_NULL, WNDCLASSW, WS_EX_TOPMOST, WS_POPUP};
 use windows::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT, WM_QUIT};
 use windows::core::{BOOL, HRESULT, HSTRING, IUnknown, Interface, PCSTR, PCWSTR, Ref, implement, w};
 
@@ -533,6 +533,55 @@ impl Drop for ShellMenuOwner
     fn drop(&mut self) { let _ = unsafe { DestroyWindow(self.hwnd) }; }
 }
 
+/// 原生菜单弹出期间把 owner 临时移入置顶带；Drop 复原，失败只记日志。
+///
+/// 只改置顶位，不激活、不移动、不改尺寸，也不改 owner 语义（ADR-0007）：
+/// 菜单结束后 owner 仍是普通 owner，进度框与确认框不受影响。
+pub(crate) struct MenuOwnerTopmost
+{
+    /// 本次临时置顶的菜单 owner。
+    hwnd: HWND,
+}
+
+impl MenuOwnerTopmost
+{
+    /// 进入置顶带；失败不阻断菜单，只留下日志与读回事实。
+    pub(crate) fn new(hwnd: HWND) -> Self
+    {
+        // 置顶请求的系统结果；失败只代表菜单可能被前台窗口遮挡。
+        let result = unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER) };
+        if let Err(error) = &result
+        {
+            crate::log_warn!("Shell：菜单 owner 临时置顶失败，所有者={hwnd:?}，错误={error}");
+        }
+        else if !menu_owner_topmost(hwnd)
+        {
+            crate::log_warn!("Shell：菜单 owner 置顶请求已接受但样式未生效，所有者={hwnd:?}"); // 便于真机判断是否退到兜底方案。
+        }
+        Self { hwnd }
+    }
+}
+
+impl Drop for MenuOwnerTopmost
+{
+    /// 菜单结束后立刻移出置顶带，避免同 owner 的进度框与确认框被一并置顶。
+    fn drop(&mut self)
+    {
+        if let Err(error) = unsafe { SetWindowPos(self.hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER) }
+        {
+            crate::log_warn!("Shell：菜单 owner 取消置顶失败，所有者={:?}，错误={error}", self.hwnd);
+        }
+    }
+}
+
+/// owner 当前是否位于置顶带；仅读扩展样式，不触发任何窗口操作。
+pub(crate) fn menu_owner_topmost(hwnd: HWND) -> bool
+{
+    // 当前扩展样式位。
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+    style & WS_EX_TOPMOST.0 != 0
+}
+
 /// Shell 桌面变化通知携带的可选精确重命名事实。
 #[derive(Clone, Debug)]
 pub enum ShellChangeEvent
@@ -579,7 +628,6 @@ unsafe extern "system" fn shell_change_window_proc(hwnd: HWND, message: u32, wpa
         let lock = unsafe { SHChangeNotification_Lock(HANDLE(wparam.0 as *mut c_void), lparam.0 as u32, Some(&mut pidls), Some(&mut event)) };
         if !lock.is_invalid() && !sender.is_null()
         {
-            crate::log_debug!("Shell：收到原始变化通知，事件掩码=0x{:08X}", event as u32);
             // 当前通知能够提供的精确变化事实。
             let change = if (event as u32 & (SHCNE_RENAMEITEM.0 | SHCNE_RENAMEFOLDER.0)) != 0 && !pidls.is_null()
             {
@@ -1052,12 +1100,12 @@ pub(crate) fn transfer_data_to_directory(owner: &ShellMenuOwner, data_object: &I
     {
         return Err("桌面文件传输只接受复制或移动效果".to_string());
     }
-    crate::log_info!("[DEBUG-drop-argument] 开始传输，线程={}，目标={}，效果={}，选择数量={}", unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }, directory.unwrap_or("<Desktop>"), drop_effect_name(effect), selected.map_or(0, <[String]>::len));
+    crate::log_debug!("开始传输，线程={}，目标={}，效果={}，选择数量={}", unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }, directory.unwrap_or("<Desktop>"), drop_effect_name(effect), selected.map_or(0, <[String]>::len));
     let destination: IShellItem = if let Some(directory) = directory
     {
         let parsing_path = shell_parsing_path(directory); // Shell 解析接口不接受 Rust canonicalize 产生的 extended-length 前缀。
         unsafe { SHCreateItemFromParsingName(&HSTRING::from(&parsing_path), None) }.map_err(|error| {
-            crate::log_error!("[DEBUG-drop-argument] 创建门户 Shell 目标失败，原路径={}，解析路径={}，HRESULT={:#010x}", directory, parsing_path, error.code().0);
+            crate::log_error!("创建门户 Shell 目标失败，原路径={}，解析路径={}，HRESULT={:#010x}", directory, parsing_path, error.code().0);
             format!("创建门户 Shell 目标失败: {error}")
         })?
     }
@@ -1066,9 +1114,9 @@ pub(crate) fn transfer_data_to_directory(owner: &ShellMenuOwner, data_object: &I
         let desktop_pidl = unsafe { SHGetKnownFolderIDList(&FOLDERID_Desktop, KF_FLAG_DEFAULT.0 as u32, None) }.map(OwnedPidl).map_err(|error| format!("读取用户桌面目标失败: {error}"))?;
         unsafe { SHCreateItemFromIDList(desktop_pidl.0) }.map_err(|error| format!("创建桌面 Shell 目标失败: {error}"))?
     }; // IFileOperation 使用的真实目标目录。
-    crate::log_info!("[DEBUG-drop-argument] 目标 Shell item 已创建，目标={}", directory.unwrap_or("<Desktop>"));
+    crate::log_debug!("目标 Shell item 已创建，目标={}", directory.unwrap_or("<Desktop>"));
     let filesystem_sources = super::drop_target::filesystem_drop_items(data_object); // 已存在文件的逐项传输路径；虚拟剪贴板仍交给 Shell 批量接口。
-    crate::log_info!("[DEBUG-drop-argument] IDataObject 来源提取完成，数量={}，来源={}", filesystem_sources.as_ref().map_or(0, Vec::len), filesystem_sources.as_ref().map(|sources| sources.join(" | ")).unwrap_or_else(|| "<无法提取文件系统来源>".into()));
+    crate::log_debug!("IDataObject 来源提取完成，数量={}，来源={}", filesystem_sources.as_ref().map_or(0, Vec::len), filesystem_sources.as_ref().map(|sources| sources.join(" | ")).unwrap_or_else(|| "<无法提取文件系统来源>".into()));
     if selected.is_some() && filesystem_sources.is_none()
     {
         return Err("投放数据不包含完整文件系统来源".into());
@@ -1086,7 +1134,7 @@ pub(crate) fn transfer_data_to_directory(owner: &ShellMenuOwner, data_object: &I
         let mut operation_error = None; // 逐项执行期间首个整体错误。
         for reference in sources
         {
-            crate::log_info!("[DEBUG-drop-argument] 排队逐项传输，来源={reference}，目标={}", directory.unwrap_or("<Desktop>"));
+            crate::log_debug!("排队逐项传输，来源={reference}，目标={}", directory.unwrap_or("<Desktop>"));
             let before = shell_file_proof(reference).ok(); // 源完整内容只用于判断新结果是否完整，不保存副本。
             let completed = (|| {
                 let source = resolve_shell_item(reference)?; // 每个顶层来源独立执行，目录后代仍由 Shell 管理。
@@ -1148,7 +1196,7 @@ pub(crate) fn transfer_data_to_directory(owner: &ShellMenuOwner, data_object: &I
                     _ => item.compensation_blocked = Some("缺少完整来源或结果安全证据".into()),
                 }
             }
-            crate::log_info!("[DEBUG-drop-argument] 逐项传输完成，来源={}，成功={}，HRESULT={:#010x}，结果={}", item.source_reference, u8::from(item.succeeded), item.result_code, item.result_reference.as_deref().unwrap_or("<无>"));
+            crate::log_debug!("逐项传输完成，来源={}，成功={}，HRESULT={:#010x}，结果={}", item.source_reference, u8::from(item.succeeded), item.result_code, item.result_reference.as_deref().unwrap_or("<无>"));
             completed_items.push(item);
             if aborted
             {
@@ -1410,15 +1458,20 @@ pub fn show_native_context_menu(owner: &mut ShellMenuOwner, target: NativeMenuTa
     }
 
     let foreground_before = unsafe { GetForegroundWindow() }; // 记录前台归属，区分激活失败与用户取消。
+    // 菜单跟踪期间的临时置顶；提前返回和错误路径都由 Drop 复位。
+    let topmost = MenuOwnerTopmost::new(owner.hwnd);
     let activated = unsafe { SetForegroundWindow(owner.hwnd) }.as_bool(); // 系统可能拒绝前台切换。
+    // 请求后的真实前台归属；为是否加 AttachThreadInput 借前台留证。
+    let foreground_after_request = unsafe { GetForegroundWindow() };
     let started = std::time::Instant::now(); // 弹出菜单持续时间。
-    crate::log_debug!("Shell：开始弹出菜单，位置=({screen_x},{screen_y})，原前台={foreground_before:?}，所有者={:?}，激活={activated}", owner.hwnd);
+    crate::log_debug!("Shell：开始弹出菜单，位置=({screen_x},{screen_y})，原前台={foreground_before:?}，所有者={:?}，激活={activated}，请求后前台={foreground_after_request:?}，前台归所有者={}，置顶={}", owner.hwnd, foreground_after_request == owner.hwnd, menu_owner_topmost(owner.hwnd));
     unsafe { SetLastError(WIN32_ERROR(0)) };
     // 用户在原生菜单中选择的命令编号。
     let selected = unsafe { TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen_x, screen_y, None, owner.hwnd, None).0 as u32 };
     let tracking_error = unsafe { GetLastError() }; // 必须在其他 Win32 调用前读取。
     // Win32 弹出菜单协议要求向 owner 投递消息，使下次点击能正常激活菜单。
     let _ = unsafe { PostMessageW(Some(owner.hwnd), WM_NULL, WPARAM(0), LPARAM(0)) };
+    drop(topmost); // 菜单已关闭，立即退出置顶带。
     crate::log_debug!("Shell：菜单跟踪结束，命令={selected}，耗时={}ms，错误=0x{:08X}，当前前台={:?}", started.elapsed().as_millis(), tracking_error.0, unsafe { GetForegroundWindow() });
     let result = if selected == 0 && tracking_error.0 != 0
     {

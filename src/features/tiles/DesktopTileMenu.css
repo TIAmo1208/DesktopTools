@@ -38,6 +38,12 @@
     color-scheme: light;
 }
 
+/* 菜单容器本身只承接键盘事件，不显示浏览器默认焦点框。 */
+.desktop-tile-menu:focus,
+.desktop-tile-menu:focus-visible {
+    outline: none;
+}
+
 /* 命令预留固定图标列与二级展开图标列。 */
 .desktop-tile-menu button {
     position: relative;

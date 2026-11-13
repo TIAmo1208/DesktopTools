@@ -18,9 +18,11 @@ export const GridSettings = ({
     const saved = preferences?.[kind] ?? defaults; // 当前已保存值。
     const [draft, setDraft] = useState(saved); // 一组可整体提交的编辑值。
     const [error, setError] = useState(""); // 输入边界错误。
+    const [notice, setNotice] = useState(""); // 恢复默认后提示尚未提交。
     useEffect(() => {
         setDraft(saved);
         setError("");
+        setNotice("");
     }, [saved]);
 
     return (
@@ -65,15 +67,20 @@ export const GridSettings = ({
                     <button
                         type="button"
                         onClick={() => {
-                            setDraft(defaults);
+                            setDraft(defaults); // 恢复默认只填草稿，点「应用」才写入。
                             setError("");
-                            onPreferences({ [kind]: { ...defaults } });
+                            setNotice("已填入默认值，点「应用」生效。");
                         }}
                     >
                         恢复默认
                     </button>
                     <button type="submit">应用</button>
                 </div>
+                {notice && (
+                    <p className="grid-settings__notice" role="status">
+                        {notice}
+                    </p>
+                )}
                 {error && <p role="alert">{error}</p>}
             </fieldset>
         </form>

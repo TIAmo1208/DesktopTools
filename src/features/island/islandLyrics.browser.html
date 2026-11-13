@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>浮岛歌词常态与展开回归检查</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            background: #d6c3bb;
+        }
+        #fixture {
+            position: relative;
+            padding: 24px;
+            width: 900px;
+            height: 520px;
+            background: linear-gradient(120deg, #d8c3b8 0%, #e7d7cd 45%, #c9a89f 100%);
+        }
+        #result {
+            position: fixed;
+            left: 8px;
+            bottom: 8px;
+            margin: 0;
+            padding: 8px;
+            background: #000c;
+            color: #7dff9b;
+            font: 12px/1.5 monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+    <body>
+        <script>
+            // 模块加载失败、未处理异常和隐藏页面也必须有界写出结论。
+            const failAssertion = (reason) => {
+                const result = document.getElementById("result");
+                if (result && !/^(PASS|FAIL)/.test(result.textContent)) {
+                    result.textContent = `FAIL\n- ${reason}`;
+                    document.body.dataset.phase = "fail";
+                }
+            };
+            window.addEventListener("error", (event) => failAssertion(event.message || "断言模块加载失败"), true);
+            window.addEventListener("unhandledrejection", (event) => failAssertion(String(event.reason)));
+            setTimeout(() => failAssertion("断言总时限 60000ms：页面状态或动画未收敛"), 60000);
+        </script>
+        <main id="fixture"></main>
+        <pre id="result">RUNNING</pre>
+        <script type="module">
+            // 本页只断言渲染契约（文本档位、高度、四边、展开槽位）。滚动计划本身是纯函数，
+            // 由 islandLyrics/音乐状态单测覆盖：headless 无渲染帧时 ResizeObserver 不回帧，不能据此判滚动实现。
+            import { 创建夹具, 媒体, 时间轴, 逐句歌词, 等待, 直到 } from "./islandFixture.js";
+
+            // 夹具必须先于产品模块的副作用安装，否则桥与订阅会拿到未替换的运行时。
+            const 夹具 = 创建夹具();
+            const [岛模块, React模块, 根模块, 偏好模块, 样式模块] = await Promise.all([
+                import("./island.tsx"),
+                import("react"),
+                import("react-dom/client"),
+                import("../settings/PreferencesProvider.tsx"),
+                import("../../styles/global.css"),
+            ]);
+            void 样式模块; // 只要求样式表加载完成，不读导出。
+            const { IslandPage } = 岛模块;
+            const React = React模块.default;
+            const { createRoot } = 根模块;
+            const { PreferencesProvider } = 偏好模块;
+
+            // 独立岛页面标记与主题，与窗口入口保持一致。
+            document.documentElement.dataset.island = "true";
+            document.documentElement.dataset.theme = "dark";
+            document.documentElement.dataset.desktopTheme = "dark";
+            createRoot(document.getElementById("fixture")).render(React.createElement(PreferencesProvider, null, React.createElement(IslandPage)));
+
+            const result = document.getElementById("result");
+            const 失败 = [];
+            // 失败先写出的结论不被迟到的成功覆盖。
+            const report = (text) => {
+                if (!result.textContent.startsWith("FAIL")) result.textContent = text;
+                document.body.dataset.phase = result.textContent.startsWith("FAIL") ? "fail" : "pass";
+            };
+            const 断言 = (条件, 说明) => {
+                if (!条件) 失败.push(说明);
+            };
+            const 根 = () => document.querySelector("main.island");
+            const 盒 = () => 根().getBoundingClientRect();
+            const 行 = () => document.querySelector(".island-music__line");
+            const 当前行 = () => document.querySelector(".island-music__current");
+            const 档位 = () => 行()?.style.getPropertyValue("--island-capsule-line-max") ?? "";
+            const 按键 = (键) => 根().dispatchEvent(new KeyboardEvent("keydown", { key: 键, bubbles: true }));
+            const 近似 = (实际, 期望, 容差 = 1) => Math.abs(实际 - 期望) <= 容差;
+            // 计算样式会把相同取值的过渡时长压成单个值，按分量逐项比较。
+            const 过渡一致 = (节点, 毫秒) => String(getComputedStyle(节点).transitionDuration).split(",").every((值) => 值.trim() === 毫秒);
+            const 延迟一致 = (节点, 秒) => String(getComputedStyle(节点).transitionDelay).split(",").every((值) => 值.trim() === 秒);
+            const 标题 = "这是一个特别长的歌曲标题用于触发常态胶囊与回落循环的横向滚动";
+            const 第三句 = "第三句歌词收尾";
+
+            const 运行 = async () => {
+                await 直到(() => 根(), "岛根节点挂载");
+                // 共享音乐源在音乐卡挂载后才建立订阅，先等握手完成再推送事实，避免事件丢失。
+                await 直到(() => 行(), "音乐卡挂载");
+                await 等待(200);
+
+                // 场景一：有同步词、播放中位置落在第二句，常态只给一行且档位按「有词」取值。
+                夹具.pushMusic(媒体(标题, "测试艺人"));
+                夹具.pushDetails({ timeline: 时间轴(12000, 标题, "测试艺人"), lyrics: 逐句歌词 });
+                await 直到(() => 行()?.textContent?.includes("第二句"), "常态显示当前句");
+                断言(行().dataset.motion === "on", `常态有词且动效开启时应带 data-motion=on，实际 ${行().dataset.motion}`);
+                断言(档位() === "188px", `横向有词的内容盒档位应为 188px，实际 ${档位()}`);
+                断言(
+                    当前行().getBoundingClientRect().width > 行().getBoundingClientRect().width + 1,
+                    "超长当前句的内容宽必须超过行盒，才需要常态滚动而不是整句塞进内容盒",
+                );
+                断言(
+                    Number.parseFloat(行().style.getPropertyValue("--island-lyric-distance") || "0") > 0,
+                    `超长当前句应产生滚动距离，实际 ${行().style.getPropertyValue("--island-lyric-distance")}`,
+                );
+
+                // 场景一（补）：换句时上一句渐出、下一句渐入，两句重叠；渐出层 180ms 后卸载。
+                夹具.pushDetails({ timeline: 时间轴(22000, 标题, "测试艺人"), lyrics: 逐句歌词 });
+                await 直到(() => 行()?.textContent?.includes("第三句"), "换句后显示新句");
+                await 直到(() => document.querySelector(".island-music__line-entry[data-leaving='true']"), "渐出层出现", 600);
+                const 渐出层 = document.querySelector(".island-music__line-entry[data-leaving='true']");
+                const 入场层 = document.querySelector(".island-music__line-entry[data-active='true']");
+                断言(渐出层?.textContent?.includes("第二句"), `渐出层应为上一句，实际 ${渐出层?.textContent}`);
+                断言(getComputedStyle(渐出层).animationName === "island-line-leave", `渐出层动画应为 island-line-leave，实际 ${getComputedStyle(渐出层).animationName}`);
+                断言(getComputedStyle(渐出层).animationDelay === "0s" && getComputedStyle(渐出层).animationDuration === "0.18s", `渐出层应立刻开始并在 180ms 内结束，实际 ${getComputedStyle(渐出层).animationDelay}/${getComputedStyle(渐出层).animationDuration}`);
+                断言(getComputedStyle(入场层).animationName === "island-line-enter", `入场层动画应为 island-line-enter，实际 ${getComputedStyle(入场层).animationName}`);
+                断言(getComputedStyle(入场层).animationDelay === "0.06s" && getComputedStyle(入场层).animationDuration === "0.2s", `入场层应延后 60ms 开始并在 200ms 内结束，实际 ${getComputedStyle(入场层).animationDelay}/${getComputedStyle(入场层).animationDuration}`);
+                await 直到(() => !document.querySelector(".island-music__line-entry[data-leaving='true']"), "渐出层卸载", 2000);
+
+                const 常态高度 = 盒().height;
+                const 有词宽度 = 盒().width;
+                断言(常态高度 > 0, "常态胶囊必须有可测高度");
+
+                // 场景二：减少动效只改为单行截断，不得改变高度、档位或撑高胶囊。
+                夹具.pushPreferences({ interfaceAnimations: false });
+                await 直到(() => 行()?.dataset.motion === "off", "动效关闭生效");
+                await 等待(80);
+                断言(!document.querySelector(".island-music__line-entry[data-leaving='true']"), "动效关闭时不得保留渐出层");
+                断言(getComputedStyle(当前行()).textOverflow === "ellipsis", "动效关闭时当前行应单行截断");
+                断言(行().scrollWidth <= 行().clientWidth + 1, `动效关闭时不得横向滚动，实际溢出 ${行().scrollWidth - 行().clientWidth}`);
+                断言(近似(盒().height, 常态高度), `动效关闭不得改变胶囊高度，实际 ${盒().height}（基准 ${常态高度}）`);
+                断言(档位() === "188px", `动效关闭不得改变内容盒档位，实际 ${档位()}`);
+                夹具.pushPreferences({ interfaceAnimations: true });
+                await 直到(() => 行()?.dataset.motion === "on", "动效恢复生效");
+
+                // 场景三：纯音乐/无同步词回落歌名·艺人，档位切到无词档，不得出现空白或跳高。
+                夹具.pushDetails({ timeline: 时间轴(12000, 标题, "测试艺人"), lyrics: [] });
+                await 直到(() => 行()?.textContent === `${标题} · 测试艺人`, "无词回落歌名与艺人");
+                断言(档位() === "116px", `无同步词的内容盒档位应为 116px，实际 ${档位()}`);
+                断言(近似(盒().height, 常态高度), `无词回落不得改变胶囊高度，实际 ${盒().height}（基准 ${常态高度}）`);
+                const 无词宽度 = 盒().width;
+                断言(近似(有词宽度 - 无词宽度, 72, 3), `有词与无词档位差应为 72 DIP，实际 ${有词宽度} → ${无词宽度}`);
+
+                // 场景四：没有媒体会话时回落播放状态，同样不空白、不跳高。
+                夹具.pushMusic(null);
+                await 直到(() => 行()?.textContent === "未在播放", "无媒体回落播放状态");
+                断言(近似(盒().height, 常态高度), `无媒体回落不得改变胶囊高度，实际 ${盒().height}`);
+
+                // 场景五：四边切换只改贴边方向，当前句与档位规则必须各自稳定。
+                夹具.pushMusic(媒体(标题, "测试艺人"));
+                夹具.pushDetails({ timeline: 时间轴(12000, 标题, "测试艺人"), lyrics: 逐句歌词 });
+                await 直到(() => 行()?.textContent?.includes("第二句"), "四边切换前恢复当前句");
+                const 四边 = {};
+                for (const 边 of ["left", "right", "top", "bottom"]) {
+                    夹具.pushPreferences({ islandEdge: 边 });
+                    await 直到(() => 根().dataset.edge === 边, `切换到 ${边} 贴边`);
+                    await 等待(120);
+                    const 值 = 盒();
+                    四边[边] = { 高: 值.height, 宽: 值.width, 档位: 档位(), 竖排: 根().dataset.vertical, 文本: 行()?.textContent };
+                    断言(四边[边].文本?.includes("第二句"), `${边} 贴边时当前句不应被重置，实际 ${四边[边].文本}`);
+                }
+                断言(四边.left.竖排 === "true" && 四边.right.竖排 === "true", `左右贴边的常态必须竖排，实际 ${四边.left.竖排}/${四边.right.竖排}`);
+                断言(四边.top.竖排 !== "true" && 四边.bottom.竖排 !== "true", `上下贴边的常态不得竖排，实际 ${四边.top.竖排}/${四边.bottom.竖排}`);
+                断言(四边.left.档位 === "124px" && 四边.right.档位 === "124px", `竖排有词档位应为 124px，实际 ${四边.left.档位}/${四边.right.档位}`);
+                断言(四边.top.档位 === "188px" && 四边.bottom.档位 === "188px", `横向有词档位应为 188px，实际 ${四边.top.档位}/${四边.bottom.档位}`);
+                断言(近似(四边.left.高, 四边.right.高), `左右贴边胶囊高度应一致，实际 ${四边.left.高} / ${四边.right.高}`);
+                断言(近似(四边.top.高, 四边.bottom.高), `上下贴边胶囊高度应一致，实际 ${四边.top.高} / ${四边.bottom.高}`);
+                断言(近似(四边.top.高, 常态高度), `切边后横向胶囊高度不得改变，实际 ${四边.top.高}（基准 ${常态高度}）`);
+                断言(四边.left.高 > 四边.top.高, `竖排胶囊必须高于横排，实际 ${四边.left.高} / ${四边.top.高}`);
+
+                // 场景六：展开三行与常态共用同一当前句，且跳转后前后句同步更新。
+                按键("Enter");
+                await 直到(() => 根().dataset.state === "expanded", "进入展开态");
+                await 直到(() => document.querySelectorAll(".island-music__lyrics p").length === 3, "展开三行槽位");
+                const 槽 = () => [...document.querySelectorAll(".island-music__lyrics p")].map((节点) => 节点.textContent);
+                断言(槽()[1] === 逐句歌词[1].text, `展开当前句必须与常态一致，实际 ${槽()[1]}`);
+                断言(槽()[0] === 逐句歌词[0].text, `展开前一句应为第一句，实际 ${槽()[0]}`);
+                断言(槽()[2] === 逐句歌词[2].text, `展开后一句应为第三句，实际 ${槽()[2]}`);
+                断言(document.querySelector('.island-music__lyrics p[data-current="true"]')?.textContent === 逐句歌词[1].text, "展开三行必须标出当前句");
+                夹具.pushDetails({ timeline: 时间轴(22000, 标题, "测试艺人"), lyrics: 逐句歌词 });
+                await 直到(() => 槽()[1] === 第三句, "展开态跳转后当前句更新");
+                断言(槽()[0] === 逐句歌词[1].text, `跳转后前一句应同步为第二句，实际 ${槽()[0]}`);
+                const 当前槽 = document.querySelector(".island-music__lyrics p[data-current='true']");
+                const 其余槽 = [...document.querySelectorAll(".island-music__lyrics p")].find((节点) => 节点 !== 当前槽);
+                断言(过渡一致(当前槽, "0.2s") && 延迟一致(当前槽, "0.08s"), `展开当前句应延后 80ms、200ms 过渡，实际 ${getComputedStyle(当前槽).transitionDuration}/${getComputedStyle(当前槽).transitionDelay}`);
+                断言(其余槽 && 过渡一致(其余槽, "0.14s") && 延迟一致(其余槽, "0s"), `展开其余句应 140ms、不延迟，实际 ${其余槽 ? `${getComputedStyle(其余槽).transitionDuration}/${getComputedStyle(其余槽).transitionDelay}` : "不存在"}`);
+                const 当前下标 = Number(当前槽?.dataset.lineIndex);
+                let 已播放动画 = false;
+                let 未播放动画 = false;
+                for (let 次 = 0; 次 < 15 && !(已播放动画 && 未播放动画); 次 += 1) {
+                    for (const 行节点 of document.querySelectorAll(".island-music__lyrics p[data-line-index]")) {
+                        const 下标 = Number(行节点.dataset.lineIndex);
+                        for (const 项 of 行节点.getAnimations()) {
+                            const 时长 = Number(项.effect?.getTiming().duration);
+                            const 延迟 = Number(项.effect?.getTiming().delay);
+                            if (下标 < 当前下标 && 时长 === 220 && 延迟 === 0) 已播放动画 = true;
+                            if (下标 >= 当前下标 && 时长 === 240 && 延迟 === 80) 未播放动画 = true;
+                        }
+                    }
+                    if (!(已播放动画 && 未播放动画)) await 等待(20);
+                }
+                断言(已播放动画 && 未播放动画, `展开换句应分已播放/未播放两段位移，实际 已播放=${已播放动画} 未播放=${未播放动画}`);
+                按键("Escape");
+                await 直到(() => 根().dataset.state === "collapsed", "回到常态");
+
+                // 场景七：拖动进度条跳到末句后，常态必须显示新句，不能沿用旧句或空白。
+                夹具.pushDetails({ timeline: 时间轴(21000, 标题, "测试艺人"), lyrics: 逐句歌词 });
+                await 直到(() => 行()?.textContent === 第三句, "常态跳转后显示末句");
+                断言(档位() === "188px", `跳转后仍按有词档位取值，实际 ${档位()}`);
+                断言(近似(盒().height, 常态高度), `跳转不得改变胶囊高度，实际 ${盒().height}`);
+
+                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : "PASS 浮岛歌词常态档位/回落/四边/展开与跳转对齐");
+            };
+
+            运行().catch((错误) => {
+                report(`FAIL\n- ${错误 instanceof Error ? 错误.message : String(错误)}`);
+            });
+        </script>
+    </body>
+</html>

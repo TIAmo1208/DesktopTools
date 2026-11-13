@@ -84,16 +84,40 @@
 }
 /* 来源项悬浮与键盘聚焦使用主题焦点边框。 */
 .weather-settings__item:has(.weather-settings__item-row:hover),
-.weather-settings__item:has(.weather-settings__item-row:focus-visible) {
+.weather-settings__item:has(.weather-settings__item-hit:focus-visible) {
     border-color: var(--color-focus);
 }
-/* 来源项主行：来源名、地址、模式、状态、展开按键与详情箭头。 */
+/* 来源项主行：命中层铺满整行，其余内容压在它之上。 */
 .weather-settings__item-row {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 12px;
-    outline: none;
     cursor: pointer;
+}
+/* 整行命中层：按钮自身盒子铺满整行，不靠伪元素拉伸。 */
+.weather-settings__item-hit {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    border-radius: var(--surface-radius);
+    cursor: pointer;
+}
+/* 展示内容压在命中层之上；展开按钮保持自身可点，其余穿透到命中层。 */
+.weather-settings__item-row > :not(.weather-settings__item-hit) {
+    position: relative;
+    z-index: 1;
+}
+.weather-settings__item-row > :not(.weather-settings__item-hit):not(.weather-settings__expand) {
+    pointer-events: none;
+}
+/* 焦点沿来源项外框表达，命中层自身不画焦点环。 */
+.weather-settings__item-hit:focus-visible {
+    outline: none;
 }
 /* 展开城市按键使用 24 × 24 命中区与 16px 指示图标。 */
 .weather-settings__expand {
@@ -117,9 +141,9 @@
     background: var(--color-subtle);
     outline: none;
 }
-/* 指示图标只在展开时上下翻转，尺寸与位置不变。 */
+/* 指示图标只在展开时旋转，尺寸与位置不变；时长与其他界面过渡共用同一开关。 */
 .weather-settings__expand .weather-settings__glyph {
-    transition: transform 120ms ease-out;
+    transition: transform var(--interface-transition-duration, 0ms) ease-out;
 }
 /* 展开状态下的图标旋转。 */
 .weather-settings__expand.is-open .weather-settings__glyph {

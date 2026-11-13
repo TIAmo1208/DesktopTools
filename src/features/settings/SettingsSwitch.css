@@ -72,11 +72,6 @@
     cursor: default;
 }
 
-/* 禁用轨道覆盖已选的青色描边。 */
-.settings-switch input:disabled + .settings-switch__track {
-    border-color: var(--color-border);
-}
-
 /* 禁用轨道用次级表面，保留胶囊轮廓。 */
 .settings-switch input:disabled + .settings-switch__track {
     border-color: var(--color-border);

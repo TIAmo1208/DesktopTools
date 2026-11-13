@@ -87,10 +87,11 @@ test("切换来源只改来源标识并清空城市标识，城市确认同时�
     assert.match(submit, /commitState\(weatherSourcePayload\(next, state\)/); // 沿用现有组件状态提交命令。
     assert.match(submit, /setCityId\(undefined\)/); // 本地城市标识同步清空，不残留旧绑定。
     assert.match(submit, /setCity\(undefined\)/); // 内存中的城市对象一并清空。
-    const confirm = source.match(/const confirmCity = \(target: WeatherCity\) =>[\s\S]*?\n    const details/)?.[0];
-    assert.ok(confirm);
-    assert.match(confirm, /addWeatherCity\(source as WeatherSource, target\)/); // 候选城市对象传入 Rust 校验后写入该来源城市列表。
-    assert.match(confirm, /await handleCity\(target\)/); // 再绑定到当前格子。
+    const confirm = source.match(/const openCityPopup = \(\) => \{[\s\S]*?\n    \};/)?.[0];
+    assert.ok(confirm, "城市确认入口仍然留在格子里");
+    assert.match(confirm, /openPopupWeatherCity\(\{ title: "添加新城市或地区"/); // 弹窗本体在置顶弹层里。
+    assert.match(confirm, /await addWeatherCity\(activeSource, picked\)/); // 候选城市传入 Rust 校验后写入该来源城市列表。
+    assert.match(confirm, /await handleCity\(picked\)/); // 再绑定到当前格子。
     assert.match(source, /state: mergeStatePayload\(state, payload\)/); // 沿用现有组件状态提交命令。
 });
 
@@ -109,11 +110,17 @@ test("验证只给结论、确认才写入城市列表，两条路径都不带�
     assert.match(confirm, /if \(!sourceSaved\(picker\.source\)\) throw new Error/);
     assert.doesNotMatch(settings, /type: "save-city"/); // 编辑弹窗不再走草稿会话写入城市。
     assert.doesNotMatch(settings, /picker\.draft/); // 城市弹窗不再区分草稿与按来源两种形态。
-    const tile = await readFile(new URL("./WeatherTile.tsx", import.meta.url), "utf8");
-    const tileValidate = tile.match(/\/\*\* 按来源验证所选城市[\s\S]*?\n        \}\);/)?.[0];
-    assert.ok(tileValidate);
-    assert.doesNotMatch(tileValidate, /addWeatherCity|handleCity/); // 格子侧验证只写弹窗状态行，不写入城市列表也不改绑定。
-    assert.match(tileValidate, /setCityDialog\(/);
+    // 城市弹窗整体迁到置顶弹层：验证只写弹窗状态行，写入仍在宿主。
+    const popup = await readFile(new URL("../../popup-layer/PopupWeather.tsx", import.meta.url), "utf8");
+    const popupValidate = popup.match(/\/\*\* 城市动作串行执行[\s\S]*?\n    \};/)?.[0];
+    assert.ok(popupValidate);
+    assert.match(popupValidate, /busy\.current/); // 弹层自己串行化城市动作。
+    const popupValidateHandler = popup.match(/onValidate=\{\(target\) =>[\s\S]*?\n                \}/)?.[0];
+    assert.ok(popupValidateHandler);
+    assert.match(popupValidateHandler, /validateWeatherCity\(payload\.source, target\)/); // 候选对象直接交给 Rust 校验。
+    assert.doesNotMatch(popupValidateHandler, /addWeatherCity|handleCity/); // 弹层侧验证不写入城市列表也不改绑定。
+    assert.match(popupValidateHandler, /setState\(/); // 只写弹窗状态行。
+    assert.match(popup, /onConfirm=\{async \(target\) => \{[\s\S]*?onConfirmed\(target\)/); // 确认只回传宿主，写入走格子。
 });
 
 test("无已配置来源的按键打开设置窗口，失败保留用户可见反馈", async () => {
@@ -124,8 +131,8 @@ test("无已配置来源的按键打开设置窗口，失败保留用户可见�
     const messages: any[] = [];
     const opened: string[] = [];
     const handleMissingAction = runInNewContext(stripTypeScriptTypes(action) + "\nhandleMissingAction", {
-        setCityOpen: (value: boolean) => opened.push(`city:${value}`),
-        setSourcePickerOpen: (value: boolean) => opened.push(`source:${value}`),
+        openCityPopup: () => opened.push("city:true"),
+        openSourcePopup: () => opened.push("source:true"),
         openSettingsWindow: () => {
             opened.push("settings");
             return Promise.reject("设置窗口打开失败：窗口不可用"); // 跨 Realm 的拒绝值同样进入用户可见反馈。

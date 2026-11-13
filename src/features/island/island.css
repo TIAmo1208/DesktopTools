@@ -8,16 +8,8 @@ html[data-island="true"] #root {
     overflow: clip;
     background: transparent;
 }
-:root[data-island="true"] {
-    --fence-border: rgb(210 224 227 / 38%);
-    --fence-surface: rgb(32 38 40 / 58%);
-    --fence-text: #e8eff0;
-}
-:root[data-island="true"][data-desktop-theme="light"] {
-    --fence-border: rgb(55 66 69 / 22%);
-    --fence-surface: rgb(185 185 185 / 58%);
-    --fence-text: #202526;
-}
+/* 岛的围栏令牌不在此处自带取值：由页面探针从 `.fence-workspace` 读取后复制到岛根， */
+/* 令牌来源因此仍只有主题样式表与偏好写入两处，避免这里长出第三份随内置主题漂移的值。 */
 .island {
     position: relative; /* 角部补面需要以窗口盒为定位基准，不能只在 paint 内联样式里设置。 */
     display: grid;
@@ -380,15 +372,34 @@ html[data-island="true"] #root {
 .island-music__lyrics {
     display: grid;
     gap: 2px;
+    overflow: clip;
+}
+/* 展开歌词换句时整轨按方向位移；行内字号、颜色与透明度各自过渡。 */
+.island-music__lyrics-track {
+    display: grid;
+    gap: 2px;
+    will-change: transform;
 }
 .island-music__lyrics p {
     font-size: 12px;
     opacity: 0.78;
 }
+.island[data-animations="true"] .island-music__lyrics p {
+    transition:
+        font-size 140ms ease-out 0ms,
+        opacity 140ms ease-out 0ms,
+        color 140ms ease-out 0ms;
+}
 .island-music__lyrics p[data-current="true"] {
     font-size: 13px;
     font-weight: 600;
     opacity: 1;
+}
+.island[data-animations="true"] .island-music__lyrics p[data-current="true"] {
+    transition:
+        font-size 200ms ease-out 80ms,
+        opacity 200ms ease-out 80ms,
+        color 200ms ease-out 80ms;
 }
 .island[data-state="hover"] .island-music__artwork {
     inline-size: 48px;
@@ -409,22 +420,98 @@ html[data-island="true"] #root {
     block-size: 28px;
     border-radius: 50%;
 }
+/* 常态胶囊内容盒：固定为档位值（胶囊档位减 52 固定件），换句不改变尺寸，超出部分在盒内滚动。 */
 .island[data-state="collapsed"] .island-music__line {
     position: relative;
     font-size: 11px;
     line-height: 28px;
     block-size: 28px;
-    min-inline-size: 72px;
-    max-inline-size: 240px;
-}
-.island-music__reserve {
-    visibility: hidden;
-}
-.island-music__current {
-    position: absolute;
-    inset: 0;
+    inline-size: var(--island-capsule-line-max, 116px);
+    min-inline-size: 0;
+    max-inline-size: var(--island-capsule-line-max, 116px);
     overflow: clip;
+}
+.island-music__line[data-motion="off"] .island-music__current {
+    inline-size: 100%;
+    overflow: hidden;
     text-overflow: ellipsis;
+}
+.island-music__line[data-motion="off"] .island-music__line-entry {
+    inline-size: 100%;
+    animation: none;
+}
+/* 常态换句：上一句渐出并上移，下一句延迟 60ms 从下方渐入上移到位；两句重叠，位移限制在行盒内。 */
+.island-music__line-entry {
+    display: block;
+    inline-size: max-content;
+    animation: island-line-enter 200ms ease-out 60ms both;
+}
+.island-music__line-entry[data-active="true"] {
+    position: relative;
+}
+.island-music__line-entry[data-leaving="true"] {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    pointer-events: none;
+    animation: island-line-leave 180ms ease-out 0ms both;
+}
+@keyframes island-line-enter {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+}
+@keyframes island-line-leave {
+    to {
+        opacity: 0;
+        transform: translateY(-6px);
+    }
+}
+/* 当前行按内容撑开，超出内容盒的部分由 transform 位移滚动；减少动效时改为单行截断。 */
+.island-music__current {
+    display: block;
+    inline-size: max-content;
+    will-change: transform;
+}
+/* 常态胶囊滚动：只位移合成层，不参与浮岛测量与窗口提交；进度档向左/向上推进，循环档往返。 */
+@keyframes island-lyric-scroll-x {
+    from {
+        transform: translate3d(0, 0, 0);
+    }
+    to {
+        transform: translate3d(calc(-1 * var(--island-lyric-distance, 0px)), 0, 0);
+    }
+}
+@keyframes island-lyric-scroll-y {
+    from {
+        transform: translate3d(0, 0, 0);
+    }
+    to {
+        transform: translate3d(0, calc(-1 * var(--island-lyric-distance, 0px)), 0);
+    }
+}
+@keyframes island-lyric-loop-x {
+    0% {
+        transform: translate3d(0, 0, 0);
+    }
+    50% {
+        transform: translate3d(calc(-1 * var(--island-lyric-distance, 0px)), 0, 0);
+    }
+    100% {
+        transform: translate3d(0, 0, 0);
+    }
+}
+@keyframes island-lyric-loop-y {
+    0% {
+        transform: translate3d(0, 0, 0);
+    }
+    50% {
+        transform: translate3d(0, calc(-1 * var(--island-lyric-distance, 0px)), 0);
+    }
+    100% {
+        transform: translate3d(0, 0, 0);
+    }
 }
 .island[data-state="collapsed"] [data-island-plugin] > p {
     block-size: 28px;
@@ -441,9 +528,6 @@ html[data-island="true"] #root {
 .island[data-vertical="true"] .island-music__line {
     writing-mode: vertical-rl;
     text-orientation: upright;
-    min-inline-size: 48px;
-    max-inline-size: 176px;
-    inline-size: max-content;
     block-size: 28px;
     line-height: 28px;
 }

@@ -180,7 +180,7 @@ impl DesktopHostRuntime
                         "message": "桌面宿主正在启动"
                     })
                 })?;
-                dispatch_native_command(&command_app, runtime, command, arguments)
+                dispatch_native_command(&command_app, runtime, crate::commands::NativeCommandSource::DesktopHost, command, arguments)
             })
         };
         let monitors = enumerate_desktop_monitors()?; // 当前全部显示器物理状态。
@@ -256,15 +256,9 @@ impl DesktopHostRuntime
             context.host.clone()
         };
         // 已应用到 HWND 的语义区域数量。
-        let region_count = apply_host_hit_regions(&host, report.hit_regions.clone()).map_err(|error| DesktopHostError::platform_failed(&error))?;
+        apply_host_hit_regions(&host, report.hit_regions.clone()).map_err(|error| DesktopHostError::platform_failed(&error))?;
         // 像素仅作诊断，空屏或 PrintWindow 捕获失败不阻塞接管。
-        let visible_pixels = probe_host_pixels(&host).unwrap_or_else(|error| {
-            crate::log_debug!("宿主：像素诊断未取得可见内容，显示器={}，原因={error}", monitor_id);
-            0
-        });
-
-        // 日志中用于验证输入坐标的首个语义命中区域。
-        let first_region = report.hit_regions.first().map(|region| format!("{}:[{:.0}, {:.0}, {:.0}, {:.0}]", region.id, region.left, region.top, region.width, region.height)).unwrap_or_else(|| "无".to_string());
+        let visible_pixels = probe_host_pixels(&host).unwrap_or(0); // 像素仅作诊断，失败不阻塞接管。
         // 将前端门槛写入当前逐屏宿主状态。
         {
             // 等待前端证据写入的正式宿主状态。
@@ -286,7 +280,6 @@ impl DesktopHostRuntime
                 data.coordinator.mark_hosts_ready();
             }
         }
-        crate::log_debug!("宿主：逐屏前端门槛已通过，显示器={}，命中区域：{}，首个区域：{}，系统图像：{}/{}，真实像素：{}", monitor_id, region_count, first_region, report.loaded_system_images, report.total_system_images, visible_pixels);
         self.commit_if_ready()
     }
 
@@ -664,7 +657,7 @@ impl DesktopHostRuntime
         let command_handler: NativeCommandHandler = {
             let command_app = app.clone(); // 新宿主本地协议使用的应用句柄。
             let command_runtime = Arc::clone(self); // 新宿主本地协议使用的正式运行时。
-            Arc::new(move |command, arguments| crate::commands::dispatch_native_command(&command_app, &command_runtime, command, arguments))
+            Arc::new(move |command, arguments| crate::commands::dispatch_native_command(&command_app, &command_runtime, crate::commands::NativeCommandSource::DesktopHost, command, arguments))
         }; // 重建后全部 WebView2 共用的命令边界。
         let previous_hosts = {
             let data = self.data.lock().map_err(|_| "桌面宿主状态暂时不可用".to_string())?; // 复用前的原生宿主身份。

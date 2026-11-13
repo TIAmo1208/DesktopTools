@@ -176,7 +176,6 @@ impl ComponentRuntimeState
             ComponentCapability::ProbeServiceStatus => crate::commands::probe::probe(&json!({ "service": "astrbot" })),
             ComponentCapability::LoopbackChannel => json!({}), // 通道数据只从三条通道命令交付，能力调用本身没有载荷。
         }; // 当前授权能力的最小结构化结果。
-        crate::log_debug!("插件：宿主能力调用完成，实例={}，能力={capability:?}", instance_id);
         Ok(ComponentCapabilityResult { instance_id: instance_id.to_string(), capability, payload })
     }
 
@@ -700,7 +699,7 @@ fn confirm_plugin_asset(folder: &std::path::Path, entry: &str, extension: &str, 
     }
     if missing
     {
-        crate::log_warn!("插件：入口脚本不存在，仍注册清单，入口={entry}");
+        crate::log_debug!("插件：入口脚本不存在，仍注册清单，入口={entry}");
         return Ok(());
     }
     let root = std::fs::canonicalize(folder).map_err(|error| format!("读取插件资产失败：{error}"))?;
