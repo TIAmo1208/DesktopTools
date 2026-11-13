@@ -1,0 +1,42 @@
+/* 桌面围栏令牌的内部值：桌面工作区与浮岛共用同一份，主题样式表在此之上覆盖。 */
+/* 浮岛用隐藏的 .fence-workspace 探针读取这组值再复制到岛根，因此浮岛不依赖工作区组件的样式表。 */
+
+/* 深色为默认态。两组强调色由偏好内联写到文档根，围栏范围内的 --color-accent 仍从桌面强调色派生。 */
+.fence-workspace {
+    --color-accent: var(--desktop-accent, #2563eb);
+    --color-focus: var(--color-accent);
+    --fence-border: rgb(210 224 227 / 38%);
+    --fence-surface: rgb(32 38 40 / 58%);
+    --fence-text: #e8eff0;
+    --fence-active: #45c98c;
+    --fence-warning: #e8a33f;
+    --fence-error: #f08a80;
+    --fence-muted: #a8b4b6;
+    --fence-focus-border: var(--color-accent);
+}
+
+/* 桌面独立浅色主题围栏变量。 */
+:root[data-desktop-theme="light"] .fence-workspace {
+    color-scheme: light;
+    --fence-border: rgb(55 66 69 / 22%);
+    --fence-surface: rgb(185 185 185 / 58%);
+    --fence-text: #202526;
+    --fence-active: #0b7a52;
+    --fence-warning: #b4770f;
+    --fence-error: #a32118;
+    --fence-muted: #5c6668;
+    --fence-item-text-shadow: none;
+    --fence-focus-border: var(--color-focus);
+}
+
+/* 桌面独立深色主题围栏变量。 */
+:root[data-desktop-theme="dark"] .fence-workspace {
+    color-scheme: dark;
+    --fence-border: rgb(210 224 227 / 38%);
+    --fence-surface: rgb(32 38 40 / 58%);
+    --fence-text: #e8eff0;
+    --fence-active: #45c98c;
+    --fence-warning: #e8a33f;
+    --fence-error: #f08a80;
+    --fence-muted: #a8b4b6;
+}

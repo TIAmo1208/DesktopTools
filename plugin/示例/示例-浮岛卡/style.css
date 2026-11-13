@@ -1,0 +1,32 @@
+/* 浮岛卡内容只画自己的一行：卡表面、圆角、内边距与滚动都由宿主提供。 */
+.plugin-example-island {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    block-size: 20px;
+    color: var(--fence-text);
+    font-size: 13px;
+    line-height: 20px;
+    white-space: nowrap;
+    overflow: clip;
+}
+
+/* 语义色来自浮岛根复制的 --fence-* 整组令牌，主题切换时自动跟随。 */
+.plugin-example-island__dot {
+    inline-size: 8px;
+    block-size: 8px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--fence-active);
+}
+
+.plugin-example-island__label {
+    overflow: clip;
+    text-overflow: ellipsis;
+}
+
+.plugin-example-island__time {
+    margin-inline-start: auto;
+    color: var(--fence-muted);
+    font-variant-numeric: tabular-nums;
+}

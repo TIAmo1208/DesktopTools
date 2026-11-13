@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>浮岛主题令牌与主题表现层隔离</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            background: #d6c3bb;
+        }
+        #root {
+            width: 420px;
+            height: 320px;
+        }
+        /* 组件作用域圆角：用来核对主题切角没有靠抬特异性盖过组件自己的值。 */
+        .island-theme-probe__scoped {
+            border-radius: 3px;
+        }
+        #result {
+            position: fixed;
+            left: 8px;
+            bottom: 8px;
+            margin: 0;
+            padding: 8px;
+            background: #000c;
+            color: #7dff9b;
+            font: 12px/1.5 monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+    <body>
+        <div id="root"></div>
+        <pre id="result">RUNNING</pre>
+        <script>
+            // 模块加载失败、未处理异常和隐藏页面也必须有界写出结论。
+            const failAssertion = (reason) => {
+                const result = document.getElementById("result");
+                if (result && !/^(PASS|FAIL)/.test(result.textContent)) {
+                    result.textContent = `FAIL\n- ${reason}`;
+                    document.body.dataset.phase = "fail";
+                }
+            };
+            window.addEventListener("error", (event) => failAssertion(event.message || "断言模块加载失败"), true);
+            window.addEventListener("unhandledrejection", (event) => failAssertion(String(event.reason)));
+            setTimeout(() => failAssertion("断言总时限 60000ms：页面状态未收敛"), 60000);
+        </script>
+        <script type="module">
+            // 本页只断言两件契约事实：浮岛根是否拿到整组围栏令牌，主题表现层是否被挡在浮岛之外。
+            // 观感、材质与真机叠加仍由 L3 取证覆盖，断言页通过不代表真机验收通过。
+            import { 创建夹具, 等待, 直到 } from "./islandFixture.js";
+
+            // 夹具必须先于产品模块的副作用安装，否则桥与订阅会拿到未替换的运行时。
+            // 用胶囊形态：刘海形态会把贴边两角改成直角，圆角断言需要四角同值的形态。
+            const 夹具 = 创建夹具({ 偏好补丁: { interfaceAnimations: false, islandForm: "capsule" } });
+            const [岛模块, 令牌模块, React模块, 根模块, 偏好模块, 样式模块, 夜之城模块] = await Promise.all([
+                import("./island.tsx"),
+                import("./islandTokens.ts"),
+                import("react"),
+                import("react-dom/client"),
+                import("../settings/PreferencesProvider.tsx"),
+                import("../../styles/global.css"),
+                import("../../../plugin/主题-夜之城/theme.css?raw"),
+            ]);
+            void 样式模块; // 只要求样式表加载完成，不读导出。
+            const { IslandPage } = 岛模块;
+            const { ISLAND_FENCE_TOKENS } = 令牌模块;
+            const React = React模块.default;
+            const { createRoot } = 根模块;
+            const { PreferencesProvider } = 偏好模块;
+            const 夜之城样式 = 夜之城模块.default;
+
+            // 独立岛页面标记与主题，与窗口入口保持一致；#root 同时用于核对整页叠加是否命中。
+            document.documentElement.dataset.island = "true";
+            document.documentElement.dataset.theme = "dark";
+            document.documentElement.dataset.desktopTheme = "dark";
+            createRoot(document.getElementById("root")).render(React.createElement(PreferencesProvider, null, React.createElement(IslandPage)));
+
+            const result = document.getElementById("result");
+            const 失败 = [];
+            // 失败先写出的结论不被迟到的成功覆盖。
+            const report = (text) => {
+                if (!result.textContent.startsWith("FAIL")) result.textContent = text;
+                else if (!失败.length) 失败.push(result.textContent);
+                document.body.dataset.phase = result.textContent.startsWith("FAIL") ? "fail" : "pass";
+            };
+            const 断言 = (条件, 说明) => {
+                if (!条件) 失败.push(说明);
+            };
+            const 根 = () => document.querySelector("main.island");
+            const 卡片 = () => document.querySelector("main.island .island-card");
+            const 探针 = () => document.querySelector(".island__palette");
+            // 岛根上的复制值：探针写入的内联自定义属性。
+            const 令牌 = (名) => (根()?.style.getPropertyValue(名) ?? "").trim();
+            // 同一令牌在探针上的计算值，作为“复制自样式表”的对照。
+            const 探针值 = (名) => (探针() ? getComputedStyle(探针()).getPropertyValue(名).trim() : "");
+            const 整页叠加 = () => getComputedStyle(document.getElementById("root"), "::after").content;
+            const 卡圆角 = () => getComputedStyle(卡片()).borderTopLeftRadius;
+            const 按键 = (键) => 根().dispatchEvent(new KeyboardEvent("keydown", { key: 键, bubbles: true }));
+            const 主题生效 = () => /e8f1ff/i.test(令牌("--fence-text"));
+            const 内置色生效 = () => /e8eff0/i.test(令牌("--fence-text"));
+            // 非浮岛表面的控件探针：带类名的控件由组件规则给圆角，裸控件由主题切角。
+            const 控件探针 = document.createElement("div");
+            控件探针.innerHTML = '<select class="island-theme-probe__scoped"><option>a</option></select><select class="island-theme-probe"><option>a</option></select>';
+            document.body.append(控件探针);
+            const 作用域控件 = 控件探针.querySelector(".island-theme-probe__scoped");
+            const 裸控件 = 控件探针.querySelector(".island-theme-probe");
+            // 真实主题样式表走 data URL，既不需要额外资产也不用 blob。
+            const 主题地址 = `data:text/css;charset=utf-8,${encodeURIComponent(夜之城样式)}`;
+            /** 用 link 加载主题：放在 body 里，探针的 head 观察看不到，只能靠 load 事件回读。 */
+            const 挂主题链接 = () => {
+                const link = document.createElement("link");
+                link.rel = "stylesheet";
+                link.setAttribute("data-theme-plugin", "");
+                link.href = 主题地址;
+                document.body.append(link);
+                return link;
+            };
+            /** 用 head 里的 style 注入主题：走探针的 head 子节点观察路径。附加哨兵表面色便于确认本次注入确实被读取。 */
+            const 挂主题样式 = () => {
+                const style = document.createElement("style");
+                style.setAttribute("data-theme-plugin", "");
+                // 哨兵规则与主题深色块同特异性并写在后面，否则会被 :root[data-desktop-theme] 的深色值盖住。
+                style.textContent = `${夜之城样式}\n:root[data-desktop-theme="dark"] .fence-workspace { --fence-surface: rgb(0 255 0 / 58%); }`;
+                document.head.append(style);
+                return style;
+            };
+
+            const 运行 = async () => {
+                await 直到(() => 根() && 令牌("--fence-surface"), "岛根挂载并完成令牌复制");
+                await 等待(200); // 让偏好 Provider 的首轮副作用（会清掉残留主题 link）先跑完。
+
+                // 场景一：内置主题下复制整组围栏令牌，语义色不能缺席。
+                await 直到(() => 内置色生效(), "内置围栏文字色");
+                for (const 名 of ISLAND_FENCE_TOKENS) {
+                    const 期望 = 探针值(名);
+                    if (!期望) continue; // 该深浅态没有声明的令牌（如深色下的文字阴影）不复制。
+                    断言(令牌(名) === 期望, `${名} 应复制桌面围栏的计算值 ${期望}，实际 ${令牌(名)}`);
+                }
+                for (const 名 of ["--fence-active", "--fence-warning", "--fence-error", "--fence-muted"]) {
+                    断言(令牌(名) !== "", `浮岛根必须复制语义色 ${名}，否则插件卡在浮岛上取不到状态色`);
+                }
+
+                // 场景二：挂载完成后从 body link 的 load 事件回读。link 放在 body，探针只观察 head 子节点，看不到这次插入。
+                const 主题链接 = 挂主题链接();
+                await 直到(() => 主题生效(), "主题 link load 后回读围栏文字色");
+                for (const 名 of ISLAND_FENCE_TOKENS) {
+                    const 期望 = 探针值(名);
+                    if (!期望) continue;
+                    断言(令牌(名) === 期望, `主题生效后 ${名} 应等于探针计算值 ${期望}，实际 ${令牌(名)}`);
+                }
+                断言(令牌("--fence-warning") !== "" && 令牌("--fence-warning") === 探针值("--fence-warning"), "主题未覆盖的语义色应回落到桌面围栏内置值");
+                断言(令牌("--fence-focus-border") !== "" && !/var\(/.test(令牌("--fence-focus-border")), `浮岛根不得存下未解析的 var()，实际 ${令牌("--fence-focus-border")}`);
+                主题链接.remove();
+
+                // 场景三：换成 head 里的 style，靠哨兵表面色确认子节点观察路径独立生效（不是沿用场景二的旧值）。
+                const 主题样式 = 挂主题样式();
+                await 直到(() => /0 255 0|0, 255, 0/i.test(令牌("--fence-surface")), "head 主题样式注入后回读哨兵表面色");
+
+                // 场景四：深浅切换只改令牌，不改探针通路。
+                document.documentElement.dataset.theme = "light";
+                document.documentElement.dataset.desktopTheme = "light";
+                await 直到(() => /0b1220/i.test(令牌("--fence-text")), "切到浅色后复制浅色围栏文字色");
+                断言(令牌("--fence-text") === 探针值("--fence-text"), "浅色下 --fence-text 应等于探针计算值");
+                断言(令牌("--fence-surface") === 探针值("--fence-surface"), "浅色下 --fence-surface 应等于探针计算值");
+                document.documentElement.dataset.theme = "dark";
+                document.documentElement.dataset.desktopTheme = "dark";
+                await 直到(() => 主题生效(), "切回深色");
+
+                // 场景五：全屏叠加与控件切角必须避开浮岛，同时确认门控是“排除浮岛”而不是规则根本没写。
+                断言(整页叠加() === "none", `浮岛文档不应命中主题全屏叠加，实际 ::after content = ${整页叠加()}`);
+                断言(getComputedStyle(裸控件).borderTopLeftRadius === "0px", `浮岛上的裸控件不应套用主题切角，实际 ${getComputedStyle(裸控件).borderTopLeftRadius}`);
+                document.documentElement.dataset.island = "false";
+                await 等待(60);
+                断言(整页叠加() === '""', `非浮岛表面应命中同一主题叠加，实际 ::after content = ${整页叠加()}`);
+                断言(getComputedStyle(裸控件).borderTopLeftRadius === "6px", `非浮岛裸控件应套用主题切角，实际 ${getComputedStyle(裸控件).borderTopLeftRadius}`);
+                断言(
+                    getComputedStyle(作用域控件).borderTopLeftRadius === "3px" && getComputedStyle(作用域控件).borderTopRightRadius === "3px",
+                    `组件作用域圆角应胜过主题切角（门控不得抬高特异性），实际 ${getComputedStyle(作用域控件).borderTopLeftRadius}/${getComputedStyle(作用域控件).borderTopRightRadius}`,
+                );
+                document.documentElement.dataset.island = "true";
+                await 等待(60);
+
+                // 场景六：撤下主题后不滞留旧值，回到样式表内置色；深色内置没有文字阴影声明，可据此确认旧值被清掉。
+                主题样式.remove();
+                await 直到(() => 内置色生效(), "撤下主题后回到内置围栏文字色");
+                断言(令牌("--fence-text") === 探针值("--fence-text"), "撤下主题后 --fence-text 应等于内置计算值");
+                断言(令牌("--fence-item-text-shadow") === "", `撤下主题后不得留下主题的文字阴影值，实际 ${令牌("--fence-item-text-shadow")}`);
+
+                // 场景七：浮岛圆角只作用于展开卡，常态与固定形态圆角不接受主题或偏好覆盖。
+                夹具.pushPreferences({ islandRadius: 8 });
+                await 直到(() => getComputedStyle(document.documentElement).getPropertyValue("--island-radius").trim() === "8px", "浮岛圆角偏好写入文档根");
+                断言(卡圆角() === "22px", `常态胶囊圆角是形态固定值 22px，实际 ${卡圆角()}`);
+                按键("Enter");
+                await 直到(() => 根()?.dataset.state === "expanded", "展开");
+                await 等待(120);
+                断言(卡圆角() === "8px", `展开卡圆角应取 --island-radius 8px，实际 ${卡圆角()}`);
+                按键("Escape");
+                await 直到(() => 根()?.dataset.state === "collapsed", "收回常态");
+
+                // 场景八：系统强调色单独变化（只改 html.style，不动偏好与 data-desktop-theme）也要刷新复制值。
+                document.documentElement.style.setProperty("--desktop-accent", "#ff0000");
+                await 直到(() => /ff0000|255,\s*0,\s*0/i.test(令牌("--fence-focus-border")), "系统强调色变化后刷新 --fence-focus-border");
+
+                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : "PASS 浮岛令牌与主题表现层隔离");
+                document.body.dataset.phase = 失败.length ? "fail" : "pass";
+            };
+
+            try {
+                await 运行();
+            } catch (error) {
+                report(`FAIL\n- ${error instanceof Error ? error.message : String(error)}`);
+                document.body.dataset.phase = "fail";
+            }
+        </script>
+    </body>
+</html>

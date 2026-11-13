@@ -39,6 +39,8 @@ import {
 import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, ISLAND_EXPAND_STAGGER_MS, ISLAND_EXPAND_MOTION_MS, islandAttachedCornerAt, islandUnionFrame } from "./islandMotion";
 import { islandHoldMessages, islandMessageTime, islandMessageView } from "./islandMessages";
 import { ISLAND_LYRIC_OFFSETS, islandCapsuleLineLimit, islandLyricView, islandMusicTickDelay, islandPlaybackStatus, islandScrollAnimationName, islandScrollDistance, islandScrollKey, islandScrollPlan, islandScrollPlayState } from "./islandLyrics";
+import { ISLAND_FENCE_TOKENS } from "./islandTokens";
+import "../../styles/fenceTokens.css"; // 探针读取的围栏内置值，来自桌面工作区与浮岛共用的那一份。
 import "./island.css";
 /** Debug 构建由后端注入的浮岛测试卡：只展示，不写偏好、不进卡片顺序与设置页列表。 */
 const ISLAND_DEBUG_CARD = "official.debug-island";
@@ -361,22 +363,24 @@ export const IslandPage = () => {
     const [work, setWork] = useState<IslandRect>();
     const root = useRef<HTMLElement>(null); // 只测量岛自身。
     const palette = useRef<HTMLDivElement>(null); // 只读取现有主题的围栏令牌，不呈现工作区。
-    useEffect(() => {
+    // 用布局副作用在首次绘制前完成复制：island.css 不再自带令牌回落，浮岛的令牌只有样式表与偏好两处来源。
+    useLayoutEffect(() => {
         const readPalette = () => {
             if (!root.current || !palette.current) return;
             // 先移除上次复制值，防止撤下主题后探针继承旧色形成自回路。
-            for (const name of ["--fence-surface", "--fence-border", "--fence-text"]) root.current.style.removeProperty(name);
+            for (const name of ISLAND_FENCE_TOKENS) root.current.style.removeProperty(name);
             const tokens = getComputedStyle(palette.current);
-            for (const name of ["--fence-surface", "--fence-border", "--fence-text"]) {
+            for (const name of ISLAND_FENCE_TOKENS) {
                 const value = tokens.getPropertyValue(name).trim();
                 if (value) root.current.style.setProperty(name, value);
-                else root.current.style.removeProperty(name);
             }
         };
         const scheme = matchMedia("(prefers-color-scheme: dark)"); // 系统变化可能只改变主题的媒体查询。
         const observer = new MutationObserver(readPalette); // 同时覆盖主题表替换与深浅模式属性更新。
         observer.observe(document.head, { childList: true, subtree: true, attributes: true, attributeFilter: ["href"] });
-        observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-desktop-theme"] });
+        // 根内联样式同样观察：桌面强调色与浮岛圆角由偏好写到 html.style，变化时 preferences 与 data-desktop-theme 都不动，
+        // 只靠上面的两处观察会让复制来的 --fence-focus-border 停在旧强调色。只观察 html 自身，探针写的是岛根，不会自回路。
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-desktop-theme", "style"] });
         const handleLoad = (event: Event) => {
             if (event.target instanceof HTMLLinkElement && event.target.hasAttribute("data-theme-plugin")) readPalette();
         };

@@ -8,16 +8,8 @@ html[data-island="true"] #root {
     overflow: clip;
     background: transparent;
 }
-:root[data-island="true"] {
-    --fence-border: rgb(210 224 227 / 38%);
-    --fence-surface: rgb(32 38 40 / 58%);
-    --fence-text: #e8eff0;
-}
-:root[data-island="true"][data-desktop-theme="light"] {
-    --fence-border: rgb(55 66 69 / 22%);
-    --fence-surface: rgb(185 185 185 / 58%);
-    --fence-text: #202526;
-}
+/* 岛的围栏令牌不在此处自带取值：由页面探针从 `.fence-workspace` 读取后复制到岛根， */
+/* 令牌来源因此仍只有主题样式表与偏好写入两处，避免这里长出第三份随内置主题漂移的值。 */
 .island {
     position: relative; /* 角部补面需要以窗口盒为定位基准，不能只在 paint 内联样式里设置。 */
     display: grid;

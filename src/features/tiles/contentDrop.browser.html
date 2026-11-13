@@ -13,6 +13,7 @@
             import { createWorkspaceDropTarget } from "../workspace/surface/workspaceDropTarget.ts";
             import { useCrossMonitorPreview } from "../workspace/surface/useCrossMonitorPreview.ts";
             import "../../styles/global.css";
+            import "../../styles/fenceTokens.css"; // 与 DesktopWorkspace.tsx 的加载顺序一致：围栏令牌在工作区布局之前。
             import "../workspace/surface/DesktopWorkspace.css";
             const h = React.createElement; // 使用生产组件，不复制业务实现。
             const root = createRoot(document.getElementById("fixture")); // 每个场景共用挂载根。

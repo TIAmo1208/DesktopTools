@@ -16,6 +16,7 @@
             import { PreferencesProvider } from "../settings/PreferencesProvider.tsx";
             import { CollectBoxTile } from "../tile-content/collect-box/CollectBoxTile.tsx";
             import "../../styles/global.css";
+            import "../../styles/fenceTokens.css"; // 与 DesktopWorkspace.tsx 的加载顺序一致：围栏令牌在工作区布局之前。
             import "../workspace/surface/DesktopWorkspace.css";
             const h = React.createElement; // 实际公共格子组件，内容使用固定时钟文本。
             let toggleCollapsed; // 浏览器断言触发公共外壳折叠状态。
