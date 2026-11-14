@@ -474,3 +474,15 @@ fn surface_plan_skips_repeated_frames_and_keeps_fixed_child_origin()
     let reset = AppliedSurface::default().plan((60, 20, 148, 44), (-100, -20, 420, 1040));
     assert!(reset.1 && reset.2);
 }
+
+/// 岛没有用户关闭入口：外部关闭请求不得销毁窗口，窗口被外部销毁后事件投递要清理并重建。
+#[test]
+fn island_window_rejects_external_close_and_recovers_disposed_webview()
+{
+    let source = include_str!("island.rs"); // 核对实际编译源码，不依赖真机复现。
+    assert!(source.contains("if message == WM_CLOSE"));
+    assert!(source.contains("岛：忽略外部关闭请求"));
+    assert!(source.contains("if !unsafe { IsWindow(Some(hwnd)) }.as_bool()"));
+    assert!(source.contains("forget_disposed_window()"));
+    assert!(source.contains("reconcile(&app)")); // 清理后按当前偏好重建，不靠下一次偏好保存。
+}

@@ -625,12 +625,37 @@ fn create(app: &AppHandle) -> Result<(), String>
 /// 共享事件白名单在 UI 线程调用；借用结束后执行脚本，允许原生消息重入。
 pub(crate) fn dispatch_script(script: &str)
 {
-    let webview = ISLAND.with(|slot| slot.borrow().as_ref().map(|window| Rc::clone(&window.webview))); // 岛关闭时没有投递目标。
-    if let Some(webview) = webview
-        && let Err(error) = webview.evaluate_script(script)
+    let target = ISLAND.with(|slot| slot.borrow().as_ref().map(|window| (Rc::clone(&window.webview), window.hwnd, window.app.clone()))); // 岛关闭时没有投递目标。
+    let Some((webview, hwnd, app)) = target
+    else
+    {
+        return;
+    };
+    // 窗口被外部销毁（没有走本模块的销毁路径）时，状态里的句柄只会让之后每次投递都失败；
+    // 这里清掉失效 WebView 并按当前偏好重建，岛能自恢复，也不再把错误刷进日志。
+    if !unsafe { IsWindow(Some(hwnd)) }.as_bool()
+    {
+        crate::log_warn!("岛：窗口已被外部销毁，清理失效 WebView 后按偏好重建");
+        if let Some(app) = forget_disposed_window()
+        {
+            reconcile(&app);
+        }
+        return;
+    }
+    if let Err(error) = webview.evaluate_script(script)
     {
         crate::log_warn!("岛：事件投递失败，错误：{error}");
     }
+}
+
+/// 清掉已失效的岛窗口句柄与 WebView；窗口本身已不存在，不再调用销毁。
+fn forget_disposed_window() -> Option<AppHandle>
+{
+    ISLAND_HWND.store(0, Ordering::Release); // 命中与运行时探针不再引用失效句柄。
+    let resource = ISLAND.with(|slot| slot.borrow_mut().take()); // 先移出，WebView 释放在借用结束后进行。
+    let app = resource.as_ref().map(|window| window.app.clone());
+    drop(resource);
+    app
 }
 
 /// UI 线程幂等清理，先释放 WebView 再销毁外层 HWND。
@@ -1185,6 +1210,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
     {
         return LRESULT(1);
     } // 不覆盖 WebView2 的透明像素。
+    if message == WM_CLOSE
+    {
+        // 岛没有用户关闭入口：Alt+F4、外部工具或误发的关闭请求都不得销毁窗口，
+        // 一旦销毁，状态里的 WebView 会失效并让后续事件全部投递失败。关闭岛只走偏好开关。
+        crate::log_warn!("岛：忽略外部关闭请求");
+        return LRESULT(0);
+    }
     if message == WM_ISLAND_CHILD_NOACTIVATE
     {
         apply_child_noactivate(hwnd);
