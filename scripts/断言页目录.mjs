@@ -2,6 +2,7 @@
 
 // 断言页：页面把结果写进 <pre id="result">，以 PASS 开头为通过、FAIL 开头为失败。
 export const 断言页 = [
+    "src/shared/scrollingText.browser.html", // 单行文本溢出滚动：判定、动画名与时长、重新测量与关闭动效。
     "src/features/desktop-items/desktopItemImage.browser.html", // 桌面项图片缩略与等待状态。
     "src/features/settings/weatherSettings.browser.html", // 天气设置完整交互链路。
     "src/features/tile-content/collect-box/collectBox.browser.html", // 收集箱加载、选择、删除与投放。

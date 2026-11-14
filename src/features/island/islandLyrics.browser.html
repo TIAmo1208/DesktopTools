@@ -209,6 +209,24 @@
                     if (!(已播放动画 && 未播放动画)) await 等待(20);
                 }
                 断言(已播放动画 && 未播放动画, `展开换句应分已播放/未播放两段位移，实际 已播放=${已播放动画} 未播放=${未播放动画}`);
+
+                // 场景六（补）：展开态溢出滚动——超长歌名与当前句滚动，其余句保持截断。
+                const 长歌词 = 逐句歌词.map((行, 下标) => (下标 === 1 ? { ...行, text: "当前句故意写得非常非常长以便在展开态触发慢速滚动而不是被截断" } : 行));
+                夹具.pushDetails({ timeline: 时间轴(12000, 标题, "测试艺人"), lyrics: 长歌词 });
+                await 直到(() => document.querySelector(".island-music__lyrics p[data-current='true']")?.textContent?.includes("故意写得"), "展开态超长当前句渲染");
+                await 等待(160);
+                断言(document.querySelector(".island-music__metadata .scrolling-text[data-overflow='true']") !== null, "展开态超长歌名必须判定为溢出并滚动");
+                断言(
+                    document.querySelector(".island-music__lyrics p[data-current='true'] .scrolling-text")?.dataset.overflow === "true",
+                    "展开态超长当前句必须滚动",
+                );
+                断言(
+                    document.querySelectorAll(".island-music__lyrics p[data-line-index]:not([data-current='true']) .scrolling-text").length === 0,
+                    "展开态非当前句不得出现滚动外壳",
+                );
+                夹具.pushDetails({ timeline: 时间轴(12000, 标题, "测试艺人"), lyrics: 逐句歌词 });
+                await 直到(() => 槽()[1] === 逐句歌词[1].text, "恢复原歌词");
+
                 按键("Escape");
                 await 直到(() => 根().dataset.state === "collapsed", "回到常态");
 

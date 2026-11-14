@@ -1,0 +1,50 @@
+/* 单行文本滚动外壳：默认单行截断，只有测量到溢出时才交给子层动画。 */
+.scrolling-text {
+    display: inline-block;
+    max-inline-size: 100%;
+    overflow: hidden;
+    vertical-align: bottom;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* 溢出时改由动画推进，不再画省略号；未溢出保持上面的截断语义。 */
+.scrolling-text[data-overflow="true"] {
+    text-overflow: clip;
+}
+
+/* 内容层只承担位移，宽度跟随文本，不参与父级测量。 */
+.scrolling-text__track {
+    display: inline-block;
+    will-change: auto;
+}
+
+/* 慢速往返：两端各留一段停顿，中段线性滑动，回到起点后循环。 */
+@keyframes scrolling-text-loop {
+    0%,
+    7% {
+        transform: translate3d(0, 0, 0);
+    }
+    45%,
+    55% {
+        transform: translate3d(calc(-1 * var(--overflow-distance, 0px)), 0, 0);
+    }
+    93%,
+    100% {
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+/* 只有溢出且测量给出计划时才启用动画；时长与距离都由内联变量给出。 */
+.scrolling-text[data-overflow="true"] .scrolling-text__track {
+    will-change: transform;
+    animation: scrolling-text-loop var(--overflow-duration, 4000ms) linear infinite;
+}
+
+/* 减少动效或用户关闭界面动画时不产生滚动，保持单行截断。 */
+@media (prefers-reduced-motion: reduce) {
+    .scrolling-text[data-overflow="true"] .scrolling-text__track {
+        animation: none;
+        will-change: auto;
+    }
+}

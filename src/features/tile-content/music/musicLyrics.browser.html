@@ -189,7 +189,53 @@
                 断言(过渡一致(当前行(), "0s"), `动效关闭时不得保留过渡，实际 ${时长(当前行())}`);
                 断言([...document.querySelectorAll(".music-control__lyrics p[data-line-index]")].every((节点) => 节点.getAnimations().length === 0), "动效关闭时不得产生位移与过渡动画");
 
-                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : "PASS 桌面音乐格子换句位移/字号颜色过渡与减少动效");
+                // 溢出滚动：窄容器 + 长文本，元数据与当前句滚动，其余句保持截断。
+                偏好.interfaceAnimations = true;
+                推送("preferences-changed", { ...偏好 });
+                等待(60);
+                const 窄盒 = document.createElement("div");
+                窄盒.style.cssText = "position:relative;width:220px;height:320px;padding:6px;display:grid;grid-template-columns:1fr";
+                document.getElementById("fixture").append(窄盒);
+                const 长歌词 = [
+                    { startMs: 0, text: "很久以前的一行歌词长度也足够触发滚动用来验证只有当前句滚动" },
+                    { startMs: 10000, text: "当前正在播放的这一句歌词非常长应该出现慢速往返滚动动画" },
+                    { startMs: 20000, text: "后面还有一句很长的歌词但它不是当前句因此不应该滚动" },
+                ];
+                const 窄根 = createRoot(窄盒);
+                窄根.render(
+                    React.createElement(
+                        PreferencesProvider,
+                        null,
+                        React.createElement(MusicControl, {
+                            snapshot: {
+                                title: "一个非常非常长的歌曲标题用来触发溢出滚动",
+                                artist: "一个同样很长的艺人名字用于第二行溢出",
+                                source: "测试播放器",
+                                playback: "playing",
+                                canPrevious: true,
+                                canPlayPause: true,
+                                canNext: true,
+                            },
+                            lyrics: 长歌词,
+                            timeline: { sessionId: "tile-overflow", title: "长标题", artist: "长艺人", positionTicks: "0", endTimeTicks: "0", lastUpdatedTimeTicks: "0", playbackStatus: 4, positionMs: 12000, durationMs: 180000, advancing: false },
+                            anchorNow: performance.now(),
+                            actions: { previous: async () => {}, playPause: async () => {}, next: async () => {} },
+                            onFailure: () => {},
+                        }),
+                    ),
+                );
+                await 直到(() => 窄盒.querySelector(".music-control__lyrics p[data-current='true']"), "窄容器歌词渲染");
+                await 等待(160);
+                const 元数据滚动 = [...窄盒.querySelectorAll(".music-control__metadata .scrolling-text")].map((节点) => 节点.dataset.overflow);
+                断言(元数据滚动.includes("true"), `超长元数据必须判定为溢出，实际 ${JSON.stringify(元数据滚动)}`);
+                const 当前句滚动 = 窄盒.querySelector(".music-control__lyrics p[data-current='true'] .scrolling-text");
+                断言(当前句滚动?.dataset.overflow === "true", `当前句超出时必须滚动，实际 ${当前句滚动?.dataset.overflow ?? "没有滚动外壳"}`);
+                const 其余句滚动 = 窄盒.querySelectorAll(".music-control__lyrics p[data-line-index]:not([data-current='true']) .scrolling-text");
+                断言(其余句滚动.length === 0, `非当前句不应滚动，实际 ${其余句滚动.length} 处`);
+                窄根.unmount();
+                窄盒.remove();
+
+                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : "PASS 桌面音乐格子换句位移/字号颜色过渡、减少动效与溢出滚动");
             };
 
             运行().catch((错误) => {

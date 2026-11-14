@@ -12,6 +12,7 @@ import warningIcon from "../../../resources/message-warning.svg?raw";
 import { PluginSlot, pluginTileType } from "../components/PluginSlot";
 import { useMusicState, musicProgressRange, positionAt } from "../music/musicSource";
 import { usePreferences } from "../settings/PreferencesProvider";
+import { ScrollingText } from "../../shared/ScrollingText";
 import {
     islandAttachedCorner,
     islandCardMaskPath,
@@ -261,13 +262,13 @@ const IslandMusic = ({ mode, side, motion }: { mode: IslandMode; side: boolean; 
                     <div className="island-music__info">
                         <div className="island-music__metadata">
                             <p className="island-music__title" title={media?.title}>
-                                {media?.title || status}
+                                <ScrollingText text={media?.title || status} enabled={motion} />
                             </p>
                             <p className="island-music__artist" title={media?.artist}>
-                                {media?.artist || "\u00a0"}
+                                <ScrollingText text={media?.artist || "\u00a0"} enabled={motion} />
                             </p>
                             <p className="island-music__source" title={media?.source}>
-                                {failure ? "控制失败，请重试" : media?.source || "\u00a0"}
+                                <ScrollingText text={failure ? "控制失败，请重试" : media?.source || "\u00a0"} enabled={motion} />
                             </p>
                         </div>
                         {mode === "expanded" ? controls : null}
@@ -292,7 +293,7 @@ const IslandMusic = ({ mode, side, motion }: { mode: IslandMode; side: boolean; 
                                 const lineIndex = view.index + offset;
                                 return (
                                     <p key={lineIndex >= 0 ? `line:${lineIndex}` : `line:${lineIndex}:${slot}`} data-line-index={lineIndex} data-current={offset === 0} title={music.lyrics[lineIndex]?.text}>
-                                        {view.slots[slot]}
+                                        {offset === 0 ? <ScrollingText text={view.slots[slot]} enabled={motion} /> : view.slots[slot]}
                                     </p>
                                 );
                             })}

@@ -7,11 +7,16 @@ import type { ComponentManifest } from "../../contracts/component";
 import type { ApplicationPreferences } from "../../contracts/settings";
 import backIcon from "../../../resources/weather-back.svg?raw";
 import chevronIcon from "../../../resources/weather-chevron-right.svg?raw";
+import trashIcon from "../../../resources/weather-trash.svg?raw";
 import { DesktopTileMenu, type DesktopTileMenuItem } from "../tiles/DesktopTileMenu";
+import { MusicLyricsRow, MusicSpectrumBarsRow, MusicSpectrumFpsRow, MusicSpectrumRow } from "./MusicSettingsRows";
 import { SettingsAbout } from "./SettingsAbout";
 import { SettingsSwitch } from "./SettingsSwitch";
 import { islandCardAvailability, moveIslandCard, sortIslandCardManifests, updateIslandCardOrder } from "./islandSettings";
 import "./IslandSettingsPage.css";
+
+/** 现成的垃圾桶图标缩到页头命令尺寸，与插件卸载按钮同一视觉。 */
+const removeIcon = trashIcon.replace("<svg ", '<svg width="18" height="18" ');
 
 /** 设置里的岛一级页与卡片二级页。 */
 export const IslandSettings = ({
@@ -80,23 +85,33 @@ export const IslandSettings = ({
                     </div>
                     <div className="island-settings__commands">
                         <button
-                            className="settings__button island-settings__remove"
+                            className="settings__button settings__icon-button island-settings__trash"
                             type="button"
+                            title="卸载卡片"
+                            aria-label="卸载卡片"
                             disabled={unavailable || !availability?.enabled}
                             onClick={() => toggle(detail.id, false)}
-                            data-button="ghost"
+                            data-button="icon"
                         >
-                            从浮岛移除
+                            <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: removeIcon }} />
                         </button>
                         <SettingsSwitch label={`${detail.name}上浮岛`} checked={availability?.enabled ?? false} disabled={unavailable} onChange={(checked) => toggle(detail.id, checked)} />
                     </div>
                 </div>
                 <SettingsAbout text={detail.description || ""} />
+                {detail.id === "official.music-control" ? (
+                    <div className="settings__rows">
+                        <MusicLyricsRow className="settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
+                        <MusicSpectrumRow className="settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
+                        <MusicSpectrumBarsRow className="settings__row" selectClassName="settings__select" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
+                        <MusicSpectrumFpsRow className="settings__row" selectClassName="settings__select" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
+                    </div>
+                ) : null}
                 {entries.length ? (
                     <div className="island-settings__entries">
                         {entries.map((entry) => <IslandPluginEntry key={entry.id} pluginId={detail.id} entry={entry} />)}
                     </div>
-                ) : (
+                ) : detail.id === "official.music-control" ? null : (
                     <p className="island-settings__empty">插件未提供设置条目</p>
                 )}
             </section>

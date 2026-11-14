@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>单行文本溢出滚动检查</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            background: #d6c3bb;
+        }
+        #fixture {
+            padding: 24px;
+            background: linear-gradient(120deg, #d8c3b8 0%, #e7d7cd 45%, #c9a89f 100%);
+        }
+        .box {
+            inline-size: 120px;
+            margin-block-end: 12px;
+            color: #2b1d16;
+            font: 400 13px/18px "Segoe UI Variable", "Segoe UI", sans-serif;
+        }
+        .box--wide {
+            inline-size: 600px;
+        }
+        #result {
+            position: fixed;
+            left: 8px;
+            bottom: 8px;
+            margin: 0;
+            padding: 8px;
+            background: #000c;
+            color: #7dff9b;
+            font: 12px/1.5 monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+    <body>
+        <main id="fixture"></main>
+        <pre id="result">RUNNING</pre>
+        <script type="module">
+            import React from "react";
+            import { createRoot } from "react-dom/client";
+            import { ScrollingText } from "./ScrollingText.tsx";
+
+            /**
+             * 断言页目的：把「溢出判定」与「真实渲染出来的动画」绑在同一条断言里。
+             * 只测纯函数无法覆盖 CSS 变量、动画名与重新测量，所以这里读真实 DOM 与 getAnimations。
+             */
+
+            try {
+                const longText = "这是一行明显超出当前列宽的歌名，用来验证慢速往返滚动是否生效";
+                const shortText = "短文本";
+                const root = createRoot(document.getElementById("fixture"));
+
+                // 一次渲染三个用例：溢出可滚动、短文本不滚动、关闭动效时不滚动。
+                const render = (wide) =>
+                    new Promise((resolve) => {
+                        root.render(
+                            React.createElement(
+                                "div",
+                                null,
+                                React.createElement(
+                                    "div",
+                                    { className: wide ? "box box--wide" : "box", "data-case": "overflow" },
+                                    React.createElement(ScrollingText, { text: longText, enabled: true }),
+                                ),
+                                React.createElement(
+                                    "div",
+                                    { className: "box", "data-case": "short" },
+                                    React.createElement(ScrollingText, { text: shortText, enabled: true }),
+                                ),
+                                React.createElement(
+                                    "div",
+                                    { className: "box", "data-case": "disabled" },
+                                    React.createElement(ScrollingText, { text: longText, enabled: false }),
+                                ),
+                            ),
+                        );
+                        // ResizeObserver 在下一帧后才回调，等两帧再判定。
+                        requestAnimationFrame(() => requestAnimationFrame(resolve));
+                    });
+
+                const box = (name) => document.querySelector(`[data-case="${name}"] .scrolling-text`);
+                const track = (name) => box(name)?.querySelector(".scrolling-text__track");
+                const animation = (name) => track(name)?.getAnimations?.() ?? [];
+
+                await render(false);
+
+                const overflowBox = box("overflow");
+                const overflowTrack = track("overflow");
+                if (!overflowBox || !overflowTrack) throw new Error("溢出用例没有渲染出滚动外壳");
+                if (overflowBox.dataset.overflow !== "true") throw new Error("超长文本必须判定为溢出");
+                const distance = Number.parseFloat(overflowTrack.style.getPropertyValue("--overflow-distance"));
+                if (!(distance > 0)) throw new Error(`溢出距离必须为正，实际 ${overflowTrack.style.getPropertyValue("--overflow-distance")}`);
+                const duration = Number.parseFloat(overflowTrack.style.getPropertyValue("--overflow-duration"));
+                if (!(duration >= 4000)) throw new Error(`往返周期不短于 4s，实际 ${duration}`);
+                const running = animation("overflow");
+                if (running.length !== 1) throw new Error(`溢出用例应只有一条滚动动画，实际 ${running.length}`);
+                if (running[0].animationName !== "scrolling-text-loop") throw new Error(`动画名应为 scrolling-text-loop，实际 ${running[0].animationName}`);
+
+                if (box("short")?.dataset.overflow !== "false") throw new Error("短文本不得判定为溢出");
+                if (animation("short").length !== 0) throw new Error("短文本不应有滚动动画");
+
+                if (box("disabled")?.dataset.overflow !== "false") throw new Error("关闭动效时不得滚动");
+                if (animation("disabled").length !== 0) throw new Error("关闭动效时不应有滚动动画");
+
+                // 容器变宽后重新测量：原本溢出的文本应回到不滚动。
+                await render(true);
+                if (box("overflow")?.dataset.overflow !== "false") throw new Error("列宽足够后必须撤销溢出滚动");
+                if (animation("overflow").length !== 0) throw new Error("列宽足够后不得保留滚动动画");
+
+                document.getElementById("result").textContent = "PASS：溢出判定、动画名与时长、重新测量与关闭动效都符合约定";
+                root.unmount();
+            } catch (error) {
+                document.getElementById("result").textContent = "FAIL：" + (error?.stack ?? error);
+            }
+        </script>
+    </body>
+</html>

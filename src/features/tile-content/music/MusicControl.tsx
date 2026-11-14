@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { LyricLine, MusicTimeline } from "../../../contracts/music";
+import { ScrollingText } from "../../../shared/ScrollingText";
 import { lyricIndex, lyricTickDelay, positionAt } from "../../music/musicState";
 import { usePreferences } from "../../settings/PreferencesProvider";
 import { isCompactMusicLayout, musicMediaMinimum } from "./musicLayout";
@@ -297,10 +298,14 @@ export const MusicControl = ({
             </div>
             <div ref={body} className="music-control__body">
                 <div ref={metadata} className="music-control__metadata">
-                    <strong title={snapshot?.title}>{empty ? "" : snapshot?.title}</strong>
-                    <span title={snapshot?.artist}>{empty ? "" : snapshot?.artist}</span>
+                    <strong title={snapshot?.title}>{empty ? "" : <ScrollingText text={snapshot?.title ?? ""} enabled={animationsEnabled} />}</strong>
+                    <span title={snapshot?.artist}>{empty ? "" : <ScrollingText text={snapshot?.artist ?? ""} enabled={animationsEnabled} />}</span>
                     <small title={showSource ? snapshot?.source : undefined}>
-                        {empty ? "" : [showSource ? snapshot?.source : "", playbackLabel].filter(Boolean).join(" · ")}
+                        {empty ? (
+                            ""
+                        ) : (
+                            <ScrollingText text={[showSource ? snapshot?.source : "", playbackLabel].filter(Boolean).join(" · ")} enabled={animationsEnabled} />
+                        )}
                     </small>
                 </div>
                 {spectrumEnabled && (
@@ -342,7 +347,7 @@ export const MusicControl = ({
                         return (
                             <Fragment key={line.startMs}>
                                 <p data-line-index={view.start + offset} data-current={current} title={line.text}>
-                                    {line.text}
+                                    {current ? <ScrollingText text={line.text} enabled={animationsEnabled} /> : line.text}
                                 </p>
                                 {current && showTranslation && line.translation ? (
                                     <p data-translation="true" title={line.translation}>

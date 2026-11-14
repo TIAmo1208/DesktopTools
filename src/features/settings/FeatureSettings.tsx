@@ -5,6 +5,7 @@ import type { AudioOutputDevice } from "../../contracts/audio";
 import type { ApplicationPreferences } from "../../contracts/settings";
 import type { FolderPortalInstance, WorkspaceCommand, WorkspaceSnapshot } from "../../contracts/workspace";
 import { SettingsSwitch } from "./SettingsSwitch";
+import { MusicLyricsRow, MusicSpectrumBarsRow, MusicSpectrumFpsRow, MusicSpectrumRow } from "./MusicSettingsRows";
 import plusIcon from "../../../resources/collect-new.svg?raw";
 import backIcon from "../../../resources/weather-back.svg?raw";
 import chevronIcon from "../../../resources/settings-chevron-right.svg?raw";
@@ -263,24 +264,8 @@ export const FeatureSettings = ({
                             onChange={(checked) => onPreferences({ musicShowSource: checked })}
                         />
                     </div>
-                    <div className="feature-settings__row">
-                        <span>显示歌词</span>
-                        <SettingsSwitch
-                            label="显示歌词"
-                            disabled={unavailable}
-                            checked={preferences?.musicLyricsEnabled ?? true}
-                            onChange={(checked) => onPreferences({ musicLyricsEnabled: checked })}
-                        />
-                    </div>
-                    <div className="feature-settings__row">
-                        <span>显示实时频谱</span>
-                        <SettingsSwitch
-                            label="显示实时频谱"
-                            disabled={unavailable}
-                            checked={preferences?.musicSpectrumEnabled ?? false}
-                            onChange={(checked) => onPreferences({ musicSpectrumEnabled: checked })}
-                        />
-                    </div>
+                    <MusicLyricsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
+                    <MusicSpectrumRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
                     <label className="feature-settings__row">
                         <span>频谱采集设备</span>
                         <select
@@ -300,34 +285,8 @@ export const FeatureSettings = ({
                             ))}
                         </select>
                     </label>
-                    <label className="feature-settings__row">
-                        <span>频谱段数</span>
-                        <select
-                            disabled={unavailable || !preferences?.musicSpectrumEnabled}
-                            value={String(preferences?.musicSpectrumBars ?? 32)}
-                            onChange={(event) => onPreferences({ musicSpectrumBars: Number(event.currentTarget.value) })}
-                        >
-                            {[16, 24, 32, 48, 64].map((bars) => (
-                                <option key={bars} value={String(bars)}>
-                                    {bars} 段
-                                </option>
-                            ))}
-                        </select>
-                    </label>
-                    <label className="feature-settings__row">
-                        <span>频谱帧率</span>
-                        <select
-                            disabled={unavailable || !preferences?.musicSpectrumEnabled}
-                            value={String(preferences?.musicSpectrumFps ?? 30)}
-                            onChange={(event) => onPreferences({ musicSpectrumFps: Number(event.currentTarget.value) })}
-                        >
-                            {[15, 30, 60].map((fps) => (
-                                <option key={fps} value={String(fps)}>
-                                    {fps} 帧/秒
-                                </option>
-                            ))}
-                        </select>
-                    </label>
+                    <MusicSpectrumBarsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
+                    <MusicSpectrumFpsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
                 </>
             ) : detail === "collect" ? (
                 <>
