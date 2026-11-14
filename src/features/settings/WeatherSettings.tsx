@@ -23,60 +23,26 @@ import {
     type WeatherAvailability,
     type WeatherCheck,
     type WeatherCity,
-    type WeatherCredentials,
     type WeatherField,
     type WeatherSource,
     type WeatherSourceStatus,
 } from "../../contracts/weather";
+import {
+    assembleWeatherCredentials,
+    confirmWeatherCityDraft,
+    emptyWeatherCityDraft,
+    requiredWeatherFields,
+    weatherCityCommitSteps,
+    weatherDraftChanged,
+    weatherDraftCities,
+    weatherLeaveDecision,
+    WEATHER_EMPTY_DRAFT,
+    WEATHER_FIELDS,
+    withdrawWeatherCityDraft,
+    type WeatherCityDraft,
+} from "./weatherSettingsFlow";
 import "./WeatherSettings.css";
 
-/** 各来源字段的标签、填写说明与输入上限；keepBlankOnEdit 表示编辑时留空代表沿用已保存值。 */
-const FIELDS: Record<
-    WeatherField,
-    { label: string; description: string; maxLength: number; secret?: boolean; multiline?: boolean; keepBlankOnEdit?: boolean }
-> = {
-    host: {
-        label: "API Host",
-        maxLength: 253,
-        description:
-            "从和风天气控制台完整复制 API Host，保留所有域名标签，例如 example.other.qweatherapi.com。仅填写主机名，不包含 https://、端口、路径、查询或片段。",
-    },
-    developerId: {
-        label: "开发者 ID",
-        maxLength: 64,
-        description: "在和风天气控制台的账户设置中查看开发者 ID（Developer ID），以 Q 开头，共 10 位；不要填写邮箱或项目 ID。",
-    },
-    projectId: {
-        label: "项目 ID",
-        maxLength: 64,
-        description: "在和风天气控制台的项目管理中创建或选择项目，复制项目 ID（Project ID）。该项目需具有城市搜索与天气预报接口权限。",
-    },
-    credentialId: {
-        label: "凭据 ID",
-        maxLength: 64,
-        description: "在所选项目下创建 JWT 凭据并上传 Ed25519 公钥，复制对应的凭据 ID（Credential ID）。此处不是 API KEY 或临时 JWT 令牌。",
-    },
-    privateKey: {
-        label: "私钥",
-        maxLength: 1024,
-        secret: true,
-        multiline: true,
-        keepBlankOnEdit: true,
-        description:
-            "按和风天气开发文档的 JWT 身份认证说明生成 Ed25519 密钥对：公钥上传到项目凭据，私钥保留在本机。导入对应的 PKCS#8 PEM 私钥文件，或粘贴包含 BEGIN PRIVATE KEY 和 END PRIVATE KEY 的完整内容；不要填写公钥或 JWT 令牌。",
-    },
-    apiKey: {
-        label: "API key",
-        maxLength: 1024,
-        secret: true,
-        keepBlankOnEdit: true,
-        description:
-            "在 Foreca My API 页面复制当前套餐的 API key，以 Bearer 令牌提交；该密钥是较长的签名令牌，需要完整复制，不要填入账户邮箱、密码或试用链接。",
-    },
-};
-
-// 弹窗关闭后恢复的空白草稿。
-const EMPTY_DRAFT: Record<WeatherField, string> = { host: "", developerId: "", projectId: "", credentialId: "", privateKey: "", apiKey: "" };
 
 /** 图标资源以原始 SVG 保存，尺寸与颜色由所在按键的样式决定。 */
 const Glyph = ({ source }: { source: string }) => <span className="weather-settings__glyph" aria-hidden="true" dangerouslySetInnerHTML={{ __html: source }} />;
@@ -113,11 +79,11 @@ export const WeatherSettings = ({
     const [cityMenu, setCityMenu] = useState<{ source: WeatherSource; city: WeatherCity; left: number; top: number }>(); // 城市项右键菜单，确认删除前只展示命令。
     const [form, setForm] = useState<{ source: WeatherSource; adding: boolean }>(); // 添加或编辑弹窗。
     const [removal, setRemoval] = useState<WeatherPendingRemoval>(); // 待确认的删除对象。
-    const [draft, setDraft] = useState<Record<WeatherField, string>>(EMPTY_DRAFT); // 只在当前页内存保存。
+    const [draft, setDraft] = useState<Record<WeatherField, string>>(WEATHER_EMPTY_DRAFT); // 只在当前页内存保存。
     const [visible, setVisible] = useState(false); // 仅当前敏感草稿显隐。
     const [expandedLoading, setExpandedLoading] = useState(false); // 当前展开项的城市列表是否正在读取。
     const [city, setCity] = useState<WeatherCity>(); // 编辑弹窗内经完整验证的城市。
-    const [cityDraft, setCityDraft] = useState<{ added: WeatherCity[]; removed: string[] }>({ added: [], removed: [] }); // 编辑弹窗内尚未提交的城市改动。
+    const [cityDraft, setCityDraft] = useState<WeatherCityDraft>(emptyWeatherCityDraft); // 编辑弹窗内尚未提交的城市改动。
     const [checks, setChecks] = useState<WeatherCheck[]>([]); // 编辑弹窗内本次验证的真实检查结果。
     const [picker, setPicker] = useState<CityPicker>(); // 城市弹窗及其调用方。
     const [expanded, setExpanded] = useState<WeatherSource>(); // 当前展开城市列表的来源。
@@ -131,13 +97,11 @@ export const WeatherSettings = ({
     const pendingLeave = useRef<() => void>(() => undefined); // 确认后执行的导航。
     // 统一页头展示当前已配置的来源数量；来源列表变化时同步。
     useEffect(() => onStatus?.(sources.length ? `${sources.length} 个已配置来源` : "未配置来源"), [sources.length, onStatus]);
-    const formRequired = form ? WEATHER_SOURCES[form.source].fields.filter((key) => form.adding || !FIELDS[key].keepBlankOnEdit) : []; // 可留空的字段只在编辑态放宽，新增时仍必须填写。
+    const formRequired = form ? requiredWeatherFields(form.source, form.adding) : []; // 可留空的字段只在编辑态放宽，新增时仍必须填写。
     const formReady = formRequired.every((key) => draft[key].trim().length > 0); // 保存只要求必填字段非空，不以能力验证为门槛。
     /** 该来源是否已有保存的凭据；城市弹窗的搜索、验证与写入都只走已保存凭据。 */
     const sourceSaved = (source: WeatherSource) => sources.some((item) => item.source === source);
-    const formCities = form
-        ? [...(sources.find((item) => item.source === form.source)?.cities ?? []).filter((item) => !cityDraft.removed.includes(item.id)), ...cityDraft.added]
-        : []; // 编辑弹窗内的城市列表＝已保存项减去待删除、加上待添加。
+    const formCities = form ? weatherDraftCities(sources.find((item) => item.source === form.source)?.cities ?? [], cityDraft) : []; // 编辑弹窗内的城市列表＝已保存项减去待删除、加上待添加。
 
     /** 打开城市弹窗；每次进入都不沿用上一次的选择与验证结果。 */
     const openPicker = (source: WeatherSource) => {
@@ -162,19 +126,15 @@ export const WeatherSettings = ({
         setBusy(kind);
     };
 
-    /** 只提交当前来源声明的字段；所有字段统一去掉首尾空白，不按字段名或来源特判。 */
-    const credentials = (): WeatherCredentials => {
-        const fields = form ? WEATHER_SOURCES[form.source].fields : WEATHER_SOURCES.qweather.fields; // 没有打开弹窗时按第一个来源装配，调用方本就不会用到。
-        const values = Object.fromEntries(fields.map((key) => [key, draft[key].trim()])) as Record<WeatherField, string>;
-        return values as unknown as WeatherCredentials; // 后端按字段结构判定来源，这里只负责按来源装配字段。
-    };
+    /** 只提交当前来源声明的字段；装配与去空白规则由领域模块统一。 */
+    const credentials = () => assembleWeatherCredentials(form?.source, draft);
 
     /** 字段改变时使会话失效并记录未保存修改。 */
     const handleDraft = (key: WeatherField, value: string) => {
         invalidate();
         setDraft((current) => {
             const next = { ...current, [key]: value }; // 本次编辑后的完整草稿。
-            live.current.dirty = JSON.stringify(next) !== opened.current;
+            live.current.dirty = weatherDraftChanged(next, opened.current);
             return next;
         });
         setChecks([]);
@@ -186,7 +146,7 @@ export const WeatherSettings = ({
     /** 打开添加或编辑弹窗；编辑模式只回填非敏感字段，敏感材料一律留空。 */
     const openForm = (source: WeatherSource, adding: boolean) => {
         const saved = adding ? undefined : sources.find((item) => item.source === source); // 已保存来源的列表状态。
-        const filled: Record<WeatherField, string> = { ...EMPTY_DRAFT, ...saved?.identity }; // 非敏感字段由后端 identity 回填，不再按来源借道地址。
+        const filled: Record<WeatherField, string> = { ...WEATHER_EMPTY_DRAFT, ...saved?.identity }; // 非敏感字段由后端 identity 回填，不再按来源借道地址。
         invalidate();
         opened.current = JSON.stringify(filled);
         live.current.dirty = false;
@@ -194,7 +154,7 @@ export const WeatherSettings = ({
         setVisible(false);
         setChecks([]);
         setCity(undefined);
-        setCityDraft({ added: [], removed: [] }); // 新开一次编辑，不沿用上一次的城市改动。
+        setCityDraft(emptyWeatherCityDraft()); // 新开一次编辑，不沿用上一次的城市改动。
         setStatus("");
         setFailure(false);
         setPicker(undefined);
@@ -222,10 +182,10 @@ export const WeatherSettings = ({
         live.current.dirty = false;
         setForm(undefined);
         setPicker(undefined);
-        setDraft(EMPTY_DRAFT);
+        setDraft(WEATHER_EMPTY_DRAFT);
         setChecks([]);
         setCity(undefined);
-        setCityDraft({ added: [], removed: [] }); // 丢弃未提交的城市改动，关闭后城市列表回到已保存的状态。
+        setCityDraft(emptyWeatherCityDraft()); // 丢弃未提交的城市改动，关闭后城市列表回到已保存的状态。
         setStatus(""); // 弹窗内的验证或保存反馈不残留到来源列表。
         setFailure(false);
     };
@@ -374,7 +334,7 @@ export const WeatherSettings = ({
             if (!sourceSaved(picker.source)) throw new Error("请先保存该来源的凭据，再添加城市或地区");
             if (form) {
                 // 编辑弹窗：城市改动属于本次编辑，取消时要一起丢弃，因此只记草稿。
-                setCityDraft((current) => ({ ...current, added: [...current.added.filter((item) => item.id !== target.id), target] }));
+                setCityDraft((current) => confirmWeatherCityDraft(current, target));
                 setCity(undefined);
                 setChecks([]);
                 setStatus("");
@@ -429,12 +389,13 @@ export const WeatherSettings = ({
                 return;
             }
             let cities = sources.find((item) => item.source === source)?.cities ?? []; // 本次提交后的城市列表。
+            const steps = weatherCityCommitSteps(cityDraft); // 先添加后移除，与保存顺序一致。
             // 每写入一项立即从草稿移除，凭据保存失败后重试不会重复添加或删除同一城市。
-            for (const city of [...cityDraft.added]) {
+            for (const city of steps.additions) {
                 cities = await addWeatherCity(source, city);
                 setCityDraft((current) => ({ ...current, added: current.added.filter((item) => item.id !== city.id) }));
             }
-            for (const id of [...cityDraft.removed]) {
+            for (const id of steps.removals) {
                 cities = await removeWeatherCity(source, id);
                 setCityDraft((current) => ({ ...current, removed: current.removed.filter((item) => item !== id) }));
             }
@@ -518,12 +479,8 @@ export const WeatherSettings = ({
     /** 删除城市项：编辑弹窗内只记草稿，其余入口按来源命令立即移除该项。 */
     const handleRemoveCity = (source: WeatherSource, city: WeatherCity) => {
         if (form) {
-            // 本次刚加上的城市只需撤回 added，不能同时记入 removed，否则保存时会删除尚不存在的一行。
-            setCityDraft((current) => ({
-                added: current.added.filter((item) => item.id !== city.id),
-                removed:
-                    current.added.some((item) => item.id === city.id) || current.removed.includes(city.id) ? current.removed : [...current.removed, city.id],
-            }));
+            // 本次刚加上的城市只撤回 added，不写进 removed，避免保存时删除尚不存在的一行。
+            setCityDraft((current) => withdrawWeatherCityDraft(current, city));
             setRemoval(undefined);
             return;
         }
@@ -558,8 +515,9 @@ export const WeatherSettings = ({
     useEffect(() => {
         live.current.mounted = true;
         const guard = (action: () => void) => {
-            if (live.current.busy === "save" || live.current.busy === "remove") return;
-            if (!live.current.dirty) {
+            const decision = weatherLeaveDecision(live.current); // 忙碌、未保存与放行共用同一条判定。
+            if (decision === "block") return;
+            if (decision === "proceed") {
                 action();
                 return;
             }
@@ -765,9 +723,9 @@ export const WeatherSettings = ({
                                             onClick={() => {
                                                 if (item === form.source) return;
                                                 invalidate();
-                                                opened.current = JSON.stringify(EMPTY_DRAFT);
+                                                opened.current = JSON.stringify(WEATHER_EMPTY_DRAFT);
                                                 live.current.dirty = false;
-                                                setDraft(EMPTY_DRAFT);
+                                                setDraft(WEATHER_EMPTY_DRAFT);
                                                 setForm({ source: item, adding: true });
                                                 setChecks([]);
                                                 setCity(undefined);
@@ -782,11 +740,11 @@ export const WeatherSettings = ({
                             </div>
                         )}
                         {WEATHER_SOURCES[form.source].fields.map((key) =>
-                            FIELDS[key].multiline ? (
+                            WEATHER_FIELDS[key].multiline ? (
                                 <div className="weather-settings__row weather-settings__row--secret" key={key}>
                                     <span>
-                                        <label htmlFor={`weather-${key}`}>{FIELDS[key].label}</label>
-                                        <SettingsInfo label={FIELDS[key].label} description={FIELDS[key].description} />
+                                        <label htmlFor={`weather-${key}`}>{WEATHER_FIELDS[key].label}</label>
+                                        <SettingsInfo label={WEATHER_FIELDS[key].label} description={WEATHER_FIELDS[key].description} />
                                     </span>
                                     <div className="weather-settings__secret">
                                         <div className="weather-settings__secret-input">
@@ -795,13 +753,13 @@ export const WeatherSettings = ({
                                                 className={visible ? "" : "is-masked"}
                                                 autoComplete="off"
                                                 spellCheck={false}
-                                                maxLength={FIELDS[key].maxLength}
+                                                maxLength={WEATHER_FIELDS[key].maxLength}
                                                 placeholder={form.adding ? "" : "已配置，输入新值代表替换"}
                                                 disabled={!!busy}
                                                 value={draft[key]}
                                                 onPaste={(event) => {
                                                     event.preventDefault();
-                                                    handleDraft(key, event.clipboardData.getData("text").slice(0, FIELDS[key].maxLength));
+                                                    handleDraft(key, event.clipboardData.getData("text").slice(0, WEATHER_FIELDS[key].maxLength));
                                                 }}
                                                 onChange={(event) => handleDraft(key, event.currentTarget.value)}
                                             />
@@ -832,7 +790,7 @@ export const WeatherSettings = ({
                                                 event.currentTarget.value = "";
                                                 if (!selected) return;
                                                 void handleAction("import", async (current) => {
-                                                    if (selected.size > FIELDS[key].maxLength) throw "私钥文件超过大小限制";
+                                                    if (selected.size > WEATHER_FIELDS[key].maxLength) throw "私钥文件超过大小限制";
                                                     const text = await selected.text(); // 不保存导入路径。
                                                     if (current !== revision.current || !live.current.mounted) return;
                                                     handleDraft(key, text);
@@ -845,17 +803,17 @@ export const WeatherSettings = ({
                             ) : (
                                 <div className="weather-settings__row" key={key}>
                                     <span>
-                                        <label htmlFor={`weather-${key}`}>{FIELDS[key].label}</label>
-                                        <SettingsInfo label={FIELDS[key].label} description={FIELDS[key].description} />
+                                        <label htmlFor={`weather-${key}`}>{WEATHER_FIELDS[key].label}</label>
+                                        <SettingsInfo label={WEATHER_FIELDS[key].label} description={WEATHER_FIELDS[key].description} />
                                     </span>
-                                    {FIELDS[key].secret ? (
+                                    {WEATHER_FIELDS[key].secret ? (
                                         <div className="weather-settings__secret-input">
                                             <input
                                                 id={`weather-${key}`}
                                                 type={visible ? "text" : "password"}
                                                 autoComplete="new-password"
                                                 spellCheck={false}
-                                                maxLength={FIELDS[key].maxLength}
+                                                maxLength={WEATHER_FIELDS[key].maxLength}
                                                 placeholder={form.adding ? "" : "已配置，输入新值代表替换"}
                                                 disabled={!!busy}
                                                 value={draft[key]}
@@ -877,7 +835,7 @@ export const WeatherSettings = ({
                                             id={`weather-${key}`}
                                             autoComplete="off"
                                             spellCheck={false}
-                                            maxLength={FIELDS[key].maxLength}
+                                            maxLength={WEATHER_FIELDS[key].maxLength}
                                             disabled={!!busy}
                                             value={draft[key]}
                                             onChange={(event) => handleDraft(key, event.currentTarget.value)}
