@@ -7,7 +7,7 @@
 ```text
 src/
 ├─ app/                     # 页面入口、根布局与窗口装配
-│  └─ preferences/          # 全局偏好 Provider：每窗口一份，跨窗口只同步契约
+│  └─ preferences/          # 全局偏好 Provider 与外观解析：每窗口一份，跨窗口只同步契约
 ├─ features/
 │  ├─ workspace/            # 跨类型装配、全局选择、命中、OLE 和跨屏协调
 │  │  ├─ surface/           # WorkspaceSurface、DesktopWorkspace 及宿主呈现
@@ -29,7 +29,7 @@ src/
 │  ├─ components/           # 运行时注册、实例能力、开关与失败隔离装配
 │  ├─ desktop-items/        # 围栏与未归类区域共享的 Shell 项目呈现
 │  ├─ notifications/        # 统一消息入口
-│  ├─ settings/             # 设置页面、插件页与来源城市列表
+│  ├─ settings/             # 设置页面与基元，天气/插件流程模块与来源城市列表
 │  └─ system-menu/          # 桌面菜单入口
 ├─ bridge/                  # 原生命令、事件、结果解码与订阅生命周期
 ├─ contracts/               # 前端 DTO、快照、命令和事件类型
