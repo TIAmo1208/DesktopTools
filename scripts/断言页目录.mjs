@@ -4,7 +4,7 @@
 export const 断言页 = [
     "src/shared/scrollingText.browser.html", // 单行文本溢出滚动：判定、动画名与时长、重新测量与关闭动效。
     "src/features/desktop-items/desktopItemImage.browser.html", // 桌面项图片缩略与等待状态。
-    "src/features/settings/weatherSettings.browser.html", // 天气设置完整交互链路。
+    "src/features/settings/weather/weatherSettings.browser.html", // 天气设置完整交互链路。
     "src/features/tile-content/collect-box/collectBox.browser.html", // 收集箱加载、选择、删除与投放。
     "src/features/tiles/contentDrop.browser.html", // 格子内容拖放。
     "src/features/tiles/tileDragPreview.browser.html", // 跨屏格子拖动预览与围栏尺寸。
@@ -25,6 +25,6 @@ export const 真机专用页 = [
 // 检查页：人工核对用的样式/菜单样张，没有 PASS/FAIL 判定，只要求能在浏览器里加载并渲染。
 // 渲染判据排除 vite-error-overlay：出现构建或运行错误浮层即判失败，不以浮层元素充当渲染内容。
 export const 检查页 = [
-    "src/features/settings/pluginSettings.browser.html", // 插件设置页样式核对。
-    "src/features/settings/pluginTaskMenu.browser.html", // 插件任务菜单各状态样张。
+    "src/features/settings/plugins/pluginSettings.browser.html", // 插件设置页样式核对。
+    "src/features/settings/plugins/pluginTaskMenu.browser.html", // 插件任务菜单各状态样张。
 ];

@@ -1,5 +1,5 @@
 import type { ApplicationPreferences } from "../../contracts/settings.ts";
-import { interfaceFontStack } from "../../features/settings/themeFonts.ts";
+import { interfaceFontStack } from "../../features/settings/appearance/themeFonts.ts";
 
 /** 外观解析只需要偏好中的主题、强调色、圆角、字体与两组网格。 */
 export type AppearancePreferences = Pick<

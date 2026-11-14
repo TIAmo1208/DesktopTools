@@ -13,9 +13,9 @@ import {
 import type { ComponentRuntimeSnapshot } from "../../contracts/component";
 import { resolveAnimationsEnabled, type ApplicationPreferences } from "../../contracts/settings";
 import { publishMessage } from "../../features/notifications/messageNotification";
-import { activeThemeScript, activeThemeStylesheet, applyThemeStylesheet, readThemePluginId, startThemeRecovery } from "../../features/settings/themePlugin";
-import { activateThemeScript, stopThemeScript } from "../../features/settings/themeRuntime";
-import { registerThemeFonts } from "../../features/settings/themeFonts";
+import { activeThemeScript, activeThemeStylesheet, applyThemeStylesheet, readThemePluginId, startThemeRecovery } from "../../features/settings/appearance/themePlugin";
+import { activateThemeScript, stopThemeScript } from "../../features/settings/appearance/themeRuntime";
+import { registerThemeFonts } from "../../features/settings/appearance/themeFonts";
 import { applyAppearanceToDocument, resolveAppearance } from "./appearanceProjection";
 
 /** 当前窗口内共享的偏好加载状态。 */
