@@ -41,6 +41,7 @@ import {
     withdrawWeatherCityDraft,
     type WeatherCityDraft,
 } from "./weatherSettingsFlow";
+import { createWeatherOperationGate } from "./weatherSettingsSession";
 import "./WeatherSettings.css";
 
 
@@ -90,8 +91,14 @@ export const WeatherSettings = ({
     const formDialog = useRef<HTMLDialogElement>(null); // 添加与编辑弹窗元素。
     const confirmDialog = useRef<HTMLDialogElement>(null); // 确认框元素。
     const file = useRef<HTMLInputElement>(null); // 本地私钥导入入口。
-    const session = useRef<number | null>(null); // 后端会话身份。
-    const revision = useRef(0); // 取消和字段改变时拒绝旧结果。
+    const [gate] = useState(() =>
+        createWeatherOperationGate({
+            begin: async (credentials) => (await weatherSettings({ type: "begin", credentials })).sessionId,
+            cancel: async (sessionId) => {
+                await weatherSettings({ type: "cancel", sessionId });
+            },
+        }),
+    ); // 异步操作身份与后端草稿会话统一由闸管理。
     const opened = useRef(""); // 打开弹窗时的草稿快照，用于判断是否有修改。
     const live = useRef({ dirty: false, busy: "", mounted: true }); // 长生命周期回调读取最新状态。
     const pendingLeave = useRef<() => void>(() => undefined); // 确认后执行的导航。
@@ -113,12 +120,7 @@ export const WeatherSettings = ({
     };
 
     /** 丢弃当前验证会话并递增前端身份，旧结果一律作废。 */
-    const invalidate = () => {
-        revision.current++;
-        const previous = session.current; // 不允许取消迟到的新会话。
-        session.current = null;
-        if (previous !== null) void weatherSettings({ type: "cancel", sessionId: previous }).catch(() => undefined);
-    };
+    const invalidate = () => gate.invalidate();
 
     /** 动作名称同步渲染状态与关闭保护读取的最新值。 */
     const applyBusy = (kind: string) => {
@@ -196,11 +198,11 @@ export const WeatherSettings = ({
         applyBusy(kind);
         setStatus("");
         setFailure(false);
-        const current = ++revision.current; // 当前操作的前端身份。
+        const current = gate.nextIdentity(); // 当前操作的前端身份。
         try {
             await action(current);
         } catch (error) {
-            if (live.current.mounted && current === revision.current) {
+            if (live.current.mounted && gate.isCurrent(current)) {
                 setFailure(true);
                 setStatus(typeof error === "string" ? error : "天气设置操作失败，请重试");
             }
@@ -216,10 +218,10 @@ export const WeatherSettings = ({
         setMenu(undefined);
         setStatus("");
         setFailure(false);
-        const current = ++revision.current; // 当前操作的前端身份。
+        const current = gate.nextIdentity(); // 当前操作的前端身份。
         try {
             const snapshot = await weatherSettings({ type: "probe", source });
-            if (!live.current.mounted || current !== revision.current) return;
+            if (!live.current.mounted || !gate.isCurrent(current)) return;
             setSources(snapshot.sources);
             const name = WEATHER_SOURCES[source].name; // 本次探测的来源名称。
             const status = snapshot.sources.find((item) => item.source === source); // 探测结果里该来源的权威状态。
@@ -229,7 +231,7 @@ export const WeatherSettings = ({
             const note = available ? AVAILABILITY.available : AVAILABILITY.unavailable;
             setStatus(cities.length ? `${name} ${note}` : `${name} ${note}，尚未添加城市或地区，请先添加城市`);
         } catch (error) {
-            if (live.current.mounted && current === revision.current) {
+            if (live.current.mounted && gate.isCurrent(current)) {
                 setFailure(true);
                 const reason = typeof error === "string" ? error : "探测失败"; // 探测只确认当前天气一次。
                 setStatus(`检测失败：${reason}`);
@@ -240,17 +242,7 @@ export const WeatherSettings = ({
     };
 
     /** 创建绑定当前字段的后端草稿，并清理迟到创建结果。 */
-    const ensureSession = async (current: number) => {
-        if (session.current !== null) return session.current;
-        const result = await weatherSettings({ type: "begin", credentials: credentials() }); // 仅明确搜索或验证时上传。
-        if (result.sessionId === null) throw new Error("会话创建失败");
-        if (!live.current.mounted || current !== revision.current) {
-            void weatherSettings({ type: "cancel", sessionId: result.sessionId }).catch(() => undefined);
-            throw new Error("操作已取消");
-        }
-        session.current = result.sessionId;
-        return result.sessionId;
-    };
+    const ensureSession = (current: number) => gate.ensure(credentials(), () => live.current.mounted, current);
 
     /** 城市弹窗的串行入口：忙碌期间拒绝重复提交，失败说明留在弹窗内。 */
     const handleCityAction = async (action: () => Promise<void>) => {
@@ -279,14 +271,14 @@ export const WeatherSettings = ({
         setStatus("正在搜索…");
         setFailure(false);
         try {
-            const current = ++revision.current; // 本次搜索的前端身份。
+            const current = gate.nextIdentity(); // 本次搜索的前端身份。
             if (!sourceSaved(picker.source)) {
                 setFailure(true);
                 setStatus("请先保存该来源的凭据，再添加城市或地区");
                 return [];
             }
             const found = await searchWeatherCities(picker.source, search); // 已保存凭据的按来源搜索，不缓存位置检索结果。
-            if (current !== revision.current || !live.current.mounted) return [];
+            if (!gate.isCurrent(current) || !live.current.mounted) return [];
             setStatus(found.length ? "" : "没有找到该位置，可尝试所属城市或英文名称");
             return found;
         } catch (error) {
@@ -313,7 +305,7 @@ export const WeatherSettings = ({
         handleCityAction(async () => {
             if (!picker) return;
             setChecks([]);
-            const current = ++revision.current; // 本次验证的前端身份。
+            const current = gate.nextIdentity(); // 本次验证的前端身份。
             setStatus("正在验证城市…");
             if (!sourceSaved(picker.source)) {
                 setFailure(true);
@@ -321,7 +313,7 @@ export const WeatherSettings = ({
                 return;
             }
             const result = await validateWeatherCity(picker.source, target); // Rust 按该来源规则校验候选对象，不要求城市已在列表中。
-            if (current !== revision.current || !live.current.mounted) return;
+            if (!gate.isCurrent(current) || !live.current.mounted) return;
             setCity(result);
             setChecks([SOURCE_CITY_CHECK]); // 按来源命令只返回结论，不拆分为逐项能力。
             setStatus("验证通过");
@@ -342,9 +334,9 @@ export const WeatherSettings = ({
                 setPicker(undefined);
                 return;
             }
-            const current = ++revision.current; // 本次写入的前端身份。
+            const current = gate.nextIdentity(); // 本次写入的前端身份。
             const added = await addWeatherCity(picker.source, target); // 入列只按该来源规则校验候选对象，不要求城市已在列表中。
-            if (current !== revision.current || !live.current.mounted) return;
+            if (!gate.isCurrent(current) || !live.current.mounted) return;
             setSources((items) => items.map((item) => (item.source === picker.source ? { ...item, cities: added } : item)));
             setCity(undefined);
             setChecks([]);
@@ -399,16 +391,15 @@ export const WeatherSettings = ({
                 cities = await removeWeatherCity(source, id);
                 setCityDraft((current) => ({ ...current, removed: current.removed.filter((item) => item !== id) }));
             }
-            if (current !== revision.current || !live.current.mounted) return;
+            if (!gate.isCurrent(current) || !live.current.mounted) return;
             let next = sources.map((item) => (item.source === source ? { ...item, cities } : item)); // 无凭据改动时只替换城市列表。
             if (live.current.dirty) {
-                if (session.current === null) await ensureSession(current);
-                if (session.current === null) throw new Error("会话创建失败");
-                const snapshot = await weatherSettings({ type: "save", sessionId: session.current }); // 服务端按草稿字段写入凭据。
-                if (current !== revision.current || !live.current.mounted) return;
+                const sessionId = gate.sessionId ?? (await ensureSession(current)); // 会话只创建一次，迟到结果会被取消。
+                const snapshot = await weatherSettings({ type: "save", sessionId }); // 服务端按草稿字段写入凭据。
+                if (!gate.isCurrent(current) || !live.current.mounted) return;
                 next = snapshot.sources.map((item) => (item.source === source ? { ...item, cities } : item));
             }
-            if (current !== revision.current || !live.current.mounted) return;
+            if (!gate.isCurrent(current) || !live.current.mounted) return;
             setSources(next);
             closeForm(true); // 先收起弹窗，保存不等待网络验证。
             setFailure(false);
@@ -425,7 +416,7 @@ export const WeatherSettings = ({
             if (removal?.kind !== "source") return;
             const source = removal.source; // 本次删除的来源。
             const snapshot = await weatherSettings({ type: "remove", source });
-            if (current !== revision.current || !live.current.mounted) return;
+            if (!gate.isCurrent(current) || !live.current.mounted) return;
             setSources(snapshot.sources);
             setRemoval(undefined);
             setStatus(`已删除 ${WEATHER_SOURCES[source].name}`);
@@ -486,7 +477,7 @@ export const WeatherSettings = ({
         }
         void handleAction("remove", async (current) => {
             const list = await removeWeatherCity(source, city.id); // 命令返回值即本轮来源，不新增广播事件。
-            if (current !== revision.current || !live.current.mounted) return;
+            if (!gate.isCurrent(current) || !live.current.mounted) return;
             setSources((items) => items.map((item) => (item.source === source ? { ...item, cities: list } : item)));
             setRemoval(undefined);
         });
@@ -562,10 +553,7 @@ export const WeatherSettings = ({
             live.current.mounted = false;
             live.current.dirty = false;
             live.current.busy = "";
-            revision.current++;
-            const previous = session.current; // 卸载时释放后端草稿。
-            session.current = null;
-            if (previous !== null) void weatherSettings({ type: "cancel", sessionId: previous }).catch(() => undefined);
+            gate.invalidate(); // 卸载时释放后端草稿。
             if (leaveGuard.current === guard) leaveGuard.current = undefined;
             void stop.then((unlisten) => unlisten()).catch(() => undefined);
         };
@@ -792,7 +780,7 @@ export const WeatherSettings = ({
                                                 void handleAction("import", async (current) => {
                                                     if (selected.size > WEATHER_FIELDS[key].maxLength) throw "私钥文件超过大小限制";
                                                     const text = await selected.text(); // 不保存导入路径。
-                                                    if (current !== revision.current || !live.current.mounted) return;
+                                                    if (!gate.isCurrent(current) || !live.current.mounted) return;
                                                     handleDraft(key, text);
                                                     applyBusy("");
                                                 });
