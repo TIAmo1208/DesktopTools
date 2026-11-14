@@ -40,6 +40,7 @@ import linkIcon from "../../../resources/plugin-repository.svg?raw";
 import infoIcon from "../../../resources/info.svg?raw";
 import { SettingsSwitch } from "./SettingsSwitch";
 import { PluginTaskMenu } from "./PluginTaskMenu";
+import { cancelledInstallTask, failedInstallTask, installBoard, installStageLabel, progressedInstallTask, rememberInstallTask, type InstallTask } from "./pluginInstallTasks";
 import "./PluginSettingsPage.css";
 
 /** 设置页里的一个插件清单。 */
@@ -197,18 +198,7 @@ export const PluginSettingsPage = ({
         let stop = () => {}; // 退订安装进度。
         void listenPluginInstallProgress((progress) => {
             if (!alive) return;
-            setTasks((current) => {
-                const existing = current.find((task) => task.id === progress.taskId); // 已结束的行不再被迟到进度改回进行中。
-                if (existing && existing.status !== "running") return current;
-                const status = progress.stage === "done" ? "done" : progress.stage === "failed" ? "failed" : "running";
-                return rememberInstallTask(current, {
-                    id: progress.taskId,
-                    name: existing?.name || progress.sourceName,
-                    status,
-                    stage: progress.stage,
-                    percent: progress.percent,
-                });
-            });
+            setTasks((current) => progressedInstallTask(current, progress)); // 已结束的行不被迟到进度改回进行中。
         })
             .then((unlisten) => {
                 if (!alive) unlisten();
@@ -250,18 +240,14 @@ export const PluginSettingsPage = ({
             })
             .catch((error: unknown) => {
                 const message = commandErrorMessage(error); // 后端 Err 原样显示。
-                setTasks((current) => {
-                    const existing = current.find((task) => task.id === plan.planId); // 用户已经取消时保留取消结果。
-                    if (existing?.status === "cancelled") return current;
-                    return rememberInstallTask(current, {
+                setTasks((current) =>
+                    failedInstallTask(current, {
                         id: plan.planId,
                         name: plan.name,
-                        status: message === "安装已取消" ? "cancelled" : "failed",
-                        stage: message === "安装已取消" ? "cancelled" : "failed",
-                        percent: existing?.percent ?? 0,
+                        cancelled: message === "安装已取消",
                         detail: message === "安装已取消" ? message : installFailureMessage(message),
-                    });
-                });
+                    }),
+                );
                 if (message !== "安装已取消")
                     publishMessage({ type: "error", content: installNotice(plan.name, installFailureMessage(message)), source: "plugin-settings" });
             });
@@ -613,7 +599,7 @@ export const PluginSettingsPage = ({
                         onCancel={(taskId) => {
                             const task = tasks.find((item) => item.id === taskId); // 只取消菜单里仍在的那一条。
                             if (!task) return;
-                            setTasks((current) => rememberInstallTask(current, { ...task, status: "cancelled", stage: "cancelled" }));
+                            setTasks((current) => cancelledInstallTask(current, task));
                             void cancelPluginInstall(taskId).catch((error: unknown) =>
                                 publishMessage({ type: "error", content: commandErrorMessage(error), source: "plugin-settings" }),
                             );
@@ -1326,18 +1312,7 @@ export const pluginRows = (manifests: readonly ComponentManifest[]): PluginRow[]
         }))
         .sort((left, right) => left.name.localeCompare(right.name, "zh"));
 
-/** 一条安装任务。只活在这次打开的设置页里。 */
-interface InstallTask {
-    id: string; // 计划标识。
-    name: string; // 插件名。
-    status: "running" | "done" | "failed" | "cancelled"; // 当前结果。
-    stage: string; // 后端阶段。
-    percent: number; // 0 到 100。
-    detail?: string; // 失败原因。
-}
-
 const PLUGIN_DIRECTORY_DEFAULT = "程序所在目录\\plugin"; // 空偏好由后端解析实际可执行文件目录。
-const INSTALL_TASK_LIMIT = 20; // 内存里保留的任务条数。
 
 /** 待保存路径。空串显示默认目录。 */
 export const pluginDirectoryShown = (draft: string | undefined, saved: string | undefined) => {
@@ -1357,25 +1332,6 @@ export const installVersionLine = (installed: string, incoming: string) => `版�
 
 /** 升级和同版本覆盖，降级要先卸载。 */
 export const installConfirmLabel = (downgrade: boolean) => (downgrade ? "卸载并安装" : "覆盖安装");
-
-/** 进度阶段的界面文案。 */
-export const installStageLabel = (stage: string) =>
-    (({ validate: "校验", extract: "解压", copy: "复制", done: "完成", failed: "失败", cancelled: "已取消" }) as Record<string, string>)[stage] ?? stage;
-
-/** 写入或更新一条任务，并丢掉超出的最旧记录。 */
-export const rememberInstallTask = (tasks: readonly InstallTask[], next: InstallTask) => {
-    const without = tasks.filter((task) => task.id !== next.id); // 同一计划只留最新状态。
-    return [...without, next].slice(-INSTALL_TASK_LIMIT);
-};
-
-/** 进行中的总进度。N 是当前这一件，M 含已完成。 */
-export const installBoard = (tasks: readonly InstallTask[]) => {
-    const running = tasks.filter((task) => task.status === "running"); // 还在安装的行。
-    const done = tasks.filter((task) => task.status === "done").length; // 已经完成的行。
-    const total = Math.max(running.length + done, running.length); // 分母至少覆盖进行中的件数。
-    const percent = running.length ? Math.round(running.reduce((sum, task) => sum + task.percent, 0) / running.length) : 0;
-    return { running: running.length, text: running.length ? `正在安装 ${Math.min(done + 1, total)}/${total}` : "", percent };
-};
 
 /** 下方放不下且上方更宽时向上翻。内容比两边都高就内部滚动。 */
 export const taskMenuPlacement = (menu: { top: number; bottom: number; height: number }, frame: { top: number; bottom: number }) => {

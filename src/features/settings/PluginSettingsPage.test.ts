@@ -11,6 +11,7 @@ const server = await createServer({
 const page = await server.ssrLoadModule("/src/features/settings/PluginSettingsPage.tsx");
 const pluginContract = await server.ssrLoadModule("/src/contracts/plugin.ts");
 const scripts = await server.ssrLoadModule("/src/bridge/pluginScripts.ts");
+const installTasks = await server.ssrLoadModule("/src/features/settings/pluginInstallTasks.ts");
 test.after(async () => {
     await server.close();
 });
@@ -78,13 +79,13 @@ test("安装确认、目录草稿和任务历史", () => {
     assert.equal(page.installConflictIdentity(named?.author, named?.pluginId), "甲@plugin.item");
     assert.equal(pluginContract.parsePluginInstallPlan(null), undefined);
     assert.throws(() => pluginContract.parsePluginInstallPlan({ planId: "" }));
-    const tasks = page.rememberInstallTask(
+    const tasks = installTasks.rememberInstallTask(
         Array.from({ length: 20 }, (_, index) => ({ id: String(index), name: "旧", status: "done", stage: "done", percent: 100 })),
         { id: "new", name: "新", status: "running", stage: "copy", percent: 40 },
     );
     assert.equal(tasks.length, 20);
     assert.equal(tasks.at(-1)?.id, "new");
-    assert.equal(page.installBoard(tasks).text, "正在安装 20/20");
+    assert.equal(installTasks.installBoard(tasks).text, "正在安装 20/20");
     for (const reason of [
         "插件清单缺少 name",
         "插件要求的程序版本过高，需要 99.0.0，当前 0.3.2",
