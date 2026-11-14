@@ -67,6 +67,10 @@ pub(crate) const POPUP_RESULT_EVENT: &str = "popup-layer-result";
 const POPUP_REQUEST_EVENT: &str = "popup-layer-request-changed";
 /// 单个弹层请求的序列化上限；菜单与对话框载荷远小于此值。
 const POPUP_PAYLOAD_LIMIT: usize = 256 * 1024;
+/// 页面上报尺寸的上限（毫秒）：超过就按打开失败收束，避免宿主永远等不到结果。
+pub(crate) const POPUP_MEASURE_TIMEOUT_MS: u64 = 5_000;
+/// 上报超时的轮询步长：等待期只有几秒，按固定步长检查是否已经显示。
+const POPUP_MEASURE_POLL_MS: u64 = 100;
 
 /// 弹层种类；决定页面装配哪个浮层组件。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -277,14 +281,15 @@ fn popup_page_url(app: &AppHandle) -> tauri::Url
     url
 }
 
-/// 首次请求时创建隐藏的置顶弹层窗口。
-fn create_window(app: &AppHandle) -> Result<WebviewWindow, String>
+/// 首次请求时创建隐藏的置顶弹层窗口；页面地址只在这里生成一次，建好后记一条可诊断的来源日志。
+fn create_window(app: &AppHandle, kind: PopupLayerKind) -> Result<WebviewWindow, String>
 {
     let monitors = super::enumerate_desktop_monitors()?;
     let monitor = monitors.iter().find(|monitor| monitor.primary).or_else(|| monitors.first()).ok_or("弹层缺少显示器")?; // 占位尺寸只服务首帧测量。
     let scale = if monitor.scale_factor > 0.0 { monitor.scale_factor } else { 1.0 };
     let (work_width, work_height) = monitor_work_dip(monitor);
-    let mut builder = WebviewWindowBuilder::new(app, POPUP_LABEL, WebviewUrl::CustomProtocol(popup_page_url(app)))
+    let page_url = popup_page_url(app); // 只生成一次：boot 序号只推进一格，日志与建窗用同一地址。
+    let mut builder = WebviewWindowBuilder::new(app, POPUP_LABEL, WebviewUrl::CustomProtocol(page_url.clone()))
         .title("Desktop Tools 弹层")
         .decorations(false)
         .shadow(false)
@@ -360,6 +365,8 @@ fn create_window(app: &AppHandle) -> Result<WebviewWindow, String>
             }
         }
     });
+    // 建好窗口就把页面来源记进日志：弹层页面取自 build/frontend，产物没重建时这条是唯一线索。
+    crate::log_info!("弹层：窗口已创建，页面来源={page_url}，等待页面上报尺寸，种类={kind:?}");
     Ok(window)
 }
 
@@ -462,7 +469,7 @@ pub(crate) fn execute_open(app: &AppHandle, request: PopupLayerRequest) -> Resul
     {
         // 建窗与空闲销毁互斥：同一 label 不能被两次创建/销毁交错。
         let window_guard = WINDOW_LOCK.lock();
-        let window = match create_window(app)
+        let window = match create_window(app, pending.view.kind)
         {
             Ok(window) => window,
             Err(error) =>
@@ -478,7 +485,7 @@ pub(crate) fn execute_open(app: &AppHandle, request: PopupLayerRequest) -> Resul
         };
         STATE.lock().map_err(|_| "弹层状态不可用")?.window = Some(window);
         drop(window_guard); // 创建段结束，释放销毁互斥。
-        crate::log_debug!("弹层：窗口已创建，等待页面上报尺寸，种类={:?}", pending.view.kind);
+        start_measure_watchdog(app, pending.view.request_id);
         return Ok(());
     };
     mark_repaint_pending();
@@ -519,6 +526,7 @@ pub(crate) fn execute_open(app: &AppHandle, request: PopupLayerRequest) -> Resul
         }
         return Err(format!("复用弹层窗口失败：{error}"));
     }
+    start_measure_watchdog(app, pending.view.request_id);
     Ok(())
 }
 
@@ -587,12 +595,7 @@ fn apply_frame(app: &AppHandle, window: &WebviewWindow, pending: &PendingRequest
         let mut state = STATE.lock().map_err(|_| "弹层状态不可用")?;
         match state.request.as_ref()
         {
-            Some(current) if current.view.request_id == frame.request_id =>
-            {
-                state.shown = true;
-                state.foreground_before = pending.foreground_before; // 关闭时还原到打开前的窗口。
-                (state.generation, std::mem::take(&mut state.needs_repaint))
-            }
+            Some(current) if current.view.request_id == frame.request_id => (state.generation, std::mem::take(&mut state.needs_repaint)),
             _ => return Err("弹层请求已结束".to_string()),
         }
     };
@@ -638,6 +641,18 @@ fn apply_frame(app: &AppHandle, window: &WebviewWindow, pending: &PendingRequest
     if let Ok(hwnd) = window.hwnd()
     {
         let _ = strip_system_frame(hwnd); // 移动同样可能重新套用样式，出现后再收敛一次。
+    }
+    // 显示成功后才置 shown：中途任何一步失败都留给上报超时兜底，不会留下一个等不到结果的请求。
+    {
+        let mut state = STATE.lock().map_err(|_| "弹层状态不可用")?;
+        let current_request = state.request.as_ref().map(|current| current.view.request_id);
+        if state.generation != generation || current_request != Some(frame.request_id)
+        {
+            let _ = window.hide(); // 显示期间请求已被收束，别让这次浮层留在屏幕上。
+            return Err("弹层请求已结束".to_string());
+        }
+        state.shown = true;
+        state.foreground_before = pending.foreground_before; // 关闭时还原到打开前的窗口。
     }
     crate::log_debug!("弹层：已显示，种类={:?}，屏幕=[{left},{top},{width},{height}]，显示器={}，缩放={scale}", pending.view.kind, monitor.id);
     let _ = app; // 与其他窗口入口保持同一签名。
@@ -721,13 +736,22 @@ pub(crate) fn execute_update_payload(app: &AppHandle, request_id: u64, payload: 
     Ok(())
 }
 
+/// 这次取消是否可以作用到当前请求：带身份时必须与进行中的请求一致，过期取消不得结束新请求。
+fn dismiss_applies_to(expected: Option<u64>, current: Option<u64>) -> bool
+{
+    match (expected, current)
+    {
+        (Some(expected), Some(current)) => expected == current,
+        _ => true, // 没有指定身份，或已经没有进行中的请求：只按隐藏窗口处理。
+    }
+}
+
 /// 宿主或失活触发的取消；没有进行中的请求时只隐藏窗口。
 pub(crate) fn execute_dismiss(app: &AppHandle, request_id: Option<u64>) -> Result<(), String>
 {
     let (window, current, previous) = {
         let mut state = STATE.lock().map_err(|_| "弹层状态不可用")?;
-        if let (Some(expected), Some(current)) = (request_id, state.request.as_ref())
-            && expected != current.view.request_id
+        if !dismiss_applies_to(request_id, state.request.as_ref().map(|current| current.view.request_id))
         {
             return Ok(()); // 过期取消不得结束新请求。
         }
@@ -777,6 +801,75 @@ fn restore_foreground(previous: isize)
     {
         crate::log_debug!("弹层：前台还原被系统拒绝，目标={previous}");
     }
+}
+
+/// 这次等待是否仍然有效：请求没被替换、代次没推进、也没有显示。
+fn wait_is_pending(state: &PopupLayerState, request_id: u64, generation: u64) -> bool { !state.shown && state.generation == generation && state.request.as_ref().is_some_and(|pending| pending.view.request_id == request_id) }
+
+/// 为当前请求启动上报超时看门狗；请求已显示或已结束时不启动。
+fn start_measure_watchdog(app: &AppHandle, request_id: u64)
+{
+    let generation = match STATE.lock()
+    {
+        Ok(state) if wait_is_pending(&state, request_id, state.generation) => state.generation,
+        _ => return,
+    };
+    watch_measure_timeout(app, request_id, generation);
+}
+
+/// 页面必须在 `POPUP_MEASURE_TIMEOUT_MS` 内上报尺寸，否则这次浮层永远不会出现。
+///
+/// 弹层页面与设置窗同源，取自 `build/frontend`。产物没重建、页面脚本出错或加载失败时，
+/// 窗口建得出来却没有人上报尺寸；没有这道看门狗，宿主那次请求既不显示也不结束，
+/// 用户只看到「右键没有菜单」，日志里也找不到线索。超时后按取消收束，让宿主恢复状态。
+fn watch_measure_timeout(app: &AppHandle, request_id: u64, generation: u64)
+{
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_millis(POPUP_MEASURE_TIMEOUT_MS);
+        // 分片等待：显示或换请求后立即退出，不把线程占满整个上限。
+        while std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(POPUP_MEASURE_POLL_MS));
+            match STATE.lock()
+            {
+                Ok(state) if wait_is_pending(&state, request_id, generation) =>
+                {}
+                _ => return, // 已显示、换了请求或状态不可用。
+            }
+        }
+        let target = handle.clone(); // 收束要在主线程做窗口操作。
+        if let Err(error) = handle.run_on_main_thread(move || {
+            // 收束前再验一次：超时与显示可能只差一帧。
+            let (kind, page_url) = match STATE.lock()
+            {
+                Ok(state) if wait_is_pending(&state, request_id, generation) => match state.request.as_ref()
+                {
+                    Some(pending) => (pending.view.kind, state.window.as_ref().and_then(|window| window.url().ok()).map(|url| url.to_string()).unwrap_or_default()),
+                    None => return,
+                },
+                _ => return,
+            };
+            // 产物没重建只发生在开发运行，安装版拿到这条提示只会被误导。
+            let hint = if cfg!(debug_assertions)
+            {
+                "；开发运行请确认前端产物已重建（npm run build，弹层页面取自 build/frontend）"
+            }
+            else
+            {
+                ""
+            };
+            crate::log_error!("弹层：页面 {}ms 内没有上报尺寸，本次浮层按取消收束，请求={request_id}，种类={kind:?}，页面={page_url}{hint}", POPUP_MEASURE_TIMEOUT_MS);
+            if let Err(error) = execute_dismiss(&target, Some(request_id))
+            {
+                crate::log_warn!("弹层：上报超时收束失败，请求={request_id}，错误={error}");
+            }
+        })
+        {
+            // 调度不上主线程时请求会继续悬挂，必须留下线索。
+            crate::log_warn!("弹层：上报超时无法调度主线程收束，请求={request_id}，错误={error}");
+        }
+    });
 }
 
 /// 关闭后按空闲时长销毁窗口；新请求推进代次即可取消。
@@ -864,3 +957,7 @@ fn require_popup_window(window: &tauri::WebviewWindow) -> Result<(), String>
         Err("弹层命令只接受弹层窗口调用".to_string())
     }
 }
+
+#[cfg(test)]
+#[path = "popup_layer.test.rs"]
+mod tests;
