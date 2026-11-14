@@ -15,7 +15,8 @@ import { resolveAnimationsEnabled, type ApplicationPreferences } from "../../con
 import { publishMessage } from "../../features/notifications/messageNotification";
 import { activeThemeScript, activeThemeStylesheet, applyThemeStylesheet, readThemePluginId, startThemeRecovery } from "../../features/settings/themePlugin";
 import { activateThemeScript, stopThemeScript } from "../../features/settings/themeRuntime";
-import { interfaceFontStack, registerThemeFonts } from "../../features/settings/themeFonts";
+import { registerThemeFonts } from "../../features/settings/themeFonts";
+import { applyAppearanceToDocument, resolveAppearance } from "./appearanceProjection";
 
 /** 当前窗口内共享的偏好加载状态。 */
 interface PreferencesContextValue {
@@ -112,49 +113,25 @@ export const PreferencesProvider = ({ children }: { children: ReactNode }) => {
         };
     }, [preferences?.useWindowsAccentColor, preferences?.desktopAppearance.useWindowsAccentColor]);
 
+    const [systemDark, setSystemDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches); // 当前 Windows 深浅模式。
     useEffect(() => {
         const systemTheme = window.matchMedia("(prefers-color-scheme: dark)"); // 当前 Windows 系统主题媒体查询。
-        /** 将用户选择解析为实际浅色或深色，供各组件复用。 */
-        const handleTheme = () => {
-            const theme = preferences?.theme ?? "system"; // 加载期间沿用系统主题。
-            document.documentElement.dataset.theme = theme === "system" ? (systemTheme.matches ? "dark" : "light") : theme;
-            const desktopTheme = preferences?.desktopAppearance.theme ?? "system"; // 桌面独立解析系统深浅模式。
-            document.documentElement.dataset.desktopTheme = desktopTheme === "system" ? (systemTheme.matches ? "dark" : "light") : desktopTheme;
-            if (preferences)
-                void invokeRuntime("sync_message_appearance", {
-                    preferences,
-                    dark: document.documentElement.dataset.theme === "dark",
-                    animationsEnabled,
-                }).catch((error: unknown) => setFailure(settingsErrorMessage(error))); // 原生消息只消费程序已经解析的界面外观，不另行监听系统颜色。
-        };
-        handleTheme();
-        systemTheme.addEventListener("change", handleTheme);
-        return () => systemTheme.removeEventListener("change", handleTheme);
-    }, [preferences, animationsEnabled]);
+        const handleSystemTheme = () => setSystemDark(systemTheme.matches); // 系统改变后重新解析外观。
+        handleSystemTheme();
+        systemTheme.addEventListener("change", handleSystemTheme);
+        return () => systemTheme.removeEventListener("change", handleSystemTheme);
+    }, []);
 
     useEffect(() => {
+        const projection = resolveAppearance(preferences, systemDark, windowsAccentColor); // 主题与文档变量只在这里解析。
+        applyAppearanceToDocument(document, projection);
         if (!preferences) return;
-        const root = document.documentElement; // 当前独立窗口的主题根节点。
-        const accent = preferences.useWindowsAccentColor ? (windowsAccentColor ?? preferences.accentColor) : preferences.accentColor; // 系统读取失败时保留有效自定义颜色。
-        root.style.setProperty("--color-focus", accent);
-        root.style.setProperty("--color-accent", accent);
-        root.style.setProperty("--interface-accent", accent);
-        const desktop = preferences.desktopAppearance; // 桌面主题保持独立，系统读取失败时保留该组自定义色。
-        root.style.setProperty("--desktop-accent", desktop.useWindowsAccentColor ? (windowsAccentColor ?? desktop.accentColor) : desktop.accentColor);
-        root.style.setProperty("--surface-radius", `${preferences.cornerRadius}px`);
-        root.style.setProperty("--island-radius", `${preferences.islandRadius}px`);
-        root.style.setProperty("--interface-font", interfaceFontStack(preferences.fontFamily));
-        root.style.setProperty("--interface-font-size", `${preferences.fontSize}px`);
-        for (const [scope, grid] of [
-            ["desktop", preferences.desktopGrid],
-            ["fence", preferences.fenceGrid],
-        ] as const) {
-            root.style.setProperty(`--${scope}-grid-width`, `${grid.width}px`);
-            root.style.setProperty(`--${scope}-grid-height`, `${grid.height}px`);
-            root.style.setProperty(`--${scope}-grid-column-gap`, `${grid.columnGap}px`);
-            root.style.setProperty(`--${scope}-grid-row-gap`, `${grid.rowGap}px`);
-        }
-    }, [preferences, windowsAccentColor]);
+        void invokeRuntime("sync_message_appearance", {
+            preferences,
+            dark: projection.theme === "dark",
+            animationsEnabled,
+        }).catch((error: unknown) => setFailure(settingsErrorMessage(error))); // 原生消息只消费程序已经解析的界面外观，不另行监听系统颜色。
+    }, [preferences, animationsEnabled, systemDark, windowsAccentColor]);
 
     useEffect(() => {
         let active = true; // 卸载后不接收迟到快照。
