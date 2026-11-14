@@ -12,10 +12,10 @@ import {
 } from "../../bridge/settings";
 import type { ComponentRuntimeSnapshot } from "../../contracts/component";
 import { resolveAnimationsEnabled, type ApplicationPreferences } from "../../contracts/settings";
-import { publishMessage } from "../notifications/messageNotification";
-import { activeThemeScript, activeThemeStylesheet, applyThemeStylesheet, readThemePluginId, startThemeRecovery } from "./themePlugin";
-import { activateThemeScript, stopThemeScript } from "./themeRuntime";
-import { interfaceFontStack, registerThemeFonts } from "./themeFonts";
+import { publishMessage } from "../../features/notifications/messageNotification";
+import { activeThemeScript, activeThemeStylesheet, applyThemeStylesheet, readThemePluginId, startThemeRecovery } from "../../features/settings/themePlugin";
+import { activateThemeScript, stopThemeScript } from "../../features/settings/themeRuntime";
+import { interfaceFontStack, registerThemeFonts } from "../../features/settings/themeFonts";
 
 /** 当前窗口内共享的偏好加载状态。 */
 interface PreferencesContextValue {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { listenComponentHostEvents } from "../../../bridge/components";
 import type { ComponentInstanceSnapshot, ComponentRegistrationSnapshot } from "../../../contracts/component";
-import { usePreferences } from "../../settings/PreferencesProvider";
+import { usePreferences } from "../../../app/preferences/PreferencesProvider";
 import { ComponentTile, type ComponentTileProps } from "../../components/ComponentTile";
 import "./LocalClock.css";
 

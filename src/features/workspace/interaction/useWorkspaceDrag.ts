@@ -4,7 +4,7 @@ import type { ShellDragPreparation } from "../../../contracts/desktopItem";
 import { cancelDesktopItemDragPreparation, prepareDesktopItemDrag } from "../../../bridge/desktopItems";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspacePoint, WorkspaceSnapshot } from "../../../contracts/workspace";
 import { selectionModeForPointer, shouldOpenItemOnPointerRelease } from "./workspaceInteraction";
-import { usePreferences } from "../../settings/PreferencesProvider";
+import { usePreferences } from "../../../app/preferences/PreferencesProvider";
 import { itemIdsInWorkspaceVisualOrder } from "./workspaceDrag";
 
 /** 工作区项目拖动需要的权威状态和命令边界。 */

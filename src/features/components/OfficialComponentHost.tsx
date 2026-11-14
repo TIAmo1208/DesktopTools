@@ -7,7 +7,7 @@ import type { DesktopHostMonitor } from "../../contracts/desktopHost";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspaceSnapshot, WorkspaceFocusTarget } from "../../contracts/workspace";
 import type { TileAppearance } from "../../contracts/tile";
 import type { ApplicationPreferences } from "../../contracts/settings";
-import { usePreferences } from "../settings/PreferencesProvider";
+import { usePreferences } from "../../app/preferences/PreferencesProvider";
 import { ComponentTile, type ComponentTileProps } from "./ComponentTile";
 import { tileRemoveMenuItem } from "../tiles/DesktopTileBase";
 import { publishMessage } from "../notifications/messageNotification";

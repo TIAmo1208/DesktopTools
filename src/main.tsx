@@ -2,7 +2,7 @@ import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./app/App";
-import { PreferencesProvider } from "./features/settings/PreferencesProvider";
+import { PreferencesProvider } from "./app/preferences/PreferencesProvider";
 import { SettingsPage } from "./features/settings/SettingsPage";
 import "./styles/global.css";
 import "./styles/bootSplash.css";

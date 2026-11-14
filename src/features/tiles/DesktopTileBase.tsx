@@ -3,7 +3,7 @@ import { createContext, useCallback, useEffect, useLayoutEffect, useRef, useStat
 import type { TileAppearance, TileAppearanceChange } from "../../contracts/tile";
 import { useDesktopTileGeometry, type DesktopTileGeometryOptions } from "./useDesktopTileGeometry";
 import { useDesktopTileExpansion } from "./useDesktopTileExpansion";
-import { usePreferences } from "../settings/PreferencesProvider";
+import { usePreferences } from "../../app/preferences/PreferencesProvider";
 import { DesktopTileMenuHoverContext, type DesktopTileMenuItem } from "./DesktopTileMenu";
 import { openTileMenu } from "../popup-layer/openTileMenu";
 import "./DesktopTileBase.css";

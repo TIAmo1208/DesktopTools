@@ -90,7 +90,7 @@ test("没有偏好写入能力时不保存，有能力时照常还原", async ()
         const source = readFileSync(new URL("./themePlugin.ts", import.meta.url), "utf8"); // 判别只看原生桥，不看窗口标题或地址。
         assert.match(source, /__DESKTOP_TOOLS_NATIVE__/);
         assert.doesNotMatch(source, /document\.title|location\.href/);
-        const provider = readFileSync(new URL("./PreferencesProvider.tsx", import.meta.url), "utf8");
+        const provider = readFileSync(new URL("../../app/preferences/PreferencesProvider.tsx", import.meta.url), "utf8");
         assert.match(provider, /startThemeRecovery\(/);
         assert.doesNotMatch(provider, /recoverUnavailableTheme\(/);
     } finally {
@@ -166,7 +166,7 @@ test("主题入口脚本只取已选中的主题角色", () => {
 });
 
 test("主题样式挂在偏好变量副作用之后", () => {
-    const source = readFileSync(new URL("./PreferencesProvider.tsx", import.meta.url), "utf8"); // 顺序以源码中的 effect 声明为准。
+    const source = readFileSync(new URL("../../app/preferences/PreferencesProvider.tsx", import.meta.url), "utf8"); // 顺序以源码中的 effect 声明为准。
     const variables = source.indexOf('setProperty("--color-focus"');
     const theme = source.indexOf("applyThemeStylesheet(");
     assert.ok(variables > 0 && theme > variables);

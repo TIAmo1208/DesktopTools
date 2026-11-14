@@ -13,7 +13,7 @@ import {
     saveCollectItem,
     writeCollectResource,
 } from "../../../bridge/collect";
-import { usePreferences } from "../../settings/PreferencesProvider";
+import { usePreferences } from "../../../app/preferences/PreferencesProvider";
 import { settingsErrorMessage } from "../../../bridge/settings";
 import { publishMessage } from "../../notifications/messageNotification";
 import { pastedLink } from "./collectEditorLinks";

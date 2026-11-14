@@ -28,7 +28,7 @@ import { applyWorkspaceCommand, getWorkspaceSnapshot, listenWorkspaceSnapshots }
 import type { DesktopHostSnapshot, TakeoverPhase } from "../../contracts/desktopHost";
 import type { ApplicationPreferences, SettingsSnapshot } from "../../contracts/settings";
 import type { WorkspaceCommand, WorkspaceSnapshot } from "../../contracts/workspace";
-import { usePreferences } from "./PreferencesProvider";
+import { usePreferences } from "../../app/preferences/PreferencesProvider";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { applyThemeSelection } from "./applyThemeSelection";
 import type { ComponentManifest } from "../../contracts/component";

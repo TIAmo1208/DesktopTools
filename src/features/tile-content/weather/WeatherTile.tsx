@@ -21,7 +21,7 @@ import {
     type WeatherSourceStatus,
 } from "../../../contracts/weather";
 import { openPopupWeatherCity, openPopupWeatherSource } from "../../popup-layer/openPopupRequest";
-import { usePreferences } from "../../settings/PreferencesProvider";
+import { usePreferences } from "../../../app/preferences/PreferencesProvider";
 import { ComponentTile, type ComponentTileProps } from "../../components/ComponentTile";
 import type { DesktopTileMenuItem } from "../../tiles/DesktopTileMenu";
 import "./WeatherTile.css";
