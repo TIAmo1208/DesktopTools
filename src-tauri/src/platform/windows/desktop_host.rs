@@ -1409,13 +1409,8 @@ pub(crate) fn boot_epoch() -> u64
 pub(crate) fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
 {
     let preferences = app.state::<crate::app::settings::SettingsState>().preferences().ok()?;
-    let id = preferences.theme_plugin_id.clone()?; // 内置主题不需要额外样式表。
-    if preferences.disabled_plugins.contains(&id)
-    {
-        return None;
-    }
     let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).ok()?.manifests; // 只读清单，不碰实例。
-    let manifest = manifests.iter().find(|manifest| manifest.id == id)?;
+    let manifest = crate::component_runtime::active_theme_manifest(&preferences, &manifests)?;
     if manifest.role != crate::contracts::ComponentRole::Theme || manifest.stylesheet.is_empty()
     {
         return None;
@@ -1439,13 +1434,8 @@ pub(crate) fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
 fn active_theme_boot(app: &AppHandle) -> Option<u32>
 {
     let preferences = app.state::<crate::app::settings::SettingsState>().preferences().ok()?;
-    let id = preferences.theme_plugin_id.clone()?;
-    if preferences.disabled_plugins.contains(&id)
-    {
-        return None;
-    }
     let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).ok()?.manifests;
-    manifests.iter().find(|manifest| manifest.id == id)?.theme_boot.as_ref()?.duration_ms // 0 也照原样传，表示不播。
+    crate::component_runtime::active_theme_manifest(&preferences, &manifests)?.theme_boot.as_ref()?.duration_ms // 0 也照原样传，表示不播。
 }
 
 /// 检查命令来源；开发来源只由调用方在 Tauri 开发模式下注入。

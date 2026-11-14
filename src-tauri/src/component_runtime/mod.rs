@@ -1135,6 +1135,17 @@ fn island_instance(component_id: &str) -> ComponentInstanceSnapshot
 /// 创建不影响其他实例的插件加载失败快照。
 fn failed_registration(instance: &ComponentInstanceSnapshot, message: &str) -> ComponentRegistrationSnapshot { ComponentRegistrationSnapshot { instance_id: instance.instance_id.clone(), component_id: instance.component_id.clone(), entry: None, authorized_capabilities: Vec::new(), status: ComponentLoadStatus::Failed, error: Some(message.to_string()) } }
 
+/// 当前选中的主题清单：未选主题、已停用或清单缺失时为空。
+pub(crate) fn active_theme_manifest<'a>(preferences: &crate::contracts::settings::ApplicationPreferences, manifests: &'a [ComponentManifest]) -> Option<&'a ComponentManifest>
+{
+    let id = preferences.theme_plugin_id.as_deref()?; // 内置主题不需要额外清单。
+    if preferences.disabled_plugins.iter().any(|item| item == id)
+    {
+        return None;
+    }
+    manifests.iter().find(|manifest| manifest.id == id)
+}
+
 #[cfg(test)]
 #[path = "mod.test.rs"]
 mod tests;
