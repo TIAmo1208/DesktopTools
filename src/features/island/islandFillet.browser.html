@@ -1,0 +1,1037 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>浮岛切态补面回归检查</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            background: #d6c3bb;
+        }
+        #fixture {
+            position: relative;
+            padding: 24px;
+            width: 900px;
+            height: 520px;
+            background: linear-gradient(120deg, #d8c3b8 0%, #e7d7cd 45%, #c9a89f 100%);
+        }
+        #result {
+            position: fixed;
+            left: 8px;
+            bottom: 8px;
+            margin: 0;
+            padding: 8px;
+            background: #000c;
+            color: #7dff9b;
+            font: 12px/1.5 monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+    <body>
+            <script>
+            // 模块加载失败、未处理异常和隐藏页面也必须有界写出结论。
+            const failAssertion = (reason) => {
+                const result = document.getElementById("result");
+                if (result && !/^(PASS|FAIL)/.test(result.textContent)) {
+                    result.textContent = `FAIL\n- ${reason}`;
+                    document.body.dataset.phase = "fail";
+                }
+            };
+            window.addEventListener("error", (event) => failAssertion(event.message || "断言模块加载失败"), true);
+            window.addEventListener("unhandledrejection", (event) => failAssertion(String(event.reason)));
+            setTimeout(() => failAssertion("断言总时限 105000ms：页面状态或动画未收敛"), 105000);
+        </script>
+        <main id="fixture"></main>
+        <pre id="result">RUNNING</pre>
+        <script type="module">
+            import React from "react";
+            import { createRoot } from "react-dom/client";
+            import { IslandPage } from "./island.tsx";
+            import { islandCardMaskPath, islandFilletPatches } from "./islandGeometry.ts";
+            import { PreferencesProvider } from "../settings/PreferencesProvider.tsx";
+            import "../../styles/global.css";
+
+            // 独立岛页面样式与主题标记，与窗口入口保持一致。
+            document.documentElement.dataset.island = "true";
+            document.documentElement.dataset.theme = "dark";
+            document.documentElement.dataset.desktopTheme = "dark";
+
+            // 真实岛页面只接受原生桥；这里用最小快照替换宿主，几何与切态逻辑仍走生产代码。
+            const query = new URLSearchParams(window.location.search);
+            if (query.get("mode") === "seam-frame") {
+                // 取证视口覆盖四边固定页面原点；原fixture高520会把bottom及左右下沿裁掉，不能拿该裁剪当产品亮缝。
+                Object.assign(document.getElementById("fixture").style, { width: "1920px", height: "1080px" });
+                document.getElementById("result").style.visibility = "hidden";
+            }
+            const interactionMode = query.get('mode')?.startsWith('interaction');
+            if (interactionMode) {
+                Object.assign(document.getElementById('fixture').style,{padding:'0px',width:'420px',height:'320px'});
+                const style=document.createElement('style');
+                style.textContent='.island[data-vertical="true"] .island-card{block-size:280px}';
+                document.head.append(style); // 左右hover从长竖胶囊进入较矮展开，确实产生纵向union余量。
+            }
+            const slowBridge = query.get("slow") === "1" || query.get("mode") === "edge"; // 模拟真实 IPC 延迟，覆盖提交未落定就被重新测量取消的路径。
+            const staticHover = query.get("mode") === "hover"; // 截图/人眼核对用：关闭动画并停在 hover 稳定态。
+            const staticExpanded = ["expanded", "resize", "interaction"].includes(query.get("mode")); // 关闭动画展开，核对最终装饰不残留补面。
+            const preferences = {
+                theme: "dark",
+                desktopAppearance: { theme: "dark", accentColor: "#2563eb", useWindowsAccentColor: false },
+                doubleClickToOpen: true,
+                islandEnabled: true,
+                islandForm: query.get("form") === "capsule" ? "capsule" : "notch",
+                islandEdge: query.get("edge") ?? "top",
+                islandOffset: 0,
+                islandRadius: 12,
+                interfaceAnimations: !staticHover && !staticExpanded && query.get("motion") !== "off",
+                followSystemReducedMotion: false,
+            };
+            const runtime = {
+                revision: 1,
+                manifests: [
+                    {
+                        id: "official.music-control",
+                        name: "音乐控制",
+                        entry: "official",
+                        script: "",
+                        requiredCapabilities: [],
+                        creatable: true,
+                        removable: true,
+                        island: true,
+                        maxTiles: 1,
+                        tileTypes: [],
+                        persistenceVersion: 1,
+                    },
+                ],
+                instances: [
+                    {
+                        instanceId: "island.official.music-control",
+                        componentId: "official.music-control",
+                        entry: null,
+                        authorizedCapabilities: [],
+                        status: "ready",
+                        error: null,
+                    },
+                ],
+                failures: [],
+            };
+            const island = {
+                runtime,
+                instances: [
+                    {
+                        instanceId: "island.official.music-control",
+                        componentId: "official.music-control",
+                        monitorId: "",
+                        projectionMonitorId: null,
+                        projectionBounds: null,
+                        bounds: { left: 0, top: 0, width: 0, height: 0 },
+                        stateVersion: 1,
+                        state: {},
+                    },
+                ],
+            };
+            // 第二个独立功能身份用于核对多卡自然列宽与间距，不能伪造同一功能的重复实例。
+            if (query.get("multi") === "1") {
+                const componentId = "official.fixture-card";
+                const instanceId = `island.${componentId}`;
+                runtime.manifests.push({ ...runtime.manifests[0], id: componentId, name: "测试卡" });
+                runtime.instances.push({ ...runtime.instances[0], componentId, instanceId });
+                island.instances.push({ ...island.instances[0], componentId, instanceId });
+            }
+            // 模拟 debug 构建由后端注入的浮岛测试卡：清单与实例都来自快照，页面不做额外注入。
+            if (query.get("debug-island") === "1") {
+                const componentId = "official.debug-island";
+                const instanceId = `island.${componentId}`;
+                runtime.manifests.push({ ...runtime.manifests[0], id: componentId, name: "Debug 浮岛" });
+                runtime.instances.push({ ...runtime.instances[0], componentId, instanceId });
+                island.instances.push({ ...island.instances[0], componentId, instanceId });
+            }
+            const desktop = {
+                phase: "ready",
+                committed: true,
+                hosts: [
+                    {
+                        monitor: {
+                            id: "monitor-1",
+                            name: "主屏",
+                            primary: true,
+                            x: 0,
+                            y: 0,
+                            width: 1920,
+                            height: 1080,
+                            workX: 0,
+                            workY: 0,
+                            workWidth: 1920,
+                            workHeight: interactionMode ? 320 : 1040,
+                            scaleFactor: 1,
+                            dpi: 96,
+                        },
+                        readiness: { guardian: true, page: true, systemImages: true, pixels: true, input: true, hitMap: true },
+                    },
+                ],
+            };
+            const scrollbarCommits = []; // 新交互模式记录提交时是否已显示条，证明时序而非猜测。
+            const savedPreferences = []; // 记录偏好保存请求，用于断言排序不把 debug 测试卡写进顺序。
+            const commits = []; // 页面提交的原生几何，用于核对并集窗口与最终态。
+            // 多卡负角验证必须由确定性的时钟与提交握手冻结，不能用静态 hover（它只渲染首卡）冒充。
+            const controlled = ["surface-frame", "seam-frame", "interaction", "interaction-scroll", "interaction-dynamic", "interaction-instant"].includes(query.get("mode"));
+            let clock = performance.now();
+            let frameId = 0;
+            const frames = new Map();
+            if (controlled) {
+                performance.now = () => clock;
+                window.requestAnimationFrame = (callback) => { frames.set(++frameId, callback); return frameId; };
+                window.cancelAnimationFrame = (id) => frames.delete(id);
+            }
+            const tick = async () => {
+                clock += query.get("mode") === "seam-frame" ? 4 : 8;
+                const callbacks = [...frames.values()];
+                frames.clear();
+                callbacks.forEach((callback) => callback(clock));
+                // MessageChannel保持一次任务边界，又不会让受控4/8ms时钟受到嵌套setTimeout的4ms最小延迟污染。
+                await new Promise((resolve) => {
+                    const channel = new MessageChannel();
+                    channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+                    channel.port2.postMessage(null);
+                });
+            };
+            let holdCommit = false;
+            let pendingCommit;
+            const releaseCommit = () => { const resolve = pendingCommit; pendingCommit = undefined; resolve?.(); };
+            const bridgeListeners = new Map(); // 按事件保存订阅，供本页模拟偏好切换。
+            window.__DESKTOP_TOOLS_NATIVE__ = {
+                invoke(command, payload) {
+                    switch (command) {
+                        case "get_preferences":
+                            return Promise.resolve(preferences);
+                        case "get_island_snapshot":
+                            return slowBridge ? new Promise((resolve) => setTimeout(() => resolve(island), 20)) : Promise.resolve(island);
+                        case "get_component_runtime_snapshot":
+                            return Promise.resolve(runtime);
+                        case "get_desktop_host_snapshot":
+                            return Promise.resolve(desktop);
+                        case "get_windows_accent_color":
+                            return Promise.resolve("#2563eb");
+                        case "get_current_music_session":
+                            return Promise.resolve(null);
+                        case "get_music_details":
+                            return Promise.resolve({ timeline: undefined, lyrics: [] });
+                        case "get_island_messages":
+                            return Promise.resolve([]); // 布局断言不注入消息卡，避免增加卡片数量。
+                        case "get_foreground_snapshot":
+                            return Promise.resolve({ revision: 1, locked: false });
+                        case "set_island_state":
+                            commits.push(payload?.request);
+                            if(interactionMode)scrollbarCommits.push({state:payload?.request?.state,visible:document.querySelector('.island__scrollbar')?.dataset.visible});
+                            if (holdCommit) return new Promise((resolve) => { pendingCommit = resolve; });
+                            return slowBridge ? new Promise((resolve) => setTimeout(resolve, 40)) : Promise.resolve();
+                        case "save_preferences":
+                            savedPreferences.push(payload?.preferences);
+                            return Promise.resolve(payload?.preferences);
+                        default:
+                            return Promise.resolve(undefined);
+                    }
+                },
+                listen(event, handler) {
+                    const handlers = bridgeListeners.get(event) ?? [];
+                    handlers.push(handler);
+                    bridgeListeners.set(event, handlers);
+                    return Promise.resolve(() => {
+                        const index = handlers.indexOf(handler);
+                        if (index >= 0) handlers.splice(index, 1);
+                    });
+                },
+                isRefreshPaused() {
+                    return false;
+                },
+            };
+
+            window.__pushMusicSnapshot = (snapshot) => {
+                for (const handler of [...(bridgeListeners.get("music-session-changed") ?? [])]) handler(snapshot);
+            };
+            window.__pushIslandPreferences = (patch) => {
+                Object.assign(preferences, patch);
+                for (const handler of [...(bridgeListeners.get("preferences-changed") ?? [])]) handler({ ...preferences });
+            };
+
+            const result = document.getElementById("result");
+            // 异步错误/总超时先写出的 FAIL 不得被迟到的成功覆盖。
+            const report = (text) => {
+                if (!result.textContent.startsWith("FAIL")) result.textContent = text;
+                else if (!failures.length) failures.push(result.textContent);
+                document.body.dataset.phase = result.textContent.startsWith("FAIL") ? "fail" : "pass";
+            };
+            const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+            // 定时采样不依赖 rAF，避免隐藏页面无限等待。
+            const until = async (probe, timeout = 5000) => {
+                const started = Date.now();
+                while (Date.now() - started < timeout) {
+                    const value = probe();
+                    if (value) return value;
+                    await wait(16);
+                }
+                throw new Error("等待页面状态超时");
+            };
+            const failures = [];
+            const check = (condition, message) => {
+                if (!condition) failures.push(message);
+            };
+            const rect = (element, root) => {
+                if (!element) return null;
+                const box = element.getBoundingClientRect();
+                const origin = root.getBoundingClientRect();
+                return {
+                    display: getComputedStyle(element).display,
+                    width: box.width,
+                    height: box.height,
+                    right: box.right - origin.left,
+                    bottom: box.bottom - origin.top,
+                    left: box.left - origin.left,
+                    top: box.top - origin.top,
+                };
+            };
+            const snapshot = () => {
+                const root = document.querySelector("main.island");
+                if (!root) return null;
+                const card = root.querySelector(".island-card");
+                const content = card?.querySelector(".island-card__content");
+                const contentStyle = content ? getComputedStyle(content) : null;
+                const surface = root.querySelector(".island__surface");
+                const surfaceStyle = surface ? getComputedStyle(surface) : null;
+                const surfaceVisible = surfaceStyle?.display === "block";
+                const positions = surfaceVisible && surfaceStyle ? surfaceStyle.maskPosition.split(",") : [];
+                const sizes = surfaceVisible && surfaceStyle ? surfaceStyle.maskSize.split(",") : [];
+                const maskLayer = (index) => {
+                    const position = positions[index]?.trim().split(/\s+/).map(Number.parseFloat);
+                    const size = sizes[index]?.trim().split(/\s+/).map(Number.parseFloat);
+                    if (!position || !size || position.length < 2 || size.length < 2)
+                        return { display: "none", left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
+                    let [left, top] = position;
+                    let [width, height] = size;
+                    // 这里返回理想弧面，不把mask-only内向采样余量冒充几何半径。
+                    const radius = Math.min(width, height);
+                    if (root.dataset.edge === "left" || root.dataset.edge === "right") {
+                        if (index === 2) top += height - radius;
+                    } else if (index === 2) left += width - radius;
+                    width = radius;
+                    height = radius;
+                    return { display: "block", left, top, right: left + width, bottom: top + height, width, height };
+                };
+                return {
+                    state: root.dataset.state,
+                    edge: root.dataset.edge,
+                    filleted: root.dataset.filleted,
+                    painted: Boolean(root.style.inlineSize),
+                    cardRadius: getComputedStyle(card).borderRadius,
+                    card: rect(card, root),
+                    cardBackground: getComputedStyle(card).backgroundColor,
+                    content: contentStyle ? { opacity: contentStyle.opacity, filter: contentStyle.filter } : null,
+                    surface: {
+                        display: surfaceVisible ? "block" : "none",
+                        background: surfaceStyle?.backgroundColor ?? "",
+                        layers: sizes.length,
+                        maskImage: surfaceStyle?.maskImage ?? "",
+                    },
+                    start: maskLayer(1),
+                    end: maskLayer(2),
+                };
+            };
+            const sampleFor = async (milliseconds) => {
+                const samples = [];
+                const started = performance.now();
+                while (performance.now() - started < milliseconds) {
+                    await wait(16);
+                    const value = snapshot();
+                    if (value) samples.push(value);
+                }
+                return samples;
+            };
+
+            createRoot(document.getElementById("fixture")).render(React.createElement(PreferencesProvider, null, React.createElement(IslandPage)));
+
+            // 终态必须同时完成提交与自然流恢复，不能只等 React 的 data-state。
+            const settledState = (state) => until(() => {
+                const value = snapshot();
+                return value?.state === state && commits.at(-1)?.state === state && !value.painted && value.content?.opacity === "1" && value.content?.filter === "none" ? value : null;
+            }, 6000);
+            const rootRectForMask = () => document.querySelector('main.island').getBoundingClientRect();
+            const transparent = (color) => color === "transparent" || color === "rgba(0, 0, 0, 0)";
+            const checkSurface = (value) => {
+                const surface = document.querySelector(".island__surface");
+                check(document.querySelectorAll(".island__surface").length === 1 && !document.querySelector(".island__fillet"), "补面必须是单层 surface，不能保留独立 fillet 表面");
+                check(value.filleted === "true" && value.surface.display === "block", "补面帧应标记 filleted 并显示 surface");
+                check(!transparent(value.surface.background) && transparent(value.cardBackground), "仅 surface 填充背景，卡片背景必须透明");
+                const style = getComputedStyle(surface);
+                check(style.maskSize.split(",").length === 4 && (style.maskImage.match(/radial-gradient\(/g) ?? []).length === 2 && style.maskImage.startsWith("url("), "所有负角帧须为原1卡片路径+2弧面+1根尺寸补采样，稳态也不遗留接缝");
+                const svg = decodeURIComponent(style.maskImage.match(/url\("([^\"]+)"\)/)?.[1] ?? "");
+                const path = new DOMParser().parseFromString(svg.slice(svg.indexOf(",") + 1), "image/svg+xml").querySelector("path")?.getAttribute("d") ?? "";
+                check(/^M /.test(path) && /A \d/.test(path) && /Z$/.test(path), "卡片遮罩应为闭合圆角路径而非矩形色层");
+                check(style.maskComposite.split(",").every((part) => part.trim() === "add"), "遮罩应按 add 并集合成");
+                const centers = [...style.maskImage.matchAll(/radial-gradient\((?:circle )?(?:[\d.]+px )?at ([^,]+)/g)].map((match) => match[1].trim());
+                const expected = { top: ["0% 100%", "100% 100%"], bottom: ["0% 0%", "100% 0%"], left: ["100% 0%", "100% 100%"], right: ["0% 0%", "0% 100%"] }[value.edge || "top"];
+                const origin = rootRectForMask();
+                const patches = islandFilletPatches({ left:value.card.left, top:value.card.top, width:value.card.width, height:value.card.height }, {width:origin.width,height:origin.height}, value.edge, 12);
+                const maskPositions = style.maskPosition.split(',').map((part)=>part.trim().split(/\s+/).map(parseFloat));
+                const maskSizes = style.maskSize.split(',').map((part)=>part.trim().split(/\s+/).map(parseFloat));
+                patches.forEach((patch,index)=>{
+                    const center = centers[index]?.split(/\s+/).map((token,axis)=>token.endsWith('%')?parseFloat(token)*maskSizes[index+1][axis]/100:parseFloat(token));
+                    const wanted = expected[index].split(' ');
+                    const position = maskPositions[index+1], size = maskSizes[index+1];
+                                        check(center && Math.abs(position[0]+center[0]-(patch.rect.left+(wanted[0]==='100%'?patch.rect.width:0)))<0.02 && Math.abs(position[1]+center[1]-(patch.rect.top+(wanted[1]==='100%'?patch.rect.height:0)))<0.02, `${value.edge} 原理想圆心须保持屏幕位置且随边翻转`);
+                    check(Math.abs(position[0]-patch.rect.left)<0.02 && Math.abs(position[1]-patch.rect.top)<0.02 && Math.abs(size[0]-patch.rect.width)<0.02 && Math.abs(size[1]-patch.rect.height)<0.02, "原弧面瓦片不可重栅格改变外缘");
+                });
+                const root = document.querySelector("main.island");
+                const normal = style.backgroundColor;
+                root.dataset.dragging = "true";
+                check(getComputedStyle(surface).backgroundColor !== normal, "拖动反馈必须改变 surface 背景");
+                check(transparent(getComputedStyle(root.querySelector(".island-card")).backgroundColor), "拖动时卡片仍应透明");
+                delete root.dataset.dragging;
+            };
+            // 浏览器只核对并集尺寸和目标内容位置，不声称验证原生透明边距命中。
+            const checkExpanded = (from) => {
+                const root = document.querySelector("main.island");
+                const value = snapshot();
+                const final = commits.at(-1);
+                const cards = [...root.querySelectorAll(".island-card")];
+                const boxes = cards.map((card) => card.getBoundingClientRect());
+                check(boxes.length === (query.get("multi") === "1" ? 2 : 1), "单双卡场景必须渲染预期卡片数");
+                const box = { width: Math.max(...boxes.map((box) => box.width)), height: boxes.reduce((sum, box) => sum + box.height, 0) + 8 * (boxes.length - 1) };
+                const edge = preferences.islandEdge;
+                const inset = preferences.islandForm === "capsule" ? 6 : 0;
+                const targetLeft = edge === "left" ? inset : edge === "right" ? 1920 - box.width - inset : (1920 - box.width) / 2;
+                const targetTop = edge === "bottom" ? 1040 - box.height - inset : edge === "left" || edge === "right" ? (1040 - box.height) / 2 : inset;
+                const expected = {
+                    left: Math.min(from.windowBox.left, targetLeft), top: Math.min(from.windowBox.top, targetTop),
+                    width: Math.max(from.windowBox.left + from.windowBox.width, targetLeft + box.width) - Math.min(from.windowBox.left, targetLeft),
+                    height: Math.max(from.windowBox.top + from.windowBox.height, targetTop + box.height) - Math.min(from.windowBox.top, targetTop),
+                };
+                for (const key of ["left", "top", "width", "height"]) check(Math.abs(final.windowBox[key] - expected[key]) < 1, `展开 ${edge} 并集 ${key} 应为 ${expected[key]}，实际 ${final.windowBox[key]}；提交 ${commits.map((item) => `${item.state}:${item.windowBox.width}x${item.windowBox.height}`).join(" → ")}`);
+                check(Math.abs(root.clientWidth - expected.width) < 1 && Math.abs(root.clientHeight - expected.height) < 1, "展开 root 实际尺寸必须保持并集");
+                check(Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-inline")) - expected.width) < 1 && Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-block")) - expected.height) < 1, "展开 CSS 尺寸变量必须保持并集");
+                check(Math.abs(parseFloat(root.style.marginInlineStart) - (targetLeft - final.viewport.left)) < 1 && Math.abs(parseFloat(root.style.marginBlockStart) - (targetTop - final.viewport.top)) < 1, "展开内容仍按目标 margin 而非并集原点排布");
+                boxes.forEach((box, index) => {
+                    const target = final.cards[index].rect;
+                    check(Math.abs(box.width - target.width) < 1 && Math.abs(box.height - target.height) < 1, "展开卡片不得被并集 grid 拉伸，实际内容尺寸应等于目标");
+                    const origin = root.getBoundingClientRect();
+                    check(Math.abs(box.left - origin.left + targetLeft - final.windowBox.left - target.left) < 1 && Math.abs(box.top - origin.top + targetTop - final.windowBox.top - target.top) < 1, "卡片屏幕位置必须等于目标几何");
+                    if (index) check(Math.abs(box.top - boxes[index - 1].bottom - 8) < 1 && Math.abs(box.width - boxes[0].width) < 1, "展开多卡必须同列宽且保持 8 DIP gap");
+                });
+                check(value.filleted === "false" && (value.surface.display === "none" || transparent(value.surface.background)), "展开 surface 不得承载表面");
+                return final;
+            };
+            const run = async () => {
+                try {
+                    const root = await until(() => document.querySelector("main.island"));
+                    await until(() => commits.length > 0);
+                    if (interactionMode) {
+                        const move=(point,id=1,buttons=0)=>document.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerType:'mouse',pointerId:id,buttons,clientX:point.x,clientY:point.y}));
+                        const enter=()=>root.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,pointerType:'mouse',relatedTarget:null}));
+                        const key=(value)=>root.dispatchEvent(new KeyboardEvent('keydown',{key:value,bubbles:true}));
+                        const flush=async(state)=>{
+                            await until(()=>root.dataset.state===state);
+                            for(let i=0;i<110&&(root.style.inlineSize||commits.at(-1)?.state!==state);i++)await tick();
+                            return await settledState(state);
+                        };
+                        const windowRect=()=>{const value=commits.at(-1);return {left:value.windowBox.left-value.viewport.left,top:value.windowBox.top-value.viewport.top,width:value.windowBox.width,height:value.windowBox.height};};
+                        // 受控时钟时间线：滚动条必须先独立渐出到0，之后才提交收起并开始卡片形变。
+                        const fadeBeforeCollapse=async(bar)=>{
+                            const frames=[];
+                            const sample=()=>frames.push({opacity:Number.parseFloat(getComputedStyle(bar).opacity),deforming:root.style.inlineSize!=="",state:root.dataset.state});
+                            key('Escape');
+                            for(let index=0;index<240;index++){
+                                sample();
+                                const last=frames.at(-1);
+                                if(last.state==='collapsed'&&!last.deforming&&frames.some((frame)=>frame.deforming))break;
+                                await wait(6);await tick();
+                            }
+                            const deforming=frames.filter((frame)=>frame.deforming);
+                            check(deforming.length>0,'收起必须有形变帧');
+                            check(deforming[0]?.opacity===0,'收起第一形变帧滚动条必须已渐出到0');
+                            check(deforming.every((frame)=>frame.opacity===0),'形变进行中不允许滚动条仍可见');
+                            check(frames.some((frame)=>frame.opacity>0&&!frame.deforming),'渐出必须在形变前独立完成');
+                            check(frames.filter((frame)=>frame.state==='collapsed')[0]?.opacity===0,'提交收起时条必须已经完全不可见');
+                        };
+                        const within=async(probe,milliseconds)=>{const started=Date.now();while(Date.now()-started<milliseconds){if(probe())return true;await tick();await wait(8);}return false;};
+                        enter(); await flush('hover');
+                        if(query.get('mode')==='interaction') {
+                            const box=root.querySelector('.island-card').getBoundingClientRect();
+                            const content={x:box.x+box.width/2,y:box.y+box.height/2};
+                            const frame=windowRect(), margin={x:frame.left+1,y:frame.top+1};
+                            move(margin);await wait(60);move(content);await wait(100);
+                            check(root.dataset.state==='hover','120ms内回到内容应取消透明收起');
+                            move(margin);await wait(150);
+                            check(root.dataset.state==='collapsed','hover透明边距停留120ms后必须收起');
+                            if(root.dataset.state!=='collapsed')key('Escape');
+                            await flush('collapsed');
+                            const capsule=root.querySelector('.island-card').getBoundingClientRect();
+                            const capsuleContent={x:capsule.x+capsule.width/2,y:capsule.y+capsule.height/2};
+                            // 常态关闭透明像素检测：胶囊内移动不再被门闩挡住，按既有180ms进入 hover。
+                            enter();
+                            const states=[];const observer=new MutationObserver(()=>states.push(root.dataset.state));
+                            observer.observe(root,{attributes:true,attributeFilter:['data-state']});
+                            for(let i=0;i<5;i++){move(capsuleContent);await wait(100);}
+                            observer.disconnect();
+                            check(root.dataset.state==='hover','常态关闭透明检测后，胶囊内停留必须按180ms正常进入hover');
+                            check(!states.includes('collapsed'),'进入hover后不得因透明判定再次收起，也不得反复切态');
+                            key('Escape');await flush('collapsed');
+                            // 离开 hover 再回来仍是既有 180ms 进入消抖。
+                            root.dispatchEvent(new PointerEvent('pointerout',{bubbles:true,pointerType:'mouse',relatedTarget:null}));
+                            enter();move(capsuleContent);
+                            await wait(80);check(root.dataset.state==='collapsed','回到胶囊仍须遵守原180ms进入消抖');
+                            await wait(130);await flush('hover');
+                            key('Enter');await flush('expanded');await wait(30);
+                            check(root.dataset.state==='expanded','切态完成不能拿旧指针位置立即评估透明带');
+                            const expanded=windowRect();
+                            const point=['left','right'].includes(preferences.islandEdge)?{x:expanded.left+expanded.width/2,y:expanded.top+expanded.height-1}:{x:expanded.left+expanded.width-1,y:expanded.top+expanded.height/2};
+                            const contentPoint={x:expanded.left+expanded.width/2,y:expanded.top+expanded.height/2};
+                            // 展开额外带与 hover 共用 120ms 去抖：计时内回内容盒取消。
+                            move(point);await wait(60);move(contentPoint);await wait(120);
+                            check(root.dataset.state==='expanded','额外带计时内回到内容盒必须取消退回');
+                            // 进带后连续停留满 120ms 才退回。
+                            move(point);await wait(60);
+                            check(root.dataset.state==='expanded','进入额外带未满120ms不得退回');
+                            await wait(90);
+                            check(root.dataset.state==='collapsed','额外带连续停留满120ms后退回');
+                        } else if(query.get('mode')==='interaction-debugcard') {
+                            // debug 构建由后端注入的浮岛测试卡：展开出现、胶囊不出现、不参与排序持久化。
+                            const debugCards=()=>root.querySelectorAll('.island-card[data-island-debug-card]');
+                            const sortableCards=()=>[...root.querySelectorAll('.island-card:not([data-island-debug-card])')];
+                            key('Enter');await flush('expanded');
+                            check(debugCards().length===1,'debug构建下展开态必须出现测试卡');
+                            check(sortableCards().length>=2,'需要至少两张真实卡片做排序对照');
+                            check(typeof DataTransfer==='function','断言环境必须支持 DataTransfer');
+                            if(typeof DataTransfer==='function'&&sortableCards().length>=2&&debugCards().length===1){
+                                const transfer=new DataTransfer();
+                                const [first,second]=sortableCards();
+                                const debugCard=debugCards()[0];
+                                const press=(card)=>{const box=card.getBoundingClientRect();card.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse',pointerId:9,button:0,buttons:1,clientX:box.x+box.width/2,clientY:box.y+box.height/2}));card.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerType:'mouse',pointerId:9,button:0}));};
+                                // 正控：真实卡片之间拖动必须保存顺序，且顺序里没有测试卡。
+                                press(first);
+                                first.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                                second.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                                second.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                                await wait(80);
+                                check(savedPreferences.length===1,'真实卡片之间拖动必须保存顺序');
+                                check(!(savedPreferences[0]?.islandCardOrder??[]).includes('official.debug-island'),'保存的顺序不得包含测试卡');
+                                // 测试卡不可拖拽，也不是合法落点。
+                                check(debugCard.getAttribute('draggable')!=='true','测试卡不可拖拽');
+                                press(first);
+                                first.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                                debugCard.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                                debugCard.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                                await wait(80);
+                                check(savedPreferences.length===1,'测试卡不得成为排序落点，也不写卡片顺序');
+                            }
+                            key('Escape');await flush('collapsed');
+                            check(debugCards().length===0,'胶囊态不得出现测试卡');
+                        } else if(query.get('mode')==='interaction-dynamic') {
+                            // 真实RO路径：卡片高度变化不改request/key，条仍必须随溢出出现并更新thumb/range。
+                            const bar=root.querySelector('.island__scrollbar'),thumb=bar?.querySelector('.island__scrollbar-thumb');
+                            const testStyle=document.createElement('style');
+                            testStyle.textContent='.island[data-state="expanded"] .island-card{block-size:320px}';
+                            document.head.append(testStyle);
+                            key('Enter');await flush('expanded');
+                            check(Boolean(bar)&&Boolean(thumb),'动态场景必须有滚动条覆盖层');
+                            check(root.scrollHeight===root.clientHeight,'卡片高度等于窗口时不应有溢出');
+                            check(bar.dataset.visible!=='true','无溢出时不得显示条');
+                            // 无可见条：收起不得引入渐出等待。
+                            key('Escape');
+                            check(await within(()=>root.dataset.state==='collapsed',100),'无可见条时必须立即提交收起，不得等待渐出');
+                            await flush('collapsed');
+                            key('Enter');await flush('expanded');
+                            const commitsBefore=commits.length;
+                            check(bar.dataset.visible!=='true','再次展开仍无溢出');
+                            // 只提高卡片高度：RO触发重测，但裁剪后request/key不变，条必须从无到有。
+                            testStyle.textContent='.island[data-state="expanded"] .island-card{block-size:500px}';
+                            await until(()=>root.scrollHeight>root.clientHeight,2000);
+                            check(await within(()=>bar.dataset.visible==='true',600),'request不变但出现溢出时必须显示条');
+                            check(commits.length===commitsBefore,'刷新条不得产生重复IPC');
+                            const range500=Number(bar.getAttribute('aria-valuemax'));
+                            check(range500>0,'出条后必须写入滚动范围');
+                            const thumb500=Number.parseFloat(thumb.style.blockSize);
+                            // 继续加高：同一key下thumb高度与范围更新。
+                            testStyle.textContent='.island[data-state="expanded"] .island-card{block-size:600px}';
+                            await until(()=>root.scrollHeight>root.clientHeight+1,2000);
+                            check(await within(()=>Number(bar.getAttribute('aria-valuemax'))>range500,600),'内容继续变高必须更新滚动范围');
+                            check(Number.parseFloat(thumb.style.blockSize)<thumb500,'范围变大后滑块必须变短');
+                            check(commits.length===commitsBefore,'继续加高仍不得新增提交');
+                            // scrollTop改变时thumb位置更新（走真实scroll路径）。
+                            const topBefore=Number.parseFloat(thumb.style.insetBlockStart);
+                            root.scrollTop=120;await wait(40);
+                            check(Number.parseFloat(thumb.style.insetBlockStart)>topBefore,'scrollTop改变必须更新滑块位置');
+                            // 反向请求：同一任务里先收起再展开，排队中的收起必须被取消，不得迟到提交。
+                            key('Escape');key('Enter');
+                            check(await within(()=>Number.parseFloat(getComputedStyle(bar).opacity)>0.99,300),'反向取消后条必须恢复可见');
+                            await wait(300);
+                            check(root.dataset.state==='expanded','渐出中反向请求必须取消迟到的收起');
+                            check(root.style.inlineSize==='','反向取消不得开始收起形变');
+                            check(bar.dataset.visible==='true','反向取消后条必须保持可见');
+                            // 有可见条：先完成独立渐出，再提交收起并开始形变。
+                            await fadeBeforeCollapse(bar);
+                        } else if(query.get('mode')==='interaction-instant') {
+                            // 减少动效：条立即隐藏并立即切态，不得引入渐出等待。
+                            const bar=root.querySelector('.island__scrollbar');
+                            key('Enter');await flush('expanded');
+                            check(Boolean(bar)&&bar.dataset.visible==='true','减少动效下溢出仍必须显示条');
+                            key('Escape');
+                            check(await within(()=>root.dataset.state==='collapsed',100),'减少动效时必须立即提交收起');
+                            check(Number.parseFloat(getComputedStyle(bar).opacity)===0,'减少动效时条必须立即隐藏');
+                            await flush('collapsed');
+                        } else {
+                            holdCommit=true;key('Enter');await until(()=>pendingCommit);
+                            const bar=root.querySelector('.island__scrollbar');
+                            check(root.querySelectorAll('[data-island-debug]').length===6,'DEV参数必须注入6张展开临时卡');
+                            check(Boolean(bar),'展开滚动条覆盖层必须存在');
+                            if(bar)check(getComputedStyle(bar).opacity==='0','展开提交未完成前滚动条必须隐藏');
+                            holdCommit=false;releaseCommit();await flush('expanded');
+                            if(bar) {
+                                check(root.scrollHeight>root.clientHeight,'debug卡必须实际撑出展开溢出');
+                                check(bar.dataset.visible==='true','展开动画和提交结束后才允许条渐入');
+                                check(scrollbarCommits.at(-1)?.visible!=='true','最终展开提交时条仍不得提前出现');
+                                const animation=bar.getAnimations()[0];
+                                check(Boolean(animation),'动画开启时必须有150ms opacity渐入');
+                                if(animation){animation.pause();animation.currentTime=75;const opacity=parseFloat(getComputedStyle(bar).opacity);check(opacity>0&&opacity<1,'渐入中点应处于0和1之间');animation.finish();await wait(20);}
+                                const box=bar.getBoundingClientRect();
+                                move({x:box.x+box.width/2,y:box.y+box.height/2});await wait(30);
+                                check(root.dataset.state==='expanded','滚动条命中矩形必须从展开退回带中扣除');
+                                const thumb=bar.querySelector('.island__scrollbar-thumb');
+                                const thumbBox=thumb.getBoundingClientRect(),before=root.scrollTop;
+                                const oldCapture=bar.setPointerCapture,oldHas=bar.hasPointerCapture,oldRelease=bar.releasePointerCapture;
+                                // 合成PointerEvent无OS活动指针；仅在断言中替换capture平台方法，实际滚动逻辑仍走生产处理器。
+                                bar.setPointerCapture=()=>{};bar.hasPointerCapture=()=>true;bar.releasePointerCapture=()=>{};
+                                try {
+                                    bar.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse',pointerId:41,button:0,buttons:1,clientX:thumbBox.x+3,clientY:thumbBox.y+3}));
+                                    move({x:thumbBox.x+3,y:thumbBox.y+63},41,1);await wait(40);
+                                    document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:41,pointerType:'mouse'}));
+                                    check(root.scrollTop>before,'拖动滑块必须改变原生滚动容器scrollTop');
+                                } finally {bar.setPointerCapture=oldCapture;bar.hasPointerCapture=oldHas;bar.releasePointerCapture=oldRelease;}
+                                const geometry=JSON.stringify(commits.at(-1).windowBox),client=[root.clientWidth,root.clientHeight];
+                                root.scrollTop+=10;root.dispatchEvent(new Event('scroll'));await tick();await wait(30);
+                                check(JSON.stringify(commits.at(-1).windowBox)===geometry&&root.clientWidth===client[0]&&root.clientHeight===client[1],'覆盖条和滚动不得改变保留窗口或内容布局尺寸');
+                                await fadeBeforeCollapse(bar); // 渐出完成后才提交收起并开始形变。
+                            }
+                        }
+                        report(failures.length?`FAIL\n- ${failures.join('\n- ')}`:'PASS 透明命中/门闩/滚动条与DEV卡');
+                        return;
+                    }
+                    if (query.get("mode") === "natural-seam") {
+                        // 真实rAF路径，不改时钟、不改变背景/描边；MutationObserver在同步paint之后记录同源几何。
+                        const records = [];
+                        const capture = () => {
+                            const card = root.querySelector(".island-card");
+                            const surface = root.querySelector(".island__surface");
+                            const box = card.getBoundingClientRect(), origin = surface.getBoundingClientRect();
+                            const style = getComputedStyle(surface), cardStyle = getComputedStyle(card);
+                            const position = style.maskPosition.split(",")[0].trim().split(/\s+/).map(parseFloat);
+                            const size = style.maskSize.split(",")[0].trim().split(/\s+/).map(parseFloat);
+                            const delta = root.dataset.filleted === "true" ? Math.max(Math.abs(position[0] - box.x + origin.x),Math.abs(position[1] - box.y + origin.y),Math.abs(size[0] - box.width),Math.abs(size[1] - box.height)) : 0;
+                            records.push({ epoch:Date.now(),time:performance.now(),state:root.dataset.state,filleted:root.dataset.filleted,surface:style.display,background:cardStyle.backgroundColor,border:getComputedStyle(card,"::before").borderTopColor,card:{x:box.x,y:box.y,width:box.width,height:box.height},maskPosition:style.maskPosition,maskSize:style.maskSize,attached:root.dataset.filleted === "true" ? -Math.min(...style.maskSize.split(',')[1].trim().split(/\s+/).map(parseFloat)) : null,delta });
+                        };
+                        const observer = new MutationObserver(capture);
+                        observer.observe(root,{attributes:true,subtree:true,attributeFilter:["style","data-state","data-filleted"]});
+                        window.__islandNaturalCapture = { records, stop:()=>observer.disconnect() };
+                        capture();
+                        report("PASS 自然rAF取证就绪");
+                        return;
+                    }
+                    if (query.get("mode") === "seam-frame") {
+                        const enter = async () => {
+                            root.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+                            await until(() => root.dataset.state === "hover");
+                            await wait(0);
+                        };
+                        await enter();
+                        if (query.get("direction") === "out") {
+                            for (let i = 0; i < 100 && root.style.inlineSize; i++) await tick();
+                            await settledState("hover");
+                            root.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, pointerType: "mouse", relatedTarget: null }));
+                            await until(() => root.dataset.state === "collapsed");
+                            await wait(0);
+                        }
+                        const elapsed = Number(query.get("elapsed") ?? 48);
+                        // 第一次rAF建立动画时钟；此后4ms步进，冻结时不再派发任何动画帧。
+                        await tick();
+                        for (let i = 0; i < elapsed / 4; i++) await tick();
+                        const inspectFrame = (elapsed, backgroundName) => {
+                        const card = root.querySelector(".island-card");
+                        const surface = root.querySelector(".island__surface");
+                        const cardStyle = getComputedStyle(card), surfaceStyle = getComputedStyle(surface);
+                        const background = backgroundName === "dark" ? "rgb(16, 16, 16)" : "rgb(255, 255, 255)";
+                        document.documentElement.style.background = background;
+                        document.body.style.background = background;
+                        document.getElementById("fixture").style.background = background;
+                        // visibility只隔离内容像素，保持真实布局、卡片背景、描边与所有mask不变。
+                        root.querySelectorAll(".island-card__content").forEach((node) => { node.style.visibility = "hidden"; });
+                        const box = card.getBoundingClientRect(), rootBox = root.getBoundingClientRect();
+                        // 仅断言页的受控像素取证API；runner读取同一冻结帧的计算样式与几何，不修改生产运行时。
+                        window.__islandSeamFrame = {
+                            form: preferences.islandForm, edge: preferences.islandEdge, direction: query.get("direction") ?? "in", elapsed,
+                            actualElapsed: parseFloat(getComputedStyle(card.querySelector(".island-card__content")).opacity) * 240,
+                            filleted: root.dataset.filleted, cardBackground: cardStyle.backgroundColor,
+                            border: getComputedStyle(card, "::before").borderTopColor,
+                            surfaceDisplay: surfaceStyle.display, surfaceColor: surfaceStyle.backgroundColor,
+                            maskImage: surfaceStyle.maskImage, maskPosition: surfaceStyle.maskPosition, maskSize: surfaceStyle.maskSize,
+                            card: { x: box.x, y: box.y, width: box.width, height: box.height },
+                            root: { x: rootBox.x, y: rootBox.y, width: rootBox.width, height: rootBox.height },
+                            background: backgroundName === "dark" ? [16, 16, 16] : [255, 255, 255],
+                        };
+                        return window.__islandSeamFrame;
+                        };
+                        let previousElapsed = elapsed;
+                        // 同次动画递增采样、同一进度切白/深背景，避免重复导航并保证成对对照来自同一帧几何。
+                        window.__islandSeamAdvance = async (target, backgroundName) => {
+                            if (target < previousElapsed) throw new Error("受控进度不得倒退");
+                            for (let i = previousElapsed; i < target; i += 4) await tick();
+                            previousElapsed = target;
+                            return inspectFrame(target, backgroundName);
+                        };
+                        inspectFrame(elapsed, query.get("background"));
+                        report("PASS 受控切态像素帧已冻结");
+                        return;
+                    }
+                    if (query.get("mode") === "surface-frame") {
+                        root.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+                        await until(() => root.dataset.state === "hover");
+                        for (let i = 0; i < 80 && root.style.inlineSize; i++) await tick();
+                        await settledState("hover");
+                        holdCommit = true;
+                        root.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+                        await until(() => pendingCommit);
+                        releaseCommit();
+                        await wait(0);
+                        // 起点 rAF，再推进8ms到第一份具有两张卡的中间几何；相位 1 内其他卡停在当前卡的展开矩形上。
+                        for (let i = 0; i < 20 && !pendingCommit; i++) await tick();
+                        await until(() => pendingCommit && commits.at(-1).cards.length >= 2).catch(() => { throw new Error(`R2 握手未到双卡帧：${JSON.stringify({ pending: Boolean(pendingCommit), frames: frames.size, clock, commits: commits.map((item) => [item.state, item.cards.length]) })}`); });
+                        releaseCommit();
+                        await wait(0);
+                        const cards = [...root.querySelectorAll(".island-card")];
+                        const surface = root.querySelector(".island__surface");
+                        const style = getComputedStyle(surface);
+                        const positions = style.maskPosition.split(",").map((part) => part.trim().split(/\s+/).map(parseFloat));
+                        const sizes = style.maskSize.split(",").map((part) => part.trim().split(/\s+/).map(parseFloat));
+                        const allPaths = [...style.maskImage.matchAll(/url\("([^\"]+)"\)/g)];
+                        const paths = allPaths.filter((match)=>!decodeURIComponent(match[1]).includes('data-island-seam'));
+                        const seamSource = allPaths.find((match)=>decodeURIComponent(match[1]).includes('data-island-seam'))?.[1];
+                        const seamText = decodeURIComponent(seamSource ?? '');
+                        const seamDocument = new DOMParser().parseFromString(seamText.slice(seamText.indexOf(',')+1), 'image/svg+xml');
+                        const seamPath = new Path2D(seamDocument.querySelector('path')?.getAttribute('d') ?? '');
+                        const seamBands = [...seamDocument.querySelectorAll('clipPath rect')].map((node)=>({left:parseFloat(node.getAttribute('x')),top:parseFloat(node.getAttribute('y')),width:parseFloat(node.getAttribute('width')),height:parseFloat(node.getAttribute('height'))}));
+                        const pointContext = document.createElement('canvas').getContext('2d');
+                        const seamContains=(x,y)=>seamBands.some((band)=>x>=band.left&&x<=band.left+band.width&&y>=band.top&&y<=band.top+band.height)&&pointContext.isPointInPath(seamPath,x,y);
+                        const visible = cards.filter((card) => Number.parseFloat(getComputedStyle(card).opacity) > 0.01); // 相位 1 只有当前卡可见。
+                        check(root.dataset.filleted === "true" && cards.length === 2 && visible.length === 1, "R2 相位 1 冻结帧应只有当前卡可见并保留负角表面");
+                        check(paths.length === visible.length, `R2 每张可见透明卡必须各有一个真实路径层，实际 ${paths.length}/${visible.length}`);
+                        check(Boolean(seamSource) && seamBands.length===visible.length*2, `中间负角帧必须有根尺寸单路径补采样，每张可见卡两个接缝带，实际=${seamBands.length}/${visible.length*2}`);
+                        const seamLayer=visible.length*3;
+                        check(positions[seamLayer]?.every((value)=>Math.abs(value)<0.01) && Math.abs(sizes[seamLayer]?.[0]-root.clientWidth)<0.1 && Math.abs(sizes[seamLayer]?.[1]-root.clientHeight)<0.1, "补采样层必须与surface局部原点一致且是根尺寸，不能退回小瓦片");
+                        check(root.querySelectorAll(".island__surface").length === 1 && !transparent(style.backgroundColor), "R2 所有卡片仅共享一次非透明表面填充");
+                        visible.forEach((card, index) => {
+                            const box = rect(card, surface);
+                            const layer = positions[index * 3];
+                            const size = sizes[index * 3];
+                            check(transparent(getComputedStyle(card).backgroundColor), `R2 卡${index}不得重复填充半透明背景`);
+                            check(layer && size && Math.abs(layer[0] - box.left) < 0.1 && Math.abs(layer[1] - box.top) < 0.1 && Math.abs(size[0] - box.width) < 0.1 && Math.abs(size[1] - box.height) < 0.1, `R2 卡${index}路径应覆盖真实DOM rect，容差0.1 DIP`);
+                            const cardStyle = getComputedStyle(card);
+                            const corners = [cardStyle.borderTopLeftRadius, cardStyle.borderTopRightRadius, cardStyle.borderBottomRightRadius, cardStyle.borderBottomLeftRadius].map(parseFloat);
+                            const svg = decodeURIComponent(paths[index]?.[1] ?? "");
+                            const d = new DOMParser().parseFromString(svg.slice(svg.indexOf(",") + 1), "image/svg+xml").querySelector("path")?.getAttribute("d");
+                            check(d === islandCardMaskPath(box.width, box.height, corners), `R2 卡${index}mask边缘须与该卡当前四角同形`);
+                            const center = [box.left + box.width / 2, box.top + box.height / 2];
+                            const covering = sizes.filter((size, i) => i<visible.length*3 && center[0] > positions[i][0] && center[0] < positions[i][0] + size[0] && center[1] > positions[i][1] && center[1] < positions[i][1] + size[1]).length + Number(seamContains(...center));
+                            check(covering >= 1 && style.maskComposite.split(",").every((part) => part.trim() === "add"), `R2 卡${index}中心mask alpha必须恰为1，单一surface只填色一次`);
+                        });
+                        check(Number.parseFloat(getComputedStyle(cards[1]).opacity) === 0, "R2 相位 1 其他卡必须隐藏，等待从当前卡背后弹出");
+                        holdCommit = false;
+                        releaseCommit();
+                        for (let i = 0; i < 80 && root.style.inlineSize; i++) await tick();
+                        await settledState("expanded");
+                        report(failures.length ? `FAIL\n- ${failures.join("\n- ")}` : "PASS R2 可控时钟双卡负角冻结帧");
+                        return;
+                    }
+                    if (query.get("mode") === "resize") {
+                        // 左右常态竖胶囊固定44宽；从横向hover构造360内容，不能拿它等同于上下常态。
+                        root.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+                        await settledState("hover");
+                        const contents = [...root.querySelectorAll(".island-card__content")];
+                        const setSize = (content, width, height) => {
+                            const child = document.createElement("div");
+                            child.style.cssText = `inline-size:${width}px;block-size:${height}px`;
+                            content.style.flex = "none";
+                            content.replaceChildren(child);
+                        };
+                        setSize(contents[0], 344, 28);
+                        await until(() => commits.at(-1).windowBox.width >= 360);
+                        const from = commits.at(-1);
+                        root.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+                        await settledState("expanded");
+                        checkExpanded(from);
+                        check(root.clientWidth >= from.windowBox.width - 1, "R3 360内容+刘海余量的root不得被360上限裁剪");
+                        const checkAgreement = (label) => {
+                            const last = commits.at(-1);
+                            const origin = root.getBoundingClientRect();
+                            const style = getComputedStyle(root);
+                            check(Math.abs(root.clientWidth - last.windowBox.width) < 1 && Math.abs(root.clientHeight - last.windowBox.height) < 1, `${label} root/windowBox必须相等`);
+                            [...root.querySelectorAll(".island-card")].forEach((card, i) => {
+                                const box = card.getBoundingClientRect();
+                                const native = last.cards[i]?.rect;
+                                check(native && Math.abs(box.width - native.width) < 1 && Math.abs(box.height - native.height) < 1, `${label} DOM/native卡${i}宽高应一致且新内容不被旧union高度截断`);
+                                check(native && Math.abs(box.left - origin.left + parseFloat(style.marginInlineStart) - (last.windowBox.left - last.viewport.left) - native.left) < 1 && Math.abs(box.top - origin.top + parseFloat(style.marginBlockStart) - (last.windowBox.top - last.viewport.top) - native.top) < 1, `${label} DOM/native卡${i}屏幕位置应一致`);
+                                check(box.width <= 360.1, `${label} 内容卡片仍受360上限约束`);
+                            });
+                        };
+                        for (const [width, height] of [[80, 88], [328, 400], [80, 88]]) {
+                            const previous = commits.at(-1).windowBox;
+                            const cardContents = [...root.querySelectorAll(".island-card__content")];
+                            cardContents.forEach((content) => setSize(content, width, height));
+                            await wait(160);
+                            checkAgreement(`R1 ${width}x${height}`);
+                            const last = commits.at(-1).windowBox;
+                            check(last.width >= previous.width - 0.1 && last.height >= previous.height - 0.1, "R1 内容重测不得收缩已经保留的union");
+                            const count = commits.length;
+                            await wait(80);
+                            check(commits.length === count, "R1 仅根paint自触发不得形成提交循环");
+                        }
+                        const final = commits.at(-1);
+                        const index = commits.length;
+                        window.__pushIslandPreferences({ interfaceAnimations: true });
+                        await wait(80);
+                        root.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+                        await until(() => commits.length > index);
+                        check(JSON.stringify(commits[index]?.windowBox) === JSON.stringify(final.windowBox), "R1/R3 下一切态必须从实际union衔接");
+                        report(failures.length ? `FAIL\n- ${failures.join("\n- ")}` : "PASS R1自然目标重测与R3宽边界");
+                        return;
+                    }
+                    if (query.get("mode") === "edge") {
+                        // 显示位置切换回归：补面必须跟着新贴边角走，不能残留上一贴边的形态。
+                        await wait(150);
+                        window.__pushIslandPreferences({ islandEdge: "bottom" });
+                        await until(() => document.querySelector("main.island")?.dataset.edge === "bottom", 3000);
+                        await wait(600);
+                        const after = snapshot();
+                        check(after.edge === "bottom", "切换显示位置后 data-edge 应更新");
+                        check(after.state === "collapsed", "切换显示位置后应保持常态");
+                        check(after.cardRadius === "22px 22px 0px 0px", `下贴边卡片下侧应为直角，实际 ${after.cardRadius}`);
+                        check(Math.abs(after.start.bottom - after.card.bottom) < 1.5, "下贴边起点圆弧应贴住卡片下沿");
+                        check(Math.abs(after.start.right - after.card.left) < 1.5, "下贴边起点圆弧应贴住卡片左边");
+                        check(/radial-gradient\((?:circle )?(?:[\d.]+px )?at 0(?:px|%) 0(?:px|%)/.test(after.surface.maskImage), `下贴边遮罩圆心应翻到上侧，实际 ${after.surface.maskImage.slice(0, 160)}`);
+                        check(!document.querySelector("main.island").style.inlineSize, "常态重放不能保留固定根宽度");
+                        check(!document.querySelector("main.island .island-card").style.inlineSize, "常态重放不能保留固定卡片宽度");
+                        // 同几何重放后媒体标题从短到长再回短，常态必须继续随内容伸缩并提交新窗口盒。
+                        const width = () => document.querySelector("main.island").getBoundingClientRect().width;
+                        const media = (title) => ({
+                            media: {
+                                sessionId: "harness",
+                                title,
+                                artist: "艺人",
+                                source: "测试",
+                                playback: "playing",
+                                canPrevious: true,
+                                canPlayPause: true,
+                                canNext: true,
+                            },
+                        });
+                        window.__pushMusicSnapshot(media("短"));
+                        await wait(200);
+                        const shortWidth = width();
+                        window.__pushMusicSnapshot(media("这是一个用于验证常态宽度自适应的长歌曲标题"));
+                        await wait(250);
+                        const longWidth = width();
+                        window.__pushMusicSnapshot(media("短"));
+                        await wait(250);
+                        const backWidth = width();
+                        check(longWidth > shortWidth + 10, `长标题应撑宽常态卡片，实际 ${shortWidth} → ${longWidth}`);
+                        check(Math.abs(backWidth - shortWidth) < 2, `短标题应回落宽度，实际 ${shortWidth} → ${backWidth}`);
+                        const lastWidths = commits.slice(-6).map((request) => request.windowBox.width);
+                        check(Math.max(...lastWidths) > Math.min(...lastWidths) + 10, `宽度变化必须提交新的原生窗口盒，实际 ${lastWidths.join(",")}`);
+                        report(failures.length ? `FAIL\n- ${failures.join("\n- ")}` : "PASS 切换显示位置补面");
+                        document.body.dataset.phase = failures.length ? "fail" : "pass";
+                        return;
+                    }
+                    if (staticHover || staticExpanded) {
+                        // 关闭动画后进入 hover（或继续展开）并停住，供 ego 或人眼核对补面与描边。
+                        root.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", relatedTarget: null }));
+                        const state = await until(() => {
+                            const value = snapshot();
+                            return value?.state === "hover" && commits.at(-1)?.state === "hover" && !value.painted && (preferences.islandForm === "capsule" || (value.start?.display === "block" && Math.abs(value.start.width - 12) < 0.6)) ? value : null;
+                        }, 5000);
+                        if (staticExpanded) {
+                            const expandedFrom = commits.at(-1);
+                            root.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+                            const expanded = await until(() => {
+                                const value = snapshot();
+                                return value?.state === "expanded" ? value : null;
+                            }, 5000);
+                            await wait(120);
+                            const settled = await settledState("expanded");
+                            const border = getComputedStyle(document.querySelector("main.island .island-card"), "::before").borderTopColor;
+                            check(expanded.state === "expanded", "关闭动画应直接进入展开态");
+                            check(settled.start.display === "none" && settled.end.display === "none", "关闭动画展开后不得残留补面");
+                            check(settled.filleted === "false", "关闭动画展开后必须恢复描边");
+                            checkExpanded(expandedFrom);
+                            check(!/rgba\(0, 0, 0, 0\)|transparent/.test(border), `关闭动画展开后描边应可见，实际 ${border}`);
+                            report(failures.length ? `FAIL\n- ${failures.join("\n- ")}` : "PASS 静态展开无补面");
+                            document.body.dataset.phase = failures.length ? "fail" : "pass";
+                            return;
+                        }
+                        if (preferences.islandForm === "capsule") {
+                            check(state.filleted === "false" && state.surface.display === "none", "胶囊 hover 不应显示补面");
+                            report(failures.length ? `FAIL\n- ${failures.join("\n- ")}` : "PASS 静态胶囊 hover");
+                            return;
+                        }
+                        const border = getComputedStyle(document.querySelector("main.island .island-card"), "::before").borderTopColor;
+                        check(state.content?.opacity === "1" && state.content?.filter === "none", "静态 hover 内容不应残留淡入/模糊");
+                        check(state.filleted === "true", "静态 hover 应抑制描边");
+                        checkSurface(state);
+                        check(/rgba\(0, 0, 0, 0\)|transparent/.test(border), "静态 hover 描边应透明");
+                        const edge = query.get("edge") ?? "top";
+                        const horizontal = edge === "left" || edge === "right";
+                        if (edge === "bottom") {
+                            check(Math.abs(state.start.left + state.start.width - state.card.left) < 1, "底部起点补面应贴住卡片左边");
+                            check(Math.abs(state.start.top + state.start.height - state.card.top - state.card.height) < 1, "底部补面应贴住卡片下沿");
+                            check(Math.abs(state.end.left - (state.card.left + state.card.width)) < 1, "底部终点补面应贴住卡片右边");
+                        } else if (horizontal) {
+                            if (edge === "left") check(Math.abs(state.start.left - state.card.left) < 1, "左侧补面应与卡片左边同侧");
+                            else check(Math.abs(state.start.left + state.start.width - (state.card.left + state.card.width)) < 1, "右侧补面应与卡片右边同侧");
+                            check(Math.abs(state.start.top + state.start.height - state.card.top) < 1, "起点补面应贴住卡片上沿");
+                            check(Math.abs(state.end.top - (state.card.top + state.card.height)) < 1, "终点补面应贴住卡片下沿");
+                        } else {
+                            check(Math.abs(state.start.left + state.start.width - state.card.left) < 1, "静态 hover 起点补面应贴住卡片左边");
+                            check(Math.abs(state.start.top - state.card.top) < 1, "静态 hover 起点补面应贴住卡片顶边");
+                            check(Math.abs(state.end.left - (state.card.left + state.card.width)) < 1, "静态 hover 终点补面应贴住卡片右边");
+                        }
+                        const cardNode = document.querySelector("main.island .island-card");
+                        const surfaceNode = document.querySelector(".island__surface");
+                        check(state.surface.display === "block", "补面帧应由单层 surface 承载表面");
+                        check(
+                            /radial-gradient/.test(state.surface.maskImage) && state.surface.maskImage.split(",").length >= 2,
+                            "surface 遮罩应包含卡片与圆弧层",
+                        );
+                        check(state.cardBackground === "rgba(0, 0, 0, 0)", `补面帧卡片应透明，实际 ${state.cardBackground}`);
+                        const normalSurfaceColor = getComputedStyle(surfaceNode).backgroundColor;
+                        check(normalSurfaceColor !== "rgba(0, 0, 0, 0)", `surface 表面色不应透明，实际 ${normalSurfaceColor}`);
+                        root.dataset.dragging = "true";
+                        const dragSurfaceColor = getComputedStyle(surfaceNode).backgroundColor;
+                        delete root.dataset.dragging;
+                        check(dragSurfaceColor !== normalSurfaceColor, "拖动反馈应改变 surface 表面色");
+                        check(getComputedStyle(cardNode).backgroundColor === "rgba(0, 0, 0, 0)", "拖动时卡片仍应透明");
+                        report(failures.length ? `FAIL\n- ${failures.join("\n- ")}` : `PASS 静态 hover 补面`);
+                        document.body.dataset.phase = failures.length ? "fail" : "pass";
+                    } else {
+                        const collapsed = snapshot();
+                        checkSurface(collapsed);
+                        check(collapsed?.state === "collapsed", "首次提交应为常态");
+                        check(collapsed?.start?.display === "block" || collapsed?.end?.display === "block", "常态刘海应显示外凸补面");
+
+                        // 进入 hover 并采样本轮动画的补面位置与描边状态。
+                        root.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", relatedTarget: null }));
+                        await until(() => document.querySelector("main.island")?.dataset.state === "hover", 3000);
+                        const hoverSamples = await sampleFor(360);
+                        // 采样只留在本次断言作用域内。
+                        const visible = hoverSamples.filter((sample) => sample.start?.display === "block");
+                        // 不把 headless 调度频率当作正确性判据；只检查实际观察到的样式。
+                        for (const sample of visible) {
+                            check(sample.surface.layers===3||sample.surface.layers===4, "动画仅可由原3层加1张根尺寸补采样，不能回退小桥瓦片");
+                            check(sample.filleted === "true", "绘制补面的帧必须同时抑制卡片描边");
+                            check(Math.abs(sample.start.width - sample.start.height) < 0.6, "补面应为正方形弧面");
+                            check(Math.abs(sample.start.left + sample.start.width - sample.card.left) < 1.5, "起点补面右边应贴住卡片左边");
+                            check(Math.abs(sample.start.top - sample.card.top) < 1.5, "起点补面顶边应贴住卡片顶边");
+                            check(Math.abs(sample.end.left - (sample.card.left + sample.card.width)) < 1.5, "终点补面左边应贴住卡片右边");
+                            if (sample.card && sample.start) {
+                                const computed = getComputedStyle(document.querySelector("main.island .island-card"));
+                                check(computed.borderTopLeftRadius === "0px", "补面帧的贴边两角应为直角");
+                            }
+                        }
+                        const fading = hoverSamples.filter((sample) => sample.content && Number.parseFloat(sample.content.opacity) < 0.99);
+                        for (const sample of fading) check(sample.content.filter.includes("blur("), "淡入时应同步去模糊");
+                        const settled = await until(() => {
+                            const value = snapshot();
+                            return value?.state === "hover" && !value.painted && value.content?.opacity === "1" && value.content?.filter === "none" ? value : null;
+                        });
+                        check(settled.content?.opacity === "1" && settled.content?.filter === "none", "hover 稳定态内容应清空淡入/模糊");
+                        check(Math.abs(settled.start.width - 12) < 0.6, "hover 稳定态补面半径应为 12 DIP");
+                        check(settled.filleted === "true", "hover 稳定态必须抑制描边");
+                        checkSurface(settled);
+                        const hoverBorder = getComputedStyle(document.querySelector("main.island .island-card"), "::before").borderTopColor;
+                        check(/rgba\(0, 0, 0, 0\)|transparent/.test(hoverBorder), `hover 补面帧描边应透明，实际 ${hoverBorder}`);
+
+                        // 连续切态只断言最终收敛；中间帧半径连续性由纯函数测试覆盖，不假设 headless 一定出帧。
+                        root.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+                        await until(() => document.querySelector("main.island")?.dataset.state === "expanded", 2000);
+
+                        root.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+                        const afterInterrupt = await settledState("collapsed");
+                        checkSurface(afterInterrupt);
+
+                        // 展开最终态：没有补面，描边恢复，并保留入态并集。
+                        await settledState("collapsed");
+                        const expandedFrom = commits.at(-1);
+                        root.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+                        await until(() => document.querySelector("main.island")?.dataset.state === "expanded", 2000);
+                        await wait(420);
+                        const expanded = await settledState("expanded");
+                        check(expanded.state === "expanded", "进入展开态");
+                        check(expanded.start.display === "none" && expanded.end.display === "none", "展开态不得残留补面");
+                        check(expanded.filleted === "false", "展开态必须恢复卡片描边");
+                        const expandedFinal = checkExpanded(expandedFrom);
+                        const nextCommitIndex = commits.length;
+                        const expandedBorder = getComputedStyle(document.querySelector("main.island .island-card"), "::before").borderTopColor;
+                        check(!/rgba\(0, 0, 0, 0\)|transparent/.test(expandedBorder), `展开态描边应可见，实际 ${expandedBorder}`);
+
+                        // 回到 hover 作为截图状态，并核对最后一次稳定态。
+                        root.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+                        await wait(400);
+                        root.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", relatedTarget: null }));
+                        await until(() => document.querySelector("main.island")?.dataset.state === "hover", 3000);
+                        await wait(320);
+                        const finalState = await settledState("hover");
+                        check(finalState.filleted === "true" && finalState.start.display === "block", "回到 hover 后补面应恢复");
+                        check(JSON.stringify(commits[nextCommitIndex]?.windowBox) === JSON.stringify(expandedFinal.windowBox), "展开后的下一切态必须从保留的并集窗口衔接");
+                        // 默认入口同时执行静态四边矩阵，避免只有手工 query 才覆盖 surface 翻转与关闭动画展开。
+                        for (const edge of ["top", "bottom", "left", "right"]) {
+                            for (const scenario of ["notch", "capsule"].flatMap((form) => ["0", "1"].flatMap((multi) => ["hover", "expanded"].map((mode) => ({ form, multi, mode }))))) {
+                                const { form, multi, mode } = scenario;
+                                const frame = document.createElement("iframe");
+                                frame.style.cssText = "position:absolute;left:-10000px;width:1920px;height:1040px";
+                                frame.src = `${location.pathname}?mode=${mode}&edge=${edge}&form=${form}&multi=${multi}`;
+                                document.body.append(frame);
+                                try {
+                                    const text = await until(() => {
+                                        const text = frame.contentDocument?.getElementById("result")?.textContent;
+                                        return /^(PASS|FAIL)/.test(text ?? "") ? text : null;
+                                    }, 8000);
+                                    check(text.startsWith("PASS"), `静态 ${edge}/${form}/multi=${multi}/${mode}: ${text}`);
+                                } finally { frame.remove(); }
+                            }
+                        }
+
+                        // 修复轮回归也进入默认清单：宽边界/内容重测四边两形态，加四边双卡负角确定性冻结。
+                        const repairCases = ["top", "bottom", "left", "right"].flatMap((edge) => ["notch", "capsule"].map((form) => `mode=resize&edge=${edge}&form=${form}&multi=1`));
+                        repairCases.push(...["top", "bottom", "left", "right"].map((edge) => `mode=surface-frame&edge=${edge}&multi=1`));
+                        repairCases.push('mode=interaction&edge=top&form=notch','mode=interaction-scroll&edge=top&form=notch&island-debug=6','mode=interaction-dynamic&edge=top&form=notch','mode=interaction-instant&edge=top&form=notch&island-debug=6&motion=off','mode=interaction-debugcard&edge=top&form=notch&debug-island=1&multi=1');
+                        for (const scenario of repairCases) {
+                            const frame = document.createElement("iframe");
+                            frame.style.cssText = "position:absolute;left:-10000px;width:1920px;height:1040px";
+                            frame.src = `${location.pathname}?${scenario}`;
+                            document.body.append(frame);
+                            try {
+                                const text = await until(() => {
+                                    const text = frame.contentDocument?.getElementById("result")?.textContent;
+                                    return /^(PASS|FAIL)/.test(text ?? "") ? text : null;
+                                }, 10000);
+                                check(text.startsWith("PASS"), `${scenario}: ${text}`);
+                            } finally { frame.remove(); }
+                        }
+                        const animationCommits = commits.filter((request) => request?.state === "hover");
+                        const boxes = new Set(animationCommits.map((request) => JSON.stringify(request.windowBox)));
+                        check(boxes.size >= 2, "动画应分别提交并集窗口与最终窗口盒");
+                        report(failures.length ? `FAIL\n- ${failures.join("\n- ")}` : `PASS 浮岛切态补面 ${commits.length} 次提交`);
+                        document.body.dataset.phase = failures.length ? "fail" : "pass";
+                    }
+                } catch (error) {
+                    report(`FAIL\n- ${error instanceof Error ? error.message : String(error)}`);
+                    document.body.dataset.phase = "fail";
+                }
+            };
+            void run();
+        </script>
+    </body>
+</html>

@@ -249,6 +249,9 @@
                 button("保存").click();
                 await waitFor(() => !dialog(), "保存后未收起弹窗");
                 assert(document.querySelector(".weather-settings__item-row"), "保存后回到来源列表");
+                const sourceRow = document.querySelector(".weather-settings__item-row"); // 来源主行只作容器。
+                assert(!sourceRow.hasAttribute("role") && !sourceRow.hasAttribute("tabindex"), "来源行不再是按钮角色，不拦截展开按键的键盘事件");
+                assert(sourceRow.querySelector(".weather-settings__item-hit[data-button=row-hit]"), "来源行提供整行命中层");
                 assert(document.querySelectorAll(".weather-settings__item").length === 1, "保存成功切换到来源列表");
                 // 保存不等待网络验证：弹窗先收起，验证结论随后补到可用状态与状态行。
                 await waitFor(
@@ -260,7 +263,7 @@
 
                 // 保存后验证失败不阻止写入：凭据已保存，失败原因按错误色反馈。
                 failProbe = true;
-                document.querySelector(".weather-settings__item-row").click();
+                document.querySelector(".weather-settings__item-hit").click();
                 await waitFor(() => formDialog(), "编辑弹窗未打开");
                 fill(document.getElementById("weather-developerId"), "Q111111111");
                 button("保存").click();
@@ -272,7 +275,7 @@
 
                 // 编辑弹窗的城市列表分组：编辑模式只保留城市列表，添加走已保存凭据的按来源命令，验证不写入。
                 await waitFor(() => !button("正在保存"), "保存动作未结束");
-                document.querySelector(".weather-settings__item-row").click();
+                document.querySelector(".weather-settings__item-hit").click();
                 await settle();
                 assert([...formDialog().querySelectorAll("h3")].map((element) => element.textContent).join(",") === "城市列表", "编辑模式只保留城市列表分组");
                 assert(formDialog().querySelector(".settings-city__empty")?.textContent === "尚未添加城市或地区", "城市列表为空时显示空态文案");
@@ -317,7 +320,7 @@
                 assert(cityLists.qweather.length === 0, "取消后城市改动全部丢弃");
 
                 // 保存时才把草稿里的城市改动写入后端。
-                document.querySelector(".weather-settings__item-row").click();
+                document.querySelector(".weather-settings__item-hit").click();
                 await waitFor(() => formDialog(), "编辑弹窗未打开");
                 button("添加城市或地区", formDialog()).click();
                 await waitFor(() => cityDialog(), "城市弹窗未打开");
@@ -392,7 +395,7 @@
                 assert(document.querySelectorAll(".settings-city__main span")[1].textContent === "汕头", "展开区显示新加入的城市");
 
                 const openEditor = async () => {
-                    document.querySelector(".weather-settings__item-row").click();
+                    document.querySelector(".weather-settings__item-hit").click();
                     await waitFor(() => formDialog(), "编辑弹窗未打开");
                 }; // 按状态等待真实的进入编辑入口。
                 await openEditor();
@@ -484,7 +487,7 @@
                 );
 
                 // 编辑态：密钥留空代表沿用已保存值，保存按键必须可用，且能真正收起弹窗。
-                document.querySelector(".weather-settings__item-row").click();
+                document.querySelector(".weather-settings__item-hit").click();
                 await waitFor(() => formDialog(), "该来源的编辑弹窗未打开");
                 assert(document.getElementById("weather-apiKey").value === "", "编辑态不回读已保存密钥");
                 assert(!button("保存").disabled, "密钥留空时该来源在编辑态仍可保存");

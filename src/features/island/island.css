@@ -1,0 +1,687 @@
+/* 岛是独立表面，只消费桌面主题令牌，不继承格子的轨道与尺寸。 */
+html[data-island="true"],
+html[data-island="true"] body,
+html[data-island="true"] #root {
+    min-inline-size: 0;
+    min-block-size: 0;
+    margin: 0;
+    overflow: clip;
+    background: transparent;
+}
+/* 岛的围栏令牌不在此处自带取值：由页面探针从 `.fence-workspace` 读取后复制到岛根， */
+/* 令牌来源因此仍只有主题样式表与偏好写入两处，避免这里长出第三份随内置主题漂移的值。 */
+.island {
+    position: relative; /* 角部补面需要以窗口盒为定位基准，不能只在 paint 内联样式里设置。 */
+    display: grid;
+    grid-auto-rows: max-content;
+    inline-size: max-content;
+    max-inline-size: 360px;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    color: var(--fence-text);
+    font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+    font-size: 13px;
+    letter-spacing: 0;
+    user-select: none;
+    background: transparent;
+    border: 0;
+}
+/* 超过工作区时只滚动内容，不扩大原生窗口盒。 */
+.island[data-state="expanded"] {
+    overflow-y: auto;
+    overflow-x: clip;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+    /* 展开终态保留入态并集窗口：内容仍按目标 margin，透明边距仍归浮岛命中。 */
+    /* 并集的透明余量不能通过 grid 默认 stretch 撑宽卡片；多卡仍共用自然内容列。 */
+    /* 360只限制下方卡片，根窗口必须容纳合法union（刘海可额外占24 DIP）。 */
+    max-inline-size: none;
+    grid-template-columns: max-content;
+    align-content: start;
+    inline-size: var(--island-expanded-inline, max-content);
+    block-size: var(--island-expanded-block, max-content);
+}
+/* 刘海的窗口在非展开态沿边各留 12 DIP；padding 让自然布局与提交几何一致，重测时不会丢掉卡片内缩。 */
+.island[data-form="notch"][data-fillets="true"][data-edge="top"],
+.island[data-form="notch"][data-fillets="true"][data-edge="bottom"] {
+    padding-inline: var(--island-notch);
+    max-inline-size: calc(360px + var(--island-notch) * 2);
+}
+.island[data-form="notch"][data-fillets="true"][data-edge="left"],
+.island[data-form="notch"][data-fillets="true"][data-edge="right"] {
+    padding-block: var(--island-notch);
+}
+/* 三态表面不透明度：常态最透，hover 居中，展开最实；正文、图标与描边不受影响。
+   注册成可插值属性，过渡只作用于透明度本身；补面层与卡片背景的显隐切换保持瞬时，不叠加出错误表面。 */
+@property --island-surface-alpha {
+    syntax: "<percentage>";
+    inherits: true;
+    initial-value: 60%;
+}
+.island {
+    --island-surface-alpha: 60%;
+}
+.island[data-state="hover"] {
+    --island-surface-alpha: 75%;
+}
+.island[data-state="expanded"] {
+    --island-surface-alpha: 90%;
+}
+/* 开启动效时透明度随三态插值；关闭动效时保持瞬时切换。 */
+.island[data-animations="true"] {
+    transition: --island-surface-alpha 240ms linear;
+}
+.island > .island__palette {
+    position: absolute;
+    display: none;
+    visibility: hidden;
+    pointer-events: none;
+    inline-size: 0;
+    block-size: 0;
+}
+/* 读屏播报节点：绝对定位且 1px，不参与卡片测量与滚动高度。 */
+.island__announcer {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    pointer-events: none;
+}
+.island-card {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    min-inline-size: 0;
+    max-inline-size: 360px;
+    padding: 16px;
+    border: 0;
+    border-radius: var(--island-radius, 12px);
+    background: var(--fence-surface);
+    background: rgb(from var(--fence-surface) r g b / var(--island-surface-alpha)); /* 三态透明度覆盖令牌自带 alpha。 */
+    overflow: clip;
+    contain: paint; /* 将插件 fixed 内容的绘制边界限制在本卡；浏览器 top-layer 仍须单独验收。 */
+}
+/* 覆盖条固定于页面viewport，不占grid行/列；原生容器仍负责wheel与scrollTop。 */
+.island__scrollbar {
+    position: fixed;
+    z-index: 2;
+    opacity: 0;
+    pointer-events: none;
+    background: transparent;
+    touch-action: none;
+    transition: opacity 150ms linear;
+}
+.island__scrollbar[data-visible="true"] { opacity: 1; pointer-events: auto; }
+.island__scrollbar-thumb {
+    position: absolute;
+    border-radius: 3px; /* 6 DIP 宽滑块的半宽胶囊，不借用界面主题圆角令牌。 */
+    background: color-mix(in srgb, var(--fence-text) 50%, transparent);
+}
+@media (hover: hover) and (pointer: fine) {
+    .island__scrollbar:hover .island__scrollbar-thumb { background: color-mix(in srgb, var(--fence-text) 75%, transparent); }
+}
+.island__scrollbar[data-dragging="true"] .island__scrollbar-thumb,
+.island__scrollbar:active .island__scrollbar-thumb { background: color-mix(in srgb, var(--fence-text) 75%, transparent); }
+.island__scrollbar:focus-visible { outline: 1px solid var(--fence-text); outline-offset: -1px; }
+/* 描边内绘，不占用 44/72 DIP 高度里的媒体与内边距。 */
+.island-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 1px solid var(--fence-border);
+    border-radius: inherit;
+    pointer-events: none;
+}
+.island-card__content {
+    min-inline-size: 0;
+    flex: 1;
+}
+.island-card__content [data-island-plugin] > p {
+    margin: 0;
+    block-size: 88px;
+    line-height: 20px;
+}
+.island-card__content > p {
+    margin: 0;
+    block-size: 88px;
+    line-height: 20px;
+}
+.island-card__content [data-plugin-container] {
+    block-size: 88px;
+    min-inline-size: 180px;
+    overflow: clip;
+}
+.island-card__content p {
+    white-space: nowrap;
+    overflow: clip;
+    text-overflow: ellipsis;
+}
+.island[data-state="expanded"] .island-card {
+    cursor: grab;
+}
+.island[data-state="expanded"] .island-card:active {
+    cursor: grabbing;
+}
+/* 根只承接键盘入口，焦点视觉内绘到卡片，透明圆角不出现矩形 UA 外环。 */
+.island:focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: -2px;
+}
+.island:focus-visible .island-card,
+.island [tabindex]:focus-visible,
+.island button:focus-visible {
+    outline: 2px solid var(--fence-text);
+    outline-offset: -2px;
+}
+.island[data-state="collapsed"] .island-card {
+    block-size: 44px;
+    padding: 8px;
+    border-radius: 22px;
+}
+/* 原生移动循环期间给卡片与补面同一点拖动反馈；只改背景色，不引入缩放/透明度合成层。 */
+.island[data-dragging="true"] .island-card,
+.island[data-dragging="true"] .island__surface {
+    background: color-mix(in srgb, var(--fence-surface) 78%, var(--fence-text) 22%);
+}
+/* 补面帧只由单层 surface 承载表面色，卡片自身透明，避免两块半透明表面重叠。 */
+.island[data-filleted="true"] .island-card {
+    background: transparent;
+}
+.island[data-state="hover"] .island-card {
+    block-size: 72px;
+    padding: 12px;
+    border-radius: 16px;
+}
+/* 左右贴边的 hover 沿用根上记录的胶囊高度；自然流与内联几何一致，restoreStyles 不再造成高度回落。 */
+.island[data-state="hover"][data-edge="left"] .island-card,
+.island[data-state="hover"][data-edge="right"] .island-card {
+    block-size: var(--island-capsule-height, 72px);
+}
+.island[data-state="hover"][data-edge="left"] .island-card__content,
+.island[data-state="hover"][data-edge="right"] .island-card__content {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+.island[data-state="collapsed"] .island-card__content > p {
+    block-size: 28px;
+    line-height: 28px;
+    font-size: 11px;
+}
+.island[data-state="hover"] .island-card__content > p {
+    block-size: 48px;
+    line-height: 48px;
+}
+.island[data-state="collapsed"] [data-plugin-container] {
+    block-size: 28px;
+}
+.island[data-state="hover"] [data-plugin-container] {
+    block-size: 48px;
+}
+.island[data-vertical="true"] {
+    inline-size: 44px;
+}
+.island[data-vertical="true"] .island-card {
+    block-size: auto;
+    min-block-size: 52px;
+    inline-size: 44px;
+}
+.island-music {
+    min-inline-size: 0;
+}
+.island-music p {
+    margin: 0;
+    line-height: 16px;
+    block-size: 16px;
+}
+.island-music__header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-inline-size: 0;
+}
+.island-music__artwork {
+    display: grid;
+    place-items: center;
+    flex: none;
+    inline-size: 88px;
+    block-size: 88px;
+    border-radius: var(--island-radius, 12px);
+    overflow: clip;
+    background: color-mix(in srgb, var(--fence-text) 8%, transparent);
+}
+.island-music__artwork img {
+    -webkit-user-drag: none;
+    inline-size: 100%;
+    block-size: 100%;
+    object-fit: cover;
+}
+.island-music__artwork span {
+    opacity: 0.78;
+}
+.island-music__info {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 6px;
+    block-size: 88px;
+    min-inline-size: 0;
+    flex: 1;
+}
+.island-music__metadata {
+    min-inline-size: 0;
+}
+.island-music__title {
+    font-size: 13px;
+}
+.island-music__artist {
+    font-size: 12px;
+    opacity: 0.78;
+}
+.island-music__source {
+    font-size: 11px;
+    opacity: 0.78;
+}
+.island-music__controls {
+    display: flex;
+    flex: none;
+    gap: 4px;
+}
+/* hover 态播放控制下移到第二排，标题行只保留媒体信息。 */
+.island-music__second-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-block-start: 6px;
+}
+.island-music__controls button {
+    display: grid;
+    place-items: center;
+    inline-size: 28px;
+    block-size: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    color: var(--fence-text);
+    background: transparent;
+    cursor: pointer;
+}
+.island-music__controls button:disabled {
+    opacity: 0.48;
+    cursor: default;
+}
+.island-music__controls button:active:not(:disabled) {
+    background: color-mix(in srgb, var(--fence-text) 18%, transparent);
+}
+.island-music__controls svg {
+    inline-size: 16px;
+    block-size: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    pointer-events: none;
+}
+@media (hover: hover) and (pointer: fine) {
+    .island-music__controls button:hover:not(:disabled) {
+        background: color-mix(in srgb, var(--fence-text) 10%, transparent);
+    }
+}
+.island-music__timeline {
+    margin-block-start: 10px;
+}
+.island-music__timeline progress {
+    display: block;
+    appearance: none;
+    inline-size: 100%;
+    block-size: 3px;
+    border: 0;
+    background: color-mix(in srgb, var(--fence-text) 18%, transparent);
+}
+.island-music__timeline progress::-webkit-progress-bar {
+    background: color-mix(in srgb, var(--fence-text) 18%, transparent);
+}
+.island-music__timeline progress::-webkit-progress-value {
+    background: color-mix(in srgb, var(--fence-text) 80%, transparent);
+}
+.island-music__timeline > div {
+    display: flex;
+    justify-content: space-between;
+    margin-block-start: 4px;
+    font-size: 11px;
+    line-height: 14px;
+    opacity: 0.78;
+    font-variant-numeric: tabular-nums;
+}
+.island-music__spectrum {
+    display: flex;
+    align-items: end;
+    gap: 3px;
+    block-size: 18px;
+    margin-block: 6px;
+    pointer-events: none;
+}
+.island-music__spectrum i {
+    flex: 1;
+    background: color-mix(in srgb, var(--fence-text) 42%, transparent);
+}
+.island-music__lyrics {
+    display: grid;
+    gap: 2px;
+    overflow: clip;
+}
+/* 展开歌词换句时整轨按方向位移；行内字号、颜色与透明度各自过渡。 */
+.island-music__lyrics-track {
+    display: grid;
+    gap: 2px;
+    will-change: transform;
+}
+.island-music__lyrics p {
+    overflow: hidden;
+    font-size: 12px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    opacity: 0.78;
+}
+.island[data-animations="true"] .island-music__lyrics p {
+    transition:
+        font-size 140ms ease-out 0ms,
+        opacity 140ms ease-out 0ms,
+        color 140ms ease-out 0ms;
+}
+.island-music__lyrics p[data-current="true"] {
+    font-size: 13px;
+    font-weight: 600;
+    opacity: 1;
+}
+.island[data-animations="true"] .island-music__lyrics p[data-current="true"] {
+    transition:
+        font-size 200ms ease-out 80ms,
+        opacity 200ms ease-out 80ms,
+        color 200ms ease-out 80ms;
+}
+.island[data-state="hover"] .island-music__artwork {
+    inline-size: 48px;
+    block-size: 48px;
+    border-radius: 16px;
+}
+.island[data-state="hover"] .island-music__header {
+    gap: 8px;
+}
+.island[data-state="hover"] .island-music__info {
+    block-size: 48px;
+}
+.island[data-state="collapsed"] .island-music__header {
+    gap: 8px;
+}
+.island[data-state="collapsed"] .island-music__artwork {
+    inline-size: 28px;
+    block-size: 28px;
+    border-radius: 50%;
+}
+/* 常态胶囊内容盒：固定为档位值（胶囊档位减 52 固定件），换句不改变尺寸，超出部分在盒内滚动。 */
+.island[data-state="collapsed"] .island-music__line {
+    position: relative;
+    font-size: 11px;
+    line-height: 28px;
+    block-size: 28px;
+    inline-size: var(--island-capsule-line-max, 116px);
+    min-inline-size: 0;
+    max-inline-size: var(--island-capsule-line-max, 116px);
+    overflow: clip;
+}
+.island-music__line[data-motion="off"] .island-music__current {
+    inline-size: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.island-music__line[data-motion="off"] .island-music__line-entry {
+    inline-size: 100%;
+    animation: none;
+}
+/* 常态换句：上一句渐出并上移，下一句延迟 60ms 从下方渐入上移到位；两句重叠，位移限制在行盒内。 */
+.island-music__line-entry {
+    display: block;
+    inline-size: max-content;
+    animation: island-line-enter 200ms ease-out 60ms both;
+}
+.island-music__line-entry[data-active="true"] {
+    position: relative;
+}
+.island-music__line-entry[data-leaving="true"] {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    pointer-events: none;
+    animation: island-line-leave 180ms ease-out 0ms both;
+}
+@keyframes island-line-enter {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+}
+@keyframes island-line-leave {
+    to {
+        opacity: 0;
+        transform: translateY(-6px);
+    }
+}
+/* 当前行按内容撑开，超出内容盒的部分由 transform 位移滚动；减少动效时改为单行截断。 */
+.island-music__current {
+    display: block;
+    inline-size: max-content;
+    will-change: transform;
+}
+/* 常态胶囊滚动：只位移合成层，不参与浮岛测量与窗口提交；进度档向左/向上推进，循环档往返。 */
+@keyframes island-lyric-scroll-x {
+    from {
+        transform: translate3d(0, 0, 0);
+    }
+    to {
+        transform: translate3d(calc(-1 * var(--island-lyric-distance, 0px)), 0, 0);
+    }
+}
+@keyframes island-lyric-scroll-y {
+    from {
+        transform: translate3d(0, 0, 0);
+    }
+    to {
+        transform: translate3d(0, calc(-1 * var(--island-lyric-distance, 0px)), 0);
+    }
+}
+@keyframes island-lyric-loop-x {
+    0% {
+        transform: translate3d(0, 0, 0);
+    }
+    50% {
+        transform: translate3d(calc(-1 * var(--island-lyric-distance, 0px)), 0, 0);
+    }
+    100% {
+        transform: translate3d(0, 0, 0);
+    }
+}
+@keyframes island-lyric-loop-y {
+    0% {
+        transform: translate3d(0, 0, 0);
+    }
+    50% {
+        transform: translate3d(0, calc(-1 * var(--island-lyric-distance, 0px)), 0);
+    }
+    100% {
+        transform: translate3d(0, 0, 0);
+    }
+}
+.island[data-state="collapsed"] [data-island-plugin] > p {
+    block-size: 28px;
+    line-height: 28px;
+    font-size: 11px;
+}
+.island[data-state="hover"] [data-island-plugin] > p {
+    block-size: 48px;
+    line-height: 48px;
+}
+.island[data-vertical="true"] .island-music__header {
+    flex-direction: column;
+}
+.island[data-vertical="true"] .island-music__line {
+    writing-mode: vertical-rl;
+    text-orientation: upright;
+    block-size: 28px;
+    line-height: 28px;
+}
+.island[data-vertical="true"] .island-card__content > p {
+    writing-mode: vertical-rl;
+    text-orientation: upright;
+    inline-size: max-content;
+    block-size: 28px;
+}
+/* 刘海形态：贴边侧为 12 DIP 外凸负圆角，窗口沿边各扩 12px，角部弧面衔接屏幕边。 */
+.island[data-form="notch"] {
+    --island-notch: 12px; /* 外凸圆弧半径；窗口沿边扩大，弧面外新增的是透明像素。 */
+}
+/* 弧面补面无法与卡片矩形描边连续，绘制外凸负圆角的帧统一不画这条 1px 内描边。 */
+.island[data-filleted="true"] .island-card::before {
+    border-color: transparent;
+}
+/* 贴边侧两角保持直角；重测回到自然布局时也不能退回到普通圆角。 */
+.island[data-form="notch"][data-fillets="true"][data-edge="top"] .island-card {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+.island[data-form="notch"][data-fillets="true"][data-edge="bottom"] .island-card {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+}
+.island[data-form="notch"][data-fillets="true"][data-edge="left"] .island-card {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+.island[data-form="notch"][data-fillets="true"][data-edge="right"] .island-card {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+/* 外凸负圆角补面：按卡片贴边角定位，形变时与卡片角同步移动；遮罩保留半径圆外的部分。 */
+.island__surface {
+    position: absolute;
+    inset: 0;
+    display: none;
+    background: var(--fence-surface);
+    background: rgb(from var(--fence-surface) r g b / var(--island-surface-alpha)); /* 补面帧与卡片共用同一三态透明度。 */
+    pointer-events: none;
+}
+
+/* 浮岛消息：与音乐卡共用卡片外壳，只在内容层区分三态呈现。 */
+.island-message {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-inline-size: 0;
+}
+.island-message__icon {
+    display: grid;
+    place-items: center;
+    flex: none;
+    inline-size: 20px;
+    block-size: 20px;
+}
+.island-message__icon svg {
+    inline-size: 16px;
+    block-size: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+/* 加载中只用静态透明度提示，不新增动画，避免绕过动效开关。 */
+.island-message[data-loading="true"] .island-message__icon {
+    opacity: 0.6;
+}
+.island-message__info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-inline-size: 0;
+    flex: 1;
+}
+.island-message__title {
+    font-size: 13px;
+    line-height: 16px;
+    block-size: 16px;
+}
+.island-message__meta {
+    font-size: 11px;
+    line-height: 14px;
+    block-size: 14px;
+    opacity: 0.78;
+}
+/* 换行只发生在展开态，其余形态沿用单行省略，不改变三态高度规则。 */
+.island[data-state="expanded"] .island-message__body {
+    font-size: 12px;
+    line-height: 18px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.island-message__close {
+    display: grid;
+    place-items: center;
+    flex: none;
+    inline-size: 28px;
+    block-size: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    color: var(--fence-text);
+    background: transparent;
+    cursor: pointer;
+}
+.island-message__close svg {
+    inline-size: 16px;
+    block-size: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.island-message__close:active {
+    background: color-mix(in srgb, var(--fence-text) 18%, transparent);
+}
+@media (hover: hover) and (pointer: fine) {
+    .island-message__close:hover {
+        background: color-mix(in srgb, var(--fence-text) 12%, transparent);
+    }
+}
+.island[data-state="collapsed"] .island-message__line {
+    font-size: 11px;
+    line-height: 28px;
+    block-size: 28px;
+    min-inline-size: 72px;
+    max-inline-size: 240px;
+}
+.island[data-state="hover"] .island-message__info {
+    block-size: 48px;
+    justify-content: center;
+}
+/* 左右贴边的胶囊沿用音乐卡的竖排：图标在上，正文竖排。 */
+.island[data-vertical="true"] .island-message {
+    flex-direction: column;
+}
+.island[data-vertical="true"] .island-message__line {
+    writing-mode: vertical-rl;
+    text-orientation: upright;
+    inline-size: max-content;
+    block-size: 28px;
+    line-height: 28px;
+    min-inline-size: 48px;
+    max-inline-size: 176px;
+}
+/* 消息卡不参与排序，展开态不显示抓取光标。 */
+.island[data-state="expanded"] .island-card[data-island-message="true"] {
+    cursor: default;
+}

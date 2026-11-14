@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePreferences } from "../../settings/PreferencesProvider";
-import { DesktopTileMenu } from "../../tiles/DesktopTileMenu";
 import { DesktopTileViewport } from "../../tiles/DesktopTileViewport";
 import {
     createCollectItem,
@@ -29,6 +28,8 @@ import {
     type CollectBoxLayout,
 } from "./collectItemState";
 import type { DesktopTileMenuItem } from "../../tiles/DesktopTileMenu";
+import { openPopupConfirm } from "../../popup-layer/openPopupRequest";
+import { openTileMenu } from "../../popup-layer/openTileMenu";
 import { collectExcerpt } from "./collectMarkdown";
 import pinIcon from "../../../../resources/collect-pin.svg?raw";
 import "./CollectBox.css";
@@ -156,7 +157,40 @@ export const CollectBox = ({
     const [ready, setReady] = useState(false); // 刷新不清空已加载内容。
     const readyRef = useRef(false); // 长期事件回调读取最新就绪状态。
     const [readError, setReadError] = useState<string>(); // 首次失败不能显示为空集合。
-    const [itemMenu, setItemMenu] = useState<{ x: number; y: number; name: string }>(); // 当前条目的局部右键菜单。
+    const [itemMenu, setItemMenu] = useState<{ x: number; y: number; name: string; keyboard?: boolean }>(); // 当前条目的右键菜单请求；菜单本身在置顶弹层里呈现。
+    useEffect(() => {
+        if (!itemMenu) return;
+        const name = itemMenu.name; // 打开时的条目身份，后续按名称读当前事实。
+        const restoreFocus = () => {
+            setItemMenu(undefined);
+            const item = [...(rootRef.current?.querySelectorAll<HTMLElement>("[data-collect-name]") ?? [])].find(
+                (element) => element.dataset.collectName === name,
+            );
+            item?.focus(); // 关闭后回到原条目。
+        };
+        const current = items.find((item) => item.name === name); // 当前文件状态。
+        openTileMenu(
+            [
+                { label: "打开", disabled: !current?.available, onSelect: () => void openCollectItem(name).catch(handleFailure) },
+                {
+                    label: current?.pinned ? "取消置顶" : "置顶",
+                    disabled: !current?.available,
+                    onSelect: () => {
+                        const item = items.find((candidate) => candidate.name === name);
+                        if (item?.available)
+                            void setCollectItemPinned(item.name, !item.pinned)
+                                .then(() => reload())
+                                .catch(handleFailure);
+                    },
+                },
+                { label: "删除", disabled: !current, onSelect: () => setPendingDelete(selected.includes(name) ? selected : [name]) },
+            ],
+            { left: itemMenu.x, top: itemMenu.y },
+            { focusFirst: itemMenu.keyboard === true, onSettled: restoreFocus },
+        );
+        // 只在一次菜单请求到来时打开；命令表读当前渲染的条目事实。
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [itemMenu]);
     const [preview, setPreview] = useState<{ x: number; y: number; item: CollectItem }>(); // 当前悬浮预览。
     const [sort, setSort] = useState<"time" | "name">("time");
     const { layout, filters } = useMemo(() => readCollectBoxState(instanceState), [instanceState]);
@@ -307,17 +341,30 @@ export const CollectBox = ({
     const [pendingDelete, setPendingDelete] = useState<string[]>();
     const [deleting, setDeleting] = useState(false);
     const deletingRef = useRef(false); // 重复点击和关闭回调即时读取提交状态。
-    const deleteDialog = useRef<HTMLDialogElement>(null); // 原生模态表面负责焦点约束。
-    const deleteCancel = useRef<HTMLButtonElement>(null); // 清理确认默认聚焦取消。
     useEffect(() => {
-        const dialog = deleteDialog.current; // 保持本次模态实例。
-        if (!pendingDelete || !dialog) return;
-        const previous = document.activeElement as HTMLElement | null; // 关闭后还原列表焦点。
-        dialog.showModal();
-        deleteCancel.current?.focus();
+        if (!pendingDelete?.length) return;
+        const names = pendingDelete; // 本次确认覆盖的条目集合。
+        let active = true; // 卸载后不执行确认后的删除。
+        // 确认框在置顶弹层里呈现，删除本身仍由本格子执行。
+        const counts = [
+            ["text", "文本"],
+            ["image", "图片"],
+            ["file", "文件映射"],
+        ]
+            .map(([kind, label]) => `${label} ${items.filter((item) => item.kind === kind && names.includes(item.name)).length} 项`)
+            .join("、");
+        void openPopupConfirm({
+            title: `删除这 ${names.length} 个收集项？`,
+            body: [`将从所有收集箱移除。${counts}。`, "文件映射不删除源文件。"],
+            confirmLabel: "删除",
+            danger: true,
+        }).then((confirmed) => {
+            if (!active) return;
+            setPendingDelete(undefined);
+            if (confirmed) handleDelete(names);
+        });
         return () => {
-            dialog.close();
-            previous?.focus();
+            active = false;
         };
     }, [pendingDelete]);
     useEffect(() => {
@@ -517,7 +564,7 @@ export const CollectBox = ({
                 window.dispatchEvent(new Event("desktop-tile-menu-opening"));
                 const bounds = target.getBoundingClientRect(); // 键盘打开时以当前条目为锚点。
                 if (!selected.includes(target.dataset.collectName)) setSelected([target.dataset.collectName]);
-                setItemMenu({ x: bounds.left, y: bounds.bottom, name: target.dataset.collectName });
+                setItemMenu({ x: bounds.left, y: bounds.bottom, name: target.dataset.collectName, keyboard: true }); // 键盘打开聚焦第一项。
             }}
             onContextMenu={(event) => {
                 const target = (event.target as HTMLElement).closest<HTMLElement>("[data-collect-name]");
@@ -648,82 +695,6 @@ export const CollectBox = ({
                         ? `显示 ${ordered.length} / ${items.length} 项`
                         : `${items.length} 项`}
             </div>
-            {itemMenu &&
-                createPortal(
-                    <DesktopTileMenu
-                        left={itemMenu.x}
-                        top={itemMenu.y}
-                        onClose={() => {
-                            setItemMenu(undefined);
-                            const item = [...(rootRef.current?.querySelectorAll<HTMLElement>("[data-collect-name]") ?? [])].find(
-                                (element) => element.dataset.collectName === itemMenu.name,
-                            ); // 恢复原条目键盘焦点。
-                            item?.focus();
-                        }}
-                        items={[
-                            {
-                                label: "打开",
-                                disabled: !items.some((item) => item.name === itemMenu.name && item.available),
-                                onSelect: () => void openCollectItem(itemMenu.name).catch(handleFailure),
-                            },
-                            {
-                                label: items.find((item) => item.name === itemMenu.name)?.pinned ? "取消置顶" : "置顶",
-                                disabled: !items.some((item) => item.name === itemMenu.name && item.available),
-                                onSelect: () => {
-                                    const item = items.find((candidate) => candidate.name === itemMenu.name); // 使用当前文件状态。
-                                    if (item?.available)
-                                        void setCollectItemPinned(item.name, !item.pinned)
-                                            .then(() => reload())
-                                            .catch(handleFailure);
-                                },
-                            },
-                            {
-                                label: "删除",
-                                disabled: !items.some((item) => item.name === itemMenu.name),
-                                onSelect: () => setPendingDelete(selected.includes(itemMenu.name) ? selected : [itemMenu.name]),
-                            },
-                        ]}
-                    />,
-                    document.body,
-                )}
-            {pendingDelete &&
-                createPortal(
-                    <div className="collect-box__modal-hit" data-hit-id="collect-delete-backdrop" data-hit-kind="component" data-hit-priority="110">
-                        <dialog
-                            ref={deleteDialog}
-                            className="collect-box__delete-dialog"
-                            aria-label={`删除这 ${pendingDelete.length} 个收集项？`}
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onKeyDown={(event) => event.stopPropagation()}
-                            onCancel={(event) => {
-                                event.preventDefault();
-                                if (!deletingRef.current) setPendingDelete(undefined);
-                            }}
-                        >
-                            <h2>删除这 {pendingDelete.length} 个收集项？</h2>
-                            <p>
-                                将从所有收集箱移除。
-                                {(["text", "image", "file"] as const)
-                                    .map(
-                                        (kind) =>
-                                            `${kind === "text" ? "文本" : kind === "image" ? "图片" : "文件映射"} ${items.filter((item) => item.kind === kind && pendingDelete.includes(item.name)).length} 项`,
-                                    )
-                                    .join("、")}
-                                。
-                            </p>
-                            <p>文件映射不删除源文件。</p>
-                            <div className="collect-box__delete-actions">
-                                <button ref={deleteCancel} type="button" disabled={deleting} onClick={() => setPendingDelete(undefined)}>
-                                    取消
-                                </button>
-                                <button type="button" disabled={deleting} onClick={() => handleDelete(pendingDelete)}>
-                                    {deleting ? "正在删除" : "删除"}
-                                </button>
-                            </div>
-                        </dialog>
-                    </div>,
-                    document.body,
-                )}
             {preview &&
                 createPortal(
                     <div

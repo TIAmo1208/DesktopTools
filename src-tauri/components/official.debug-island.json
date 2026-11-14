@@ -1,0 +1,11 @@
+{
+  "id": "official.debug-island",
+  "name": "Debug 浮岛",
+  "entry": "official:debug-island",
+  "requiredCapabilities": [],
+  "creatable": false,
+  "removable": false,
+  "island": true,
+  "maxTiles": 1,
+  "persistenceVersion": 1
+}

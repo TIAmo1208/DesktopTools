@@ -20,6 +20,7 @@ use commands::sync_message_appearance;
 use commands::{apply_plugin_install, apply_plugin_installs, cancel_plugin_install, choose_plugin_directory, create_plugin_component, get_plugin_settings, open_plugin_directory, open_plugin_repository, prepare_plugin_install_from_archive, prepare_plugin_install_from_folder, resolved_plugin_directory, save_plugin_settings, uninstall_plugin};
 use commands::{apply_workspace_command, apply_workspace_interaction, begin_desktop_host_input_drag, delete_desktop_items, end_desktop_host_input_drag, execute_music_action, exit_desktop_tools, get_application_snapshot, get_component_runtime_snapshot, get_current_music_session, get_desktop_host_snapshot, get_desktop_item_snapshot, get_workspace_snapshot, inspect_workspace_backup, invoke_component_capability, list_workspace_auto_snapshots, open_desktop_items, open_settings_window, paste_desktop_items, publish_desktop_host_readiness, publish_message_notification, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, redo_workspace, rename_desktop_item, restore_workspace_backup, set_application_status, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag, undo_workspace, update_desktop_host_hit_map, write_workspace_backup};
 use commands::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
+use commands::{dismiss_island_message, get_island_messages};
 use component_runtime::ComponentRuntimeState;
 use host::DesktopHostRuntime;
 use notifications::ToastManager;
@@ -32,6 +33,12 @@ use workspace::WorkspaceState;
 /// 创建并运行 Desktop Tools 正式应用。
 pub fn run()
 {
+    // 低完整性进程无法写入用户日志目录，也无法附着 Explorer 桌面层；先提示并退出，不进入 Tauri 初始化。
+    if let Err(message) = crate::platform::windows::integrity::ensure_startup_integrity()
+    {
+        eprintln!("启动失败：{message}");
+        std::process::exit(1);
+    }
     if let Err(error) = tools::log::init(tools::log::LogConfig::default())
         && cfg!(debug_assertions)
     {
@@ -65,6 +72,9 @@ pub fn run()
         .manage(ApplicationState::default())
         .manage(desktop_items)
         .invoke_handler(tauri::generate_handler![
+            commands::island::get_island_snapshot,
+            commands::island::set_island_state,
+            commands::island::begin_island_drag,
             commands::get_foreground_snapshot,
             commands::settings::get_settings,
             commands::weather::weather_settings,
@@ -110,6 +120,9 @@ pub fn run()
             commands::folder_portal::set_folder_portal_clipboard,
             commands::folder_portal::paste_folder_portal_items,
             commands::folder_portal::show_folder_portal_menu,
+            platform::windows::popup_layer::get_popup_layer_request,
+            platform::windows::popup_layer::set_popup_layer_frame,
+            platform::windows::popup_layer::finish_popup_layer,
             commands::folder_portal::rename_folder_portal_item,
             commands::folder_portal::prepare_folder_portal_drag,
             commands::collect::get_collect_items,
@@ -141,6 +154,7 @@ pub fn run()
             commands::loopback::set_loopback_credential,
             commands::loopback::clear_loopback_credential,
             get_current_music_session,
+            commands::music::get_music_details,
             execute_music_action,
             commands::audio::list_audio_output_devices,
             commands::audio::start_audio_spectrum,
@@ -175,10 +189,15 @@ pub fn run()
             set_application_status,
             publish_message_notification,
             sync_message_appearance,
+            get_island_messages,
+            dismiss_island_message,
             update_desktop_host_hit_map,
         ])
         .register_asynchronous_uri_scheme_protocol(crate::platform::windows::SETTINGS_PROTOCOL, |context, request, responder| {
             crate::platform::windows::dispatch_settings_protocol(request, context.app_handle().clone(), move |response| responder.respond(response)); // wry 在创建 WebView 时调用 with_asynchronous_custom_protocol。
+        })
+        .register_asynchronous_uri_scheme_protocol(crate::platform::windows::island::ISLAND_PROTOCOL, |context, request, responder| {
+            crate::platform::windows::island::dispatch_protocol(request, context.app_handle().clone(), move |response| responder.respond(response));
         })
         .setup(move |app| {
             let bootstrap = app.path().app_data_dir()?; // 启动定位目录，配置目录指针放在这里。
@@ -197,7 +216,7 @@ pub fn run()
             app.manage(crate::platform::windows::settings::WindowsAccentMonitor::install(app.handle().clone())?);
             let toast_preferences = app.state::<crate::app::settings::SettingsState>().preferences()?; // 启动时已经解析好的当前偏好。
             let toast_palette = crate::notifications::active_palette(app.handle(), &toast_preferences); // 已选主题若声明了消息配色，首条消息就用它。
-            app.manage(ToastManager::install(toast_preferences, toast_palette)?);
+            app.manage(ToastManager::install(Some(app.handle().clone()), toast_preferences, toast_palette)?);
             crate::app::tray::install(app.handle())?;
             // 当前 Windows 用户独占的正式工作区快照路径。
             let workspace_path = config_directory.join("workspace-layout.json");
@@ -218,6 +237,7 @@ pub fn run()
             });
             let desktop_host = DesktopHostRuntime::start(app.handle())?;
             app.manage(Arc::clone(&desktop_host));
+            crate::platform::windows::island::install(app.handle()); // 仅偏好开启时懒建独立岛页面。
             // Shell 变化通知由唯一协调线程消费。
             let changes = app.state::<DesktopItemState>().take_change_receiver().map_err(|error| error.message)?;
             start_desktop_item_change_monitor(app.handle().clone(), changes);
@@ -265,6 +285,7 @@ pub fn run()
             {
                 runtime.cleanup();
             }
+            crate::platform::windows::island::destroy(); // 退出分支均在 UI 线程，重复调用安全。
             if let Some(toast) = app.try_state::<Arc<ToastManager>>()
             {
                 toast.inner().cleanup();
@@ -282,6 +303,7 @@ pub fn run()
             {
                 runtime.cleanup();
             }
+            crate::platform::windows::island::destroy(); // 退出分支均在 UI 线程，重复调用安全。
             if let Some(toast) = app.try_state::<Arc<ToastManager>>()
             {
                 toast.inner().cleanup();

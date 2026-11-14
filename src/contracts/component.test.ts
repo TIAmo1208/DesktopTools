@@ -113,13 +113,24 @@ test("parses a persisted component instance and host event", () => {
 
 // 验证探活结果按四档通过契约边界，非 ok 档不带启动时间。
 test("parses a probe service status payload", () => {
-    assert.deepEqual(parseComponentCapabilityResult({ instanceId: "tile", capability: "probe-service-status", payload: { level: "ok", startTime: 1_793_365_017, checkedAt: 1_793_372_400 } }), {
-        instanceId: "tile",
-        capability: "probe-service-status",
-        payload: { level: "ok", startTime: 1_793_365_017, checkedAt: 1_793_372_400 },
-    });
+    assert.deepEqual(
+        parseComponentCapabilityResult({
+            instanceId: "tile",
+            capability: "probe-service-status",
+            payload: { level: "ok", startTime: 1_793_365_017, checkedAt: 1_793_372_400 },
+        }),
+        {
+            instanceId: "tile",
+            capability: "probe-service-status",
+            payload: { level: "ok", startTime: 1_793_365_017, checkedAt: 1_793_372_400 },
+        },
+    );
     for (const level of ["warn", "off", "unknown"]) {
-        const result = parseComponentCapabilityResult({ instanceId: "tile", capability: "probe-service-status", payload: { level, startTime: null, checkedAt: 1_793_372_400 } }); // 非 ok 档的探活结果。
+        const result = parseComponentCapabilityResult({
+            instanceId: "tile",
+            capability: "probe-service-status",
+            payload: { level, startTime: null, checkedAt: 1_793_372_400 },
+        }); // 非 ok 档的探活结果。
         assert.deepEqual(result.payload, { level, startTime: null, checkedAt: 1_793_372_400 });
     }
 });
@@ -132,7 +143,35 @@ test("rejects an invalid probe service status payload", () => {
         { level: "off", startTime: 1_793_365_017, checkedAt: 1_793_372_400 },
         { level: "ok", startTime: 1_793_365_017, checkedAt: 0 },
     ];
-    for (const payload of invalid) assert.throws(() => parseComponentCapabilityResult({ instanceId: "tile", capability: "probe-service-status", payload }), { name: "ComponentContractError" });
+    for (const payload of invalid)
+        assert.throws(() => parseComponentCapabilityResult({ instanceId: "tile", capability: "probe-service-status", payload }), {
+            name: "ComponentContractError",
+        });
+});
+
+test("主题岛圆角缺省不覆盖，合法整数通过且非法值拒绝", () => {
+    const parse = (themeAppearance: unknown) =>
+        parseComponentRuntimeSnapshot({
+            revision: 1,
+            manifests: [
+                {
+                    id: "plugin.theme",
+                    name: "主题",
+                    role: "theme",
+                    stylesheet: "theme/theme.css",
+                    entry: "plugin:slot",
+                    script: "",
+                    requiredCapabilities: [],
+                    persistenceVersion: 1,
+                    themeAppearance,
+                },
+            ],
+            instances: [],
+            failures: [],
+        }).manifests[0].themeAppearance;
+    assert.equal(parse({})?.islandRadius, null);
+    for (const islandRadius of [0, 12, 16]) assert.equal(parse({ islandRadius })?.islandRadius, islandRadius);
+    for (const islandRadius of [-1, 17, 12.5, "12", NaN, Infinity]) assert.throws(() => parse({ islandRadius }));
 });
 
 test("rejects an unknown component capability", () => {

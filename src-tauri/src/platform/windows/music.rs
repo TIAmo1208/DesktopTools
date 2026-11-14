@@ -3,6 +3,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use windows::Media::Control::{GlobalSystemMediaTransportControlsSession as Session, GlobalSystemMediaTransportControlsSessionManager as SessionManager, GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus};
+#[path = "music_details.rs"]
+pub mod details;
+
 pub const MUSIC_SESSION_CHANGED_EVENT: &str = "music-session-changed";
 
 static MEDIA_CACHE: Mutex<Option<serde_json::Value>> = Mutex::new(None); // 事件线程发布的唯一权威媒体快照。
@@ -264,6 +267,10 @@ pub fn start_monitor(app: tauri::AppHandle)
             }
             .unwrap_or_else(|error| serde_json::json!({ "media": null, "error": error })); // 故障参与事件发布。
             let failed = current.get("error").is_some();
+            if current["media"].is_null()
+            {
+                details::update(None, String::new());
+            }
             let mut cache = MEDIA_CACHE.lock().unwrap_or_else(|error| error.into_inner()); // 更新缓存后再广播。
             if cache.as_ref() != Some(&current)
             {
@@ -281,6 +288,7 @@ pub fn start_monitor(app: tauri::AppHandle)
             {
                 drop(cache);
             }
+            details::publish(&app); // 完整媒体先发布，第二事实不参与收敛比较。
             convergence = match wake
             {
                 MonitorWake::Signal(signal) if signal.starts_convergence() || convergence.is_some() => Some(Convergence::new(current)),
@@ -308,10 +316,12 @@ pub fn start_monitor(app: tauri::AppHandle)
             }
             else
             {
-                match receiver.recv()
+                // 事件驱动为主；30 秒兜底复核一次，覆盖播放器漏发属性事件导致媒体与歌词停在旧曲目的情况。
+                match receiver.recv_timeout(Duration::from_secs(30))
                 {
                     Ok(signal) => MonitorWake::Signal(signal),
-                    Err(_) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => MonitorWake::Deadline,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             };
         }
@@ -338,6 +348,28 @@ enum MonitorWake
     Signal(MonitorSignal),
     Deadline,
     Retry,
+}
+
+/// 时间轴投影：真实时间轴按 LastUpdatedTime 外推；网易云等 end 与 LastUpdatedTime 全 0 的播放器在 Playing 时按本地挂钟推进。
+/// 零时间轴的上报位置恒为 0，本地锚点由 `music_details::update` 在事件间延续，这里只给出推进方向与时长。
+fn project_timeline(playing: bool, position_ticks: i64, end_ticks: i64, updated_ticks: i64, now_ms: i64) -> (bool, f64, f64)
+{
+    let zero_timeline = end_ticks == 0 && updated_ticks == 0; // 只发元数据的播放器不填结束时间与最后更新时间。
+    let updated_ms = updated_ticks / 10_000 - 11_644_473_600_000i64; // WinRT 的 1601 纪元转换为 Unix 毫秒。
+    let age = now_ms.saturating_sub(updated_ms);
+    let advancing = playing && (zero_timeline || (updated_ticks > 0 && age >= 0 && end_ticks > 0));
+    let duration_ms = (end_ticks as f64 / 10_000.0).max(0.0);
+    let position_ms = if zero_timeline
+    {
+        // 零时间轴通常 Position 恒为 0；若播放器上报了公开位置，保留它作为跳转锚点（best-effort）。
+        (position_ticks as f64 / 10_000.0).max(0.0)
+    }
+    else
+    {
+        let raw = position_ticks as f64 / 10_000.0 + if advancing { age as f64 } else { 0.0 };
+        if duration_ms > 0.0 { raw.clamp(0.0, duration_ms) } else { raw.max(0.0) }
+    };
+    (advancing, duration_ms, position_ms)
 }
 
 /// 在已经初始化 WinRT 的工作线程读取当前媒体；无会话与 API 故障分别返回。
@@ -396,9 +428,22 @@ pub fn read_current_session(force_properties: bool) -> windows::core::Result<Opt
     {
         return Err(windows::core::Error::new(windows::core::HRESULT(0x80004004u32 as i32), "播放来源已变化，正在重新同步媒体"));
     }
+    // 时间轴读取失败只清空第二类事实，不改变播放控制能力。
+    let timeline = (|| -> windows::core::Result<details::Timeline> {
+        let timeline = session.GetTimelineProperties()?;
+        let position = timeline.Position()?.Duration;
+        let end = timeline.EndTime()?.Duration;
+        let updated = timeline.LastUpdatedTime()?.UniversalTime;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let (advancing, duration_ms, position_ms) = project_timeline(status == PlaybackStatus::Playing, position, end, updated, now_ms);
+        Ok(details::Timeline { session_id: session_id.clone(), title: title.clone(), artist: artist.clone(), position_ticks: position.to_string(), end_time_ticks: end.to_string(), last_updated_time_ticks: updated.to_string(), playback_status: status.0, position_ms, duration_ms, advancing })
+    })()
+    .ok();
+    let source = session.SourceAppUserModelId()?.to_string(); // 播放源身份：歌词源按它切换，未知来源走通用兜底。
+    details::update(timeline, source.clone());
     Ok(Some(MusicSnapshot {
         session_id,
-        source: session.SourceAppUserModelId()?.to_string(),
+        source,
         title,
         artist,
         playback,
@@ -568,6 +613,28 @@ pub fn execute_action(action: &str, expected_session: &str) -> Result<(), String
 #[cfg(test)]
 mod empty_session_tests
 {
+    /// 零时间轴播放器在 Playing 时按本地挂钟推进；真实时间轴保持原有外推与夹紧。
+    #[test]
+    fn timeline_projection_handles_zero_and_real_timelines()
+    {
+        // 网易云：position/end/lastUpdated 全 0。锚点由音乐事实层延续，这里只要求 Playing 时 advancing 为真。
+        assert_eq!(super::project_timeline(true, 0, 0, 0, 1_000_000), (true, 0.0, 0.0));
+        assert_eq!(super::project_timeline(false, 0, 0, 0, 1_000_000), (false, 0.0, 0.0));
+        // 零时间轴若上报了公开 Position，保留为跳转锚点。
+        assert_eq!(super::project_timeline(true, 50_000_000, 0, 0, 1_000_000), (true, 0.0, 5_000.0));
+        // 真实时间轴：位置 10s、总长 100s、LastUpdatedTime 比 now 早 2s → 外推到 12s。
+        let updated = (998_000i64 + 11_644_473_600_000) * 10_000;
+        let (advancing, duration, position) = super::project_timeline(true, 100_000_000, 1_000_000_000, updated, 1_000_000);
+        assert!(advancing);
+        assert_eq!(duration, 100_000.0);
+        assert!((position - 12_000.0).abs() < 0.001);
+        // 暂停不再外推；外推不越过总时长。
+        assert!(!super::project_timeline(false, 100_000_000, 1_000_000_000, updated, 1_000_000).0);
+        assert_eq!(super::project_timeline(true, 999_000_000, 1_000_000_000, updated, 1_000_000).2, 100_000.0);
+        // updated 为 0 但 end 有效：不猜测推进。
+        assert!(!super::project_timeline(true, 0, 1_000_000_000, 0, 1_000_000).0);
+    }
+
     /// 有限收敛在连续相同快照时提前停止，变化持续时最多执行到 3 秒检查。
     #[test]
     fn convergence_stops_after_stability_or_final_deadline()

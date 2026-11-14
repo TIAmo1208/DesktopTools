@@ -17,6 +17,7 @@ import { MessageNotificationHost } from "../../notifications/MessageNotification
 import { publishMessage } from "../../notifications/messageNotification";
 import { useWorkspaceInteraction } from "../interaction/useWorkspaceInteraction";
 import { useWorkspaceDrag } from "../interaction/useWorkspaceDrag";
+import "../../../styles/fenceTokens.css";
 import "./DesktopWorkspace.css";
 
 /** 跨类型工作区接收的权威快照与命令边界。 */

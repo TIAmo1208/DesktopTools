@@ -1,0 +1,74 @@
+name: quality
+
+# 护栏：类型检查 + 项目全量门禁（含 cargo test）+ 真实组件断言页。
+on:
+  push:
+    branches: [main, "Feature/**"]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+        # 仓库未跟踪 package-lock.json，setup-node 的 npm 缓存无依赖文件可哈希，故不启用 cache。
+      - name: 安装依赖
+        # 仓库未跟踪 package-lock.json（见 .gitignore），因此用 npm install；
+        # 若以后要可复现构建，改为跟踪 lockfile 并使用 npm ci。
+        run: npm install --no-audit --no-fund
+      - name: 类型检查
+        run: npm run typecheck
+      - name: 全量门禁
+        run: npm test
+        env:
+          TMP: ${{ runner.temp }}
+
+  browser:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    # 先观察：islandFillet 等页面在功能分支上可能暂时失败；稳定两周后再改为阻断。
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+        # 与 check 任务相同：没有 lockfile，不启用 npm 缓存。
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
+      - name: 启动断言页服务
+        shell: pwsh
+        run: |
+          $server = Start-Process -FilePath "npm.cmd" -ArgumentList "run", "dev" -PassThru -RedirectStandardOutput "dev.log" -RedirectStandardError "dev.err"
+          "SERVER_PID=$($server.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $deadline = (Get-Date).AddSeconds(90)
+          $ready = $false
+          while ((Get-Date) -lt $deadline) {
+            $client = New-Object System.Net.Sockets.TcpClient
+            try {
+              $client.Connect("127.0.0.1", 1420)
+              $ready = $true
+              break
+            } catch {
+              Start-Sleep -Milliseconds 500
+            } finally {
+              $client.Dispose()
+            }
+          }
+          if (-not $ready) {
+            Get-Content dev.log, dev.err -ErrorAction SilentlyContinue
+            throw "开发服务器未在 90 秒内监听 127.0.0.1:1420"
+          }
+      - name: 浏览器断言
+        run: npm run test:browser
+      - name: 收尾
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:SERVER_PID) {
+            taskkill /PID $env:SERVER_PID /T /F 2>$null
+            exit 0
+          }

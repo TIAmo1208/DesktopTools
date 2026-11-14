@@ -68,12 +68,14 @@ pub struct ThemeBaseline
     pub accent_color: String,         // 界面自定义强调色。
     pub desktop_accent_color: String, // 桌面自定义强调色。
     pub corner_radius: u8,            // 表面圆角。
+    #[serde(default = "default_island_radius")]
+    pub island_radius: u8, // 岛展开卡圆角。
     pub font_family: String,          // 白名单字体。
     pub font_size: u8,                // 正文字号。
 }
 
-/// 原子保存的用户界面与项目打开偏好。
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// 原子保存的用户界面与项目打开偏好；含 f64 偏移，故只有 PartialEq。
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ApplicationPreferences
 {
@@ -99,6 +101,7 @@ pub struct ApplicationPreferences
     pub collect_image_import_mode: String,     // 图片收入方式：copy、move 或 link。
     pub collect_image_preview_width: u16,      // 列表图片宽度，单位 DIP。
     pub music_show_source: bool,               // 音乐控制显示媒体来源。
+    pub music_lyrics_enabled: bool,            // 音乐控制显示歌词，默认开启。
     pub music_spectrum_enabled: bool,          // 音乐控制显示实时频谱，默认关闭。
     pub music_spectrum_device: String,         // 频谱采集设备标识，空字符串表示跟随系统默认。
     pub music_spectrum_bars: u8,               // 频谱段数。
@@ -113,9 +116,20 @@ pub struct ApplicationPreferences
     pub folder_portal_enabled: bool,           // 文件夹门户功能入口显隐。
     pub pause_on_fullscreen: bool,             // 前台全屏或最大化覆盖本屏时暂停刷新。
     pub pause_on_focus: bool,                  // 外部应用获得焦点时暂停全部桌面刷新。
+    pub island_radius: u8,                     // 岛展开卡圆角，独立于界面圆角。
+    pub island_form: String,                   // 岛形态：capsule 胶囊（离边 6px）或 notch 刘海。
+    pub island_enabled: bool,                  // 岛总开关，关闭时隐藏并保留窗口，退出时释放。
+    pub island_edge: String,                   // 岛贴边方向，空字符串按顶部处理，偏移为 0 时居中。
+    pub island_offset: f64,                    // 沿贴边方向的偏移，单位 DIP。
+    pub island_hide_on_fullscreen: bool,       // 前台全屏时隐藏岛。
+    #[serde(default, deserialize_with = "deserialize_island_card_order")]
+    pub island_card_order: Vec<String>, // 已启用岛卡及其展开态排列顺序。
     #[serde(default, deserialize_with = "deserialize_disabled_plugins")]
     pub disabled_plugins: Vec<String>, // 宿主停用的插件标识，不属于插件自己的设置文件。
 }
+
+/// 岛展开卡默认圆角，偏好与主题基线共用。
+fn default_island_radius() -> u8 { 12 }
 
 /// 首次启动跟随系统，并沿用现有双击打开行为。
 impl Default for ApplicationPreferences
@@ -146,6 +160,7 @@ impl Default for ApplicationPreferences
             collect_image_import_mode: "copy".to_string(),
             collect_image_preview_width: 78,
             music_show_source: true,
+            music_lyrics_enabled: true,
             music_spectrum_enabled: false,
             music_spectrum_device: String::new(),
             music_spectrum_bars: 32,
@@ -160,6 +175,13 @@ impl Default for ApplicationPreferences
             folder_portal_enabled: true,
             pause_on_fullscreen: false,
             pause_on_focus: false,
+            island_radius: default_island_radius(),
+            island_form: "capsule".to_string(),
+            island_enabled: false,
+            island_edge: String::new(),
+            island_offset: 0.0,
+            island_hide_on_fullscreen: true,
+            island_card_order: Vec::new(),
             disabled_plugins: Vec::new(),
         }
     }
@@ -196,11 +218,42 @@ where
     Ok(normalize_disabled_plugins(Vec::<String>::deserialize(deserializer)?))
 }
 
+/// 岛卡只保留带 official. 或 plugin. 前缀的非空标识，去重后最多 32 条。
+pub fn normalize_island_card_order(values: impl IntoIterator<Item = String>) -> Vec<String>
+{
+    let mut kept = Vec::new(); // 按首次出现顺序保留的合法标识。
+    let mut seen = std::collections::HashSet::new(); // 已保留的标识。
+    let mut dropped = 0u32; // 非法、重复或超出上限的条数。
+    for card_id in values
+    {
+        let valid = ["official.", "plugin."].iter().any(|prefix| card_id.starts_with(prefix) && card_id.len() > prefix.len()); // 前缀后必须有名称。
+        if !valid || !seen.insert(card_id.clone()) || kept.len() >= 32
+        {
+            dropped += 1;
+            continue;
+        }
+        kept.push(card_id);
+    }
+    if dropped > 0
+    {
+        crate::log_warn!("岛卡顺序：已丢弃 {dropped} 条非法、重复或超出上限的标识");
+    }
+    kept
+}
+
+/// 缺失字段走默认空列表；出现的非法岛卡在反序列化时丢弃。
+fn deserialize_island_card_order<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(normalize_island_card_order(Vec::<String>::deserialize(deserializer)?))
+}
+
 /// 字体族名只做字形名边界校验：内置系统字体和插件自带字体共用这条规则。
 pub fn is_font_family_name(value: &str) -> bool { !value.is_empty() && value.len() <= 64 && value.trim() == value && !value.chars().any(|character| character.is_control() || matches!(character, ';' | '{' | '}' | '(' | ')' | '\'' | '"' | '\\')) }
 
 /// 当前外观与基线使用相同的颜色、字体和尺寸边界。
-fn validate_appearance(accent: &str, desktop_accent: &str, radius: u8, font: &str, size: u8) -> Result<(), String>
+fn validate_appearance(accent: &str, desktop_accent: &str, radius: u8, island_radius: u8, font: &str, size: u8) -> Result<(), String>
 {
     for color in [accent, desktop_accent]
     {
@@ -212,6 +265,10 @@ fn validate_appearance(accent: &str, desktop_accent: &str, radius: u8, font: &st
     if radius > 12
     {
         return Err("圆角必须介于 0 和 12 之间".to_string());
+    }
+    if island_radius > 16
+    {
+        return Err("岛圆角必须介于 0 和 16 之间".to_string());
     }
     if !(12..=18).contains(&size)
     {
@@ -260,14 +317,26 @@ impl ApplicationPreferences
             return Err("图片预览宽度必须为 48 到 156 DIP 的整数".into());
         }
         self.fence_grid.validate()?;
-        validate_appearance(&self.accent_color, &self.desktop_appearance.accent_color, self.corner_radius, &self.font_family, self.font_size)?;
+        validate_appearance(&self.accent_color, &self.desktop_appearance.accent_color, self.corner_radius, self.island_radius, &self.font_family, self.font_size)?;
         if self.theme_plugin_id.as_ref().is_some_and(|id| id.trim().is_empty())
         {
             return Err("主题插件标识无效".to_string());
         }
         if let Some(baseline) = &self.theme_baseline
         {
-            validate_appearance(&baseline.accent_color, &baseline.desktop_accent_color, baseline.corner_radius, &baseline.font_family, baseline.font_size)?;
+            validate_appearance(&baseline.accent_color, &baseline.desktop_accent_color, baseline.corner_radius, baseline.island_radius, &baseline.font_family, baseline.font_size)?;
+        }
+        if !matches!(self.island_form.as_str(), "capsule" | "notch")
+        {
+            return Err("岛形态必须为 capsule 或 notch".to_string());
+        }
+        if !matches!(self.island_edge.as_str(), "" | "top" | "bottom" | "left" | "right")
+        {
+            return Err("岛贴边方向必须为空或 top、bottom、left、right".to_string());
+        }
+        if !self.island_offset.is_finite()
+        {
+            return Err("岛偏移必须为有限的 DIP 数值".to_string());
         }
         if !(16..=64).contains(&self.music_spectrum_bars)
         {
@@ -293,6 +362,99 @@ pub struct SettingsSnapshot
 }
 
 #[cfg(test)]
+mod island_tests
+{
+    use super::ApplicationPreferences;
+
+    /// 旧配置直接使用岛默认值，camelCase 字段往返不丢失。
+    #[test]
+    fn island_preferences_defaults_and_roundtrip()
+    {
+        let defaults: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 缺少岛字段的旧配置。
+        assert_eq!(defaults.island_radius, 12);
+        assert_eq!(defaults.island_form, "capsule");
+        assert!(!defaults.island_enabled);
+        assert_eq!(defaults.island_edge, "");
+        assert_eq!(defaults.island_offset, 0.0);
+        assert!(defaults.island_hide_on_fullscreen);
+        assert!(defaults.island_card_order.is_empty());
+        assert!(defaults.validate().is_ok());
+        let selected = ApplicationPreferences { island_radius: 16, island_form: "notch".into(), island_enabled: true, island_edge: "left".into(), island_offset: -12.5, island_hide_on_fullscreen: false, island_card_order: vec!["official.music".into(), "plugin.clock".into()], ..defaults }; // 非默认岛偏好。
+        let value = serde_json::to_value(&selected).unwrap(); // 实际持久化字段名。
+        assert_eq!(value["islandRadius"], 16);
+        assert_eq!(value["islandForm"], "notch");
+        assert_eq!(value["islandEnabled"], true);
+        assert_eq!(value["islandEdge"], "left");
+        assert_eq!(value["islandOffset"], -12.5);
+        assert_eq!(value["islandHideOnFullscreen"], false);
+        assert_eq!(value["islandCardOrder"], serde_json::json!(["official.music", "plugin.clock"]));
+        assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap(), selected);
+    }
+
+    /// 方向严格限制为约定值，偏移不能是 NaN 或无穷。
+    #[test]
+    fn island_preferences_validate_edge_and_offset()
+    {
+        for radius in [0, 12, 16]
+        {
+            assert!(ApplicationPreferences { island_radius: radius, ..Default::default() }.validate().is_ok());
+        }
+        assert!(ApplicationPreferences { island_radius: 17, ..Default::default() }.validate().is_err());
+        for invalid in [serde_json::json!(-1), serde_json::json!(1.5), serde_json::json!("12")]
+        {
+            assert!(serde_json::from_value::<ApplicationPreferences>(serde_json::json!({"islandRadius": invalid})).is_err());
+        }
+        for edge in ["", "top", "bottom", "left", "right"]
+        {
+            assert!(ApplicationPreferences { island_edge: edge.into(), ..Default::default() }.validate().is_ok());
+        }
+        for edge in ["center", "Top", " top", "right "]
+        {
+            assert!(ApplicationPreferences { island_edge: edge.into(), ..Default::default() }.validate().is_err());
+        }
+        for offset in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY]
+        {
+            assert!(ApplicationPreferences { island_offset: offset, ..Default::default() }.validate().is_err());
+        }
+        for offset in [-100.0, 0.0, 100.0]
+        {
+            assert!(ApplicationPreferences { island_offset: offset, ..Default::default() }.validate().is_ok());
+        }
+    }
+
+    /// 岛形态只接受 capsule 与 notch，缺失配置回退胶囊。
+    #[test]
+    fn island_preferences_validate_form()
+    {
+        for form in ["capsule", "notch"]
+        {
+            assert!(ApplicationPreferences { island_form: form.into(), ..Default::default() }.validate().is_ok());
+        }
+        for form in ["", "Capsule", "notch ", "round"]
+        {
+            assert!(ApplicationPreferences { island_form: form.into(), ..Default::default() }.validate().is_err());
+        }
+        let parsed: ApplicationPreferences = serde_json::from_value(serde_json::json!({"islandForm": "round"})).unwrap(); // 字段反序列化不代校验，validate 统一收口。
+        assert!(parsed.validate().is_err());
+        let selected: ApplicationPreferences = serde_json::from_value(serde_json::json!({"islandForm": "notch"})).unwrap();
+        assert_eq!(selected.island_form, "notch");
+        assert!(selected.validate().is_ok());
+    }
+
+    /// 反序列化去重并丢弃非法项，只保留首次出现的前 32 个岛卡。
+    #[test]
+    fn island_card_order_normalizes_and_caps()
+    {
+        let mut cards = vec!["official.music".to_string(), "plugin.clock".into(), "official.music".into(), "".into(), "official.".into(), "plugin.".into(), "other.card".into()]; // 含重复与非法标识。
+        cards.extend((0..40).map(|index| format!("plugin.card{index}")));
+        let parsed: ApplicationPreferences = serde_json::from_value(serde_json::json!({"islandCardOrder": cards})).unwrap(); // 走实际 deserialize_with 边界。
+        let mut expected = vec!["official.music".to_string(), "plugin.clock".into()]; // 首次出现的顺序不变。
+        expected.extend((0..30).map(|index| format!("plugin.card{index}")));
+        assert_eq!(parsed.island_card_order, expected);
+    }
+}
+
+#[cfg(test)]
 mod music_tests
 {
     use super::ApplicationPreferences;
@@ -306,11 +468,11 @@ mod music_tests
         let mut value = serde_json::to_value(&defaults).unwrap(); // 持久化边界的实际 camelCase 载荷。
         assert!(value["themePluginId"].is_null() && value["themeBaseline"].is_null());
         value["themePluginId"] = serde_json::json!("plugin.missing");
-        value["themeBaseline"] = serde_json::json!({"accentColor":"#AABBCC","desktopAccentColor":"#123456","cornerRadius":4,"fontFamily":"Arial","fontSize":14});
+        value["themeBaseline"] = serde_json::json!({"accentColor":"#AABBCC","desktopAccentColor":"#123456","cornerRadius":4,"islandRadius":16,"fontFamily":"Arial","fontSize":14});
         let selected: ApplicationPreferences = serde_json::from_value(value.clone()).unwrap();
         assert!(selected.validate().is_ok());
         assert_eq!(serde_json::to_value(selected).unwrap(), value);
-        for (key, invalid) in [("accentColor", serde_json::json!("red")), ("desktopAccentColor", serde_json::json!("#12345g")), ("cornerRadius", serde_json::json!(13)), ("fontFamily", serde_json::json!("Arial; color:red")), ("fontSize", serde_json::json!(19))]
+        for (key, invalid) in [("accentColor", serde_json::json!("red")), ("desktopAccentColor", serde_json::json!("#12345g")), ("cornerRadius", serde_json::json!(13)), ("islandRadius", serde_json::json!(17)), ("fontFamily", serde_json::json!("Arial; color:red")), ("fontSize", serde_json::json!(19))]
         {
             let mut invalid_value = value.clone(); // 每个字段单独验证。
             invalid_value["themeBaseline"][key] = invalid;
@@ -337,19 +499,25 @@ mod music_tests
         }
     }
 
-    /// 老配置默认关闭音乐，开关值必须完整通过实际序列化边界。
+    /// 老配置默认关闭音乐、默认显示歌词，开关值必须完整通过实际序列化边界。
     #[test]
     fn music_preference_roundtrip()
     {
         let legacy: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 缺少音乐字段的旧配置。
         assert!(!legacy.music_enabled);
+        assert!(legacy.music_lyrics_enabled);
         for enabled in [false, true]
         {
             let mut preferences = legacy.clone(); // 当前待保存偏好。
             preferences.music_enabled = enabled;
-            let value = serde_json::to_value(preferences).unwrap(); // 实际命令与存储的 JSON 字段。
+            let value = serde_json::to_value(&preferences).unwrap(); // 实际命令与存储的 JSON 字段。
             assert_eq!(value["musicEnabled"], enabled);
             assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap().music_enabled, enabled);
+            let mut lyrics = legacy.clone(); // 显示歌词开关。
+            lyrics.music_lyrics_enabled = enabled;
+            let value = serde_json::to_value(&lyrics).unwrap();
+            assert_eq!(value["musicLyricsEnabled"], enabled);
+            assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap().music_lyrics_enabled, enabled);
         }
     }
 

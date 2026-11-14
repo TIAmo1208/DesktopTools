@@ -5,11 +5,12 @@ use std::sync::{
 };
 use tauri::{Emitter, Listener, Manager};
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
     System::{RemoteDesktop::*, Threading::GetCurrentThreadId},
     UI::{
         Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
+        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LSHIFT, VK_LWIN, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SNAPSHOT},
         Shell::{QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState},
         WindowsAndMessaging::*,
     },
@@ -46,6 +47,7 @@ static EVENT_APP: OnceLock<tauri::AppHandle> = OnceLock::new(); // 发布出口�
 static EVENT_THREAD: AtomicU32 = AtomicU32::new(0); // 已建立消息队列的线程。
 static GENERATION: AtomicU64 = AtomicU64::new(0); // 新事件使在途采样失效。
 static SWITCHING: AtomicBool = AtomicBool::new(false); // Alt+Tab 显式切换阶段。
+static HOOK_MODIFIERS: AtomicU32 = AtomicU32::new(0); // 低级键盘钩子跟踪的 Win/Shift 修饰键位。
 static EVENT_FALLBACK: AtomicBool = AtomicBool::new(true); // Hook 失败时保留页面低频兜底。
 const SAMPLE: u32 = WM_APP + 71; // 合并采样通知。
 
@@ -286,6 +288,20 @@ pub(crate) fn start_events(app: &tauri::AppHandle)
             }
         }
         EVENT_FALLBACK.store(failed, Ordering::Release);
+        HOOK_MODIFIERS.store(0, Ordering::Release); // 新钩子从无修饰键开始，避免旧会话残留位。
+        let keyboard_hook = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_screenshot_hook), None, 0)
+        {
+            Ok(hook) =>
+            {
+                crate::log_info!("前台快照：截图热键钩子已安装");
+                Some(hook)
+            }
+            Err(error) =>
+            {
+                crate::log_warn!("前台快照：截图热键钩子安装失败，仍使用截图工具前台检测：{error}");
+                None
+            }
+        };
         let _ = ready.send(());
         request_sample();
         let mut timer = 0; // 只用于事件合并与有限复查。
@@ -358,11 +374,59 @@ pub(crate) fn start_events(app: &tauri::AppHandle)
         {
             let _ = UnhookWinEvent(hook);
         }
+        if let Some(hook) = keyboard_hook
+        {
+            let _ = UnhookWindowsHookEx(hook);
+        }
     });
     if initialized.recv().is_err()
     {
         crate::log_error!("前台快照：事件线程初始化失败");
     }
+}
+
+/// 低级键盘钩子只识别系统截图热键；不拦截输入，继续交给系统处理。
+unsafe extern "system" fn keyboard_screenshot_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT
+{
+    if code >= 0
+    {
+        let message = wparam.0 as u32;
+        let down = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
+        let up = matches!(message, WM_KEYUP | WM_SYSKEYUP);
+        let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) }; // 已由系统保证有效。
+        let key = info.vkCode;
+        let win_key = key == VK_LWIN.0 as u32 || key == VK_RWIN.0 as u32;
+        let shift_key = key == VK_SHIFT.0 as u32 || key == VK_LSHIFT.0 as u32 || key == VK_RSHIFT.0 as u32;
+        if win_key && down
+        {
+            HOOK_MODIFIERS.fetch_or(1, Ordering::AcqRel);
+        }
+        else if win_key && up
+        {
+            HOOK_MODIFIERS.fetch_and(!1, Ordering::AcqRel);
+        }
+        else if shift_key && down
+        {
+            HOOK_MODIFIERS.fetch_or(2, Ordering::AcqRel);
+        }
+        else if shift_key && up
+        {
+            HOOK_MODIFIERS.fetch_and(!2, Ordering::AcqRel);
+        }
+        let tracked = HOOK_MODIFIERS.load(Ordering::Acquire);
+        let async_win = unsafe { GetAsyncKeyState(VK_LWIN.0 as i32) < 0 || GetAsyncKeyState(VK_RWIN.0 as i32) < 0 };
+        let async_shift = unsafe { GetAsyncKeyState(VK_SHIFT.0 as i32) < 0 };
+        // 真实输入以当前键态为准，避免安全桌面吞 keyup 后跟踪位失步；注入键没有可靠 async 状态，退回跟踪位。
+        let injected = info.flags.0 & LLKHF_INJECTED.0 != 0;
+        let win = if injected { tracked & 1 != 0 } else { async_win };
+        let shift = if injected { tracked & 2 != 0 } else { async_shift };
+        if down && (key == VK_SNAPSHOT.0 as u32 || (key == 0x53 && win && shift))
+        {
+            super::island::hide_for_screenshot_hotkey(); // 必须早于截图工具冻结画面。
+            HOOK_MODIFIERS.store(0, Ordering::Release); // 触发后清零，避免 keyup 丢失时旧位影响下一次按键。
+        }
+    }
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
 /// 回调只记录切换阶段并唤醒，避免系统回调内重复查询。

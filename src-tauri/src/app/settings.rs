@@ -173,10 +173,97 @@ impl SettingsState
         preferences.disabled_plugins = crate::contracts::settings::normalize_disabled_plugins(std::mem::take(&mut preferences.disabled_plugins)); // 手写结构也走同一条丢弃规则。
         validate_preferences(&preferences)?;
         let mut current = self.preferences.lock().map_err(|_| "设置状态不可用".to_string())?; // 当前串行提交锁。
+        self.commit(&mut current, preferences)
+    }
+
+    /// 在同一提交锁内基于最新偏好更新字段，patch 或落盘失败均不改变内存事实。
+    pub fn update(&self, patch: impl FnOnce(&mut ApplicationPreferences) -> Result<(), String>) -> Result<ApplicationPreferences, String>
+    {
+        let mut current = self.preferences.lock().map_err(|_| "设置状态不可用".to_string())?; // 与整份保存共用串行锁。
+        let mut next = current.clone(); // 修改候选副本，失败不泄漏部分字段。
+        patch(&mut next)?;
+        next.disabled_plugins = crate::contracts::settings::normalize_disabled_plugins(std::mem::take(&mut next.disabled_plugins));
+        validate_preferences(&next)?;
+        self.commit(&mut current, next)
+    }
+
+    /// 两种保存入口共用唯一的落盘与成功提交逻辑；调用方必须持有偏好锁。
+    fn commit(&self, current: &mut ApplicationPreferences, preferences: ApplicationPreferences) -> Result<ApplicationPreferences, String>
+    {
         save_json_atomic(&self.path, &preferences).map_err(|error| format!("保存设置失败：{error}"))?;
         *current = preferences;
         crate::log_info!("设置：用户偏好已保存");
         Ok(current.clone())
+    }
+}
+
+#[cfg(test)]
+mod atomic_update_tests
+{
+    use super::*;
+
+    #[test]
+    fn settings_atomic_patch_serializes_and_preserves_state_on_every_failure()
+    {
+        let directory = std::env::temp_dir().join(format!("desktop-tools-settings-patch-{}", std::process::id())); // 独占测试路径。
+        let path = directory.join("settings.json");
+        let state = std::sync::Arc::new(SettingsState::load(path.clone()).unwrap());
+        state
+            .update(|preferences| {
+                preferences.island_enabled = true;
+                Ok(())
+            })
+            .unwrap();
+        let workers = (0..8)
+            .map(|_| {
+                let state = std::sync::Arc::clone(&state); // 竞争真实 SettingsState 提交锁。
+                std::thread::spawn(move || {
+                    state
+                        .update(|preferences| {
+                            preferences.island_offset += 1.0;
+                            Ok(())
+                        })
+                        .unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers
+        {
+            worker.join().unwrap();
+        }
+        let original = state.preferences().unwrap();
+        assert_eq!(original.island_offset, 8.0); // 每次 patch 读取最新值，而非锁外快照。
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(
+            state
+                .update(|preferences| {
+                    preferences.island_offset = 10.0;
+                    Err("注入 patch 失败".into())
+                })
+                .is_err()
+        );
+        assert!(
+            state
+                .update(|preferences| {
+                    preferences.island_offset = f64::NAN;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert_eq!(state.preferences().unwrap(), original);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let blocked = SettingsState { path: path.join("blocked.json"), preferences: Mutex::new(original.clone()) }; // 文件作为父目录，注入真实写盘失败。
+        assert!(
+            blocked
+                .update(|preferences| {
+                    preferences.island_offset = 30.0;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert_eq!(blocked.preferences().unwrap(), original);
+        assert_eq!(SettingsState::load(path).unwrap().preferences().unwrap(), original);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }
 

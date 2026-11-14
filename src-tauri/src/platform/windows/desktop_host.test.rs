@@ -42,3 +42,12 @@ fn loopback_host_events_do_not_require_time_consumers()
     assert!(component_host_event_needs_time_consumers(tick));
     assert!(component_host_event_needs_time_consumers("{"));
 }
+
+/// 浮岛消息事件必须同时进入 Rust 转发白名单与注入桥的事件映射，否则岛侧静默收不到。
+#[test]
+fn island_message_event_is_forwarded_and_mapped_to_the_read_command()
+{
+    assert!(super::FORWARDED_EVENTS.contains(&"island-messages-changed"), "事件必须由宿主转发到原生 WebView");
+    let script = super::native_bridge_script("http://desktop-tools-island.localhost");
+    assert!(script.contains(r#""island-messages-changed": "get_island_messages""#), "注入桥必须把事件映射到只读投影命令");
+}

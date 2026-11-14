@@ -13,7 +13,10 @@ test("正式音乐订阅更新、故障后相同值恢复、退订不再交付",
     const requests: string[] = []; // 实际读取命令。
     let reply: unknown = { ok: true, result: { media: null } }; // 本轮模拟的 native transport 返回。
     let finish: (() => void) | undefined; // 控制退订期间的在途请求。
-    const window = { setTimeout: (callback: () => Promise<void>) => timers.push(callback), clearTimeout: () => {}, addEventListener: () => {} } as Record<string, any>; // 最小宿主环境。
+    const window = { setTimeout: (callback: () => Promise<void>) => timers.push(callback), clearTimeout: () => {}, addEventListener: () => {} } as Record<
+        string,
+        any
+    >; // 最小宿主环境。
     const nativeOrigin = "http://desktop-tools-host-0.localhost"; // 与 Rust 注入的逐屏协议地址一致。
     runInNewContext(script.replace("__DESKTOP_NATIVE_ORIGIN__", JSON.stringify(nativeOrigin)).replace("__REFRESH_POLICY_FALLBACK__", "false"), {
         window,
@@ -36,5 +39,16 @@ test("正式音乐订阅更新、故障后相同值恢复、退订不再交付",
     unlisten();
     window.__DESKTOP_TOOLS_NATIVE__.dispatch("music-session-changed", { media: { title: "迟到值" } });
     assert.equal(events.length, 3);
+    assert.equal(timers.length, 0);
+    reply = { ok: true, result: { timeline: null, lyrics: [] } };
+    const details: unknown[] = [];
+    const stopDetails = await window.__DESKTOP_TOOLS_NATIVE__.listen("music-timeline-changed", (payload: unknown) => details.push(payload));
+    assert.match(requests.at(-1)!, /get_music_details/);
+    assert.equal(details.length, 1);
+    window.__DESKTOP_TOOLS_NATIVE__.dispatch("music-timeline-changed", { timeline: null, lyrics: [] });
+    assert.equal(details.length, 2);
+    stopDetails();
+    window.__DESKTOP_TOOLS_NATIVE__.dispatch("music-timeline-changed", { timeline: null, lyrics: [] });
+    assert.equal(details.length, 2);
     assert.equal(timers.length, 0);
 });

@@ -4,6 +4,7 @@
     position: relative;
     isolation: isolate;
     display: grid;
+    box-sizing: border-box;
     grid-template-columns: var(--music-cover) minmax(0, 1fr);
     gap: 12px;
     width: 100%;
@@ -211,4 +212,153 @@
     bottom: 0;
     left: 0;
     margin: 0;
+}
+
+/* 歌词区不接收指针与键盘焦点，行盒高度与行距按设计文档固定。 */
+.music-control__lyrics {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    min-height: 0;
+    overflow: hidden;
+    color: var(--fence-text);
+    pointer-events: none;
+}
+
+/* 展开时高度与透明度从 0 过渡到目标尺寸，180ms ease-out。 */
+.music-control[data-animations="on"] .music-control__lyrics {
+    animation: music-lyrics-in 180ms ease-out;
+    transition: opacity 120ms ease-out;
+}
+
+/* 切歌时旧词整体淡出 120ms，再替换为新歌。 */
+.music-control[data-animations="on"] .music-control__lyrics[data-fading="true"] {
+    opacity: 0;
+    transition: opacity 120ms ease-out;
+}
+
+@keyframes music-lyrics-in {
+    from {
+        height: 0;
+        opacity: 0;
+    }
+}
+
+/* 收起时让出高度并淡出，180ms 后卸载，不保留空位。 */
+.music-control__lyrics[data-leaving="true"] {
+    opacity: 0;
+}
+
+.music-control[data-animations="on"] .music-control__lyrics[data-leaving="true"] {
+    transition:
+        height 180ms ease-out,
+        opacity 180ms ease-out;
+}
+
+/* 单行截断；换句时整块按方向位移，当前句字号与颜色过渡（离开 120ms、进入 180ms）。 */
+.music-control__lyrics p {
+    margin: 0;
+    overflow: hidden;
+    font-size: 13px;
+    line-height: 16px;
+    height: 16px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    opacity: 0.62;
+}
+
+.music-control[data-animations="on"] .music-control__lyrics p {
+    transition:
+        opacity 140ms ease-out 0ms,
+        font-size 140ms ease-out 0ms,
+        color 140ms ease-out 0ms;
+}
+
+/* 当前句只靠字号更大与颜色更深区分，不加粗。 */
+.music-control__lyrics p[data-current="true"] {
+    font-size: 14px;
+    line-height: 17px;
+    height: 17px;
+    opacity: 1;
+    font-weight: 400;
+}
+
+.music-control[data-animations="on"] .music-control__lyrics p[data-current="true"] {
+    transition:
+        opacity 200ms ease-out 80ms,
+        font-size 200ms ease-out 80ms,
+        color 200ms ease-out 80ms;
+}
+
+/* 翻译跟随当前句，仅在能多容纳一行时出现。 */
+.music-control__lyrics p[data-translation="true"] {
+    font-size: 12px;
+    line-height: 16px;
+    height: 16px;
+    opacity: 0.52;
+}
+
+/* 界面动画关闭时逐句更新直接切换。 */
+.music-control[data-animations="off"] .music-control__lyrics p {
+    transition: none;
+}
+
+/* 下方通栏：歌词行独占内容区底部；封面只使用正文媒体区高度。 */
+.music-control[data-lyrics="bottom"] {
+    --music-cover: min(calc((100cqw - 24px) * 0.4), var(--music-media-height, 94px));
+    grid-template-rows: minmax(0, 1fr) auto;
+    row-gap: 6px;
+}
+
+.music-control[data-lyrics="bottom"] .music-control__lyrics {
+    grid-column: 1 / -1;
+    grid-row: 2;
+}
+
+/* 右侧固定列：156px 加 12px 列间距，封面为正文保留 128px。 */
+.music-control[data-lyrics="right"] {
+    --music-cover: min(calc((100cqw - 24px) * 0.4), max(0px, calc(100cqw - 308px)), max(0px, 100cqh));
+}
+
+/* 右侧固定列：156px 加 12px 列间距，正文让出同一宽度。 */
+.music-control__lyrics[data-placement="right"] {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 156px;
+}
+
+.music-control__body {
+    transition: padding-right 180ms ease-out;
+}
+
+.music-control[data-animations="off"] .music-control__body {
+    transition: none;
+}
+
+.music-control[data-lyrics="right"][data-lyrics-open="on"] .music-control__body {
+    padding-right: 168px;
+}
+
+/* 紧凑布局歌词排在底部信息和按钮上方，仍叠在封面下半部。 */
+.music-control[data-layout="compact"][data-lyrics="bottom"] {
+    grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.music-control[data-layout="compact"][data-lyrics="bottom"] .music-control__lyrics {
+    position: static;
+    grid-column: 1 / -1;
+    grid-row: 1;
+    margin-inline: 6px;
+    z-index: 2;
+}
+
+.music-control[data-layout="compact"][data-lyrics="bottom"] .music-control__body {
+    grid-row: 2;
+}
+
+/* 紧凑布局有有效封面时沿用白色文字与遮罩规则。 */
+.music-control[data-layout="compact"][data-artwork="ready"] .music-control__lyrics {
+    color: #fff;
 }

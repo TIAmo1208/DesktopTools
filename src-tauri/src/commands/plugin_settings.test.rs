@@ -2,7 +2,7 @@ use super::validate_creatable_plugin;
 use crate::contracts::ComponentManifest;
 
 /// 造一份只用于门禁判断的插件清单。
-fn manifest(id: &str, entry: &str, creatable: bool) -> ComponentManifest { ComponentManifest { theme_notification: None, theme_boot: None, id: id.to_string(), name: id.to_string(), version: String::new(), stylesheet_cache_key: String::new(), entry: entry.to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable, removable: false, persistence_version: 1, max_tiles: 0, tile_types: Vec::new(), repository: String::new(), description: String::new(), author: String::new() } }
+fn manifest(id: &str, entry: &str, creatable: bool) -> ComponentManifest { ComponentManifest { theme_notification: None, theme_boot: None, id: id.to_string(), name: id.to_string(), version: String::new(), stylesheet_cache_key: String::new(), entry: entry.to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable, removable: false, island: false, persistence_version: 1, max_tiles: 0, tile_types: Vec::new(), repository: String::new(), description: String::new(), author: String::new() } }
 
 /// 非插件标识、缺失清单和未声明可创建都不能进入创建事务。
 #[test]

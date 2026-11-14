@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>浮岛消息卡三态与降级回归检查</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            background: #d6c3bb;
+        }
+        #fixture {
+            position: relative;
+            padding: 24px;
+            width: 900px;
+            height: 520px;
+            background: linear-gradient(120deg, #d8c3b8 0%, #e7d7cd 45%, #c9a89f 100%);
+        }
+        #result {
+            position: fixed;
+            left: 8px;
+            bottom: 8px;
+            margin: 0;
+            padding: 8px;
+            background: #000c;
+            color: #7dff9b;
+            font: 12px/1.5 monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+    <body>
+        <script>
+            // 模块加载失败、未处理异常和隐藏页面也必须有界写出结论。
+            const failAssertion = (reason) => {
+                const result = document.getElementById("result");
+                if (result && !/^(PASS|FAIL)/.test(result.textContent)) {
+                    result.textContent = `FAIL\n- ${reason}`;
+                    document.body.dataset.phase = "fail";
+                }
+            };
+            window.addEventListener("error", (event) => failAssertion(event.message || "断言模块加载失败"), true);
+            window.addEventListener("unhandledrejection", (event) => failAssertion(String(event.reason)));
+            setTimeout(() => failAssertion("断言总时限 60000ms：页面状态或动画未收敛"), 60000);
+        </script>
+        <main id="fixture"></main>
+        <pre id="result">RUNNING</pre>
+        <script type="module">
+            import { 创建夹具, 消息, 等待, 直到 } from "./islandFixture.js";
+
+            // 初读通道挂起，用来覆盖「消息通道超时不得阻塞岛卡」；消息仍应由事件路径送达。
+            const 夹具 = 创建夹具({ 消息初读: "hang" });
+            const [岛模块, React模块, 根模块, 偏好模块, 样式模块] = await Promise.all([
+                import("./island.tsx"),
+                import("react"),
+                import("react-dom/client"),
+                import("../settings/PreferencesProvider.tsx"),
+                import("../../styles/global.css"),
+            ]);
+            void 样式模块; // 只要求样式表加载完成，不读导出。
+            const { IslandPage } = 岛模块;
+            const React = React模块.default;
+            const { createRoot } = 根模块;
+            const { PreferencesProvider } = 偏好模块;
+
+            document.documentElement.dataset.island = "true";
+            document.documentElement.dataset.theme = "dark";
+            document.documentElement.dataset.desktopTheme = "dark";
+            createRoot(document.getElementById("fixture")).render(React.createElement(PreferencesProvider, null, React.createElement(IslandPage)));
+
+            const result = document.getElementById("result");
+            const 失败 = [];
+            // 失败先写出的结论不被迟到的成功覆盖。
+            const report = (text) => {
+                if (!result.textContent.startsWith("FAIL")) result.textContent = text;
+                document.body.dataset.phase = result.textContent.startsWith("FAIL") ? "fail" : "pass";
+            };
+            const 断言 = (条件, 说明) => {
+                if (!条件) 失败.push(说明);
+            };
+            const 根 = () => document.querySelector("main.island");
+            const 盒 = () => 根().getBoundingClientRect();
+            const 卡 = () => [...document.querySelectorAll(".island-card[data-island-message]")];
+            const 消息体 = () => document.querySelector(".island-message");
+            const 单行 = () => document.querySelector(".island-message__line");
+            const 摘要 = () => document.querySelector(".island-message__title");
+            const 全文 = () => document.querySelector(".island-message__body");
+            const 元信息 = () => document.querySelector(".island-message__meta");
+            const 关闭按钮 = () => document.querySelector(".island-message__close");
+            const 按键 = (键) => 根().dispatchEvent(new KeyboardEvent("keydown", { key: 键, bubbles: true }));
+            const 悬停 = () => 根().dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", relatedTarget: null }));
+            const 近似 = (实际, 期望, 容差 = 1) => Math.abs(实际 - 期望) <= 容差;
+
+            const 运行 = async () => {
+                await 直到(() => 根(), "岛根节点挂载");
+                await 直到(() => 夹具.提交.length > 0, "岛完成首次原生几何提交");
+                await 等待(200);
+
+                // 场景一：消息通道初读挂起时，岛卡必须照常渲染，不能被消息卡阻塞。
+                断言(卡().length === 0, `通道挂起时不应凭空出现消息卡，实际 ${卡().length}`);
+                断言(盒().height > 0, "通道挂起时岛卡必须仍然渲染并具备高度");
+
+                // 场景二：常态只给一行简略，不给关闭按钮，也不出现摘要块。
+                夹具.pushMessages([消息(1, "info", "通知正文", "测试来源")]);
+                await 直到(() => 单行()?.textContent === "通知正文", "常态显示消息简略");
+                断言(卡().length === 1, `常态只应有一张消息卡，实际 ${卡().length}`);
+                断言(消息体().dataset.kind === "info", `消息类型应写入 data-kind，实际 ${消息体().dataset.kind}`);
+                断言(!document.querySelector(".island-message__info"), "常态不得渲染摘要块");
+                断言(!关闭按钮(), "常态不得渲染关闭按钮");
+                const 单行样式 = getComputedStyle(单行());
+                断言(单行样式.lineHeight === "28px", `常态简略行高应为 28px，实际 ${单行样式.lineHeight}`);
+                const 行上限 = 单行样式.maxInlineSize || 单行样式.maxWidth;
+                断言(String(行上限).includes("240"), `常态简略最大宽度应为 240px，实际 ${行上限}`);
+                const 常态高度 = 盒().height;
+
+                // 场景三：多条消息在常态只保留最新一条，顺序由身份决定。
+                夹具.pushMessages([
+                    消息(1, "info", "通知正文", "测试来源"),
+                    消息(2, "success", "第二条通知正文", "构建"),
+                    消息(3, "warning", "第三条通知正文", "监控"),
+                ]);
+                await 直到(() => 卡().length === 1 && 单行()?.textContent === "第三条通知正文", "常态只保留最新一条");
+                断言(消息体().dataset.kind === "warning", `最新一条的类型应生效，实际 ${消息体().dataset.kind}`);
+
+                // 场景四：hover 给摘要、来源时间与关闭按钮，仍只有一条。
+                悬停();
+                await 直到(() => 根().dataset.state === "hover", "进入 hover");
+                断言(摘要()?.textContent === "第三条通知正文", `hover 摘要应显示正文，实际 ${摘要()?.textContent}`);
+                断言(/^监控 · \d{1,2}:\d{2}$/.test(元信息()?.textContent ?? ""), `hover 元信息应为来源与时分，实际 ${元信息()?.textContent}`);
+                断言(关闭按钮()?.getAttribute("aria-label") === "关闭监控消息", `关闭按钮应带来源名，实际 ${关闭按钮()?.getAttribute("aria-label")}`);
+                断言(!单行(), "hover 不得同时保留常态简略行");
+                断言(卡().length === 1, `hover 只应保留一条，实际 ${卡().length}`);
+
+                // 场景五：展开给完整正文、来源与时间，正文允许换行。
+                按键("Enter");
+                await 直到(() => 根().dataset.state === "expanded", "进入展开态");
+                断言(全文()?.textContent === "第三条通知正文", `展开应显示完整正文，实际 ${全文()?.textContent}`);
+                断言(getComputedStyle(全文()).whiteSpace === "pre-wrap", "展开正文必须保留换行");
+                断言(/^监控 · \d{1,2}:\d{2}$/.test(元信息()?.textContent ?? ""), `展开元信息应为来源与时分，实际 ${元信息()?.textContent}`);
+                断言(Boolean(关闭按钮()), "展开态必须可关闭");
+
+                // 场景六：关闭走原生离场路径，卡片随权威集合消失。
+                关闭按钮().click();
+                await 直到(() => 夹具.关闭记录.length === 1, "关闭命令送达原生");
+                断言(夹具.关闭记录[0] === 3, `关闭的消息身份应为 3，实际 ${夹具.关闭记录[0]}`);
+                await 直到(() => !卡().some((节点) => 节点.textContent.includes("第三条通知正文")), "关闭后该消息卡消失");
+                断言(卡().length === 2, `展开态关闭一条后应保留其余两条，实际 ${卡().length}`);
+                按键("Escape");
+                await 直到(() => 根().dataset.state === "collapsed", "关闭后回到常态");
+
+                // 场景七：阅读期间消息过期，hover 暂存到回到常态才清空。
+                夹具.pushMessages([消息(4, "info", "第四条通知正文", "测试来源"), 消息(5, "error", "第五条通知正文", "监控")]);
+                await 直到(() => 单行()?.textContent === "第五条通知正文", "常态显示最新一条");
+                悬停();
+                await 直到(() => 根().dataset.state === "hover", "进入 hover 阅读");
+                夹具.pushMessages([]); // 后端到期清空，阅读视图应保留当前消息。
+                await 等待(200);
+                断言(
+                    卡().length === 1 && 摘要()?.textContent === "第五条通知正文",
+                    `阅读期暂存应保留当前消息，实际 ${卡().length} 张 / ${摘要()?.textContent}`,
+                );
+                按键("Escape");
+                await 直到(() => 根().dataset.state === "collapsed", "暂存消息后回到常态");
+                await 等待(120);
+                断言(卡().length === 0, `回到常态必须清空暂存消息，实际 ${卡().length}`);
+
+                // 场景八：坏载荷只报告，不覆盖已有消息，也不阻塞岛卡。
+                await 等待(400); // 等收起后的原生几何提交落定，再取基线高度。
+                const 无消息高度 = 盒().height;
+                夹具.pushRawMessages([{ id: 9 }]);
+                await 等待(200);
+                断言(卡().length === 0, `坏载荷不得生成消息卡，实际 ${卡().length}`);
+                断言(近似(盒().height, 无消息高度), `坏载荷不得改变岛卡高度，实际 ${盒().height}（基准 ${无消息高度}）`);
+                断言(根().isConnected && 盒().height > 0, "坏载荷后岛卡必须仍然可用");
+
+                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : "PASS 浮岛消息三态/关闭/阅读期暂存/通道降级");
+            };
+
+            运行().catch((错误) => {
+                report(`FAIL\n- ${错误 instanceof Error ? 错误.message : String(错误)}`);
+            });
+        </script>
+    </body>
+</html>

@@ -307,6 +307,7 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    flex: 1 1 auto; /* 占满内容区剩余高度，超出的节点裁掉，更新时间行始终留在底部。 */
     min-height: 0;
     overflow: hidden;
 }
@@ -398,6 +399,7 @@
 }
 
 .astrbot-tile__updated {
+    flex: none; /* 固定在内容底部，不被时间轴挤出。 */
     margin: auto 0 0;
     color: var(--fence-muted);
     font-size: max(10px, calc(var(--interface-font-size) - 3px));

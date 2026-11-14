@@ -2,6 +2,95 @@ use super::{ComponentRuntimeState, validate_manifest};
 use crate::contracts::{ComponentCapability, ComponentCapabilityDeclaration, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, WorkspaceRect};
 use serde_json::json;
 
+/// 岛布尔值沿用 ini 旗标规则，主题即使声明也不允许上岛。
+#[test]
+fn island_manifest_flags_and_theme_ignore()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-island-flags-{}", std::process::id())); // 本测试独占主题资产目录。
+    std::fs::create_dir_all(&directory).unwrap();
+    let base = "[plugin]\nid=plugin.test\nname=test\nversion=1.0.0\nentry=main.js\n"; // 合法插件必填字段。
+    for (extra, expected) in [("", false), ("island=1\n", true), ("island=0\n", false), ("island=true\n", true), ("island=false\n", false), ("island=yes\n", false), ("island=\n", false)]
+    {
+        let manifest = super::plugin_manifest_from_ini("test", &directory, &format!("{base}{extra}")).unwrap(); // 非法旗标不使注册失败。
+        assert_eq!(manifest.island, expected, "{extra}");
+    }
+    std::fs::write(directory.join("theme.css"), ":root {}").unwrap();
+    std::fs::write(directory.join("theme.json"), r#"{"appearance":{}}"#).unwrap();
+    for flag in ["1", "0", "true", "false", "junk"]
+    {
+        let manifest = super::plugin_manifest_from_ini("test", &directory, &format!("{base}role=theme\nstylesheet=theme.css\nisland={flag}\n")).unwrap(); // 主题声明全部忽略且照常注册。
+        assert!(!manifest.island);
+    }
+    assert!(!serde_json::from_str::<ComponentManifest>(super::LOCAL_CLOCK_MANIFEST).unwrap().island); // 官方 JSON 未声明时也为 false。
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// 官方音乐清单显式上岛；快照下发清单、合成实例与独立授权投影，不自动启用卡片。
+#[test]
+fn official_music_island_manifest_and_snapshot()
+{
+    let sources = [("official.music-control".to_string(), super::MUSIC_MANIFEST.to_string()), ("official.local-clock".to_string(), super::LOCAL_CLOCK_MANIFEST.to_string()), ("official.weather".to_string(), super::WEATHER_MANIFEST.to_string()), ("official.collect-box".to_string(), super::COLLECT_MANIFEST.to_string())]; // 使用随程序编译的真实官方清单。
+    let directory = std::env::temp_dir().join("desktop-tools-official-music-island"); // 不读取仓库插件目录，也不创建持久布局。
+    let runtime = ComponentRuntimeState::from_manifest_sources(&sources, Vec::new(), Vec::new(), &directory);
+    let (_, available) = runtime.island_snapshot(&[]).unwrap(); // 未勾选时仍向设置页下发可用岛卡。
+    assert_eq!(available.manifests.iter().filter(|manifest| manifest.island).map(|manifest| manifest.id.as_str()).collect::<Vec<_>>(), ["official.music-control"]);
+    assert!(available.instances.is_empty());
+    let (instances, snapshot) = runtime.island_snapshot(&["official.music-control".into()]).unwrap(); // 与 get_island_snapshot 使用同一投影函数。
+    assert_eq!(instances.len(), 1);
+    assert_eq!(instances[0].instance_id, "island.official.music-control");
+    assert_eq!(instances[0].component_id, "official.music-control");
+    assert_eq!(snapshot.instances.len(), 1);
+    assert_eq!(snapshot.instances[0].status, ComponentLoadStatus::Ready);
+    assert_eq!(snapshot.instances[0].entry.as_deref(), Some("official:music-control"));
+    assert_eq!(snapshot.instances[0].authorized_capabilities, [ComponentCapability::ReadCurrentMedia]);
+    assert!(runtime.instances.lock().unwrap().is_empty()); // 岛投影不能写工作区注册集合。
+}
+
+/// 合成岛实例按首次卡片顺序注册，并沿用清单逐实例能力边界，不占桌面格子配额。
+#[test]
+fn island_instances_preserve_order_and_capabilities()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-island-instances-{}", std::process::id())); // 解析不要求入口脚本已经存在。
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut plugins = Vec::new(); // 测试清单与实际 ini 解析共用同一路径。
+    for (id, extra) in [("plugin.clock", "island=1\nrequired_capabilities=read-host-time\n"), ("plugin.media", "island=true\nrequired_capabilities=read-current-media\n"), ("plugin.off", "island=false\n")]
+    {
+        plugins.push(super::plugin_manifest_from_ini("test", &directory, &format!("[plugin]\nid={id}\nname=test\nversion=1.0.0\nentry=main.js\nmaxTiles=1\n{extra}")).unwrap());
+    }
+    let runtime = ComponentRuntimeState::from_manifest_sources(&[], Vec::new(), plugins, &directory); // 只含本测试声明的清单。
+    let order = ["plugin.media", "plugin.missing", "plugin.off", "plugin.clock", "plugin.media"].map(str::to_string); // 包含未知、未启用与重复候选。
+    let instances = runtime.island_instances(&order); // 不调用格子配额校验，也不写入工作区。
+    assert_eq!(instances.iter().map(|instance| instance.instance_id.as_str()).collect::<Vec<_>>(), ["island.plugin.media", "island.plugin.clock"]);
+    for instance in &instances
+    {
+        assert!(instance.monitor_id.is_empty());
+        assert!(instance.projection_monitor_id.is_none() && instance.projection_bounds.is_none());
+        assert_eq!(instance.bounds, WorkspaceRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 });
+        assert_eq!(instance.state_version, 1);
+        assert_eq!(instance.state, json!({}));
+    }
+    let mut desktop = instances[1].clone(); // 工作区实例只通过原有工作区入口注册。
+    desktop.instance_id = "desktop.clock".into();
+    let workspace_snapshot = runtime.snapshot(&[desktop.clone()]).unwrap();
+    assert!(runtime.invoke_capability(&[desktop.clone()], "desktop.clock", ComponentCapability::ReadHostTime).is_ok());
+    assert!(runtime.invoke_capability(&[desktop.clone()], "desktop.clock", ComponentCapability::ReadCurrentMedia).is_err());
+    let (projected, snapshot) = runtime.island_snapshot(&order).unwrap(); // 岛按需投影，不修改共享工作区注册集合。
+    assert_eq!(projected, instances);
+    assert_eq!(runtime.instances.lock().unwrap().as_slice(), workspace_snapshot.instances.as_slice());
+    assert_eq!(runtime.invoke_capability(&[desktop], "island.plugin.clock", ComponentCapability::ReadHostTime).unwrap_err().code, "invalid-component-instance");
+    for registration in &snapshot.instances
+    {
+        assert_eq!(registration.status, ComponentLoadStatus::Ready);
+        assert_eq!(registration.authorized_capabilities, runtime.catalog().manifests[&registration.component_id].required_capabilities);
+    }
+    assert!(runtime.invoke_capability(&instances, "island.plugin.clock", ComponentCapability::ReadHostTime).is_ok());
+    assert_eq!(runtime.instances.lock().unwrap().as_slice(), workspace_snapshot.instances.as_slice()); // 能力查询也不污染工作区快照。
+    assert_eq!(runtime.revision.load(std::sync::atomic::Ordering::Relaxed), workspace_snapshot.revision);
+    assert_eq!(runtime.invoke_capability(&instances, "island.plugin.clock", ComponentCapability::ReadCurrentMedia).unwrap_err().code, "component-capability-denied");
+    assert_eq!(runtime.invoke_capability(&instances, "island.plugin.off", ComponentCapability::ReadHostTime).unwrap_err().code, "invalid-component-instance");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// 主题清单与数据经过真实目录扫描，错误均进入隔离失败集合。
 #[test]
 fn theme_manifest_validates_assets_and_appearance()
@@ -13,7 +102,7 @@ fn theme_manifest_validates_assets_and_appearance()
     std::fs::write(folder.join("theme.css"), ":root {}").unwrap();
     let base = "[plugin]\nid=plugin.theme\nname=theme\nversion=1.0.0\nentry=main.js\ncreatable=true\nmaxTiles=5\n"; // 保留原有 entry 校验。
     let theme = format!("{base}role=theme\nstylesheet=theme.css\n"); // 合法主题声明。
-    std::fs::write(folder.join("theme.json"), r##"{"appearance":{"accentColor":"#Ab12Cd","desktopAccentColor":"#123456","cornerRadius":12,"fontFamily":"Arial","fontSize":18},"notification":{"surface":"#0d1322","text":"#e8f1ff","success":"#00f5a0","weight":"semibold","cornerStyle":"bevel","cornerSize":12},"boot":{"durationMs":2600}}"##).unwrap();
+    std::fs::write(folder.join("theme.json"), r##"{"appearance":{"accentColor":"#Ab12Cd","desktopAccentColor":"#123456","cornerRadius":12,"islandRadius":16,"fontFamily":"Arial","fontSize":18},"notification":{"surface":"#0d1322","text":"#e8f1ff","success":"#00f5a0","weight":"semibold","cornerStyle":"bevel","cornerSize":12},"boot":{"durationMs":2600}}"##).unwrap();
     std::fs::write(folder.join("manifest.ini"), &theme).unwrap();
     let runtime = ComponentRuntimeState::new(&directory); // 检查运行时下发载荷。
     assert!(runtime.catalog().failures.is_empty());
@@ -25,6 +114,7 @@ fn theme_manifest_validates_assets_and_appearance()
     assert_eq!(manifest.script, "theme/main.js"); // 主题和格子一样可以带入口脚本。
     assert!(manifest.creatable); // 带入口脚本的主题可以声明创建格子。
     assert_eq!(manifest.max_tiles, 5);
+    assert_eq!(manifest.theme_appearance.as_ref().unwrap().island_radius, Some(16));
     assert_eq!(serde_json::to_value(manifest.theme_appearance).unwrap()["accentColor"], "#Ab12Cd");
     let notification = manifest.theme_notification.clone().expect("主题可以声明消息配色"); // 未声明的字段留给内置调色板。
     assert_eq!((notification.surface.as_deref(), notification.text.as_deref()), (Some("#0d1322"), Some("#e8f1ff")));
@@ -70,8 +160,8 @@ fn theme_manifest_validates_assets_and_appearance()
         std::fs::write(folder.join("theme.json"), body).unwrap();
         assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1, "{body}"); // 消息配色非法或字段未知都拒绝注册。
     }
-    std::fs::write(folder.join("theme.json"), r##"{"appearance":{"accentColor":"#Ab12Cd","desktopAccentColor":"#123456","cornerRadius":12,"fontFamily":"Arial","fontSize":18},"notification":{"surface":"#0d1322","text":"#e8f1ff","success":"#00f5a0","weight":"semibold","cornerStyle":"bevel","cornerSize":12},"boot":{"durationMs":2600}}"##).unwrap();
-    for body in [r##"{"appearance":{"accentColor":"red"}}"##, r##"{"appearance":{"desktopAccentColor":"#12345g"}}"##, r#"{"appearance":{"fontFamily":"Unknown"}}"#, r#"{"appearance":{"fontSize":19}}"#, r#"{"appearance":{"fontSize":11}}"#, r#"{"appearance":{"fontSize":12.5}}"#, r#"{"appearance":{"cornerRadius":13}}"#, r#"{"appearance":{"cornerRadius":-1}}"#, "{}", "not-json"]
+    std::fs::write(folder.join("theme.json"), r##"{"appearance":{"accentColor":"#Ab12Cd","desktopAccentColor":"#123456","cornerRadius":12,"islandRadius":16,"fontFamily":"Arial","fontSize":18},"notification":{"surface":"#0d1322","text":"#e8f1ff","success":"#00f5a0","weight":"semibold","cornerStyle":"bevel","cornerSize":12},"boot":{"durationMs":2600}}"##).unwrap();
+    for body in [r##"{"appearance":{"accentColor":"red"}}"##, r##"{"appearance":{"desktopAccentColor":"#12345g"}}"##, r#"{"appearance":{"fontFamily":"Unknown"}}"#, r#"{"appearance":{"fontSize":19}}"#, r#"{"appearance":{"fontSize":11}}"#, r#"{"appearance":{"fontSize":12.5}}"#, r#"{"appearance":{"islandRadius":17}}"#, r#"{"appearance":{"islandRadius":-1}}"#, r#"{"appearance":{"islandRadius":1.5}}"#, r#"{"appearance":{"islandRadius":"12"}}"#, r#"{"appearance":{"cornerRadius":13}}"#, r#"{"appearance":{"cornerRadius":-1}}"#, "{}", "not-json"]
     {
         std::fs::write(folder.join("theme.json"), &body).unwrap();
         assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1, "{body}");
@@ -82,7 +172,7 @@ fn theme_manifest_validates_assets_and_appearance()
     assert_eq!(ComponentRuntimeState::new(&directory).catalog().failures.len(), 1);
     std::fs::write(folder.join("theme.json"), r#"{"appearance":{}}"#).unwrap();
     let runtime = ComponentRuntimeState::new(&directory); // 缺省覆盖字段序列化为 null。
-    assert_eq!(serde_json::to_value(&runtime.catalog().manifests["plugin.theme"].theme_appearance).unwrap(), json!({"accentColor":null,"desktopAccentColor":null,"cornerRadius":null,"fontFamily":null,"fontSize":null}));
+    assert_eq!(serde_json::to_value(&runtime.catalog().manifests["plugin.theme"].theme_appearance).unwrap(), json!({"accentColor":null,"desktopAccentColor":null,"cornerRadius":null,"islandRadius":null,"fontFamily":null,"fontSize":null}));
     let linked = folder.join("linked"); // 无需管理员权限的目录联接，用于覆盖重解析点路径。
     let output = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&linked).arg(&folder).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
@@ -324,7 +414,7 @@ fn time_subscriptions_are_scoped_and_do_not_reuse_identity()
 #[test]
 fn manifest_rejects_an_unauthorized_capability_set()
 {
-    let manifest = ComponentManifest { theme_notification: None, theme_boot: None, id: "official.local-clock".to_string(), name: "本地时间".to_string(), version: String::new(), stylesheet_cache_key: String::new(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable: true, removable: true, persistence_version: 1, max_tiles: 0, tile_types: Vec::new(), repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
+    let manifest = ComponentManifest { theme_notification: None, theme_boot: None, id: "official.local-clock".to_string(), name: "本地时间".to_string(), version: String::new(), stylesheet_cache_key: String::new(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable: true, removable: true, island: false, persistence_version: 1, max_tiles: 0, tile_types: Vec::new(), repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
 
     assert_eq!(validate_manifest(&manifest).expect_err("空能力集合应被拒绝").code, "invalid-component-manifest");
 }
@@ -608,4 +698,54 @@ status = 1x1
     assert_eq!(super::parse_tile_size_declaration(" 320 X 180 , 200x120 "), Some((crate::contracts::TileSize { width: 320, height: 180 }, Some(crate::contracts::TileSize { width: 200, height: 120 }))));
     assert!(super::parse_tile_size_declaration("320x180, 200x120, 1x1").is_none());
     assert!(super::parse_tile_size_declaration("320x").is_none());
+}
+
+/// Debug 构建自动注入浮岛测试卡：不写偏好、不进卡片顺序，发布构建不注册。
+#[test]
+fn debug_island_card_is_injected_only_in_debug_builds()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-debug-island-{}", std::process::id())); // 不读取仓库插件目录。
+    std::fs::create_dir_all(&directory).unwrap();
+    let runtime = ComponentRuntimeState::new(&directory);
+    let empty = runtime.island_instances(&[]);
+    if cfg!(debug_assertions)
+    {
+        // 未勾选任何卡片也自动出现，且排在卡片顺序之后。
+        assert_eq!(empty.iter().map(|instance| instance.component_id.as_str()).collect::<Vec<_>>(), ["official.debug-island"]);
+        assert_eq!(empty[0].instance_id, "island.official.debug-island");
+        let with_music = runtime.island_instances(&["official.music-control".to_string()]);
+        assert_eq!(with_music.iter().map(|instance| instance.component_id.as_str()).collect::<Vec<_>>(), ["official.music-control", "official.debug-island"]);
+        // 浮岛快照带上清单与授权投影，浮岛页可以直接渲染；工作区与设置页的清单投影不含它。
+        let (instances, island) = runtime.island_snapshot(&[]).unwrap();
+        assert_eq!(instances.len(), 1);
+        assert!(island.manifests.iter().any(|manifest| manifest.id == "official.debug-island" && manifest.island));
+        assert_eq!(island.instances[0].entry.as_deref(), Some("official:debug-island"));
+        let workspace = runtime.snapshot(&[]).unwrap();
+        assert!(!workspace.manifests.iter().any(|manifest| manifest.id == "official.debug-island"), "测试卡不得进入设置页清单");
+        assert!(!runtime.capability_declarations().iter().any(|declaration| declaration.component_id == "official.debug-island"), "测试卡不是工作区格子");
+        // 不写偏好：重复读取稳定，不因快照或能力声明而变化。
+        assert_eq!(runtime.island_instances(&[]), empty);
+    }
+    else
+    {
+        assert!(empty.is_empty(), "发布构建不注入测试卡");
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// 测试卡清单只在 Debug 构建注册，且沿用调试入口白名单。
+#[test]
+fn debug_island_manifest_follows_debug_gate()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-debug-island-manifest-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let runtime = ComponentRuntimeState::new(&directory);
+    let (_, island) = runtime.island_snapshot(&[]).unwrap();
+    assert_eq!(island.manifests.iter().any(|manifest| manifest.id == "official.debug-island"), cfg!(debug_assertions));
+    // 同一身份换成非调试入口时无论如何都拒绝注册。
+    let mut manifest: ComponentManifest = serde_json::from_str(super::DEBUG_ISLAND_MANIFEST).unwrap();
+    assert_eq!(validate_manifest(&manifest), if cfg!(debug_assertions) { Ok(()) } else { Err(crate::contracts::ComponentRuntimeError::invalid_manifest("插件前端入口不受支持")) });
+    manifest.entry = "official:debug-test".to_string();
+    assert!(validate_manifest(&manifest).is_err(), "测试卡身份不接受其它入口");
+    std::fs::remove_dir_all(directory).unwrap();
 }

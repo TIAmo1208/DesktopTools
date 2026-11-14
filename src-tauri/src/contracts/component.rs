@@ -45,6 +45,7 @@ pub struct ThemeAppearance
     pub accent_color: Option<String>,         // 界面强调色。
     pub desktop_accent_color: Option<String>, // 桌面强调色。
     pub corner_radius: Option<u32>,           // 共用圆角。
+    pub island_radius: Option<u32>,           // 岛展开卡圆角。
     pub font_family: Option<String>,          // 系统字体或本主题自带字体的族名。
     pub font_size: Option<u32>,               // 正文字号。
 }
@@ -188,6 +189,9 @@ pub struct ComponentManifest
     /// 用户是否可移除该组件的实例。JSON 缺省为 false；插件 ini 缺省为 true。
     #[serde(default)]
     pub removable: bool,
+    /// 插件是否可上岛；官方 JSON 缺省为 false。
+    #[serde(default)]
+    pub island: bool,
     /// 桌面格子数量上限。0 表示不限。
     #[serde(default)]
     pub max_tiles: u32,

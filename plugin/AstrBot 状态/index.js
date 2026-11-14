@@ -368,6 +368,7 @@ export function messagesView(snapshot, nowMs) {
         bars,
         peakText: peak ? `峰值 ${formatNumber(peak.count)}（${formatClock(peak.ts)}）` : "",
         emptyChart: series.length === 0,
+        chartHint: series.length === 0 ? "逐小时趋势未上报" : "", // 趋势缺失时给说明，格子不留一整块空白。
     };
 }
 
@@ -534,11 +535,11 @@ export function createStatusStore({ invoke, listen, now = () => Date.now(), samp
         return true;
     };
 
-    /** 读取 listen 通道缓冲；读到即消费，序号只增不减。 */
-    const readPush = async () => {
-        if (!invoke || !ownerId || !pushReady || disposed) return;
+    /** 读取 listen 通道缓冲；读到即消费，序号只增不减。注册期间用捕获的实例，避免 owner 切换后读错实例。 */
+    const readPush = async (instanceId = ownerId) => {
+        if (!invoke || !instanceId || !pushReady || disposed) return;
         try {
-            const entries = await invoke("read_loopback_channel", { instanceId: ownerId, channelId: PUSH_CHANNEL, afterSequence });
+            const entries = await invoke("read_loopback_channel", { instanceId, channelId: PUSH_CHANNEL, afterSequence });
             let changed = false;
             for (const entry of Array.isArray(entries) ? entries : []) {
                 if (Number.isSafeInteger(entry?.sequence)) afterSequence = Math.max(afterSequence, entry.sequence);
@@ -551,12 +552,12 @@ export function createStatusStore({ invoke, listen, now = () => Date.now(), samp
         }
     };
 
-    /** 经 8766 拉取一次快照，作为推送缺失时的兜底。 */
-    const requestSnapshot = async ({ validateToken = false } = {}) => {
-        if (!invoke || !ownerId || !requestReady || requesting || disposed) return;
+    /** 经 8766 拉取一次快照，作为推送缺失时的兜底。注册期间用捕获的实例。 */
+    const requestSnapshot = async ({ validateToken = false, instanceId = ownerId } = {}) => {
+        if (!invoke || !instanceId || !requestReady || requesting || disposed) return;
         requesting = (async () => {
             try {
-                const response = await invoke("request_loopback", { instanceId: ownerId, channelId: REQUEST_CHANNEL, method: "GET", path: "/v1/snapshot" });
+                const response = await invoke("request_loopback", { instanceId, channelId: REQUEST_CHANNEL, method: "GET", path: "/v1/snapshot" });
                 if (response?.status === 401) {
                     tokenInvalid = true; // 对端明确拒绝 token：给可感知状态，不静默失败。
                     needsPairing = false;
@@ -625,7 +626,7 @@ export function createStatusStore({ invoke, listen, now = () => Date.now(), samp
                 });
                 pushReady = true;
                 afterSequence = 0;
-                await readPush(); // 先读一次缓冲，宿主随后才开始发通知。
+                await readPush(instanceId); // 先读一次缓冲，宿主随后才开始发通知。
             } catch (error) {
                 pushReady = false;
                 lastError = String(error?.message ?? error);
@@ -657,7 +658,7 @@ export function createStatusStore({ invoke, listen, now = () => Date.now(), samp
                 }
                 warn(`拉取通道注册失败：${lastError}`);
             }
-            maybeRefresh();
+            if (!needsPairing && !tokenInvalid && (!snapshot || isDisplayStale(snapshot.collectedAt, now()))) void requestSnapshot({ instanceId }); // 首次注册后用捕获实例兜底一次，不跟随全局 owner。
         })().finally(() => {
             registering = undefined;
         });
@@ -1027,16 +1028,16 @@ function createMessagesContent(content, notice) {
             setHidden(content, false);
             notice.hide();
             setText(total, view.totalText);
-            setHidden(chart, view.emptyChart);
-            setHidden(labels, view.emptyChart);
+            setHidden(chart, false); // 趋势缺失也保留 24 槽骨架，格子不留空白。
+            setHidden(labels, false);
             view.bars.forEach((bar, index) => {
                 const slot = columns[index];
                 setTitle(slot.column, bar.empty ? "" : bar.title);
                 setHidden(slot.fill, bar.empty);
                 if (!bar.empty) setHeight(slot.fill, bar.height);
             });
-            setText(peak, view.peakText);
-            setHidden(peak, !view.peakText);
+            setText(peak, view.peakText || view.chartHint);
+            setHidden(peak, !(view.peakText || view.chartHint));
         },
     };
 }

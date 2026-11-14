@@ -15,6 +15,8 @@ pub(crate) mod loopback;
 /// 官方插件前端注册表当前支持的入口。
 const LOCAL_CLOCK_ENTRY: &str = "official:local-clock";
 const MUSIC_ENTRY: &str = "official:music-control";
+const DEBUG_ISLAND_ENTRY: &str = "official:debug-island"; // 仅 Debug 构建注册的浮岛测试卡入口。
+const DEBUG_ISLAND_ID: &str = "official.debug-island";
 const PLUGIN_SLOT_ENTRY: &str = "plugin:slot"; // 插件共享的精确入口，不接受任意 URL。
 
 /// 内置官方插件清单来源。
@@ -22,6 +24,7 @@ const LOCAL_CLOCK_MANIFEST: &str = include_str!("../../components/official.local
 const MUSIC_MANIFEST: &str = include_str!("../../components/official.music-control.json");
 const COLLECT_MANIFEST: &str = include_str!("../../components/official.collect-box.json");
 const WEATHER_MANIFEST: &str = include_str!("../../components/official.weather.json");
+const DEBUG_ISLAND_MANIFEST: &str = include_str!("../../components/official.debug-island.json"); // 仅 Debug 构建注册的浮岛测试卡清单。
 
 static TIME_CONSUMERS: LazyLock<(Mutex<HashMap<u64, String>>, Condvar)> = LazyLock::new(|| (Mutex::new(HashMap::new()), Condvar::new())); // 独立订阅身份映射到原生宿主。
 static NEXT_TIME_SUBSCRIPTION: AtomicU64 = AtomicU64::new(1); // 重载后的身份不复用。
@@ -64,6 +67,7 @@ impl ComponentRuntimeState
         if cfg!(debug_assertions)
         {
             sources.push(("official.debug-test".to_string(), include_str!("../../components/official.debug-test.json").to_string()));
+            sources.push((DEBUG_ISLAND_ID.to_string(), DEBUG_ISLAND_MANIFEST.to_string())); // 只有 Debug 构建注入浮岛测试卡。
         }
         let plugins = load_plugin_folders(plugin_directory, &mut failures); // 只认一层子目录里的 manifest.ini，根上的旧 json 不读。
         Self::from_manifest_sources(&sources, failures, plugins, plugin_directory)
@@ -109,7 +113,33 @@ impl ComponentRuntimeState
     /// 返回全部已注册清单声明的创建与移除能力，供工作区命令校验可操作范围。
     pub fn capability_declarations(&self) -> Vec<ComponentCapabilityDeclaration> { self.catalog().declarations.clone() }
 
-    /// 校验并注册统一工作区的全部插件实例。
+    /// 按卡片顺序产出已注册且允许上岛的合成实例；岛不持有桌面布局，不计入 max_tiles，不调用 enforce_plugin_tile_limit。
+    /// 岛注册沿用 registration_snapshot 逐实例校验，不写工作区注册集合；能力调用只使用临时合并视图。
+    pub(crate) fn island_instances(&self, card_order: &[String]) -> Vec<ComponentInstanceSnapshot>
+    {
+        let catalog = self.catalog(); // 仅依据已通过注册校验的清单。
+        let mut seen = HashSet::new(); // 重复卡片只保留首次出现位置。
+        let mut instances = card_order.iter().filter(|id| seen.insert(id.as_str()) && catalog.manifests.get(id.as_str()).is_some_and(|manifest| manifest.island)).map(|id| island_instance(id.as_str())).collect::<Vec<_>>();
+        // Debug 构建自动补一张浮岛测试卡：不写偏好、不进 islandCardOrder、不进设置页列表，也不参与排序持久化。
+        if cfg!(debug_assertions) && catalog.manifests.contains_key(DEBUG_ISLAND_ID) && seen.insert(DEBUG_ISLAND_ID)
+        {
+            instances.push(island_instance(DEBUG_ISLAND_ID));
+        }
+        instances
+    }
+
+    /// 按需生成岛注册投影，不修改工作区注册集合或其修订号。
+    pub(crate) fn island_snapshot(&self, card_order: &[String]) -> Result<(Vec<ComponentInstanceSnapshot>, ComponentRuntimeSnapshot), ComponentRuntimeError>
+    {
+        let instances = self.island_instances(card_order); // 岛独立合成，不持有布局。
+        let registrations = instances.iter().map(|instance| self.registration_snapshot(instance)).collect(); // 与工作区相同的逐实例授权。
+        let catalog = self.catalog();
+        let mut manifests = catalog.manifests.values().cloned().collect::<Vec<_>>(); // 设置页也需要未上岛但允许上岛的清单。
+        manifests.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok((instances, ComponentRuntimeSnapshot { revision: self.revision.load(Ordering::Relaxed), manifests, instances: registrations, failures: catalog.failures.clone() }))
+    }
+
+    /// 校验并注册统一工作区的全部插件实例；岛投影不进入该集合。
     pub fn snapshot(&self, instances: &[ComponentInstanceSnapshot]) -> Result<ComponentRuntimeSnapshot, ComponentRuntimeError>
     {
         let registrations = instances.iter().filter(|instance| cfg!(debug_assertions) || instance.component_id != "official.debug-test").map(|instance| self.registration_snapshot(instance)).collect::<Vec<_>>(); // 当前布局中每个实例互相隔离的注册结果。
@@ -120,7 +150,8 @@ impl ComponentRuntimeState
             self.revision.fetch_add(1, Ordering::Relaxed);
         }
         let catalog = self.catalog(); // 发布当前清单，不在这里改工作区。
-        let mut manifests = catalog.manifests.values().cloned().collect::<Vec<_>>(); // 稳定排序后发布的清单集合。
+        // 浮岛测试卡只下发给浮岛页面，不进入工作区与设置页的清单投影。
+        let mut manifests = catalog.manifests.values().filter(|manifest| !(cfg!(debug_assertions) && manifest.id == DEBUG_ISLAND_ID)).cloned().collect::<Vec<_>>(); // 稳定排序后发布的清单集合。
         manifests.sort_by(|first, second| first.id.cmp(&second.id));
         let failures = catalog.failures.clone();
         drop(catalog);
@@ -130,7 +161,12 @@ impl ComponentRuntimeState
     /// 校验实例声明后执行一个已授权宿主能力。
     pub fn invoke_capability(&self, instances: &[ComponentInstanceSnapshot], instance_id: &str, capability: ComponentCapability) -> Result<ComponentCapabilityResult, ComponentRuntimeError>
     {
-        self.authorize_capability(instances, instance_id, capability)?; // 能力调用前同步并校验当前实例注册结果。
+        let instance = instances.iter().find(|instance| instance.instance_id == instance_id).ok_or_else(|| ComponentRuntimeError::invalid_instance("插件实例不存在"))?; // 只信调用方提供的权威临时视图。
+        let registration = self.registration_snapshot(instance); // 纯校验，不为能力读取改写工作区注册集合。
+        if registration.status != ComponentLoadStatus::Ready || !registration.authorized_capabilities.contains(&capability)
+        {
+            return Err(ComponentRuntimeError::capability_denied(capability));
+        }
         let payload = match capability
         {
             ComponentCapability::ReadHostTime => json!({
@@ -140,7 +176,6 @@ impl ComponentRuntimeState
             ComponentCapability::ProbeServiceStatus => crate::commands::probe::probe(&json!({ "service": "astrbot" })),
             ComponentCapability::LoopbackChannel => json!({}), // 通道数据只从三条通道命令交付，能力调用本身没有载荷。
         }; // 当前授权能力的最小结构化结果。
-        crate::log_debug!("插件：宿主能力调用完成，实例={}，能力={capability:?}", instance_id);
         Ok(ComponentCapabilityResult { instance_id: instance_id.to_string(), capability, payload })
     }
 
@@ -316,7 +351,8 @@ impl ComponentRuntimeState
 /// 提取已注册清单声明的创建与移除能力，并按插件身份稳定排序。
 fn capability_declarations(manifests: &HashMap<String, ComponentManifest>) -> Vec<ComponentCapabilityDeclaration>
 {
-    let mut declarations = manifests.values().map(|manifest| ComponentCapabilityDeclaration { component_id: manifest.id.clone(), creatable: manifest.creatable, removable: manifest.removable, max_tiles: manifest.max_tiles, tile_types: manifest.tile_types.clone() }).collect::<Vec<_>>(); // 每个成功注册清单对应一项能力声明。
+    // 浮岛测试卡不是工作区格子，也不进入创建与移除能力声明。
+    let mut declarations = manifests.values().filter(|manifest| !(cfg!(debug_assertions) && manifest.id == DEBUG_ISLAND_ID)).map(|manifest| ComponentCapabilityDeclaration { component_id: manifest.id.clone(), creatable: manifest.creatable, removable: manifest.removable, max_tiles: manifest.max_tiles, tile_types: manifest.tile_types.clone() }).collect::<Vec<_>>(); // 每个成功注册清单对应一项能力声明。
     declarations.sort_by(|first, second| first.component_id.cmp(&second.component_id));
     declarations
 }
@@ -473,6 +509,15 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     let max_tiles = plugin_max_tiles(&id, values.get("maxTiles").map(String::as_str)); // 缺省和 0 都不限。
     let creatable = plugin_flag(&id, "creatable", values.get("creatable").map(String::as_str), false); // 缺省不能添加到桌面。
     let removable = plugin_flag(&id, "removable", values.get("removable").map(String::as_str), true); // 缺省允许用户移除格子。
+    let island = if role == ComponentRole::Theme && values.contains_key("island")
+    {
+        crate::log_warn!("插件：主题忽略 island 声明，身份={id}");
+        false
+    }
+    else
+    {
+        plugin_flag(&id, "island", values.get("island").map(String::as_str), false)
+    }; // 主题不上岛，普通插件缺省关闭。
     let repository = plugin_repository(&id, values.get("repository").map(String::as_str)); // 非法地址视同未声明。
     let description = plugin_description(values.get("description").map(String::as_str)); // ini 按行切，换行写成 \n。
     let author = values.get("author").map(|value| value.trim().to_string()).unwrap_or_default(); // 缺省没有作者。
@@ -482,7 +527,7 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     // 主题默认没有格子；带入口脚本时按清单声明放行，供主题自带的格子使用（同一插件里既能换肤又能添格子）。
     let creatable = creatable && (role == ComponentRole::Tile || !script.is_empty());
     let max_tiles = if role == ComponentRole::Theme && !creatable { 0 } else { max_tiles }; // 不能创建的主题忽略格子上限。
-    let manifest = ComponentManifest { id, name, version, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, stylesheet_cache_key, theme_appearance, theme_notification, theme_boot, theme_fonts, required_capabilities, creatable, removable, persistence_version: 1, max_tiles, tile_types, repository, description, author };
+    let manifest = ComponentManifest { id, name, version, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, stylesheet_cache_key, theme_appearance, theme_notification, theme_boot, theme_fonts, required_capabilities, creatable, removable, island, persistence_version: 1, max_tiles, tile_types, repository, description, author };
     validate_manifest(&manifest).map_err(|error| error.message)?;
     Ok(manifest)
 }
@@ -654,7 +699,7 @@ fn confirm_plugin_asset(folder: &std::path::Path, entry: &str, extension: &str, 
     }
     if missing
     {
-        crate::log_warn!("插件：入口脚本不存在，仍注册清单，入口={entry}");
+        crate::log_debug!("插件：入口脚本不存在，仍注册清单，入口={entry}");
         return Ok(());
     }
     let root = std::fs::canonicalize(folder).map_err(|error| format!("读取插件资产失败：{error}"))?;
@@ -732,6 +777,10 @@ fn read_theme_data(folder: &std::path::Path, folder_name: &str) -> Result<(Theme
     if appearance.corner_radius.is_some_and(|value| value > 12)
     {
         return Err("主题圆角超出范围".to_string());
+    }
+    if appearance.island_radius.is_some_and(|value| value > 16)
+    {
+        return Err("主题岛圆角超出范围".to_string());
     }
     if appearance.font_size.is_some_and(|value| !(12..=18).contains(&value))
     {
@@ -1033,10 +1082,11 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
     let clock_manifest = manifest.id == "official.local-clock" && manifest.entry == LOCAL_CLOCK_ENTRY; // 官方身份与入口必须成对。
     let music_manifest = manifest.id == "official.music-control" && manifest.entry == MUSIC_ENTRY;
     let debug_manifest = cfg!(debug_assertions) && manifest.id == "official.debug-test" && manifest.entry == "official:debug-test"; // 仅 Debug 可注册测试入口。
+    let debug_island_manifest = cfg!(debug_assertions) && manifest.id == DEBUG_ISLAND_ID && manifest.entry == DEBUG_ISLAND_ENTRY; // 浮岛测试卡同样只在 Debug 构建注册。
     let collect_manifest = manifest.id == "official.collect-box" && manifest.entry == "official:collect-box";
     let weather_manifest = manifest.id == "official.weather" && manifest.entry == "official:weather";
     let plugin_slot = manifest.id.starts_with("plugin.") && manifest.entry == PLUGIN_SLOT_ENTRY; // 插件只能进入宿主槽，不能选择 URL 或官方入口。
-    if !clock_manifest && !music_manifest && !debug_manifest && !collect_manifest && !weather_manifest && !plugin_slot
+    if !clock_manifest && !music_manifest && !debug_manifest && !debug_island_manifest && !collect_manifest && !weather_manifest && !plugin_slot
     {
         return Err(ComponentRuntimeError::invalid_manifest("插件前端入口不受支持"));
     }
@@ -1044,7 +1094,7 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
     {
         return Err(ComponentRuntimeError::invalid_manifest("插件持久化版本无效"));
     }
-    if (debug_manifest || collect_manifest || weather_manifest) && manifest.required_capabilities.is_empty()
+    if (debug_manifest || debug_island_manifest || collect_manifest || weather_manifest) && manifest.required_capabilities.is_empty()
     {
         return Ok(());
     }
@@ -1074,6 +1124,12 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
         return Err(ComponentRuntimeError::invalid_manifest("插件请求了未授权宿主能力"));
     }
     Ok(())
+}
+
+/// 合成一张浮岛实例：不持有布局、不写工作区注册集合。
+fn island_instance(component_id: &str) -> ComponentInstanceSnapshot
+{
+    ComponentInstanceSnapshot { instance_id: format!("island.{component_id}"), component_id: component_id.to_string(), monitor_id: String::new(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 }, state_version: 1, state: json!({}) }
 }
 
 /// 创建不影响其他实例的插件加载失败快照。

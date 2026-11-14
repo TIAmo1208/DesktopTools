@@ -15,7 +15,7 @@ use std::{
     time::Instant,
 };
 use surface::Surface;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use windows::{
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM},
@@ -49,6 +49,31 @@ pub struct ToastRequest
     pub loading: Option<bool>, // 加载状态图标。
     #[serde(rename = "durationMs")]
     pub duration_ms: u32, // 调用方明确传入的显示毫秒数，不含悬停暂停。
+}
+
+/// 浮岛消息投影：与原生消息同一队列的只读快照，不含动画帧与命中几何。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IslandMessage
+{
+    pub id: u64,             // 队列内稳定身份，页面用它关闭同一条消息。
+    pub r#type: String,      // info / success / warning / error。
+    pub content: String,     // 完整正文，三态下的截断由页面决定。
+    pub source: String,      // 来源标识。
+    pub loading: bool,       // 加载状态图标。
+    pub received_at_ms: u64, // 到达时刻的墙钟毫秒。
+}
+
+/// 浮岛消息集合变化事件；载荷是完整投影，页面不需要再次读取。
+const ISLAND_MESSAGES_EVENT: &str = "island-messages-changed";
+
+/// 当前浮岛可见的消息：排除已进入离场的项，按到达顺序返回。
+fn project_island_messages<'a>(items: impl Iterator<Item = &'a state::ToastItem>) -> Vec<IslandMessage>
+{
+    items
+        .filter(|item| !item.closing)
+        .map(|item| IslandMessage { id: item.id, r#type: item.request.r#type.clone(), content: item.request.content.clone(), source: item.request.source.clone(), loading: item.request.loading.unwrap_or(false), received_at_ms: item.received_at_ms })
+        .collect()
 }
 
 /// 从界面主题及系统设置解析出的绘图参数。
@@ -224,12 +249,14 @@ struct Runtime
     frames: Vec<Frame>,                  // 上一帧呈现区域。
     scale: f32,                          // 主显示器 DPI。
     hover_id: Option<u64>,               // 关闭按钮悬停。
+    island_messages: Vec<IslandMessage>, // 上一次外发的浮岛投影，用于跳过重复广播。
 }
 
 /// 持有主显示器顶层窗口和消息队列。
 pub struct ToastManager
 {
     hwnd: AtomicIsize,       // 退出时置零，允许重复清理。
+    app: Option<AppHandle>,  // 浮岛消息事件的外发句柄；单元测试没有宿主时为空。
     runtime: Mutex<Runtime>, // 唯一状态锁。
 }
 const SETTINGS_CHANGED: u32 = WM_APP + 41; // 设置变化的异步窗口通知。
@@ -237,12 +264,12 @@ const SETTINGS_CHANGED: u32 = WM_APP + 41; // 设置变化的异步窗口通知�
 impl ToastManager
 {
     /// 创建无激活原生窗口并应用初始偏好。
-    pub fn install(preferences: ApplicationPreferences, palette: Option<ThemeNotification>) -> Result<Arc<Self>, String>
+    pub fn install(app: Option<AppHandle>, preferences: ApplicationPreferences, palette: Option<ThemeNotification>) -> Result<Arc<Self>, String>
     {
         let appearance = Appearance::resolve(&preferences, false, true).with_palette(palette); // 系统值随后在窗口线程解析。
-        let manager = Arc::new(Self { hwnd: AtomicIsize::new(0), runtime: Mutex::new(Runtime { suppressed: false, queue: ToastState::default(), preferences, appearance, frames: Vec::new(), scale: 1.0, hover_id: None }) }); // HWND 引用的稳定地址。
+        let manager = Arc::new(Self { hwnd: AtomicIsize::new(0), app, runtime: Mutex::new(Runtime { suppressed: false, queue: ToastState::default(), preferences, appearance, frames: Vec::new(), scale: 1.0, hover_id: None, island_messages: Vec::new() }) }); // HWND 引用的稳定地址。
         let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(|error| error.to_string())?; // 当前模块。
-        let class = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(window_proc), hInstance: HINSTANCE(module.0), lpszClassName: w!("DesktopToolsNativeToast"), ..Default::default() }; // 无不透明背景刷。
+        let class = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(window_proc), hInstance: HINSTANCE(module.0), lpszClassName: w!("DesktopToolsNativeToast"), hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(), ..Default::default() }; // 无不透明背景刷；默认箭头避免沿用上一个窗口的悬停光标。
         if unsafe { RegisterClassExW(&class) } == 0 && unsafe { windows::Win32::Foundation::GetLastError() } != windows::Win32::Foundation::ERROR_CLASS_ALREADY_EXISTS
         {
             return Err("注册 Toast 窗口类失败".into());
@@ -272,6 +299,59 @@ impl ToastManager
                 runtime.queue.enqueue(request, 64.0, Instant::now(), animated);
             }
             crate::platform::windows::refresh_policy::check_before_notification();
+            manager.refresh();
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    /// 页面首次挂载或广播丢失时读取当前投影，与事件共用同一份过滤规则。
+    pub fn island_messages(&self) -> Vec<IslandMessage>
+    {
+        match self.runtime.lock()
+        {
+            Ok(runtime) => project_island_messages(runtime.queue.items.iter()),
+            Err(_) => Vec::new(), // 状态锁不可用时按没有消息处理，页面回落到岛卡。
+        }
+    }
+
+    /// 集合变化时广播完整投影；集合未变不重复外发，动画帧不产生事件。
+    fn sync_island_messages(&self)
+    {
+        let messages = {
+            let Ok(runtime) = self.runtime.lock()
+            else
+            {
+                return;
+            };
+            let messages = project_island_messages(runtime.queue.items.iter()); // 与命令读取同一投影。
+            if messages == runtime.island_messages
+            {
+                return; // 同一集合（含仅动画推进）不外发。
+            }
+            messages
+        };
+        if let Some(app) = &self.app
+            && let Err(error) = app.emit(ISLAND_MESSAGES_EVENT, messages.clone())
+        {
+            crate::log_warn!("浮岛消息：广播失败，下次刷新重试，错误={error}");
+            return; // 不推进缓存，下一次刷新重新外发同一集合。
+        }
+        if let Ok(mut runtime) = self.runtime.lock()
+        {
+            runtime.island_messages = messages; // 只有成功外发才推进，避免事件丢失后永久静默。
+        }
+    }
+
+    /// 页面关闭单条消息：与原生关闭按钮共用同一条离场路径。
+    pub fn dismiss(self: &Arc<Self>, app: &AppHandle, id: u64) -> Result<(), String>
+    {
+        let manager = Arc::clone(self); // 主线程任务完成前保持有效。
+        app.run_on_main_thread(move || {
+            if let Ok(mut runtime) = manager.runtime.lock()
+            {
+                let animated = runtime.appearance.animated; // 当前有效动画。
+                runtime.queue.close(id, Instant::now(), animated);
+            }
             manager.refresh();
         })
         .map_err(|error| error.to_string())
@@ -352,7 +432,9 @@ impl ToastManager
     /// 绘制失败停止计时器，避免错误刷屏。
     fn refresh(&self)
     {
-        if let Err(error) = self.paint()
+        let result = self.paint(); // 先推进原生窗口，再同步只读投影。
+        self.sync_island_messages(); // 集合变化必须外发，即使本帧绘制失败，否则页面会停在旧消息。
+        if let Err(error) = result
         {
             unsafe {
                 let _ = KillTimer(Some(self.hwnd()), 1);
@@ -572,6 +654,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 LRESULT(0)
             }
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+            WM_SETCURSOR =>
+            {
+                // 鼠标从桌面格子边缘移入消息时重置光标，不沿用上一个窗口的调节手柄图标。
+                let _ = SetCursor(Some(LoadCursorW(None, IDC_ARROW).unwrap_or_default()));
+                LRESULT(1)
+            }
             WM_MOUSEMOVE =>
             {
                 use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};

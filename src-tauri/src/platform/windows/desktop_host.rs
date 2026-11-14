@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::num::NonZeroIsize;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,9 +25,13 @@ use windows::Win32::UI::WindowsAndMessaging::{CS_HREDRAW, CS_VREDRAW, CreateWind
 use windows::core::{BOOL, Interface, PCWSTR, w};
 use wry::http::{Request, Response, StatusCode};
 use wry::raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle};
-use wry::{MemoryUsageLevel, PageLoadEvent, Rect as WryRect, WebView, WebViewBuilder, WebViewExtWindows, dpi};
+use wry::{MemoryUsageLevel, PageLoadEvent, Rect as WryRect, WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows, dpi};
 
 use crate::contracts::{DesktopHostMonitor, DesktopItem, HitRegion};
+
+/// 开发构建的 WebView2 参数：保留 wry 默认项，附加本机 CDP 端口；发布构建不暴露调试端口。
+#[cfg(debug_assertions)]
+pub(crate) const DEV_WEBVIEW2_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port=9223";
 
 /// 独立页面向正式应用共享状态发送命令的桥接接口。
 pub type NativeCommandHandler = Arc<dyn Fn(&str, Value) -> Result<Value, Value> + Send + Sync + 'static>;
@@ -242,7 +247,7 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
           pauseSince ||= performance.now();
           if (performance.now() - pauseSince >= 300) setPaused(true);
         } else { pauseSince = 0; setPaused(false); }
-      }
+      } else { setPaused(foreground?.locked === true); } // 独立岛没有桌面 monitorId，解锁也须恢复。
     } catch { if (requested === policyGeneration && foreground?.locked !== true) { pauseSince = 0; setPaused(false); } }
     finally {
       if (requested === policyGeneration && pauseSince && !refreshPaused) policyTimer = window.setTimeout(checkRefresh, 350);
@@ -251,6 +256,7 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
 
   const eventCommands = {
     "music-session-changed": "get_current_music_session",
+    "music-timeline-changed": "get_music_details",
     "preferences-changed": "get_preferences",
     "windows-accent-color-changed": "get_windows_accent_color",
     "desktop-item-snapshot-changed": "get_current_desktop_item_snapshot",
@@ -258,6 +264,7 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
     "workspace-snapshot-changed": "get_current_workspace_snapshot",
     "component-runtime-snapshot-changed": "get_current_component_runtime_snapshot",
     "component-host-event": "get_current_component_host_event",
+    "island-messages-changed": "get_island_messages",
   };
 
   const eventSubscriptions = new Map(); // 已迁移事件的本页订阅，不保留历史消息。
@@ -280,14 +287,19 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
   // 权威布局、桌面项目及组件注册事件使用真实投递。
   const listen = async (eventName, handler) => {
     if (
+      eventName === "plugin-settings-changed" ||
       eventName === "folder-portal-changed" ||
       eventName === "collect-items-changed" ||
       eventName === "weather-configuration-changed" ||
       eventName === "weather-forecast-changed" ||
       eventName === "audio-spectrum-changed" ||
-      eventName === "audio-spectrum-device-changed"
+      eventName === "audio-spectrum-device-changed" ||
+      eventName === "popup-layer-result"
     ) {
-      const subscription = { receive: (payload) => { if (!refreshPaused || eventName === "weather-configuration-changed" || payload?.error || payload?.deletedName) handler(payload); } }; // 主动删除即使暂停也必须移除会话缓存。
+      // 刷新暂停只用来省掉重建数据的开销：一次性的请求完成消息与主动删除必须照常送达，
+      // 否则弹层确认/菜单选择的 Promise 永远等不到结果。
+      const always = eventName === "popup-layer-result" || eventName === "weather-configuration-changed";
+      const subscription = { receive: (payload) => { if (!refreshPaused || always || payload?.error || payload?.deletedName) handler(payload); } }; // 主动删除即使暂停也必须移除会话缓存。
       if (!eventSubscriptions.has(eventName)) eventSubscriptions.set(eventName, new Set());
       eventSubscriptions.get(eventName).add(subscription);
       return () => eventSubscriptions.get(eventName)?.delete(subscription);
@@ -337,6 +349,9 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
 })();
 "#;
 
+/// 各独立来源复用原生桥实现，但只注入自身命令地址。
+pub(crate) fn native_bridge_script(origin: &str) -> String { NATIVE_BRIDGE_SCRIPT.replace("__DESKTOP_NATIVE_ORIGIN__", &serde_json::to_string(origin).expect("宿主地址序列化失败")).replace("__REFRESH_POLICY_FALLBACK__", if super::refresh_policy::fallback_enabled() { "true" } else { "false" }) }
+
 /// 将保存的原始整数恢复为 HWND。
 fn raw_hwnd(raw: isize) -> HWND { HWND(raw as *mut c_void) }
 
@@ -346,11 +361,15 @@ fn host_event_kind(payload: &str) -> Option<String> { serde_json::from_str::<Val
 /// loopback 数据通知由通道订阅驱动，不要求该屏存在时间消费者；其它组件宿主事件仍按时间消费者过滤。
 fn component_host_event_needs_time_consumers(payload: &str) -> bool { !host_event_kind(payload).is_some_and(|kind| crate::component_runtime::loopback::is_event_kind(&kind)) }
 
+/// 需要转发到原生 WebView 的宿主事件白名单；独立岛与逐屏宿主共用同一份。
+/// 新增事件必须同时写入注入桥的 `eventCommands`，否则岛侧 `listen` 会静默丢弃。
+const FORWARDED_EVENTS: &[&str] = &[crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "music-timeline-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", "island-messages-changed", super::popup_layer::POPUP_RESULT_EVENT, crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, crate::contracts::PLUGIN_EVENT_CHANNEL];
+
 /// 将现有宿主事件转交 UI 线程的原生 WebView，页面重载后自动使用新的订阅入口。
 pub(crate) fn install_host_events(app: &AppHandle)
 {
     super::refresh_policy::start_events(app);
-    for name in [crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, crate::contracts::PLUGIN_EVENT_CHANNEL]
+    for name in FORWARDED_EVENTS.iter().copied()
     {
         let handle = app.clone(); // 原生窗口所属的 UI 调度器。
         app.listen(name, move |event| {
@@ -361,6 +380,7 @@ pub(crate) fn install_host_events(app: &AppHandle)
             let task_handle = handle.clone(); // 主线任务持有独立句柄，监听回调仍可重复执行。
             if let Err(error) = handle.run_on_main_thread(move || {
                 let script = format!("window.__DESKTOP_TOOLS_NATIVE__?.dispatch('{name}', {payload});"); // 内部白名单事件名，不执行外部脚本输入。
+                super::island::dispatch_script(&script); // 同一白名单事件投递到独立岛，不新增事件或轮询。
                 // 频谱只在同时开启音乐控件与频谱时才有订阅者，每帧读一次设置即可。
                 let spectrum_active = spectrum_event && task_handle.state::<crate::app::settings::SettingsState>().preferences().is_ok_and(|preferences| preferences.music_enabled && preferences.music_spectrum_enabled);
                 let workspace = task_handle.state::<crate::workspace::WorkspaceState>(); // 按显示器判断音乐控件归属，避免整份快照拷贝。
@@ -375,7 +395,7 @@ pub(crate) fn install_host_events(app: &AppHandle)
                         {
                             continue;
                         }
-                        if !matches!(name, "desktop-refresh-policy-changed" | "preferences-changed" | "collect-items-changed" | "weather-configuration-changed") && !watcher_failed && super::refresh_policy::is_paused(&host.monitor_id)
+                        if !matches!(name, "desktop-refresh-policy-changed" | "preferences-changed" | "collect-items-changed" | "weather-configuration-changed" | super::popup_layer::POPUP_RESULT_EVENT) && !watcher_failed && super::refresh_policy::is_paused(&host.monitor_id)
                         {
                             continue;
                         }
@@ -805,7 +825,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
         unsafe { OleUninitialize() };
         return Err("正式宿主没有可用的 Shell 桌面投放目标".to_string());
     }
-    crate::log_info!("Shell：宿主 OLE 投放目标已注册，窗口数量：{}", targets.len());
+    crate::log_debug!("Shell：宿主 OLE 投放目标已注册，窗口数量：{}", targets.len());
     Ok((targets, true))
 }
 
@@ -1055,7 +1075,6 @@ pub fn desktop_item_monitor_assignments(items: &[DesktopItem], monitors: &[Deskt
         }
     }; // Explorer 当前项目物理坐标。
     let assignments = match_desktop_item_monitor_assignments(items, monitors, &positions); // Explorer 坐标与当前显示器边界的匹配结果。
-    crate::log_debug!("工作区：Explorer 项目显示器归属已读取，项目={}，匹配={}，显示器={}", items.len(), assignments.len(), monitors.len());
     assignments
 }
 
@@ -1271,7 +1290,9 @@ fn handle_protocol_request(request: Request<Vec<u8>>, app: &AppHandle, command_h
         if let Some(runtime) = app.try_state::<crate::component_runtime::ComponentRuntimeState>()
             && let Some((content_type, bytes)) = read_plugin_asset(runtime.plugin_directory(), relative)
         {
-            return protocol_response(StatusCode::OK, content_type, None, Cow::Owned(bytes));
+            let mut response = protocol_response(StatusCode::OK, content_type, None, Cow::Owned(bytes));
+            response.headers_mut().insert("Cache-Control", wry::http::header::HeaderValue::from_static("no-store")); // 插件文件可能被重装覆盖，禁止 WebView 复用旧缓存。
+            return response;
         }
         crate::log_warn!("插件：资产不存在或路径不受支持，相对路径={relative}");
         return protocol_response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", None, Cow::Borrowed(b"not found"));
@@ -1312,8 +1333,17 @@ fn handle_protocol_request(request: Request<Vec<u8>>, app: &AppHandle, command_h
 /// 设置窗口自定义协议名。Windows 上页面来源为 `http://desktop-tools-settings.localhost`。
 pub(crate) const SETTINGS_PROTOCOL: &str = "desktop-tools-settings";
 
+/// 页面地址序号：每次创建页面窗口都换一个，让入口页重新读取而不依赖缓存头。
+static PAGE_SEQUENCE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
 /// 设置窗口页面地址，与协议名对应，供同源 `import("/plugins/...")`。
-pub(crate) fn settings_page_url() -> tauri::Url { tauri::Url::parse(&format!("http://{SETTINGS_PROTOCOL}.localhost/")).expect("设置窗口协议地址无效") }
+///
+/// 带 `boot` 序号：入口页文件名固定，重新构建后必须换 URL 才能拿到新页面。
+pub(crate) fn settings_page_url() -> tauri::Url
+{
+    let sequence = PAGE_SEQUENCE.fetch_add(1, Ordering::AcqRel);
+    tauri::Url::parse(&format!("http://{SETTINGS_PROTOCOL}.localhost/?boot={}-{sequence}", std::process::id())).expect("设置窗口协议地址无效")
+}
 
 /// 设置窗口协议入口。页面、插件资产和原生命令都交给现有处理函数。
 pub(crate) fn handle_settings_protocol_request(request: Request<Vec<u8>>, app: &AppHandle) -> Response<Cow<'static, [u8]>>
@@ -1327,7 +1357,7 @@ pub(crate) fn handle_settings_protocol_request(request: Request<Vec<u8>>, app: &
             {
                 return Err(json!({ "code": "desktop-host-starting", "message": "桌面宿主正在启动" }));
             }; // 与逐屏宿主同一条命令边界。
-            crate::commands::dispatch_native_command(&app, &runtime, command, arguments)
+            crate::commands::dispatch_native_command(&app, &runtime, crate::commands::NativeCommandSource::Settings, command, arguments)
         }
     });
     handle_protocol_request(request, app, &handler)
@@ -1369,14 +1399,14 @@ fn desktop_page_url(native_origin: &str, dev_url: Option<&tauri::Url>, index: us
 }
 
 /// 进程内第一次建宿主窗口的时刻，页面据此只在本进程启动后播放一次启动动画。
-fn boot_epoch() -> u64
+pub(crate) fn boot_epoch() -> u64
 {
     static BOOT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *BOOT.get_or_init(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as u64).unwrap_or(0))
 }
 
 /// 当前生效主题的样式表地址；没有选中主题、已停用或清单缺失时为空。
-fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
+pub(crate) fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
 {
     let preferences = app.state::<crate::app::settings::SettingsState>().preferences().ok()?;
     let id = preferences.theme_plugin_id.clone()?; // 内置主题不需要额外样式表。
@@ -1422,7 +1452,7 @@ fn active_theme_boot(app: &AppHandle) -> Option<u32>
 fn allowed_desktop_origin(origin: &str, native_origin: &str, dev_origin: Option<&str>) -> bool { origin == native_origin || dev_origin == Some(origin) }
 
 /// 为开发页面提供受限跨域命令访问，预检不执行任何原生命令。
-fn handle_desktop_request(request: Request<Vec<u8>>, app: &AppHandle, handler: &NativeCommandHandler, native_origin: &str, dev_origin: Option<&str>) -> Response<Cow<'static, [u8]>>
+pub(crate) fn handle_desktop_request(request: Request<Vec<u8>>, app: &AppHandle, handler: &NativeCommandHandler, native_origin: &str, dev_origin: Option<&str>) -> Response<Cow<'static, [u8]>>
 {
     if !request.uri().path().starts_with("/__desktop_tools_invoke/")
     {
@@ -1551,6 +1581,13 @@ mod desktop_dev_tests
             assert!(!allowed_desktop_origin(origin, native, None));
         }
         assert!(!allowed_desktop_origin("http://127.0.0.1:14200", native, Some("http://127.0.0.1:1420")));
+        let island = "http://desktop-tools-island.localhost"; // 岛白名单不扩大桌面或设置来源。
+        assert!(allowed_desktop_origin(island, island, None));
+        assert!(!allowed_desktop_origin(island, native, None));
+        for origin in [native, "http://desktop-tools-settings.localhost", "null", ""]
+        {
+            assert!(!allowed_desktop_origin(origin, island, None));
+        }
     }
 
     /// 设置窗口来源必须等于协议名加 `.localhost`，否则 Tauri 不把它当本地 IPC 来源。
@@ -1558,8 +1595,14 @@ mod desktop_dev_tests
     fn settings_page_url_matches_protocol_name()
     {
         let url = super::settings_page_url(); // 设置窗口实际导航地址。
-        assert_eq!(url.as_str(), "http://desktop-tools-settings.localhost/");
+        assert_eq!(url.scheme(), "http");
+        assert_eq!(url.path(), "/");
         assert_eq!(url.host_str().and_then(|host| host.strip_suffix(".localhost")), Some(super::SETTINGS_PROTOCOL));
+        // 每次创建窗口都换 `boot` 序号，入口页重新读取，不依赖缓存头。
+        let first = url.query_pairs().find(|(name, _)| name == "boot").map(|(_, value)| value.into_owned());
+        let second = super::settings_page_url().query_pairs().find(|(name, _)| name == "boot").map(|(_, value)| value.into_owned());
+        assert!(first.is_some(), "设置页地址必须带 boot 序号");
+        assert_ne!(first, second, "连续两次建窗的 boot 序号必须不同");
     }
 }
 
@@ -1584,11 +1627,11 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     let dev_url = if tauri::is_dev() { app.config().build.dev_url.as_ref() } else { None }; // Debug 构建不等同于 Tauri 开发模式。
     let dev_origin = dev_url.map(|url| url.origin().ascii_serialization()); // 正式模式不会放行开发 Origin。
     let page_url = desktop_page_url(&native_origin, dev_url, index, boot_epoch(), active_theme_stylesheet(app).as_deref(), active_theme_boot(app)).to_string(); // 页面与刷新共享当前模式地址。
-    let initialization_script = NATIVE_BRIDGE_SCRIPT.replace("__DESKTOP_NATIVE_ORIGIN__", &serde_json::to_string(&native_origin).expect("宿主地址序列化失败")).replace("__REFRESH_POLICY_FALLBACK__", if super::refresh_policy::fallback_enabled() { "true" } else { "false" }); // JSON 编码避免脚本字符串转义错误，Hook 状态在宿主创建前确定。
+    let initialization_script = native_bridge_script(&native_origin); // JSON 编码避免脚本字符串转义错误，Hook 状态在宿主创建前确定。
     super::refresh_policy::set_paused(&monitor.id, false);
     crate::log_info!("宿主：页面来源={}，原生命令来源={}", page_url, native_origin);
     // 正式 Windowed WebView2。
-    let webview = WebViewBuilder::new()
+    let builder = WebViewBuilder::new()
         .with_id(&label)
         .with_transparent(true)
         .with_visible(true)
@@ -1633,9 +1676,11 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
             };
             crate::log_debug!("宿主：React 页面加载{}，URL：{}", stage, url);
         })
-        .with_url("about:blank")
-        .build_as_child(&raw_window)
-        .map_err(|error| format!("创建正式 Windowed WebView2 失败: {error}"))?;
+        .with_url("about:blank");
+    // 开发构建启用本机 CDP：保留 wry 默认参数，发布构建不暴露调试端口。
+    #[cfg(debug_assertions)]
+    let builder = builder.with_additional_browser_args(DEV_WEBVIEW2_ARGS);
+    let webview = builder.build_as_child(&raw_window).map_err(|error| format!("创建正式 Windowed WebView2 失败: {error}"))?;
 
     // 正式 WebView2 的原生 Controller。
     let controller = webview.controller();
@@ -1676,6 +1721,9 @@ pub fn create_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_h
     }
     Ok(hosts)
 }
+
+/// 返回首个正式宿主的 WebView2 环境，供岛复用，避免同进程重复创建环境。
+pub(crate) fn shared_webview_environment() -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment> { NATIVE_HOSTS.with(|hosts| hosts.borrow().first().map(|host| host.webview.environment())) }
 
 /// 保留未变化且页面索引一致的宿主，只创建并导航发生变化的显示器。
 pub fn reconcile_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, monitors: &[DesktopHostMonitor], previous: &[NativeDesktopHost]) -> Result<Vec<NativeDesktopHost>, String>

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../bridge/components";
 import { requestLoopback } from "../../bridge/loopback";
+import { SettingsAbout } from "./SettingsAbout";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../bridge/pluginSettings";
 import {
     applyPluginInstall,
@@ -536,7 +537,7 @@ export const PluginSettingsPage = ({
                             </button>
                         ) : null}
                     </p>
-                    {selected.description ? <PluginAbout text={selected.description} /> : null}
+                    {selected.description ? <SettingsAbout text={selected.description} /> : null}
                     {loopbackCredential ? <PluginLoopbackPairing pluginId={selected.id} metadata={loopbackCredential} disabled={disabled || pluginDisabled} /> : null}
                     {pending ? (
                         <p className="plugin-settings__status" role="status" aria-busy="true">
@@ -993,6 +994,7 @@ const PluginLoopbackPairing = ({ pluginId, metadata, disabled }: { pluginId: str
     const [secret, setSecret] = useState(""); // 只有本次输入，保存后立即清空。
     const [busy, setBusy] = useState(false); // 保存或清除进行中。
     const [feedback, setFeedback] = useState<{ tone: "ok" | "error"; text: string }>(); // 面板内的可见反馈。
+    const [confirmClear, setConfirmClear] = useState(false); // 清除凭据不可恢复，先要一次二次确认。
     const inputId = `loopback-token-${metadata.target.replace(/[^a-zA-Z0-9_-]/g, "-")}`; // 目标里可能有斜杠。
     const run = (task: Promise<unknown>, success: string) => {
         setBusy(true);
@@ -1045,9 +1047,35 @@ const PluginLoopbackPairing = ({ pluginId, metadata, disabled }: { pluginId: str
                 <button className="settings__button" type="button" disabled={disabled || busy} onClick={handleSave} data-button="secondary">
                     保存
                 </button>
-                <button className="settings__button plugin-settings__pairing-clear" type="button" disabled={disabled || busy} onClick={handleClear} data-button="danger">
-                    清除
-                </button>
+                {confirmClear ? (
+                    <>
+                        <button
+                            className="settings__button plugin-settings__pairing-clear"
+                            type="button"
+                            disabled={disabled || busy}
+                            onClick={() => {
+                                setConfirmClear(false);
+                                handleClear();
+                            }}
+                            data-button="danger"
+                        >
+                            确认清除
+                        </button>
+                        <button className="settings__button" type="button" disabled={disabled || busy} onClick={() => setConfirmClear(false)} data-button="secondary">
+                            取消
+                        </button>
+                    </>
+                ) : (
+                    <button
+                        className="settings__button plugin-settings__pairing-clear"
+                        type="button"
+                        disabled={disabled || busy}
+                        onClick={() => setConfirmClear(true)}
+                        data-button="danger"
+                    >
+                        清除
+                    </button>
+                )}
             </div>
             {feedback ? (
                 <p className={`plugin-settings__pairing-feedback plugin-settings__pairing-feedback--${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}>
@@ -1233,29 +1261,6 @@ export const pluginIdentity = (author: string | undefined, id: string) => (autho
 /** 头部启停按钮。停用时写启动，启用时写停用。 */
 export const pluginPowerLabel = (pluginDisabled: boolean) => (pluginDisabled ? "启动插件" : "停用插件");
 
-/** 简介超出一行才给出展开。收起后仍可再展开。 */
-const PluginAbout = ({ text }: { text: string }) => {
-    const textRef = useRef<HTMLSpanElement>(null); // 用来量是否超出一行。
-    const [open, setOpen] = useState(false); // 展开后显示全文。
-    const [overflow, setOverflow] = useState(false); // 收起时是否放不下。
-    useLayoutEffect(() => {
-        const node = textRef.current;
-        if (!node || open) return;
-        setOverflow(node.scrollWidth > node.clientWidth + 1);
-    }, [text, open]);
-    return (
-        <p className="plugin-settings__about">
-            <span ref={textRef} className={open ? "plugin-settings__about-text plugin-settings__about-text--open" : "plugin-settings__about-text"}>
-                {text}
-            </span>
-            {overflow || open ? (
-                <button className="plugin-settings__about-toggle" type="button" onClick={() => setOpen((current) => !current)} data-button="ghost">
-                    {open ? "收起" : "展开"}
-                </button>
-            ) : null}
-        </p>
-    );
-};
 
 /**
  * 插件行右键菜单。四组用分隔线隔开。不可创建时不出现「添加到桌面」。

@@ -1,11 +1,13 @@
 // 无头运行真实组件浏览器断言页：每个页面一个独立的 Edge headless 实例 + CDP 读取 #result，输出 PASS/FAIL；样张页记 INSPECT，真机专用页记 SKIP。
 import { execFileSync, spawn } from "node:child_process"; // 进程控制：结束残留 Edge 与启动无头 Edge。
+import { createHash } from "node:crypto";
 import { connect } from "node:net"; // 探测 127.0.0.1:1420 是否监听。
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"; // 临时 user-data-dir、日志与清理。
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"; // 临时 user-data-dir、日志与清理。
 import { existsSync } from "node:fs"; // 探测 Edge 可执行文件与端口文件。
 import { tmpdir } from "node:os"; // 系统临时目录。
 import { join, resolve } from "node:path"; // 路径拼接与绝对路径归一。
 import { request } from "node:http"; // 直连本机 CDP 端点，不受系统代理影响。
+import { expectedPixelFrames, validatePixelFrame, summarizePixelFrames } from "./浮岛像素门禁.mjs";
 import { 断言页, 真机专用页, 检查页 } from "./断言页目录.mjs"; // 断言页、真机专用页与只核对加载的检查页清单。
 
 const 开发服务器地址 = "http://127.0.0.1:1420"; // 由 npm run dev 提供的断言页服务地址。
@@ -18,8 +20,8 @@ const 退出码 = { 通过: 0, 失败: 1, 环境: 2 }; // 与设计文档一致�
 
 // 解析命令行参数，未识别参数按环境问题（用法错误）退出，不抛未捕获堆栈。
 const 参数 = process.argv.slice(2); // 原始命令行参数。
-const 选项 = { 超时毫秒: 默认超时毫秒, 页过滤: "", 详细: false }; // 运行选项。
-const 用法 = "用法：node scripts/跑断言页.mjs [--页 <路径子串>] [--超时 30000] [--verbose]"; // 参数错误时打印的用法。
+const 选项 = { 超时毫秒: 默认超时毫秒, 页过滤: "", 详细: false, 浮岛像素: false, 像素筛选: "", 像素对照: "normal", 自然帧: false, 像素基线: "", 稳态对照: false }; // 运行选项。
+const 用法 = "用法：node scripts/跑断言页.mjs [--页 <路径子串>] [--超时 30000] [--verbose] [--浮岛像素 [--像素筛选 <形态/边/DPR/方向/毫秒/背景的正则>] [--像素基线 <旧证据目录>] [--像素对照 normal|card-solid|patch-solid|all-solid|overlap] [--自然帧] [--稳态对照]]"; // 默认不进行像素取证；取证入口只针对islandFillet独立运行。
 
 // 参数不属于页面判定结果：打印用法后以「环境」退出码结束，避免被读成断言失败。
 function 参数错误(说明) {
@@ -39,6 +41,20 @@ for (let 索引 = 0; 索引 < 参数.length; 索引 += 1) {
         const 值 = Number(参数[(索引 += 1)]); // 单页超时毫秒数。
         if (!Number.isFinite(值) || 值 <= 0) 参数错误("--超时需要正整数毫秒");
         选项.超时毫秒 = 值;
+    } else if (当前 === "--浮岛像素") {
+        选项.浮岛像素 = true;
+    } else if (当前 === "--像素筛选") {
+        选项.像素筛选 = 参数[(索引 += 1)] ?? "";
+    } else if (当前 === "--像素对照") {
+        选项.像素对照 = 参数[(索引 += 1)] ?? "normal";
+        if (!["normal", "card-solid", "patch-solid", "all-solid", "overlap"].includes(选项.像素对照)) 参数错误("未知像素对照");
+    } else if (当前 === "--像素基线") {
+        选项.像素基线 = 参数[(索引 += 1)] ?? "";
+        if (!选项.像素基线) 参数错误("--像素基线缺少目录");
+    } else if (当前 === "--稳态对照") {
+        选项.稳态对照 = true;
+    } else if (当前 === "--自然帧") {
+        选项.自然帧 = true;
     } else if (当前 === "--verbose") {
         选项.详细 = true;
     } else {
@@ -100,6 +116,54 @@ async function 检查端口() {
         throw new Error("127.0.0.1:1420 未监听，请先在另一个终端运行 npm run dev 后重试");
     } finally {
         连接.destroy();
+    }
+}
+
+// 查找 1420 的监听进程，只用于把环境问题说清楚；查不到时返回空串，不影响判定。
+function 查找端口进程() {
+    try {
+        const 行 = execFileSync("netstat", ["-ano"], { encoding: "utf8", timeout: 5000 })
+            .split(/\r?\n/)
+            .find((项) => /:1420\s/.test(项) && /LISTENING/i.test(项));
+        const pid = 行?.trim().split(/\s+/).pop();
+        if (!pid) return "";
+        const 名称 = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", timeout: 5000 })
+            .split(",")[0]
+            .replaceAll('"', "")
+            .trim();
+        return 名称 && 名称 !== "INFO:" ? `PID ${pid}（${名称}）` : `PID ${pid}`;
+    } catch {
+        return "";
+    }
+}
+
+// 读取开发服务器首页；单次有界请求，失败即报环境问题，不循环重试。
+function 读取首页() {
+    return new Promise((完成, 失败) => {
+        const 请求 = request({ host: "127.0.0.1", port: 1420, path: "/", method: "GET", timeout: 3000 }, (响应) => {
+            let 正文 = "";
+            响应.setEncoding("utf8");
+            响应.on("data", (块) => (正文 += 块));
+            响应.on("end", () => 完成(正文));
+        });
+        请求.on("timeout", () => 请求.destroy(new Error("读取首页超时")));
+        请求.on("error", 失败);
+        请求.end();
+    });
+}
+
+// 1420 有监听不等于它一定是本仓库的 Vite：先核对页面标记，避免把别的服务当成断言页。
+async function 检查开发服务器() {
+    await 检查端口();
+    let 正文 = "";
+    try {
+        正文 = await 读取首页();
+    } catch (错误) {
+        throw new Error(`127.0.0.1:1420 已监听但读取首页失败：${错误.message}`);
+    }
+    if (!正文.includes("Desktop Tools")) {
+        const 占用 = 查找端口进程();
+        throw new Error(`127.0.0.1:1420 被其他进程占用${占用 ? `：${占用}` : ""}，返回页面不含 Desktop Tools 标记；请结束占用后重跑 npm run dev`);
     }
 }
 
@@ -172,7 +236,7 @@ async function 启动浏览器(可执行文件) {
 }
 
 // 建立一条页面级 CDP 连接，只连一次，不做重连。
-function 连接页面(地址) {
+function 连接页面(地址, onEvent) {
     return new Promise((完成, 失败) => {
         const 套接字 = new WebSocket(地址); // Node 24 全局 WebSocket。
         const 待响应 = new Map(); // 命令 id 到回调。
@@ -197,7 +261,8 @@ function 连接页面(地址) {
                 套接字.send(JSON.stringify({ id, method: 方法, params: 参数 }));
             });
         套接字.addEventListener("message", (事件) => {
-            const 消息 = JSON.parse(事件.data); // CDP 消息。
+            const 消息 = JSON.parse(事件.data);
+            if (消息.method) onEvent?.(消息); // CDP 消息。
             const 等待项 = 消息.id === undefined ? undefined : 待响应.get(消息.id); // 对应命令回调。
             if (!等待项) return;
             待响应.delete(消息.id);
@@ -321,12 +386,306 @@ function 汇总(记录) {
     return 失败数 === 0;
 }
 
+// 自然rAF仅由显式诊断开关运行，截取Page.screencastFrame并保留真实时间间隔，不声称达到60fps。
+async function 自然帧取证() {
+    await 检查开发服务器();
+    const 目录=resolve('build/validation/浮岛修复/02b-切态接缝',new Date().toISOString().replace(/[:.]/g,'-')+'-natural');
+    await mkdir(目录,{recursive:true});
+    let 实例,连接;
+    const images=[];
+    const evaluate=async(expression)=>{
+        const value=await 连接.发送('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});
+        if(value.exceptionDetails)throw new Error(value.exceptionDetails.text);
+        return value.result.value;
+    };
+    try {
+        实例=await 启动浏览器(定位浏览器());
+        const page=JSON.parse(await 取文本(`http://${实例.端点地址}/json/new?about:blank`,10000,'PUT'));
+        连接=await 连接页面(page.webSocketDebuggerUrl,(event)=>{
+            if(event.method!=='Page.screencastFrame')return;
+            images.push(event.params);
+            void 连接.发送('Page.screencastFrameAck',{sessionId:event.params.sessionId}).catch(()=>{});
+        });
+        await 连接.发送('Page.enable',{});
+        await 连接.发送('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:1,mobile:false});
+        await 连接.发送('Page.bringToFront',{});
+        await 连接.发送('Page.navigate',{url:`${开发服务器地址}/src/features/island/islandFillet.browser.html?mode=natural-seam`});
+        const deadline=Date.now()+10000;
+        while(Date.now()<deadline && !(await evaluate('Boolean(window.__islandNaturalCapture)')))await 等待(20);
+        const box=await evaluate('document.querySelector(".island-card").getBoundingClientRect().toJSON()');
+        await 连接.发送('Page.startScreencast',{format:'png',everyNthFrame:1});
+        await 连接.发送('Input.dispatchMouseEvent',{type:'mouseMoved',x:0,y:0});
+        await 等待(100);
+        await 连接.发送('Input.dispatchMouseEvent',{type:'mouseMoved',x:box.x+box.width/2,y:box.y+box.height/2});
+        await 等待(900);
+        await 连接.发送('Input.dispatchMouseEvent',{type:'mouseMoved',x:700,y:500});
+        await 等待(900);
+        await 连接.发送('Page.stopScreencast',{});
+        const records=await evaluate('window.__islandNaturalCapture.stop();window.__islandNaturalCapture.records');
+        const timeline=[];
+        for(let i=0;i<images.length;i++) {
+            const name=`frame-${String(i).padStart(3,'0')}.png`;
+            await writeFile(join(目录,name),Buffer.from(images[i].data,'base64'));
+            timeline.push({file:name,...images[i].metadata});
+        }
+        const summary={records,timeline,intervals:timeline.slice(1).map((frame,i)=>(frame.timestamp-timeline[i].timestamp)*1000),maxGeometryDelta:Math.max(...records.map((frame)=>frame.delta))};
+        await writeFile(join(目录,'自然帧时间线.json'),JSON.stringify(summary,null,2));
+        console.log(`自然帧证据：${目录}，CSS记录${records.length}，合成帧${images.length}，最大几何差${summary.maxGeometryDelta} DIP`);
+        return records.length>1 && images.length>1 && summary.maxGeometryDelta<0.05;
+    } finally { if(连接)连接.关闭();if(实例)await 结束实例(实例); }
+}
+
+// 只在显式--浮岛像素入口执行：保留同一受控帧PNG与像素剖面，其他断言页的默认执行完全不变。
+async function 浮岛像素回归() {
+    await 检查开发服务器();
+    const 目录 = resolve("build/validation/浮岛修复/02b-切态接缝", new Date().toISOString().replace(/[:.]/g, "-"));
+    await mkdir(目录, { recursive: true });
+    const 记录 = [];
+    const 期望帧 = expectedPixelFrames({ steady: 选项.稳态对照, filter: 选项.像素筛选 });
+    const 保存记录 = async (record) => {
+        记录.push(record);
+        await appendFile(join(目录, "逐帧.jsonl"), JSON.stringify(record) + "\n");
+        if (记录.length % 64 === 0) console.log(`已记录${记录.length}帧：${record.name}`);
+    };
+    let 实例, 页面, 连接;
+    let currentPageKey = "";
+    const sources = ["src/features/island/island.tsx", "src/features/island/island.css", "src/features/island/islandGeometry.ts"];
+    await writeFile(join(目录, "源码指纹.json"), JSON.stringify(await Promise.all(sources.map(async (path) => ({ path, sha256: createHash("sha256").update(await readFile(path)).digest("hex") }))), null, 2));
+    const 读值 = async (expression) => {
+        const value = await 连接.发送("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+        if (value.exceptionDetails) throw new Error(value.exceptionDetails.text + " " + JSON.stringify(value.exceptionDetails.exception));
+        return value.result.value;
+    };
+    try {
+        实例 = await 启动浏览器(定位浏览器());
+        页面 = JSON.parse(await 取文本(`http://${实例.端点地址}/json/new?about:blank`, 10000, "PUT"));
+        连接 = await 连接页面(页面.webSocketDebuggerUrl);
+        await 连接.发送("Page.enable", {});
+        await 连接.发送("Emulation.setFocusEmulationEnabled", { enabled: true });
+        await 连接.发送("Page.bringToFront", {});
+        for (const expected of 期望帧) {
+            const { form, edge, dpr, direction, requestedMs: elapsed, background, name } = expected;
+            let frame;
+            try {
+            const pageKey = `${form}/${edge}/${dpr}/${direction}`;
+            if (pageKey !== currentPageKey) {
+                await 连接.发送("Emulation.setDeviceMetricsOverride", { width: 1920, height: 1080, deviceScaleFactor: dpr, mobile: false });
+                const url = `${开发服务器地址}/src/features/island/islandFillet.browser.html?mode=seam-frame&form=${form}&edge=${edge}&direction=${direction}&elapsed=${elapsed}&background=${background}`;
+                await 连接.发送("Page.navigate", { url });
+                const deadline = Date.now() + 选项.超时毫秒;
+                let ready = false;
+                while (Date.now() < deadline) {
+                    const value = await 读值("({frame:window.__islandSeamFrame,result:document.querySelector('#result')?.textContent})");
+                    if (value?.frame) { ready = true; break; }
+                    if (value?.result?.startsWith("FAIL")) throw new Error(`${name}: ${value.result}`);
+                    await 等待(20);
+                }
+                if (!ready) throw new Error(`${name}: 冻结帧等待超时`);
+                currentPageKey = pageKey;
+            }
+            frame = await 读值(`(async()=>({...(await window.__islandSeamAdvance(${elapsed},${JSON.stringify(background)})),mode:${JSON.stringify(expected.mode)},dpr:window.devicePixelRatio}))()`);
+            const validity = validatePixelFrame(frame, expected);
+            if (!validity.valid) {
+                await 保存记录({ name, ...frame, scanned: false, reason: validity.reasons.join("；") });
+                continue;
+            }
+            if (选项.像素对照 === "overlap") {
+                await 读值(`(() => {
+                    const node = document.querySelector('.island__surface');
+                    const style = getComputedStyle(node);
+                    const positions = style.maskPosition.split(',').map((part) => part.trim().split(/\\s+/).map(parseFloat));
+                    const sizes = style.maskSize.split(',').map((part) => part.trim().split(/\\s+/).map(parseFloat));
+                    const vertical = ['left','right'].includes(${JSON.stringify(edge)});
+                    for(let i=1;i<Math.min(3,sizes.length);i++) {
+                        const axis=vertical?1:0;
+                        sizes[i][axis]+=2;
+                        if(i%3===2) positions[i][axis]-=2;
+                    }
+                    node.style.maskPosition=positions.map((pair)=>pair.map((value)=>value+'px').join(' ')).join(',');
+                    node.style.maskSize=sizes.map((pair)=>pair.map((value)=>value+'px').join(' ')).join(',');
+                })()`);
+            } else if (选项.像素对照 !== "normal") {
+                await 读值(`(() => {
+                    const node = document.querySelector('.island__surface');
+                    const style = getComputedStyle(node);
+                    const image = style.maskImage;
+                    const end = image.indexOf('\")') + 2;
+                    const card = ${JSON.stringify(选项.像素对照)} === 'patch-solid' ? image.slice(0,end) : 'linear-gradient(#000,#000)';
+                    const patches = ${JSON.stringify(选项.像素对照)} === 'card-solid' ? image.slice(end) : ', '+Array(style.maskSize.split(',').length-1).fill('linear-gradient(#000 0px,#000 1px)').join(',');
+                    node.style.maskImage = card + patches;
+                })()`);
+            }
+            const x = Math.max(0, Math.floor((frame.card.x - 20) / 4) * 4);
+            const y = Math.max(0, Math.floor((frame.card.y - 20) / 4) * 4);
+            const clip = { x, y, width: Math.ceil((frame.card.x + frame.card.width + 20 - x) / 4) * 4, height: Math.ceil((frame.card.y + frame.card.height + 20 - y) / 4) * 4, scale: 1 };
+            const image = await 连接.发送("Page.captureScreenshot", { format: "png", clip, captureBeyondViewport: true });
+            const filename = `${选项.像素对照}_${name.replaceAll("/", "_")}.png`;
+            await writeFile(join(目录, filename), Buffer.from(image.data, "base64"));
+            // 浏览器自身解码CDP截图，避免额外PNG依赖；只返回接缝附近的有界像素剖面。
+            let steadyBaseline = null;
+            if (选项.稳态对照) {
+                // 重构t5原三层mask字面值：同一稳态DOM/几何/背景仅切换新旧mask，RGBA逐字节比较。
+                await 读值(`(() => {
+                    const node=document.querySelector('.island__surface');
+                    const style=getComputedStyle(node), image=style.maskImage;
+                    if(image==='none')return;
+                    const first=image.slice(0,image.indexOf('\\")')+2);
+                    const sizes=style.maskSize.split(',').slice(1,3).map((part)=>Math.min(...part.trim().split(/\\s+/).map(parseFloat)));
+                    const centers={top:['0% 100%','100% 100%'],bottom:['0% 0%','100% 0%'],left:['100% 0%','100% 100%'],right:['0% 0%','0% 100%']}[${JSON.stringify(edge)}];
+                    node.style.maskImage=first+', '+sizes.map((radius,i)=>'radial-gradient(circle at '+centers[i]+',transparent '+(radius-.5)+'px,#000 '+radius+'px)').join(', ');
+                })()`);
+                steadyBaseline=(await 连接.发送('Page.captureScreenshot',{format:'png',clip,captureBeyondViewport:true})).data;
+                await writeFile(join(目录,filename.replace('.png','_legacy-steady.png')),Buffer.from(steadyBaseline,'base64'));
+            }
+            const baseline = 选项.像素基线 ? (await readFile(join(选项.像素基线, filename))).toString('base64') : null;
+            const scan = await 读值(`(${像素扫描.toString()})(${JSON.stringify({ png: image.data, frame, clip, dpr, baseline, steadyBaseline, validity })})`);
+            if(选项.稳态对照) {
+                const layers=frame.maskSize.split(',').length;
+                if(frame.form==='notch' && layers!==4)throw new Error('稳态负角必须为原三层+根尺寸单路径');
+                await 读值(`(() => {const node=document.querySelector('.island__surface');node.style.maskImage=${JSON.stringify(frame.maskImage)};document.querySelector('main.island').dataset.dragging='true';})()`);
+                const dragNew=(await 连接.发送('Page.captureScreenshot',{format:'png',clip,captureBeyondViewport:true})).data;
+                await 读值(`(() => {const node=document.querySelector('.island__surface');const image=getComputedStyle(node).maskImage;if(image==='none')return;const first=image.slice(0,image.indexOf('\\")')+2);const sizes=getComputedStyle(node).maskSize.split(',').slice(1,3).map((p)=>Math.min(...p.trim().split(/\\s+/).map(parseFloat)));const centers={top:['0% 100%','100% 100%'],bottom:['0% 0%','100% 0%'],left:['100% 0%','100% 100%'],right:['0% 0%','0% 100%']}[${JSON.stringify(edge)}];node.style.maskImage=first+', '+sizes.map((r,i)=>'radial-gradient(circle at '+centers[i]+',transparent '+(r-.5)+'px,#000 '+r+'px)').join(', ');})()`);
+                const dragOld=(await 连接.发送('Page.captureScreenshot',{format:'png',clip,captureBeyondViewport:true})).data;
+                const dragCompare=await 读值(`(${像素扫描.toString()})(${JSON.stringify({png:dragNew,frame,clip,dpr,steadyBaseline:dragOld,validity})})`);
+                scan.dragSteadyChangedBytes=dragCompare.steadyChangedBytes;
+                scan.dragSteadyOutsideChanged=dragCompare.outsideBandChanged+dragCompare.outsideNewCoverage;
+                await writeFile(join(目录,filename.replace('.png','_drag-steady.png')),Buffer.from(dragNew,'base64'));
+                await 读值(`(() => { delete document.querySelector('main.island').dataset.dragging; document.querySelector('.island__surface').style.maskImage=${JSON.stringify(frame.maskImage)}; })()`);
+            }
+            const record = { name, variant: 选项.像素对照, screenshot: join(目录, filename), ...frame, ...scan };
+            await 保存记录(record);
+            if (选项.像素对照 !== "normal") await 读值(`(() => { const node=document.querySelector('.island__surface'); node.style.maskImage=${JSON.stringify(frame.maskImage)};node.style.maskPosition=${JSON.stringify(frame.maskPosition)};node.style.maskSize=${JSON.stringify(frame.maskSize)}; })()`);
+            } catch (error) {
+                await 保存记录({ name, mode: expected.mode, form, edge, dpr, direction, elapsed, ...frame, scanned: false, reason: `像素驱动停止：${error.message}` });
+                break; // CDP/截图失败时不反复驱动坏页面；缺少的期望帧由同一门禁明确判失败。
+            }
+        }
+    } finally {
+        if (连接) 连接.关闭();
+        if (实例) await 结束实例(实例);
+        await writeFile(join(目录, "像素剖面.json"), JSON.stringify(记录, null, 2));
+        console.log(`像素证据：${目录}`);
+    }
+    const summary = summarizePixelFrames(记录, 期望帧);
+    const { failures, ...counts } = summary;
+    await writeFile(join(目录, "门禁汇总.json"), JSON.stringify({ ...counts, failures: failures.map((failure) => ({ name: failure.expected?.name || failure.frame?.name, actualElapsed: failure.frame?.actualElapsed, reasons: failure.reasons })) }, null, 2));
+    console.log(`像素帧${记录.length}，接缝失败${failures.length}；capsule无外凸接缝，不以未复现代替真机通过。`);
+    console.log(`未扫描 ${summary.unscannedCount} / 期望 ${summary.expectedCount}；实际扫描 ${summary.scannedCount}，记录 ${summary.recordCount}`);
+    console.log(`样本构成：动画 ${summary.sampleCounts.animation}，终态 ${summary.sampleCounts.terminal}；沿用较早paint ${summary.sampleCounts.reusedPaint}（动画子集）`);
+    if (!summary.passed) {
+        console.log(summary.firstFailure);
+        console.log(`数量问题：${summary.countReasons.join("；") || "无"}；原因汇总：${JSON.stringify(summary.reasonCounts)}`);
+    }
+    return summary.passed;
+}
+
+// 接缝位于圆弧与卡片共同内部，而非轮廓外沿；白/深背景分别重建同一单层mask覆盖alpha。
+async function 像素扫描({ png, frame, clip, dpr, baseline, steadyBaseline, validity }) {
+    if (!validity?.valid) return { scanned: false, reason: validity?.reasons?.join("；") || "帧有效性未验证" };
+    const image = new Image();
+    image.src = `data:image/png;base64,${png}`;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width; canvas.height = image.height;
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, image.width, image.height).data;
+    const numbers = (frame.form === "capsule" ? frame.cardBackground : frame.surfaceColor).match(/[\d.]+/g).map(Number);
+    const expected = numbers[3] ?? 1;
+    const box = frame.card;
+    const horizontal = frame.edge === "top" || frame.edge === "bottom";
+    const joins = horizontal ? [box.x, box.x + box.width] : [box.y, box.y + box.height];
+    const rows = [];
+    // 回弹可能把补面余量夹到小于12；扫描线必须仍位于理想圆弧的实心内部，不能把真实外轮廓当亮缝。
+    const radii = frame.maskSize.split(',').slice(1,3).map((part) => Math.min(...part.trim().split(/\s+/).map(parseFloat)));
+    const radius = frame.form === "capsule" ? 12 : Math.min(...radii);
+    const insets = [Math.min(2, radius / 6), Math.min(4, radius / 4), Math.min(6, radius / 3)];
+    for (const join of joins) for (const inset of insets) {
+        const fixed = horizontal ? (frame.edge === "top" ? box.y + inset : box.y + box.height - inset) : (frame.edge === "left" ? box.x + inset : box.x + box.width - inset);
+        const base = horizontal ? clip.x : clip.y;
+        const center = (join - base) * dpr;
+        const values = [];
+        for (let axis = Math.floor(center - dpr); axis <= Math.ceil(center + dpr); axis++) {
+            const css = base + (axis + 0.5) / dpr;
+            if (Math.abs(css - join) > 1) continue;
+            const px = horizontal ? axis : Math.floor((fixed - clip.x) * dpr);
+            const py = horizontal ? Math.floor((fixed - clip.y) * dpr) : axis;
+            const offset = (py * image.width + px) * 4;
+            const rgb = [...pixels.slice(offset, offset + 3)];
+            const alpha = rgb.reduce((sum, color, channel) => sum + (frame.background[channel] - color) / (frame.background[channel] - numbers[channel]), 0) / 3;
+            values.push({ css, rgb, alpha });
+        }
+        rows.push({ join, inset, values });
+    }
+    if (frame.form === "capsule") {
+        // Capsule没有fillet；只在四条直边内部4px做连续表面对照，不把其外轮廓的正常AA算接缝。
+        rows.length = 0;
+        for (const [x,y] of [[box.x+4,box.y+box.height/2],[box.x+box.width-4,box.y+box.height/2],[box.x+box.width/2,box.y+4],[box.x+box.width/2,box.y+box.height-4]]) {
+            const offset=(Math.floor((y-clip.y)*dpr)*image.width+Math.floor((x-clip.x)*dpr))*4;
+            const rgb=[...pixels.slice(offset,offset+3)];
+            const alpha=rgb.reduce((sum,color,channel)=>sum+(frame.background[channel]-color)/(frame.background[channel]-numbers[channel]),0)/3;
+            rows.push({ location:[x,y], values:[{css:x,rgb,alpha}] });
+        }
+    }
+    const centerOffset=(Math.floor((box.y+box.height/2-clip.y)*dpr)*image.width+Math.floor((box.x+box.width/2-clip.x)*dpr))*4;
+    const singleSurfaceRgb=[...pixels.slice(centerOffset,centerOffset+3)];
+    let maxSingleSurfaceDelta=0;
+    let maxLightWidth = 0, maxDarkAlpha = 0, minAlpha = 1;
+    for (const row of rows) {
+        let width = 0;
+        for (const value of row.values) {
+            maxSingleSurfaceDelta=Math.max(maxSingleSurfaceDelta,...value.rgb.map((color,channel)=>Math.abs(color-singleSurfaceRgb[channel])));
+            minAlpha = Math.min(minAlpha, value.alpha);
+            maxDarkAlpha = Math.max(maxDarkAlpha, value.alpha - expected);
+            width = value.alpha < expected - 0.06 ? width + 1 / dpr : 0;
+            maxLightWidth = Math.max(maxLightWidth, width);
+        }
+    }
+    let outsideBandChanged = 0, outsideBandMaxDelta = 0, outsideNewCoverage = 0, steadyChangedBytes = 0;
+    if (baseline || steadyBaseline) {
+        const reference = new Image();
+        reference.src = `data:image/png;base64,${baseline || steadyBaseline}`;
+        await reference.decode();
+        if (reference.width !== image.width || reference.height !== image.height) throw new Error('基线截图尺寸不一致，不能比较轮廓');
+        context.clearRect(0,0,image.width,image.height);
+        context.drawImage(reference,0,0);
+        const before = context.getImageData(0,0,image.width,image.height).data;
+        for(let py=0;py<image.height;py++) for(let px=0;px<image.width;px++) {
+            const x=clip.x+(px+0.5)/dpr, y=clip.y+(py+0.5)/dpr;
+            const normal = horizontal ? x : y;
+            const along = horizontal ? y : x;
+            const attached = horizontal ? (frame.edge==='top'?box.y:box.y+box.height) : (frame.edge==='left'?box.x:box.x+box.width);
+            const inward = frame.edge==='top'||frame.edge==='left' ? along-attached : attached-along;
+            const seamBand = frame.form==='notch' && joins.some((join)=>Math.abs(normal-join)<=2) && inward>=-1/dpr && inward<=Math.max(...radii)+1/dpr;
+            const offset=(py*image.width+px)*4;
+            if(steadyBaseline)steadyChangedBytes += [0,1,2,3].filter((channel)=>pixels[offset+channel]!==before[offset+channel]).length;
+            if(seamBand)continue;
+            const difference=Math.max(...[0,1,2].map((channel)=>Math.abs(pixels[offset+channel]-before[offset+channel])));
+            outsideBandMaxDelta=Math.max(outsideBandMaxDelta,difference);
+            if(difference>2)outsideBandChanged++;
+            if([0,1,2].every((channel)=>Math.abs(before[offset+channel]-frame.background[channel])<=2) && [0,1,2].some((channel)=>Math.abs(pixels[offset+channel]-frame.background[channel])>2))outsideNewCoverage++;
+        }
+    }
+    return { scanned: true, singleSurfaceRgb, maxSingleSurfaceDelta, expectedAlpha: expected, minAlpha, maxLightWidth, maxDarkAlpha, outsideBandChanged, outsideBandMaxDelta, outsideNewCoverage, steadyChangedBytes, steadyCompared:Boolean(steadyBaseline), bandDefinition:{normalHalfWidthCss:2,inwardStartCss:-1/dpr,inwardEndCss:Math.max(...radii)+1/dpr,clipHalfWidthCss:1+Math.max(.5,.5/dpr)}, baselineCompared:Boolean(baseline), rows };
+}
+
+// 清理被中断的运行遗留的无头 Edge：用户开着可见 Edge 窗口时跳过全局清理，本次实例仍按进程树回收。
+function 清理遗留无头浏览器() {
+    try {
+        const 可见窗口数 = execFileSync("powershell", ["-NoProfile", "-Command", "(Get-Process msedge -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle } | Measure-Object).Count"], { encoding: "utf8", timeout: 15000, windowsHide: true }).trim(); // 用户可见 Edge 窗口数。
+        if (可见窗口数 !== "0") return; // 用户正在用 Edge，交给实例回收处理自己的进程树。
+        execFileSync("taskkill", ["/IM", "msedge.exe", "/F"], { stdio: "ignore", timeout: 15000 }); // 无可见窗口时清掉无头残留。
+    } catch {
+        // 清理失败不影响断言判定；本次实例的回收仍然执行。
+    }
+}
+
 // 主流程：环境预检 → 逐页独立浏览器实例判定 → 汇总退出。
 async function 主流程() {
     const 全部页 = [...断言页, ...真机专用页, ...检查页]; // 断言页 + 真机专用页 + 只核对加载的检查页。
     const 待跑 = 选项.页过滤 ? 全部页.filter((页) => 页.includes(选项.页过滤)) : 全部页; // 本次要跑的页面。
     if (待跑.length === 0) throw new Error(`没有匹配 --页 ${选项.页过滤} 的断言页`);
-    await 检查端口();
+    await 检查开发服务器();
     const 可执行文件 = 定位浏览器(); // Edge 可执行文件；找不到属于环境问题。
     const 记录 = []; // 逐页结果。
 
@@ -363,11 +722,15 @@ async function 主流程() {
     return 汇总(记录);
 }
 
+// 启动与收尾各清理一次：覆盖被上游中断、实例树没来得及回收的运行。
+清理遗留无头浏览器();
 let 退出值 = 退出码.失败; // 默认按失败退出，异常路径改走环境问题退出码。
 try {
-    退出值 = (await 主流程()) ? 退出码.通过 : 退出码.失败;
+    退出值 = (await (选项.浮岛像素 ? (选项.自然帧 ? 自然帧取证() : 浮岛像素回归()) : 主流程())) ? 退出码.通过 : 退出码.失败;
 } catch (错误) {
     console.error(`[环境] ${错误.message}`);
     退出值 = 退出码.环境;
+} finally {
+    清理遗留无头浏览器();
 }
 process.exit(退出值);

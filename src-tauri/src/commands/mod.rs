@@ -8,6 +8,7 @@ pub mod folder_portal;
 pub mod loopback;
 pub use desktop_item::get_desktop_item_image;
 pub use desktop_item::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
+pub(crate) mod island;
 pub mod music;
 mod notifications;
 pub mod plugin_settings;
@@ -319,7 +320,7 @@ pub use component::{get_component_runtime_snapshot, invoke_component_capability}
 pub use desktop_host::{begin_desktop_host_input_drag, end_desktop_host_input_drag, exit_desktop_tools, get_desktop_host_snapshot, publish_desktop_host_readiness, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, update_desktop_host_hit_map};
 pub(crate) use desktop_item::refresh_desktop_item_snapshot;
 pub use desktop_item::{delete_desktop_items, get_desktop_item_snapshot, open_desktop_items, paste_desktop_items, rename_desktop_item, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag};
-pub use notifications::{publish_message_notification, sync_message_appearance};
+pub use notifications::{dismiss_island_message, get_island_messages, publish_message_notification, sync_message_appearance};
 
 /// 普通 Tauri 页面读取与桌面宿主相同的锁屏及前台快照。
 #[tauri::command]
@@ -327,13 +328,47 @@ pub(crate) fn get_foreground_snapshot() -> crate::platform::windows::refresh_pol
 pub(crate) use workspace::reconcile_workspace_environment;
 pub use workspace::{apply_workspace_command, apply_workspace_interaction, get_workspace_snapshot, inspect_workspace_backup, list_workspace_auto_snapshots, redo_workspace, restore_workspace_backup, undo_workspace, write_workspace_backup};
 
+/// 原生命令的协议来源；同一套命令面按来源收窄，不把宿主能力暴露给其他窗口。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeCommandSource
+{
+    /// 桌面宿主页面（逐屏宿主与独立岛）。
+    DesktopHost,
+    /// 设置窗口页面。
+    Settings,
+}
+
+/// 判断命令是否属于桌面层浮层命令；这些命令只服务宿主页面。
+pub(crate) fn is_popup_layer_command(command: &str) -> bool { matches!(command, "open_popup_layer" | "dismiss_popup_layer" | "update_popup_layer_payload") }
+
+/// 判断协议来源能否调用浮层命令；设置窗口只保留只读与设置命令。
+pub(crate) fn popup_layer_command_allowed(source: NativeCommandSource) -> bool { source == NativeCommandSource::DesktopHost }
+
 /// 路由独立 Windowed WebView2 transport 到正式应用命令边界。
-pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRuntime, command: &str, arguments: Value) -> Result<Value, Value>
+pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRuntime, source: NativeCommandSource, command: &str, arguments: Value) -> Result<Value, Value>
 {
     use tauri::Emitter;
+    // 置顶弹层只服务桌面层浮层：设置窗口与弹层页面自身都不得替换、关闭或改写宿主请求。
+    if is_popup_layer_command(command) && !popup_layer_command_allowed(source)
+    {
+        return Err(serialize_error(DesktopHostError::invalid_readiness("弹层命令不接受设置窗口调用")));
+    }
     // 当前本地 transport 命令的统一 JSON 结果。
     let result: Result<Value, Value> = match command
     {
+        "get_island_snapshot" => island::execute_get_island_snapshot(app).map_err(serialize_error).and_then(serialize_result),
+        "set_island_state" =>
+        {
+            let request = command_argument(&arguments, "request", "岛状态参数无效").map_err(serialize_error)?;
+            island::execute_set_island_state(app, request).map_err(serialize_error).and_then(serialize_result)
+        }
+        "begin_island_drag" => island::execute_begin_island_drag(app).map_err(serialize_error).and_then(serialize_result),
+        "get_island_messages" => serialize_result(notifications::execute_get_island_messages(app.state::<std::sync::Arc<crate::notifications::ToastManager>>().inner())),
+        "dismiss_island_message" =>
+        {
+            let id: u64 = command_argument(&arguments, "id", "岛消息身份无效").map_err(serialize_error)?; // 队列内消息身份。
+            notifications::execute_dismiss_island_message(app, app.state::<std::sync::Arc<crate::notifications::ToastManager>>().inner(), id).map_err(serialize_error).and_then(serialize_result)
+        }
         "list_audio_output_devices" => serialize_result(audio::list_audio_output_devices()),
         "start_audio_spectrum" =>
         {
@@ -348,6 +383,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             serialize_result(())
         }
         "get_audio_spectrum_status" => serialize_result(audio::get_audio_spectrum_status()),
+        "get_music_details" => Ok(music::get_music_details()),
         "get_current_music_session" => music::get_current_music_session().map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))),
         "request_music_convergence" =>
         {
@@ -597,7 +633,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let instance: String = command_argument(&arguments, "instanceId", "组件实例标识无效").map_err(serialize_error)?; // 需要校验的真实组件实例。
             let monitor: String = command_argument(&arguments, "monitorId", "显示器标识无效").map_err(serialize_error)?; // 当前呈现宿主。
             runtime.validate_monitor_id(&monitor).map_err(serialize_error)?;
-            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), instance, crate::contracts::ComponentCapability::ReadHostTime).map_err(serialize_error)?;
+            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::app::settings::SettingsState>(), instance, crate::contracts::ComponentCapability::ReadHostTime).map_err(serialize_error)?;
             serialize_result(ComponentRuntimeState::subscribe_time(monitor))
         }
         "unsubscribe_component_time" =>
@@ -639,7 +675,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             crate::platform::windows::refresh_policy::set_paused(&monitor_id, paused);
             ComponentRuntimeState::wake_time_source();
             let _ = app.emit("desktop-refresh-policy-changed", ());
-            crate::log_info!("桌面刷新：显示器={}，状态={}", monitor_id, if paused { "已暂停" } else { "已恢复" });
+            crate::log_debug!("桌面刷新：显示器={}，状态={}", monitor_id, if paused { "已暂停" } else { "已恢复" });
             serialize_result(())
         }
         "sync_message_appearance" =>
@@ -694,6 +730,22 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let request = command_argument(&arguments, "request", "门户菜单参数无效").map_err(serialize_error)?; // 两种传输使用相同请求结构。
             folder_portal::execute_show_folder_portal_menu(&app.state::<DesktopItemState>(), runtime, request).map_err(serialize_error).and_then(serialize_result)
         }
+        "open_popup_layer" =>
+        {
+            let request = command_argument(&arguments, "request", "弹层请求参数无效").map_err(serialize_error)?; // 宿主页面与弹层页面共用同一请求结构。
+            crate::platform::windows::popup_layer::execute_open(app, request).map_err(serialize_error).and_then(serialize_result)
+        }
+        "update_popup_layer_payload" =>
+        {
+            let request_id: u64 = command_argument(&arguments, "requestId", "弹层请求身份无效").map_err(serialize_error)?;
+            let payload = arguments.get("payload").cloned().unwrap_or(serde_json::Value::Null); // 载荷结构由弹层页面按种类校验。
+            crate::platform::windows::popup_layer::execute_update_payload(app, request_id, payload).map_err(serialize_error).and_then(serialize_result)
+        }
+        "dismiss_popup_layer" =>
+        {
+            let request_id: Option<u64> = arguments.get("requestId").cloned().map(serde_json::from_value).transpose().map_err(|error| serialize_error(error.to_string()))?; // 省略时结束当前请求。
+            crate::platform::windows::popup_layer::execute_dismiss(app, request_id).map_err(serialize_error).and_then(serialize_result)
+        }
         "rename_folder_portal_item" =>
         {
             let request = command_argument(&arguments, "request", "门户重命名参数无效").map_err(serialize_error)?;
@@ -719,7 +771,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         {
             let instance_id: String = command_argument(&arguments, "instanceId", "命令参数无效").map_err(serialize_error)?; // 已解码的 instanceId。
             let capability: ComponentCapability = command_argument(&arguments, "capability", "命令参数无效").map_err(serialize_error)?; // 已解码的 capability。
-            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), instance_id, capability).map_err(serialize_error).and_then(serialize_result)
+            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::app::settings::SettingsState>(), instance_id, capability).map_err(serialize_error).and_then(serialize_result)
         }
         "register_loopback_channel" =>
         {

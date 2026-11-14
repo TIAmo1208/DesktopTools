@@ -21,6 +21,7 @@ export interface ThemeAppearance {
     accentColor: string | null;
     desktopAccentColor: string | null;
     cornerRadius: number | null;
+    islandRadius: number | null; // 岛展开卡圆角。
     fontFamily: string | null;
     fontSize: number | null;
 }
@@ -55,6 +56,7 @@ export interface ComponentManifest {
     creatable: boolean;
     // 用户是否可移除该组件的实例。
     removable: boolean;
+    island?: boolean; // 清单是否允许上岛，缺省为 false。
     maxTiles: number; // 可创建的格子上限。0 表示不限。
     tileTypes: ComponentTileType[]; // 插件声明的格子类型，第一项为默认类型。空表示隐式单类型。
     version?: string; // 插件版本。缺省不展示。
@@ -214,6 +216,7 @@ const parseThemeAppearance = (value: unknown): ThemeAppearance | null => {
     }
     for (const [key, min, max] of [
         ["cornerRadius", 0, 12],
+        ["islandRadius", 0, 16],
         ["fontSize", 12, 18],
     ] as const) {
         const field = item[key]; // 待校验的整数范围。
@@ -224,6 +227,7 @@ const parseThemeAppearance = (value: unknown): ThemeAppearance | null => {
         accentColor: (item.accentColor ?? null) as string | null,
         desktopAccentColor: (item.desktopAccentColor ?? null) as string | null,
         cornerRadius: (item.cornerRadius ?? null) as number | null,
+        islandRadius: (item.islandRadius ?? null) as number | null,
         fontFamily: (item.fontFamily ?? null) as string | null,
         fontSize: (item.fontSize ?? null) as number | null,
     };
@@ -299,6 +303,7 @@ export const parseComponentRuntimeSnapshot = (value: unknown): ComponentRuntimeS
             requiredCapabilities: item.requiredCapabilities.map(parseCapability),
             creatable: parseDeclarationFlag(item.creatable),
             removable: parseDeclarationFlag(item.removable),
+            island: parseDeclarationFlag(item.island),
             maxTiles: parseMaxTiles(item.maxTiles),
             tileTypes: parseTileTypes(item.tileTypes),
             version: parseOptionalText(item.version),

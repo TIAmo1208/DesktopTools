@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>弹层菜单贴边与窗口盒检查</title>
+    <body>
+        <main id="fixture"></main>
+        <pre id="result">RUNNING</pre>
+        <script type="module">
+            import React from "react";
+            import { createRoot } from "react-dom/client";
+            import { PopupMenu } from "./PopupMenu.tsx";
+            import "../tiles/DesktopTileMenu.css"; // 菜单表面的布局与配色由这里提供。
+            import "./popupLayer.css";
+
+            /**
+             * 断言页目的：把「贴边位置的计算」与「真实渲染出来的位置」绑在同一条断言里。
+             * 上一轮只改计算、没改渲染，导致空隙连续逃逸两次，所以这里必须读真实 DOM 矩形。
+             */
+
+            /** 断言失败时抛出，由外层统一写 FAIL。 */
+            const assert = (condition, message) => {
+                if (!condition) throw new Error(message);
+            };
+
+            /** 读取真实渲染出的两个菜单（排除隐藏测量副本）。 */
+            const menus = () => [...document.querySelectorAll(".desktop-tile-menu")].filter((menu) => !menu.closest(".popup-layer__probe"));
+
+            /** 等一帧再加悬停延迟，让 React 完成展开。 */
+            const settle = (milliseconds = 260) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+            /** 悬停某个父项，触发二级菜单展开。 */
+            const hoverParent = async (index) => {
+                const rows = [...menus()[0].querySelectorAll("li")];
+                // React 的 onPointerEnter 由 pointerover 委托实现，必须派发可冒泡的 pointerover。
+                rows[index].dispatchEvent(new PointerEvent("pointerover", { bubbles: true, relatedTarget: null }));
+                await settle();
+            };
+
+            const 宽子菜单 = [
+                { label: "固定显示并按名称升序排列的一行很长很长的命令文字" },
+                { label: "悬浮隐藏" },
+            ];
+            const 窄子菜单 = [{ label: "升序" }, { label: "降序" }];
+            const items = [{ label: "上方一" }, { label: "宽子菜单", children: 宽子菜单 }, { label: "窄子菜单", children: 窄子菜单 }, { label: "下方一" }];
+
+            const root = createRoot(document.getElementById("fixture"));
+
+            try {
+                // 场景一：锚点靠近屏幕右侧，二级菜单向左展开。
+                const frames = []; // 每次 onLayout 的摆放，用来验证开合不改窗口盒。
+                const render = (available) =>
+                    new Promise((resolve) => {
+                        root.render(
+                            React.createElement(PopupMenu, {
+                                items,
+                                available,
+                                focusFirst: false,
+                                onLayout: (frame) => frames.push(frame),
+                                onSelect: () => {},
+                                onDismiss: () => {},
+                            }),
+                        );
+                        requestAnimationFrame(() => requestAnimationFrame(resolve));
+                    });
+
+                await render({ left: 2300, right: 240, top: 700, bottom: 700 });
+                const frame = frames.at(-1);
+                assert(frame, "首次渲染必须上报窗口盒");
+                assert(frame.anchorOffsetX > 0, "右侧锚点必须把根菜单右移，给左侧二级菜单让位");
+
+                const [rootMenu, childMenu] = menus();
+                assert(rootMenu && childMenu === undefined, "未展开时只应渲染根菜单");
+
+                await hoverParent(1);
+                // DOM 顺序固定：第一个是根菜单，第二个是二级菜单；位置关系由展开方向决定。
+                let rootRect = menus()[0].getBoundingClientRect();
+                let childRect = menus()[1].getBoundingClientRect();
+                assert(
+                    Math.abs(childRect.right - rootRect.left) <= 1,
+                    `向左展开时二级菜单必须贴住根菜单左边，实际空隙 ${(rootRect.left - childRect.right).toFixed(1)}；根菜单 left=${rootRect.left.toFixed(1)} 二级菜单 left=${childRect.left.toFixed(1)} right=${childRect.right.toFixed(1)} 宽度=${childRect.width.toFixed(1)}`,
+                );
+                assert(frames.length === 1, "展开二级菜单不得重新上报窗口盒");
+
+                // 换成更窄的二级菜单：上一轮的空隙就在这种宽窄不一致时出现。
+                await hoverParent(2);
+                rootRect = menus()[0].getBoundingClientRect();
+                childRect = menus()[1].getBoundingClientRect();
+                assert(childRect.width < 260, `窄子菜单应比宽子菜单窄，实际 ${childRect.width}`);
+                assert(Math.abs(childRect.right - rootRect.left) <= 1, `换成窄子菜单后仍要贴住根菜单左边，实际空隙 ${(rootRect.left - childRect.right).toFixed(1)}`);
+                assert(frames.length === 1, "切换二级菜单不得重新上报窗口盒");
+
+                // 场景二：锚点靠左，二级菜单向右展开。
+                await render({ left: 200, right: 2000, top: 700, bottom: 700 });
+                const leftFrame = frames.at(-1);
+                assert(leftFrame.anchorOffsetX === 0, "左侧锚点的根菜单不应右移");
+                await hoverParent(1);
+                rootRect = menus()[0].getBoundingClientRect();
+                childRect = menus()[1].getBoundingClientRect();
+                assert(Math.abs(childRect.left - rootRect.right) <= 1, `向右展开时二级菜单必须贴住根菜单右边，实际空隙 ${(childRect.left - rootRect.right).toFixed(1)}`);
+
+                document.getElementById("result").textContent = "PASS：左右两个展开方向、宽窄两种二级菜单都紧贴一级菜单，展开与切换都不改窗口盒";
+            } catch (error) {
+                document.getElementById("result").textContent = "FAIL：" + error.stack;
+            } finally {
+                root.unmount();
+            }
+        </script>
+    </body>
+</html>

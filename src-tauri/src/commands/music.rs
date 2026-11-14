@@ -4,6 +4,10 @@ use tauri::command;
 #[command]
 pub fn get_current_music_session() -> Result<serde_json::Value, String> { crate::platform::windows::music::snapshot() }
 
+/// 读取独立时间轴与歌词缓存，不触发网络或媒体读取。
+#[command]
+pub fn get_music_details() -> serde_json::Value { crate::platform::windows::music::details::snapshot() }
+
 /// 执行当前媒体会话的播放控制动作。
 #[command]
 pub fn execute_music_action(action: String, expected_session: String) -> Result<(), String> { crate::platform::windows::music::execute_action(&action, &expected_session) }

@@ -17,7 +17,7 @@ const theme = (id: string, appearance: Partial<ThemeAppearance>): ComponentManif
     removable: true,
     maxTiles: 0,
     persistenceVersion: 1,
-    themeAppearance: { accentColor: null, desktopAccentColor: null, cornerRadius: null, fontFamily: null, fontSize: null, ...appearance },
+    themeAppearance: { accentColor: null, desktopAccentColor: null, cornerRadius: null, islandRadius: null, fontFamily: null, fontSize: null, ...appearance },
 });
 
 const original = parsePreferences({
@@ -27,6 +27,7 @@ const original = parsePreferences({
     fontFamily: "Arial",
     fontSize: 14,
     cornerRadius: 4,
+    islandRadius: 8,
     useWindowsAccentColor: true,
 }); // 非默认用户外观。
 
@@ -34,7 +35,7 @@ test("首次选择捕获原值且一次保存，换主题不更新基线并清�
     let calls = 0; // 真实调用次数，而非只断言构造结果。
     const first = await applyThemeSelection(
         original,
-        theme("plugin.first", { accentColor: "#abcdef", fontFamily: "SimSun", cornerRadius: 12 }),
+        theme("plugin.first", { accentColor: "#abcdef", fontFamily: "SimSun", cornerRadius: 12, islandRadius: 16 }),
         async (next) => {
             calls++;
             assert.equal(original.themeBaseline, null);
@@ -42,14 +43,23 @@ test("首次选择捕获原值且一次保存，换主题不更新基线并清�
         },
     );
     assert.equal(calls, 1);
-    assert.deepEqual(first.themeBaseline, { accentColor: "#123456", desktopAccentColor: "#2563eb", fontFamily: "Arial", fontSize: 14, cornerRadius: 4 });
+    assert.deepEqual(first.themeBaseline, {
+        accentColor: "#123456",
+        desktopAccentColor: "#2563eb",
+        fontFamily: "Arial",
+        fontSize: 14,
+        cornerRadius: 4,
+        islandRadius: 8,
+    });
     assert.equal(first.fontFamily, "SimSun");
+    assert.equal(first.islandRadius, 16);
     assert.equal(first.useWindowsAccentColor, true);
     const second = selectTheme(first, theme("plugin.second", { fontSize: 18, desktopAccentColor: "#445566" })); // 不声明字体与界面色。
     assert.deepEqual(second.themeBaseline, first.themeBaseline);
     assert.equal(second.fontFamily, "Arial");
     assert.equal(second.accentColor, "#123456");
     assert.equal(second.cornerRadius, 4);
+    assert.equal(second.islandRadius, 8);
     assert.equal(second.fontSize, 18);
     assert.equal(second.desktopAppearance.accentColor, "#445566");
     assert.deepEqual(clearTheme(second), original);
@@ -74,11 +84,12 @@ test("非法旧基线按字段回退默认值且还原不抛错", () => {
     const selected = selectTheme(original, theme("plugin.first", {}));
     const cleared = clearTheme({
         ...selected,
-        themeBaseline: { ...selected.themeBaseline!, fontFamily: "Arial; color:red", fontSize: 100, cornerRadius: -1, accentColor: "red" },
+        themeBaseline: { ...selected.themeBaseline!, fontFamily: "Arial; color:red", fontSize: 100, cornerRadius: -1, islandRadius: 17, accentColor: "red" },
     });
     assert.equal(cleared.fontFamily, "Segoe UI Variable");
     assert.equal(cleared.fontSize, 13);
     assert.equal(cleared.cornerRadius, 6);
+    assert.equal(cleared.islandRadius, 12);
     assert.equal(cleared.accentColor, "#2563eb");
     assert.equal(cleared.themeBaseline, null);
 });
@@ -101,7 +112,7 @@ test("已被主题字体污染的旧基线在停用或切回默认时回到系�
         themePluginId: "plugin.songlv",
         fontFamily: "宋律宋体",
         themeBaseline: {
-            ...(original.themeBaseline ?? { accentColor: "#123456", desktopAccentColor: "#2563eb", cornerRadius: 4, fontSize: 14 }),
+            ...(original.themeBaseline ?? { accentColor: "#123456", desktopAccentColor: "#2563eb", cornerRadius: 4, islandRadius: 8, fontSize: 14 }),
             fontFamily: "宋律宋体",
         },
     };

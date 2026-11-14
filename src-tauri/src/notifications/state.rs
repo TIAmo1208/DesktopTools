@@ -1,7 +1,7 @@
 use super::ToastRequest;
 use std::{
     collections::VecDeque,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 /// 一条消息当前呈现的几何与独立透明度，坐标以堆栈底边为原点。
@@ -52,6 +52,7 @@ pub(super) struct ToastItem
     pub request: ToastRequest, // 原始消息。
     pub expires_at: Instant,   // 当前停留截止时刻。
     pub created_at: Instant,   // 悬停期间新增消息只暂停自身存在的时间。
+    pub received_at_ms: u64,   // 到达时刻的墙钟毫秒，供浮岛显示来源时间。
     pub height: f32,           // DirectWrite 测量后的布局高度。
     pub closing: bool,         // 已进入离场，不再参与补位计算。
     pub motion: Motion,        // 独立的插值状态。
@@ -83,7 +84,8 @@ impl ToastState
         self.next_id += 1;
         let initial = Visual { top: -height + 16.0, height, scale: 1.0, alpha: 0.0, content: 1.0 }; // 从底部下方透明进入。
         let expires_at = now + Duration::from_millis(u64::from(request.duration_ms)); // 每条消息独立期限，不按队列顺序关闭。
-        self.items.push_back(ToastItem { id: self.next_id, request, height, created_at: now, expires_at, closing: false, motion: Motion { from: initial, to: initial, started: now } });
+        let received_at_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64; // 投影显示用的到达时刻，与单调时钟分开保存。
+        self.items.push_back(ToastItem { id: self.next_id, request, height, created_at: now, received_at_ms, expires_at, closing: false, motion: Motion { from: initial, to: initial, started: now } });
         while self.items.len() > 5
         {
             self.items.pop_front();

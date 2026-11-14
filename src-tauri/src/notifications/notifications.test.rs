@@ -4,6 +4,9 @@ use std::time::Duration;
 /// 构造正式协议消息，不绕过真实队列路径。
 fn message(content: &str) -> ToastRequest { ToastRequest { r#type: "info".into(), content: content.into(), source: "test".into(), dedupe_key: None, loading: None, duration_ms: 4000 } }
 
+/// 两个用例都建真实 Toast 窗口，安装会改写进程级前台快照；串行执行避免互相覆盖。
+static TOAST_SNAPSHOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 新消息独立淡入，旧层从当前画面缩小上移，连发也不跳回起点。
 #[test]
 fn incoming_toast_does_not_fade_existing_items()
@@ -125,7 +128,8 @@ fn appearance_uses_interface_preferences_only()
 fn saved_palette_repaints_existing_toasts_without_resetting_queue()
 {
     let preferences = ApplicationPreferences::default(); // 权威已保存偏好。
-    let manager = ToastManager::install(preferences.clone(), None).unwrap(); // 真实管理器，测试只访问非 COM 状态。
+    let _snapshot = TOAST_SNAPSHOT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner()); // 共用前台快照的用例串行。
+    let manager = ToastManager::install(None, preferences.clone(), None).unwrap(); // 真实管理器，测试只访问非 COM 状态。
     let now = Instant::now(); // 确定性队列时钟。
     {
         let mut runtime = manager.runtime.lock().unwrap();
@@ -156,7 +160,8 @@ fn saved_palette_repaints_existing_toasts_without_resetting_queue()
 fn native_surface_theme_and_close_follow_rendered_frames()
 {
     let preferences = ApplicationPreferences { theme: ApplicationTheme::Light, follow_system_reduced_motion: false, interface_animations: false, ..Default::default() }; // 确定性原生测试。
-    let manager = ToastManager::install(preferences, None).unwrap(); // 真实分层窗口。
+    let _snapshot = TOAST_SNAPSHOT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner()); // 共用前台快照的用例串行。
+    let manager = ToastManager::install(None, preferences, None).unwrap(); // 真实分层窗口（测试无宿主句柄）。
     crate::platform::windows::refresh_policy::assume_notifications_visible_for_test();
     {
         let mut runtime = manager.runtime.lock().unwrap(); // 原生主线程入队。
@@ -182,4 +187,47 @@ fn native_surface_theme_and_close_follow_rendered_frames()
     manager.cleanup();
     manager.cleanup();
     assert!(manager.hwnd().is_invalid());
+}
+
+/// 浮岛投影按到达顺序给出活动消息，同来源同键去重，离场与过期项不进入投影。
+#[test]
+fn island_projection_orders_dedupes_and_drops_closed_messages()
+{
+    let now = Instant::now(); // 可重复的测试时钟。
+    let mut queue = ToastState::default(); // 与正式窗口相同的队列。
+    queue.enqueue(message("第一条"), 64.0, now, true);
+    queue.enqueue(ToastRequest { dedupe_key: Some("same".into()), ..message("重复") }, 64.0, now, true);
+    assert!(!queue.enqueue(ToastRequest { dedupe_key: Some("same".into()), ..message("重复") }, 64.0, now, true)); // 同来源同键被拒绝。
+    queue.enqueue(message("第三条"), 64.0, now, true);
+    let projected = project_island_messages(queue.items.iter());
+    assert_eq!(projected.iter().map(|message| message.content.as_str()).collect::<Vec<_>>(), ["第一条", "重复", "第三条"]);
+    assert!(projected.iter().all(|message| message.received_at_ms > 0), "投影必须带墙钟到达时刻");
+    assert_eq!(projected.iter().map(|message| message.id).collect::<Vec<_>>(), queue.items.iter().map(|item| item.id).collect::<Vec<_>>());
+    let closed = projected[0].id; // 关闭最早进入的一条。
+    queue.close(closed, now, true);
+    assert_eq!(project_island_messages(queue.items.iter()).iter().map(|message| message.content.as_str()).collect::<Vec<_>>(), ["重复", "第三条"]);
+    queue.tick(now + Duration::from_secs(5), true); // 全部超过 4 秒期限。
+    assert!(project_island_messages(queue.items.iter()).is_empty(), "过期消息必须从投影移除");
+}
+
+/// 无宿主句柄时同步仍推进投影缓存；同一集合不重复推进。
+#[test]
+fn island_sync_tracks_projection_and_keeps_cache_stable()
+{
+    let _snapshot = TOAST_SNAPSHOT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner()); // 共用前台快照的用例串行。
+    let manager = ToastManager::install(None, ApplicationPreferences::default(), None).unwrap(); // 真实窗口，测试无宿主句柄。
+    crate::platform::windows::refresh_policy::assume_notifications_visible_for_test();
+    manager.refresh(); // 空队列同步一次。
+    assert!(manager.runtime.lock().unwrap().island_messages.is_empty());
+    {
+        let mut runtime = manager.runtime.lock().unwrap();
+        runtime.queue.enqueue(message("同步"), 64.0, Instant::now(), false);
+    }
+    manager.refresh();
+    let first = manager.runtime.lock().unwrap().island_messages.clone(); // 成功路径推进缓存。
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].content, "同步");
+    manager.refresh(); // 同一集合不得再次推进。
+    assert_eq!(manager.runtime.lock().unwrap().island_messages, first);
+    manager.cleanup();
 }

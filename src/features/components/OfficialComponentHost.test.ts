@@ -11,12 +11,17 @@ const server = await createServer({
             name: "plugin-host-test-tables",
             transform(code, id) {
                 if (id.endsWith("/features/components/OfficialComponentHost.tsx"))
-                    return `${code}\nexport { pluginVisibility, instanceVisible, pluginRenderers, syncPluginScripts, mountPluginTile, releasePluginTile, syncPluginTileSettings };`;
+                    return `${code}\nexport { pluginVisibility, instanceVisible, pluginRenderers };`;
+                if (id.endsWith("/features/components/PluginSlot.tsx"))
+                    return `${code}\nexport { mountPluginTile, releasePluginTile, syncPluginTileSettings };`;
             },
         },
     ],
 }); // 不启动监听端口，沿用生产入口及依赖。
-const host = await server.ssrLoadModule("/src/features/components/OfficialComponentHost.tsx");
+const host = {
+    ...(await server.ssrLoadModule("/src/features/components/OfficialComponentHost.tsx")),
+    ...(await server.ssrLoadModule("/src/features/components/PluginSlot.tsx")),
+};
 const bridge = await server.ssrLoadModule("/src/bridge/pluginSettings.ts");
 /** 插件容器只需提供 replaceChildren：重挂前宿主会清空它。 */
 const fakeContainer = () => ({ replaceChildren: () => undefined });
@@ -32,7 +37,7 @@ test("插件宿主保留官方显隐、入口别名和未知入口兜底", async
     const { pluginVisibility, instanceVisible, pluginRenderers } = host;
     for (const value of [undefined, false, true]) {
         for (const debugRegistered of [false, true]) {
-const context = {
+            const context = {
                 preferences: { clockEnabled: value, debugEnabled: value, musicEnabled: value, collectEnabled: value, weatherEnabled: value },
                 runtime: { manifests: debugRegistered ? [{ id: "official.debug-test" }] : [] },
             }; // 每个开关与 Debug 注册是独立条件。
@@ -78,9 +83,10 @@ const context = {
     assert.match(source, /props\.registration\?\.entry \?\? instance\.componentId/);
     assert.match(source, /title="本地时间" minimum=\{\{ width: 164, height: 90 \}\}/);
     assert.match(source, /<p className="official-component__error">组件前端入口不存在<\/p>/);
-    assert.match(source, /<div ref=\{containerRef\} data-plugin-container=\{instanceId\} \/>/);
-    assert.match(source, /releasePluginTile\(instanceId\)/);
-    assert.match(source, /removeEventListener\("desktop-refresh-changed", handleRefresh\)/);
+    const slotSource = await readFile(new URL("./PluginSlot.tsx", import.meta.url), "utf8"); // 共享链路迁移后仍验证实际生产模块。
+    assert.match(slotSource, /<div ref=\{containerRef\} data-plugin-container=\{instanceId\} \/>/);
+    assert.match(slotSource, /releasePluginTile\(instanceId\)/);
+    assert.match(slotSource, /removeEventListener\("desktop-refresh-changed", handleRefresh\)/);
 });
 
 test("按插件 id 去重只导入一次模块，失败不重试并进入错误态", async () => {
@@ -141,7 +147,7 @@ test("实例移除时调用最近一次 renderTile 的清理函数", () => {
             return () => cleaned.push(context.instanceId);
         },
     };
-    const context = (instanceId) => ({ pluginId: "plugin.shared", instanceId, collapsed: true, settings: { on: true }, saveSettings: async () => undefined });
+    const context = (instanceId) => ({ pluginId: "plugin.shared", instanceId, tileType: "", collapsed: true, settings: { on: true }, saveSettings: async () => undefined });
     host.mountPluginTile(fakeContainer(), context("inst-1"));
     host.mountPluginTile(fakeContainer(), context("inst-2"));
     assert.equal(seen.instanceId, "inst-2");
@@ -163,12 +169,39 @@ test("实例移除时调用最近一次 renderTile 的清理函数", () => {
             return () => order.push(current);
         },
     };
-    const redraw = { pluginId: "plugin.redraw", instanceId: "redraw-1", collapsed: false, settings: null, saveSettings: async () => undefined };
+    const redraw = { pluginId: "plugin.redraw", instanceId: "redraw-1", tileType: "", collapsed: false, settings: null, saveSettings: async () => undefined };
     host.mountPluginTile(fakeContainer(), redraw);
     host.mountPluginTile(fakeContainer(), redraw);
     assert.deepEqual(order, [1]);
     host.releasePluginTile("redraw-1");
     assert.deepEqual(order, [1, 2]);
+});
+
+test("插件清理抛错不破坏其他卡片与宿主卸载", () => {
+    scripts.pluginShell["plugin.cleanup-failure"] = {
+        renderTile: () => () => {
+            throw new Error("清理失败");
+        },
+    };
+    const context = {
+        pluginId: "plugin.cleanup-failure",
+        instanceId: "cleanup-failure",
+        tileType: "",
+        collapsed: false,
+        settings: null,
+        saveSettings: async () => undefined,
+    };
+    host.mountPluginTile(fakeContainer(), context);
+    const previous = console.warn;
+    const warnings = [];
+    console.warn = (...args) => warnings.push(args);
+    try {
+        assert.doesNotThrow(() => host.releasePluginTile(context.instanceId));
+    } finally {
+        console.warn = previous;
+    }
+    assert.equal(warnings.length, 1);
+    assert.doesNotThrow(() => host.releasePluginTile(context.instanceId));
 });
 
 test("renderTile 通过 context.menu 注册实例菜单并在清理时撤下", async () => {
@@ -178,7 +211,7 @@ test("renderTile 通过 context.menu 注册实例菜单并在清理时撤下", a
             context.menu.register([{ id: "refresh", label: "刷新一次", onSelect: () => undefined }]);
         },
     };
-    host.mountPluginTile(fakeContainer(), { pluginId: "plugin.menu", instanceId: "menu-1", collapsed: false, settings: null, saveSettings: async () => undefined });
+    host.mountPluginTile(fakeContainer(), { pluginId: "plugin.menu", instanceId: "menu-1", tileType: "", collapsed: false, settings: null, saveSettings: async () => undefined });
     assert.deepEqual(
         menu.readPluginMenuItems("menu-1").map((item) => item.id),
         ["refresh"],
@@ -231,7 +264,7 @@ test("收到 plugin-settings-changed 后用新设置重绘，并先执行上一�
             return () => order.push(generation);
         },
     };
-    const context = (settings) => ({ pluginId: "plugin.greet", instanceId: "tile-1", collapsed: false, settings, saveSettings: async () => undefined });
+    const context = (settings) => ({ pluginId: "plugin.greet", instanceId: "tile-1", tileType: "", collapsed: false, settings, saveSettings: async () => undefined });
     const cleared: number[] = []; // 每次重挂前是否清掉上一轮 DOM。
     const container = { replaceChildren: () => cleared.push(seen.length) };
     host.mountPluginTile(container, context(null));

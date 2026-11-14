@@ -5,8 +5,10 @@ import type { AudioOutputDevice } from "../../contracts/audio";
 import type { ApplicationPreferences } from "../../contracts/settings";
 import type { FolderPortalInstance, WorkspaceCommand, WorkspaceSnapshot } from "../../contracts/workspace";
 import { SettingsSwitch } from "./SettingsSwitch";
+import { MusicLyricsRow, MusicSpectrumBarsRow, MusicSpectrumFpsRow, MusicSpectrumRow } from "./MusicSettingsRows";
 import plusIcon from "../../../resources/collect-new.svg?raw";
 import backIcon from "../../../resources/weather-back.svg?raw";
+import chevronIcon from "../../../resources/settings-chevron-right.svg?raw";
 import "../tiles/DesktopTileMenu.css";
 import "./FeatureSettings.css";
 
@@ -93,7 +95,7 @@ export const FeatureSettings = ({
         };
     }, [detail]);
     const [selectedPortalId, setSelectedPortalId] = useState<string>(); // 当前单击选中的映射。
-    const [portalMenu, setPortalMenu] = useState<{ portalId: string; left: number; top: number }>(); // 当前跟随鼠标的映射菜单。
+    const [portalMenu, setPortalMenu] = useState<{ portalId: string; left: number; top: number; confirm?: boolean }>(); // 当前跟随鼠标的映射菜单；confirm 为移除前的二次确认态。
     const portalMenuRef = useRef<HTMLMenuElement>(null); // 右键菜单外部点击边界。
     const unavailable = disabled || !preferences; // 加载前不允许修改。
     /** 开关：限量为 1 的功能格子开启时走后端补建默认格子，其余仍按普通偏好保存。 */
@@ -147,7 +149,8 @@ export const FeatureSettings = ({
                 title="返回功能格子"
                 aria-label="返回功能格子"
                 onClick={() => (detail === "weather" ? leaveGuard.current?.(() => setDetail(undefined)) : setDetail(undefined))}
-             data-button="icon">
+                data-button="icon"
+            >
                 <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: backIcon }} />
             </button>
             <div className="feature-settings__identity">
@@ -163,7 +166,8 @@ export const FeatureSettings = ({
                         title="添加天气来源"
                         aria-label="添加天气来源"
                         onClick={() => setWeatherAddKey((value) => value + 1)}
-                     data-button="icon">
+                        data-button="icon"
+                    >
                         <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: addTileIcon }} />
                     </button>
                 ) : canAdd && feature ? (
@@ -174,7 +178,8 @@ export const FeatureSettings = ({
                         title="添加格子到桌面"
                         aria-label="添加格子到桌面"
                         onClick={() => void onCreateTile(feature.componentId)}
-                     data-button="icon">
+                        data-button="icon"
+                    >
                         <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: addTileIcon }} />
                     </button>
                 ) : null}
@@ -198,33 +203,31 @@ export const FeatureSettings = ({
             {!detail ? (
                 <>
                     <div className="feature-settings__list">
-                    {features.map((entry) => (
-                        <div className="feature-settings__row feature-settings__row--link" key={entry.id}>
-                            <span className="feature-settings__copy">{entry.label}</span>
-                            <SettingsSwitch
-                                label={entry.label}
-                                disabled={unavailable}
-                                checked={Boolean(
-                                    preferences?.[
-                                        entry.key as
-                                            "clockEnabled" | "musicEnabled" | "collectEnabled" | "folderPortalEnabled" | "weatherEnabled" | "debugEnabled"
-                                    ],
-                                )}
-                                onChange={(checked) => handleEnabled(checked, entry)}
-                            />
-                            <span className="feature-settings__chevron" aria-hidden="true">
-                                {"\uE76C"}
-                            </span>
-                            <button
-                                className="feature-settings__hit"
-                                type="button"
-                                data-button="row-hit"
-                                title={`${entry.label}设置`}
-                                aria-label={`${entry.label}设置`}
-                                onClick={() => setDetail(entry.id as "clock" | "music" | "collect" | "folder" | "weather" | "debug")}
-                            />
-                        </div>
-                    ))}
+                        {features.map((entry) => (
+                            <div className="feature-settings__row feature-settings__row--link" key={entry.id}>
+                                <span className="feature-settings__copy">{entry.label}</span>
+                                <SettingsSwitch
+                                    label={entry.label}
+                                    disabled={unavailable}
+                                    checked={Boolean(
+                                        preferences?.[
+                                            entry.key as
+                                                "clockEnabled" | "musicEnabled" | "collectEnabled" | "folderPortalEnabled" | "weatherEnabled" | "debugEnabled"
+                                        ],
+                                    )}
+                                    onChange={(checked) => handleEnabled(checked, entry)}
+                                />
+                                <span className="feature-settings__chevron" aria-hidden="true" dangerouslySetInnerHTML={{ __html: chevronIcon }} />
+                                <button
+                                    className="feature-settings__hit"
+                                    type="button"
+                                    data-button="row-hit"
+                                    title={`${entry.label}设置`}
+                                    aria-label={`${entry.label}设置`}
+                                    onClick={() => setDetail(entry.id as "clock" | "music" | "collect" | "folder" | "weather" | "debug")}
+                                />
+                            </div>
+                        ))}
                     </div>
                 </>
             ) : detail === "clock" ? (
@@ -261,15 +264,8 @@ export const FeatureSettings = ({
                             onChange={(checked) => onPreferences({ musicShowSource: checked })}
                         />
                     </div>
-                    <div className="feature-settings__row">
-                        <span>显示实时频谱</span>
-                        <SettingsSwitch
-                            label="显示实时频谱"
-                            disabled={unavailable}
-                            checked={preferences?.musicSpectrumEnabled ?? false}
-                            onChange={(checked) => onPreferences({ musicSpectrumEnabled: checked })}
-                        />
-                    </div>
+                    <MusicLyricsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
+                    <MusicSpectrumRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
                     <label className="feature-settings__row">
                         <span>频谱采集设备</span>
                         <select
@@ -289,34 +285,8 @@ export const FeatureSettings = ({
                             ))}
                         </select>
                     </label>
-                    <label className="feature-settings__row">
-                        <span>频谱段数</span>
-                        <select
-                            disabled={unavailable || !preferences?.musicSpectrumEnabled}
-                            value={String(preferences?.musicSpectrumBars ?? 32)}
-                            onChange={(event) => onPreferences({ musicSpectrumBars: Number(event.currentTarget.value) })}
-                        >
-                            {[16, 24, 32, 48, 64].map((bars) => (
-                                <option key={bars} value={String(bars)}>
-                                    {bars} 段
-                                </option>
-                            ))}
-                        </select>
-                    </label>
-                    <label className="feature-settings__row">
-                        <span>频谱帧率</span>
-                        <select
-                            disabled={unavailable || !preferences?.musicSpectrumEnabled}
-                            value={String(preferences?.musicSpectrumFps ?? 30)}
-                            onChange={(event) => onPreferences({ musicSpectrumFps: Number(event.currentTarget.value) })}
-                        >
-                            {[15, 30, 60].map((fps) => (
-                                <option key={fps} value={String(fps)}>
-                                    {fps} 帧/秒
-                                </option>
-                            ))}
-                        </select>
-                    </label>
+                    <MusicSpectrumBarsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
+                    <MusicSpectrumFpsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
                 </>
             ) : detail === "collect" ? (
                 <>
@@ -368,7 +338,13 @@ export const FeatureSettings = ({
                             添加收集箱
                             <small>在桌面创建新的收集箱格子。</small>
                         </span>
-                        <button className="feature-settings__action" type="button" disabled={unavailable} onClick={() => void onCreateCollectBox()} data-button="ghost">
+                        <button
+                            className="feature-settings__action"
+                            type="button"
+                            disabled={unavailable}
+                            onClick={() => void onCreateCollectBox()}
+                            data-button="ghost"
+                        >
                             添加
                         </button>
                     </div>
@@ -394,7 +370,8 @@ export const FeatureSettings = ({
                                         });
                                 })
                             }
-                         data-button="ghost">
+                            data-button="ghost"
+                        >
                             新建
                         </button>
                     </div>
@@ -442,19 +419,35 @@ export const FeatureSettings = ({
                                     重新映射路径
                                 </button>
                             </li>
-                            <li role="none">
-                                <button
-                                    type="button"
-                                    role="menuitem"
-                                    onClick={() => {
-                                        const portalId = portalMenu.portalId;
-                                        setPortalMenu(undefined);
-                                        void onWorkspaceCommand({ type: "remove-folder-portal", portalId });
-                                    }}
-                                >
-                                    移除映射
-                                </button>
-                            </li>
+                            {portalMenu.confirm ? (
+                                <>
+                                    <li role="none">
+                                        <button
+                                            type="button"
+                                            role="menuitem"
+                                            className="desktop-tile-menu__danger"
+                                            onClick={() => {
+                                                const portalId = portalMenu.portalId; // 移除前先记下目标，菜单随后关闭。
+                                                setPortalMenu(undefined);
+                                                void onWorkspaceCommand({ type: "remove-folder-portal", portalId });
+                                            }}
+                                        >
+                                            确认移除
+                                        </button>
+                                    </li>
+                                    <li role="none">
+                                        <button type="button" role="menuitem" onClick={() => setPortalMenu({ ...portalMenu, confirm: false })}>
+                                            取消
+                                        </button>
+                                    </li>
+                                </>
+                            ) : (
+                                <li role="none">
+                                    <button type="button" role="menuitem" onClick={() => setPortalMenu({ ...portalMenu, confirm: true })}>
+                                        移除映射
+                                    </button>
+                                </li>
+                            )}
                         </menu>
                     )}
                 </>

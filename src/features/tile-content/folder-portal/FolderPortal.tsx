@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type Ref } from "react";
 import { createPortal } from "react-dom";
 import { cancelDesktopItemDragPreparation, startDesktopItemDrag } from "../../../bridge/desktopItems";
 import { redoWorkspace, undoWorkspace } from "../../../bridge/workspace";
@@ -15,6 +15,7 @@ import {
 } from "../../../bridge/folderPortal";
 import type { FolderPortalItem, FolderPortalSnapshot } from "../../../contracts/folderPortal";
 import { publishMessage } from "../../notifications/messageNotification";
+import { openTileMenu } from "../../popup-layer/openTileMenu";
 import "./FolderPortal.css";
 
 /** 当前门户内容公开给其公共标题和菜单的操作。 */
@@ -55,7 +56,6 @@ export const FolderPortal = ({
     const pendingRead = useRef(Promise.resolve()); // 跨导航串行化同一门户的枚举。
     const cancelDrag = useRef<(() => void) | undefined>(undefined); // 导航或卸载终止本次原生准备。
     const breadcrumbButton = useRef<HTMLButtonElement>(null); // 弹层使用当前可见锚点。
-    const breadcrumbMenu = useRef<HTMLMenuElement>(null); // 与公共菜单一致管理焦点和失焦关闭。
     const suppressClick = useRef(false); // OLE 交接后的合成点击不得改变完整选择。
     const mergeSnapshot = (next: FolderPortalSnapshot, quiet: boolean) =>
         setSnapshot((previous) => {
@@ -76,22 +76,10 @@ export const FolderPortal = ({
     useEffect(() => () => cancelDrag.current?.(), []);
     useEffect(() => {
         if (!crumbMenuOpen) return;
-        const closeOutside = (event: globalThis.PointerEvent) => {
-            if (event.target instanceof Node && (breadcrumbMenu.current?.contains(event.target) || breadcrumbButton.current?.contains(event.target))) return;
-            setCrumbMenuOpen(false);
-        };
+        // 弹层菜单自己处理点外关闭；这里只跟随"别的菜单打开"清掉 aria 状态。
         const close = () => setCrumbMenuOpen(false);
-        document.addEventListener("pointerdown", closeOutside, true);
-        window.addEventListener("blur", close);
         window.addEventListener("desktop-tile-menu-opening", close);
-        return () => {
-            document.removeEventListener("pointerdown", closeOutside, true);
-            window.removeEventListener("blur", close);
-            window.removeEventListener("desktop-tile-menu-opening", close);
-        };
-    }, [crumbMenuOpen]);
-    useLayoutEffect(() => {
-        if (crumbMenuOpen) breadcrumbMenu.current?.querySelector<HTMLButtonElement>("button")?.focus();
+        return () => window.removeEventListener("desktop-tile-menu-opening", close);
     }, [crumbMenuOpen]);
     useEffect(() => onCurrentPathChange?.(currentPath), [currentPath, onCurrentPathChange]);
 
@@ -337,53 +325,31 @@ export const FolderPortal = ({
                                         aria-label="显示中间层级"
                                         aria-expanded={crumbMenuOpen}
                                         onClick={() => {
+                                            const button = breadcrumbButton.current;
+                                            if (!button) return;
                                             if (!crumbMenuOpen) window.dispatchEvent(new Event("desktop-tile-menu-opening"));
-                                            setCrumbMenuOpen((open) => !open);
+                                            const bounds = button.getBoundingClientRect(); // 以当前按钮为锚点。
+                                            setCrumbMenuOpen(true);
+                                            // 层级菜单在置顶弹层里呈现；跳转逻辑仍留在门户本身。
+                                            openTileMenu(
+                                                crumb.slice(1, -2).map((middle, middleIndex) => ({
+                                                    label: middle,
+                                                    onSelect: () => {
+                                                        setSelected([]);
+                                                        setCurrentPath(`${rootPath.replace(/[\\/]$/, "")}/${crumb.slice(1, middleIndex + 2).join("/")}`);
+                                                    },
+                                                })),
+                                                {
+                                                    left: Math.max(4, Math.min(bounds.left, window.innerWidth - 124)),
+                                                    top: Math.max(4, Math.min(bounds.bottom + 2, window.innerHeight - 30 - crumb.slice(1, -2).length * 26)),
+                                                },
+                                                { onSettled: () => setCrumbMenuOpen(false) },
+                                            );
                                         }}
-                                     data-button="icon">
+                                        data-button="icon"
+                                    >
                                         …
                                     </button>
-                                    {crumbMenuOpen &&
-                                        breadcrumbButton.current &&
-                                        createPortal(
-                                            <menu
-                                                ref={breadcrumbMenu}
-                                                className="folder-portal__breadcrumb-menu"
-                                                role="menu"
-                                                style={{
-                                                    top: Math.max(
-                                                        4,
-                                                        Math.min(
-                                                            breadcrumbButton.current.getBoundingClientRect().bottom + 2,
-                                                            window.innerHeight - 30 - crumb.slice(1, -2).length * 26,
-                                                        ),
-                                                    ),
-                                                    left: Math.max(4, Math.min(breadcrumbButton.current.getBoundingClientRect().left, window.innerWidth - 124)),
-                                                }}
-                                            >
-                                                {crumb.slice(1, -2).map((middle, middleIndex) => (
-                                                    <li key={`${middle}-${middleIndex}`} role="none">
-                                                        <button
-                                                            type="button"
-                                                            role="menuitem"
-                                                            onKeyDown={(event) => {
-                                                                if (event.key === "Escape" || event.key === "Tab") setCrumbMenuOpen(false);
-                                                            }}
-                                                            onClick={() => {
-                                                                setSelected([]);
-                                                                setCrumbMenuOpen(false);
-                                                                setCurrentPath(
-                                                                    `${rootPath.replace(/[\\/]$/, "")}/${crumb.slice(1, middleIndex + 2).join("/")}`,
-                                                                );
-                                                            }}
-                                                        >
-                                                            {middle}
-                                                        </button>
-                                                    </li>
-                                                ))}
-                                            </menu>,
-                                            document.body,
-                                        )}
                                 </span>
                             ) : index === displayCrumb.length - 1 ? (
                                 <span className="folder-portal__breadcrumb-page" aria-current="page">

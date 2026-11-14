@@ -6,23 +6,25 @@ import { runInNewContext } from "node:vm";
 
 test("城市弹窗动作串行，卸载后拒绝城市列表迟到结果", async () => {
     const source = await readFile(new URL("./WeatherTile.tsx", import.meta.url), "utf8");
-    const gate = source.slice(source.indexOf("    const runCityAction = async"), source.indexOf("\n    /** 按来源搜索候选位置"));
-    assert.ok(gate.includes("const runCityAction")); // 城市弹窗的提交门槛由格子自己持有。
-    const cityBusy = { current: false };
+    // 城市弹窗整体迁到置顶弹层后，提交门槛由弹层自己持有。
+    const popup = await readFile(new URL("../../popup-layer/PopupWeather.tsx", import.meta.url), "utf8");
+    const gate = popup.slice(popup.indexOf("    const run = async"), popup.indexOf("\n    return ("));
+    assert.ok(gate.includes("const run = async")); // 提交门槛随弹窗一起进入置顶弹层。
+    const busy = { current: false };
     const states: any[] = [];
     const action = async () => {
         states.push({ ran: true });
     };
     const scope: any = {
-        cityBusy,
-        setCityBusyState: () => {},
-        setCityDialog: (update: (value: any) => any) => states.push(update({ checks: [], status: "", failure: false })),
+        busy,
+        setPending: () => {},
+        setState: (update: (value: any) => any) => states.push(update({ checks: [], status: "", failure: false })),
     };
-    const runCityAction = runInNewContext(stripTypeScriptTypes(gate) + "\nrunCityAction", scope);
-    await Promise.all([runCityAction(action), runCityAction(action)]); // 忙碌期间拒绝重复提交。
+    const run = runInNewContext(stripTypeScriptTypes(gate) + "\nrun", scope);
+    await Promise.all([run(action), run(action)]); // 忙碌期间拒绝重复提交。
     assert.equal(states.filter((value) => value.ran).length, 1);
-    assert.equal(cityBusy.current, false); // 结束后释放门槛。
-    await runCityAction(async () => {
+    assert.equal(busy.current, false); // 结束后释放门槛。
+    await run(async () => {
         throw new Error("保存失败"); // 非本 Realm 的错误不能被识别为 Error，回落文案同样进入状态行。
     });
     assert.ok(states.some((value) => value.failure === true && typeof value.status === "string" && value.status.length > 0)); // 失败说明留在弹窗状态行。

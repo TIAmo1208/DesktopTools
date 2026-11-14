@@ -9,6 +9,8 @@ import "./styles/bootSplash.css";
 
 // 编辑器及其样式只在按需编辑窗加载，桌面宿主不承担其初始化成本。
 const CollectEditor = lazy(() => import("./features/tile-content/collect-box/CollectEditor").then((module) => ({ default: module.CollectEditor })));
+// 置顶弹层只在独立弹层窗加载，桌面宿主与设置窗都不装配它。
+const PopupLayerPage = lazy(() => import("./features/popup-layer/PopupLayerPage").then((module) => ({ default: module.PopupLayerPage })));
 
 // React 应用挂载节点。
 const rootElement = document.getElementById("root");
@@ -16,9 +18,13 @@ if (!rootElement) throw new Error("缺少 React 应用挂载节点");
 // 正式透明桌面宿主页面标记。
 const query = new URLSearchParams(window.location.search);
 const isDesktopHost = query.get("desktop-host") === "1";
+const isIsland = query.get("island") === "1"; // 独立岛不装配设置页或桌面工作区。
 const isCollectEditor = query.get("collect-editor") === "1";
+const isPopupLayer = query.get("popup-layer") === "1"; // 置顶弹层窗口：菜单、确认与天气弹窗。
 document.documentElement.dataset.desktopHost = String(isDesktopHost);
+document.documentElement.dataset.island = String(isIsland);
 document.documentElement.dataset.collectEditor = String(isCollectEditor);
+document.documentElement.dataset.popupLayer = String(isPopupLayer);
 document.documentElement.dataset.theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 document.documentElement.dataset.desktopTheme = document.documentElement.dataset.theme;
 
@@ -77,7 +83,11 @@ playBootSplash();
 createRoot(rootElement).render(
     <StrictMode>
         <PreferencesProvider>
-            {isDesktopHost ? (
+            {isPopupLayer ? (
+                <Suspense fallback={null}>
+                    <PopupLayerPage />
+                </Suspense>
+            ) : isDesktopHost || isIsland ? (
                 <App />
             ) : isCollectEditor ? (
                 <Suspense fallback={<p>正在加载编辑器…</p>}>

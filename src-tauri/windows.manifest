@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+    全部目标共用的应用清单：依赖链（tauri-runtime-wry 等）静态导入 comctl32 v6 才提供的
+    TaskDialogIndirect。缺少这条依赖时加载器会拿到 System32 的 comctl32 v5.82，
+    进程在入口点之前就以 0xC0000139 (STATUS_ENTRYPOINT_NOT_FOUND) 退出。
+    内容与 tauri-build 的默认清单一致，只是改为对 bin 与 lib 测试目标一并生效。
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+    <dependency>
+        <dependentAssembly>
+            <assemblyIdentity
+                type="win32"
+                name="Microsoft.Windows.Common-Controls"
+                version="6.0.0.0"
+                processorArchitecture="*"
+                publicKeyToken="6595b64144ccf1df"
+                language="*"
+            />
+        </dependentAssembly>
+    </dependency>
+</assembly>

@@ -1,10 +1,12 @@
 {
   "id": "official.music-control",
   "name": "音乐控制",
+  "description": "显示当前媒体会话的封面、歌名、艺人与逐句歌词，并提供上一曲、播放/暂停与下一曲；没有媒体会话时显示空态。",
   "entry": "official:music-control",
   "requiredCapabilities": ["read-current-media"],
   "creatable": true,
   "removable": true,
+  "island": true,
   "maxTiles": 1,
   "persistenceVersion": 1
 }

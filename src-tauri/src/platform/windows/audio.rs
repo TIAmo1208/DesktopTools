@@ -394,7 +394,6 @@ where
             {
                 errors.store(true, Ordering::Relaxed);
             }
-            crate::log_debug!("音频：采集流回调，错误={error}");
         },
         None,
     )
@@ -518,7 +517,6 @@ fn capture_thread(app: tauri::AppHandle, preferred: String, bars: usize, interva
 /// 启动采集；重复调用会先停止旧线程。
 pub fn start(app: tauri::AppHandle, preferred: String, bars: u8, fps: u8) -> Result<SpectrumStatus, String>
 {
-    crate::log_info!("音频：收到启动请求，设备={preferred}，段数={bars}，帧率={fps}");
     stop();
     let bars = bars.clamp(8, 64) as usize; // 段数上限保证单帧事件足够小。
     let interval = Duration::from_millis((1000 / fps.clamp(10, 60) as u64).max(1)); // 帧率收敛到可用的整数毫秒间隔。
