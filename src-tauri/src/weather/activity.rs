@@ -68,7 +68,7 @@ fn wake(reset: bool)
 }
 
 /// 网络开始前和返回后都重新判断活动实例与已保存功能开关。
-fn active(app: &AppHandle, source: Source, city: &str) -> bool { app.state::<crate::app::settings::SettingsState>().preferences().is_ok_and(|value| value.weather_enabled) && SCHEDULE.0.lock().unwrap_or_else(|error| error.into_inner()).consumers.values().any(|value| value.source == source && value.city.id == city && !crate::platform::windows::refresh_policy::is_paused(&value.monitor)) }
+fn active(app: &AppHandle, source: Source, city: &str) -> bool { app.state::<crate::preferences::SettingsState>().preferences().is_ok_and(|value| value.weather_enabled) && SCHEDULE.0.lock().unwrap_or_else(|error| error.into_inner()).consumers.values().any(|value| value.source == source && value.city.id == city && !crate::platform::windows::refresh_policy::is_paused(&value.monitor)) }
 
 /// 启动一个按截止时间等待的天气更新线程。
 pub(crate) fn start(app: AppHandle)
@@ -81,7 +81,7 @@ pub(crate) fn start(app: AppHandle)
         loop
         {
             let mut schedule = SCHEDULE.0.lock().unwrap_or_else(|error| error.into_inner());
-            let enabled = app.state::<crate::app::settings::SettingsState>().preferences().is_ok_and(|value| value.weather_enabled);
+            let enabled = app.state::<crate::preferences::SettingsState>().preferences().is_ok_and(|value| value.weather_enabled);
             let now = chrono::Utc::now().timestamp_millis(); // 每轮只为最近的活动来源位置设置一次等待。
             let next = schedule.consumers.values().filter(|value| enabled && !crate::platform::windows::refresh_policy::is_paused(&value.monitor)).map(|value| (schedule.deadlines.get(&plan_key(value.source, &value.city.id)).copied().unwrap_or(now), plan_key(value.source, &value.city.id), value.source, value.city.clone())).min_by_key(|(deadline, key, _, _)| (*deadline, key.clone())); // 同一截止时间按来源与城市固定顺序，避免计划顺序随注册次序漂移。
             let Some((deadline, key, source, city)) = next

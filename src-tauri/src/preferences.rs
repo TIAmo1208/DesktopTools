@@ -938,5 +938,5 @@ fn extract_archive(archive_path: &Path, prefix: &str, temp: &Path, cancel: &std:
 }
 
 #[cfg(test)]
-#[path = "settings.test.rs"]
+#[path = "preferences.test.rs"]
 mod tests;

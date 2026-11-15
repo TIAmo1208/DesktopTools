@@ -277,7 +277,7 @@ fn grid_preferences_reflow_and_reject_insufficient_capacity()
     let path = snapshot_path("grid-preferences"); // 测试独占布局文件。
     let settings_path = snapshot_path("grid-settings"); // 测试独占偏好文件。
     let state = workspace_state(path.clone()); // 原子持久化工作区。
-    let settings = crate::app::settings::SettingsState::load(settings_path.clone()).unwrap(); // 首次启动配置。
+    let settings = crate::preferences::SettingsState::load(settings_path.clone()).unwrap(); // 首次启动配置。
     let monitors = [monitor("DISPLAY1", true, 0, 1.5)]; // 混合 DPI 计算中的 150% 显示器。
     let items = (0..30).map(|index| format!("item-{index}")).collect::<Vec<_>>(); // 新大网格不能全部容纳的项目数。
     state.reconcile_host_monitors(&monitors, &items, &[], &[]).unwrap();
@@ -294,7 +294,7 @@ fn grid_preferences_reflow_and_reject_insufficient_capacity()
     assert_eq!(state.snapshot().unwrap(), snapshot);
     assert_eq!(settings.preferences().unwrap().desktop_grid.width, 100);
     let blocked_path = snapshot_path("blocked-grid-settings"); // 写入时才变成目录的配置目标。
-    let blocked_settings = crate::app::settings::SettingsState::load(blocked_path.clone()).unwrap(); // 可读取但随后无法替换目标的配置状态。
+    let blocked_settings = crate::preferences::SettingsState::load(blocked_path.clone()).unwrap(); // 可读取但随后无法替换目标的配置状态。
     std::fs::create_dir(&blocked_path).unwrap();
     let mut rejected = settings.preferences().unwrap(); // 会触发重排但最终保存失败的配置。
     rejected.desktop_grid.width = 110;

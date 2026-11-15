@@ -115,14 +115,6 @@
         {
             "file": "src-tauri/src/platform/windows/island.rs",
             "to": "commands"
-        },
-        {
-            "file": "src-tauri/src/platform/windows/music_details.rs",
-            "to": "app"
-        },
-        {
-            "file": "src-tauri/src/weather/activity.rs",
-            "to": "app"
         }
     ]
 }

@@ -2,7 +2,6 @@ use std::sync::Mutex;
 
 pub(crate) mod desktop_drop;
 pub mod desktop_menu;
-pub mod settings;
 pub mod tray;
 
 use crate::contracts::{ApplicationError, ApplicationSnapshot, ApplicationStatus, parse_application_status};

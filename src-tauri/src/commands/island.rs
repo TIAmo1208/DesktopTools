@@ -13,7 +13,7 @@ pub(crate) struct IslandSnapshot
 /// 同源原生桥与设置窗口共用的只读岛快照。
 pub(crate) fn execute_get_island_snapshot(app: &AppHandle) -> Result<IslandSnapshot, String>
 {
-    let preferences = app.state::<crate::app::settings::SettingsState>().preferences()?; // 与拖动及设置保存共用权威偏好。
+    let preferences = app.state::<crate::preferences::SettingsState>().preferences()?; // 与拖动及设置保存共用权威偏好。
     let (instances, runtime) = app.state::<crate::component_runtime::ComponentRuntimeState>().island_snapshot(&preferences.island_card_order).map_err(|error| error.message)?;
     Ok(IslandSnapshot { instances, runtime })
 }

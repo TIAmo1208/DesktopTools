@@ -1,4 +1,4 @@
-use crate::{app::settings::SettingsState, contracts::DesktopHostMonitor};
+use crate::{contracts::DesktopHostMonitor, preferences::SettingsState};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,

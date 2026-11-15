@@ -16,6 +16,7 @@ src-tauri/
 │  ├─ collect/            # 文本、图片、文件映射、资源、收入取出与删除恢复
 │  ├─ host/               # 透明宿主、WebView2、DPI、命中图和接管
 │  ├─ persistence/        # 布局快照和备份
+│  ├─ preferences.rs        # 偏好存储、校验与配置/插件目录解析
 │  ├─ weather/            # 天气凭据、按来源分派的请求与临时验证会话
 │  ├─ component_runtime/  # 组件清单、能力、类型级尺寸与运行时状态
 │  ├─ recovery/           # guardian、健康状态和异常恢复

@@ -132,7 +132,7 @@ pub fn enable_feature(app: tauri::AppHandle, component_id: String) -> Result<(),
 fn enable_feature_preferences(app: &tauri::AppHandle, component_id: &str) -> Result<(), String>
 {
     use tauri::Manager;
-    let current = app.state::<crate::app::settings::SettingsState>().preferences()?; // 当前偏好，作为写入基底。
+    let current = app.state::<crate::preferences::SettingsState>().preferences()?; // 当前偏好，作为写入基底。
     // 指定功能格子已经在开启状态或没有开关时不再写入。
     let mut enabled = current.clone();
     match component_id
@@ -147,7 +147,7 @@ fn enable_feature_preferences(app: &tauri::AppHandle, component_id: &str) -> Res
     {
         return Ok(());
     }
-    crate::commands::settings::execute_apply_preferences(app, &app.state::<crate::app::settings::SettingsState>(), enabled).map(|_| ())
+    crate::commands::settings::execute_apply_preferences(app, &app.state::<crate::preferences::SettingsState>(), enabled).map(|_| ())
 }
 
 /// 请求显示设置窗口：复用托盘同一显隐入口，不承载凭据或设置语义。
@@ -220,7 +220,7 @@ pub(crate) fn execute_create_weather_tile(app: &tauri::AppHandle, binding: Optio
         app.state::<crate::weather::WeatherState>().validated_city(*source, city_id)?; // 创建前确认城市仍在该来源列表中。
     }
     // 先把功能开关写成开启并广播，使创建动作不以格子可见性作为成功条件。
-    let settings = app.state::<crate::app::settings::SettingsState>();
+    let settings = app.state::<crate::preferences::SettingsState>();
     if let Some(preferences) = weather_enabled_preferences(&settings.preferences()?)
     {
         crate::commands::settings::execute_apply_preferences(app, &settings, preferences)?;
@@ -268,7 +268,7 @@ pub(crate) fn execute_registered_desktop_menu(app: &tauri::AppHandle, selected: 
     let action = workspace_menu::choose_workspace_menu(&snapshot, monitor, WorkspaceContextMenuTarget::Background, (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor, |_, _, _, _| Ok(Some(selected))).map_err(|error| error.message)?; // 只解释已选择的动作，不获取或弹出菜单。
     if selected == 0x7808
     {
-        if !app.state::<crate::app::settings::SettingsState>().preferences()?.folder_portal_enabled
+        if !app.state::<crate::preferences::SettingsState>().preferences()?.folder_portal_enabled
         {
             return Err("文件夹门户已关闭，请在功能格子设置中启用".to_string());
         }
@@ -419,7 +419,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             serialize_result(())
         }
         "get_windows_accent_color" => app.state::<crate::platform::windows::settings::WindowsAccentMonitor>().color().map_err(serialize_error).and_then(serialize_result),
-        "get_preferences" => app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error).and_then(serialize_result),
+        "get_preferences" => app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error).and_then(serialize_result),
         "get_weather_forecast" =>
         {
             let source: crate::weather::Source = command_argument(&arguments, "source", "天气来源参数无效").map_err(serialize_error)?;
@@ -483,8 +483,8 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         }
         "get_collect_items" =>
         {
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
-            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::preferences::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::list(&path).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(serialize_result)
         }
         "read_collect_image" =>
@@ -498,16 +498,16 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         "prepare_collect_export" =>
         {
             let names: Vec<String> = command_argument(&arguments, "names", "收集项选择无效").map_err(serialize_error)?;
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
-            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::preferences::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::prepare_export(&path, &names).map_err(serialize_error).and_then(serialize_result)
         }
         "receive_collect_items" =>
         {
             let names: Vec<String> = command_argument(&arguments, "names", "收集项选择无效").map_err(serialize_error)?;
             let target_name: Option<String> = arguments.get("targetName").cloned().map(serde_json::from_value).transpose().map_err(|error| serialize_error(error.to_string()))?;
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
-            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::preferences::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             collect::with_collect_editor_state(app, &crate::collect::directory(&path), target_name.as_deref(), |editing| crate::collect::receive_items(&path, target_name.as_deref(), &names, editing)).map_err(serialize_error).and_then(|result| {
                 let _ = app.emit("collect-items-changed", ());
                 serialize_result(result)
@@ -526,8 +526,8 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         "create_collect_item" =>
         {
             let content: String = command_argument(&arguments, "content", "收集项内容无效").map_err(serialize_error)?;
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
-            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::preferences::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::create(&path, &content).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(|item| {
                 let _ = app.emit("collect-items-changed", ());
                 serialize_result(item)
@@ -537,8 +537,8 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         {
             let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
             let content: String = command_argument(&arguments, "content", "收集项内容无效").map_err(serialize_error)?;
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
-            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::preferences::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::save(&path, &name, &content).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(|_| {
                 let _ = app.emit("collect-items-changed", ());
                 serialize_result(())
@@ -556,8 +556,8 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
             let source: String = command_argument(&arguments, "source", "图片路径无效").map_err(serialize_error)?;
             let mode: String = command_argument(&arguments, "mode", "图片收入方式无效").map_err(serialize_error)?;
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
-            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::preferences::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::import_resource(&path, &name, std::path::Path::new(&source), &mode).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(serialize_result)
         }
         "write_collect_resource" =>
@@ -565,8 +565,8 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
             let file_name: String = command_argument(&arguments, "fileName", "图片文件名无效").map_err(serialize_error)?;
             let bytes: Vec<u8> = command_argument(&arguments, "bytes", "图片内容无效").map_err(serialize_error)?;
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
-            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::preferences::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::write_resource_bytes(&path, &name, &file_name, &bytes).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(serialize_result)
         }
         "import_collect_rendered_resource" =>
@@ -574,16 +574,16 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
             let reference: String = command_argument(&arguments, "reference", "图片引用无效").map_err(serialize_error)?;
             let mode: String = command_argument(&arguments, "mode", "图片收入方式无效").map_err(serialize_error)?;
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
-            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::preferences::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::import_rendered_resource(&path, &name, &reference, &mode).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(serialize_result)
         }
         "set_collect_item_pinned" =>
         {
             let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
             let pinned: bool = command_argument(&arguments, "pinned", "置顶状态无效").map_err(serialize_error)?;
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
-            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::preferences::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::set_pinned(&path, &name, pinned).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(|_| {
                 let _ = app.emit("collect-items-changed", ());
                 serialize_result(())
@@ -592,8 +592,8 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         "delete_collect_item" =>
         {
             let name: String = command_argument(&arguments, "name", "收集项名称无效").map_err(serialize_error)?;
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
-            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::preferences::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::delete(&path, &name).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(|_| {
                 let _ = app.emit("collect-items-changed", json!({ "deletedName": name })); // 主动删除不生成不可用占位。
                 serialize_result(())
@@ -601,8 +601,8 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         }
         "restore_collect_item" =>
         {
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?;
-            let path = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
+            let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error)?;
+            let path = crate::preferences::resolve_config_directory(&preferences.config_directory).map_err(serialize_error)?;
             crate::collect::restore_latest(&path).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string()))).and_then(|item| {
                 let _ = app.emit("collect-items-changed", ());
                 serialize_result(item)
@@ -633,7 +633,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let instance: String = command_argument(&arguments, "instanceId", "组件实例标识无效").map_err(serialize_error)?; // 需要校验的真实组件实例。
             let monitor: String = command_argument(&arguments, "monitorId", "显示器标识无效").map_err(serialize_error)?; // 当前呈现宿主。
             runtime.validate_monitor_id(&monitor).map_err(serialize_error)?;
-            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::app::settings::SettingsState>(), instance, crate::contracts::ComponentCapability::ReadHostTime).map_err(serialize_error)?;
+            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>(), instance, crate::contracts::ComponentCapability::ReadHostTime).map_err(serialize_error)?;
             serialize_result(ComponentRuntimeState::subscribe_time(monitor))
         }
         "unsubscribe_component_time" =>
@@ -647,7 +647,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
             let monitor_id: String = command_argument(&arguments, "monitorId", "显示器标识无效").map_err(serialize_error)?; // 当前页面的显示器身份。
             let snapshot = runtime.snapshot().map_err(serialize_error)?; // 暂停只适用于已完成接管的宿主。
             runtime.validate_monitor_id(&monitor_id).map_err(serialize_error)?;
-            let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(serialize_error)?; // 每次读取已保存的开关。
+            let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(serialize_error)?; // 每次读取已保存的开关。
             let foreground = crate::platform::windows::refresh_policy::foreground_snapshot(); // 页面与原生消息共享同一前台事实。
             serialize_result(serde_json::json!({ "snapshot": foreground, "committed": snapshot.committed, "pauseOnFocus": preferences.pause_on_focus, "pauseOnFullscreen": preferences.pause_on_fullscreen }))
         }
@@ -771,7 +771,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         {
             let instance_id: String = command_argument(&arguments, "instanceId", "命令参数无效").map_err(serialize_error)?; // 已解码的 instanceId。
             let capability: ComponentCapability = command_argument(&arguments, "capability", "命令参数无效").map_err(serialize_error)?; // 已解码的 capability。
-            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::app::settings::SettingsState>(), instance_id, capability).map_err(serialize_error).and_then(serialize_result)
+            component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>(), instance_id, capability).map_err(serialize_error).and_then(serialize_result)
         }
         "register_loopback_channel" =>
         {
@@ -900,10 +900,10 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         "get_plugin_settings" =>
         {
             let plugin_id: String = command_argument(&arguments, "pluginId", "插件标识无效").map_err(serialize_error)?; // 逐屏载荷用 camelCase。
-            let directory = app.state::<crate::app::settings::SettingsState>().directory().map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message)))?; // 与设置窗口同一份配置目录。
+            let directory = app.state::<crate::preferences::SettingsState>().directory().map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message)))?; // 与设置窗口同一份配置目录。
             let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.message)))?.manifests; // 作者取自当前清单。
-            let author = crate::app::settings::plugin_settings_author(&manifests, &plugin_id).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message)))?;
-            crate::app::settings::read_plugin_settings(&directory, &author, &plugin_id).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+            let author = crate::preferences::plugin_settings_author(&manifests, &plugin_id).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message)))?;
+            crate::preferences::read_plugin_settings(&directory, &author, &plugin_id).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
         }
         "apply_workspace_interaction" =>
         {

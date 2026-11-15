@@ -215,7 +215,7 @@ pub(crate) fn content_target(app: &AppHandle, snapshot: &WorkspaceSnapshot, regi
     {
         return Ok(None);
     }; // Renderer 不能伪造目标类型。
-    let preferences = app.state::<crate::app::settings::SettingsState>().preferences()?; // 原生复核功能开关。
+    let preferences = app.state::<crate::preferences::SettingsState>().preferences()?; // 原生复核功能开关。
     if app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&snapshot.components).map_err(|error| error.message)?.instances.iter().find(|entry| entry.instance_id == component.instance_id).is_none_or(|entry| entry.status != crate::contracts::ComponentLoadStatus::Ready)
     {
         return Ok(None);
@@ -248,8 +248,8 @@ pub(crate) fn receive_content(app: &AppHandle, region: HitRegion, monitor_id: St
         app.state::<crate::shell::DesktopItemState>().open_media_drop(paths.remove(0))?;
         return Ok(crate::collect::ReceiveResult { processed: 1, skipped: 0, failures: Vec::new(), had_move: false });
     }
-    let preferences = app.state::<crate::app::settings::SettingsState>().preferences()?; // 当前配置目录。
-    let config = crate::app::settings::resolve_config_directory(&preferences.config_directory)?; // 与编辑窗共用收集目录。
+    let preferences = app.state::<crate::preferences::SettingsState>().preferences()?; // 当前配置目录。
+    let config = crate::preferences::resolve_config_directory(&preferences.config_directory)?; // 与编辑窗共用收集目录。
     let result = crate::commands::collect::with_collect_editor_state(app, &crate::collect::directory(&config), target_name.as_deref(), |editing| {
         if let Some(names) = collect_names
         {

@@ -8,6 +8,7 @@ mod host;
 mod notifications;
 mod persistence;
 mod platform;
+mod preferences;
 pub mod recovery;
 mod shell;
 /// 提供 Rust 后端共享基础工具。
@@ -202,10 +203,10 @@ pub fn run()
         })
         .setup(move |app| {
             let bootstrap = app.path().app_data_dir()?; // 启动定位目录，配置目录指针放在这里。
-            let config_directory = crate::app::settings::prepare_config_directory(&bootstrap)?; // 在后台写入线程启动前完成配置迁移。
+            let config_directory = crate::preferences::prepare_config_directory(&bootstrap)?; // 在后台写入线程启动前完成配置迁移。
             let settings_path = config_directory.join("settings.json"); // 当前用户的正式设置文件。
-            let settings = crate::app::settings::SettingsState::load(settings_path)?; // 配置迁移后读取插件目录偏好。
-            let plugin_directory = crate::app::settings::resolve_plugin_directory(&settings.preferences()?.plugin_directory, &config_directory).map_err(std::io::Error::other)?; // 启动直接解析插件偏好，不复制迁移，本次运行内保持不变。
+            let settings = crate::preferences::SettingsState::load(settings_path)?; // 配置迁移后读取插件目录偏好。
+            let plugin_directory = crate::preferences::resolve_plugin_directory(&settings.preferences()?.plugin_directory, &config_directory).map_err(std::io::Error::other)?; // 启动直接解析插件偏好，不复制迁移，本次运行内保持不变。
             let component_runtime = ComponentRuntimeState::new(&plugin_directory); // 坏清单只进入 failures，不阻塞工作区加载。
             let default_components = component_runtime.default_instances(); // 首次工作区的官方默认实例。
             let component_capabilities = component_runtime.capability_declarations().to_vec(); // 注册表移入应用前取出工作区能力声明。
@@ -215,7 +216,7 @@ pub fn run()
             std::fs::create_dir_all(config_directory.join("collect"))?;
             let _ = crate::platform::windows::directory_watch::start(app.handle().clone(), "collect".to_string(), config_directory.join("collect"));
             app.manage(crate::platform::windows::settings::WindowsAccentMonitor::install(app.handle().clone())?);
-            let toast_preferences = app.state::<crate::app::settings::SettingsState>().preferences()?; // 启动时已经解析好的当前偏好。
+            let toast_preferences = app.state::<crate::preferences::SettingsState>().preferences()?; // 启动时已经解析好的当前偏好。
             let toast_palette = crate::notifications::active_palette(app.handle(), &toast_preferences); // 已选主题若声明了消息配色，首条消息就用它。
             app.manage(ToastManager::install(Some(app.handle().clone()), toast_preferences, toast_palette)?);
             crate::app::tray::install(app.handle())?;
@@ -223,7 +224,7 @@ pub fn run()
             let workspace_path = config_directory.join("workspace-layout.json");
             // 启动前完成恢复的权威工作区状态。
             let workspace = WorkspaceState::load_with_components(workspace_path, &default_components, &component_capabilities)?;
-            workspace.initialize_grid_preferences(app.state::<crate::app::settings::SettingsState>().preferences()?.desktop_grid)?;
+            workspace.initialize_grid_preferences(app.state::<crate::preferences::SettingsState>().preferences()?.desktop_grid)?;
             app.manage(workspace);
 
             // 正式逐屏宿主运行时。

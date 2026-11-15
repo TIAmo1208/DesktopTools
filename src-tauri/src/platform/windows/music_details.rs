@@ -122,7 +122,7 @@ pub fn update(timeline: Option<Timeline>, source: String)
 fn lyrics_enabled(app: &tauri::AppHandle) -> bool
 {
     use tauri::Manager;
-    app.try_state::<crate::app::settings::SettingsState>().and_then(|state| state.preferences().ok()).map(|preferences| preferences.music_lyrics_enabled).unwrap_or(true)
+    app.try_state::<crate::preferences::SettingsState>().and_then(|state| state.preferences().ok()).map(|preferences| preferences.music_lyrics_enabled).unwrap_or(true)
 }
 
 /// 一次调试轮询的结果：不适用、读到位置、读取失败。

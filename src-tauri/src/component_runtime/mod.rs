@@ -265,7 +265,7 @@ impl ComponentRuntimeState
                 {
                     break;
                 };
-                if !app.state::<crate::app::settings::SettingsState>().preferences().is_ok_and(|preferences| preferences.clock_enabled)
+                if !app.state::<crate::preferences::SettingsState>().preferences().is_ok_and(|preferences| preferences.clock_enabled)
                 {
                     continue;
                 }

@@ -382,7 +382,7 @@ pub(crate) fn install_host_events(app: &AppHandle)
                 let script = format!("window.__DESKTOP_TOOLS_NATIVE__?.dispatch('{name}', {payload});"); // 内部白名单事件名，不执行外部脚本输入。
                 super::island::dispatch_script(&script); // 同一白名单事件投递到独立岛，不新增事件或轮询。
                 // 频谱只在同时开启音乐控件与频谱时才有订阅者，每帧读一次设置即可。
-                let spectrum_active = spectrum_event && task_handle.state::<crate::app::settings::SettingsState>().preferences().is_ok_and(|preferences| preferences.music_enabled && preferences.music_spectrum_enabled);
+                let spectrum_active = spectrum_event && task_handle.state::<crate::preferences::SettingsState>().preferences().is_ok_and(|preferences| preferences.music_enabled && preferences.music_spectrum_enabled);
                 let workspace = task_handle.state::<crate::workspace::WorkspaceState>(); // 按显示器判断音乐控件归属，避免整份快照拷贝。
                 NATIVE_HOSTS.with(|hosts| {
                     for host in hosts.borrow().iter()
@@ -542,7 +542,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                             {
                                 if let Some(target) = crate::app::desktop_drop::content_target(&app, &snapshot, region, &monitor.id).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?
                                 {
-                                    let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 当前资源模式决定实际效果。
+                                    let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 当前资源模式决定实际效果。
                                     let x = (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor; // 以当前指针命中正文目标。
                                     let y = (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor;
                                     let appending = geometry.collect_items.iter().any(|item| item.instance_id == region.id && item.name.ends_with(".md") && x >= item.bounds.left && x < item.bounds.left + item.bounds.width && y >= item.bounds.top && y < item.bounds.top + item.bounds.height);
@@ -618,7 +618,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                         super::drop_target::filesystem_drop_items(data).unwrap_or_default()
                                     }; // 收集保留失效路径，其他目标仍整体校验。
                                     let offer = super::drop_content::offer(data, &paths); // 重新探测仍有效的源格式。
-                                    let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 固定本次资源模式。
+                                    let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 固定本次资源模式。
                                     let x = (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor; // 释放实时横坐标。
                                     let y = (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor; // 释放实时纵坐标。
                                     let name = geometry.collect_items.iter().find(|item| item.instance_id == region.id && x >= item.bounds.left && x < item.bounds.left + item.bounds.width && y >= item.bounds.top && y < item.bounds.top + item.bounds.height).map(|item| item.name.clone()); // 命中条目才追加。
@@ -1408,7 +1408,7 @@ pub(crate) fn boot_epoch() -> u64
 /// 当前生效主题的样式表地址；没有选中主题、已停用或清单缺失时为空。
 pub(crate) fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
 {
-    let preferences = app.state::<crate::app::settings::SettingsState>().preferences().ok()?;
+    let preferences = app.state::<crate::preferences::SettingsState>().preferences().ok()?;
     let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).ok()?.manifests; // 只读清单，不碰实例。
     let manifest = crate::component_runtime::active_theme_manifest(&preferences, &manifests)?;
     if manifest.role != crate::contracts::ComponentRole::Theme || manifest.stylesheet.is_empty()
@@ -1433,7 +1433,7 @@ pub(crate) fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
 /// 当前生效主题声明的启动覆盖层时长；没声明时为空，前端用内置时长。
 fn active_theme_boot(app: &AppHandle) -> Option<u32>
 {
-    let preferences = app.state::<crate::app::settings::SettingsState>().preferences().ok()?;
+    let preferences = app.state::<crate::preferences::SettingsState>().preferences().ok()?;
     let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).ok()?.manifests;
     crate::component_runtime::active_theme_manifest(&preferences, &manifests)?.theme_boot.as_ref()?.duration_ms // 0 也照原样传，表示不播。
 }

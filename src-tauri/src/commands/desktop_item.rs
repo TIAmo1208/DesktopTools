@@ -113,8 +113,8 @@ pub async fn prepare_collect_drag(app: AppHandle, names: Vec<String>) -> Result<
 /// 从磁盘读取权威收集项并把双表示交给现有 Shell STA。
 pub(crate) fn execute_prepare_collect_drag(app: &AppHandle, names: Vec<String>) -> Result<crate::contracts::ShellDragPreparation, DesktopItemError>
 {
-    let preferences = app.state::<crate::app::settings::SettingsState>().preferences().map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 当前共享配置目录。
-    let config = crate::app::settings::resolve_config_directory(&preferences.config_directory).map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 和收入使用同一事实来源。
+    let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 当前共享配置目录。
+    let config = crate::preferences::resolve_config_directory(&preferences.config_directory).map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 和收入使用同一事实来源。
     let export = crate::collect::prepare_export(&config, &names).map_err(|error| DesktopItemError::shell_operation_failed(&error))?; // 无效单项不拖垮后续可用条目。
     if export.result.skipped > 0 || !export.result.failures.is_empty()
     {
