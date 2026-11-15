@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../../bridge/components";
 import { requestLoopback } from "../../../bridge/loopback";
-import { SettingsAbout } from "../ui/SettingsAbout";
+import { SettingsAbout } from "../ui";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../../bridge/pluginSettings";
 import {
     applyPluginInstall,
@@ -38,7 +38,7 @@ import trashIcon from "../../../../resources/weather-trash.svg?raw";
 import plusIcon from "../../../../resources/collect-new.svg?raw";
 import linkIcon from "../../../../resources/plugin-repository.svg?raw";
 import infoIcon from "../../../../resources/info.svg?raw";
-import { SettingsSwitch } from "../ui/SettingsSwitch";
+import { SettingsSwitch } from "../ui";
 import { PluginTaskMenu } from "./PluginTaskMenu";
 import { cancelledInstallTask, failedInstallTask, installBoard, installStageLabel, progressedInstallTask, rememberInstallTask, type InstallTask } from "./pluginInstallTasks";
 import "./PluginSettingsPage.css";

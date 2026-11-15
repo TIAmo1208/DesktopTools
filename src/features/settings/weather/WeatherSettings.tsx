@@ -12,7 +12,7 @@ import {
 import { WeatherCityDialog } from "../../weather/WeatherCityDialog";
 import { DesktopTileMenu, type DesktopTileMenuItem } from "../../tiles/DesktopTileMenu";
 import { SettingsCityList } from "./SettingsCityList";
-import { SettingsInfo } from "../ui/SettingsInfo";
+import { SettingsInfo } from "../ui";
 import chevronRightIcon from "../../../../resources/weather-chevron-right.svg?raw";
 import closeIcon from "../../../../resources/weather-close.svg?raw";
 import eyeIcon from "../../../../resources/weather-eye.svg?raw";

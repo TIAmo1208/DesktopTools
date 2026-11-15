@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { type ApplicationPreferences, type ApplicationTheme, type DesktopAppearance } from "../../../contracts/settings";
 import "./AppearanceSettings.css";
-import { SettingsSwitch } from "../ui/SettingsSwitch";
-import { SettingsInfo } from "../ui/SettingsInfo";
+import { SettingsSwitch } from "../ui";
+import { SettingsInfo } from "../ui";
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../../bridge/components";
 import type { ComponentManifest, ComponentRuntimeSnapshot } from "../../../contracts/component";
 import { settingsErrorMessage } from "../../../bridge/settings";

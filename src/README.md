@@ -85,4 +85,4 @@ src/
 React feature -> bridge -> Tauri command/event -> src-tauri/src
 ```
 
-`features/` 使用 `contracts/`、`bridge/` 和 `shared/`；`bridge/` 使用 `contracts/`。公共格子不导入业务内容目录。全局偏好 Provider 位于 `app/preferences/`，功能域只经 `usePreferences` 读取，不从设置目录导入。
+`features/` 使用 `contracts/`、`bridge/` 和 `shared/`；`bridge/` 使用 `contracts/`。公共格子不导入业务内容目录。全局偏好 Provider 位于 `app/preferences/`，功能域只经 `usePreferences` 读取，不从设置目录导入。设置子域只经 `settings/ui/index.ts` 引用基元；前端与 Rust 的模块依赖由 `scripts/检查架构边界.mjs` 以基线校验，新增违规会让 `test:scripts` 失败。

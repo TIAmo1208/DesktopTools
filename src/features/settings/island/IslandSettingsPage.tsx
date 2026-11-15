@@ -9,9 +9,9 @@ import backIcon from "../../../../resources/weather-back.svg?raw";
 import chevronIcon from "../../../../resources/weather-chevron-right.svg?raw";
 import trashIcon from "../../../../resources/weather-trash.svg?raw";
 import { DesktopTileMenu, type DesktopTileMenuItem } from "../../tiles/DesktopTileMenu";
-import { MusicLyricsRow, MusicSpectrumBarsRow, MusicSpectrumFpsRow, MusicSpectrumRow } from "../ui/MusicSettingsRows";
-import { SettingsAbout } from "../ui/SettingsAbout";
-import { SettingsSwitch } from "../ui/SettingsSwitch";
+import { MusicLyricsRow, MusicSpectrumBarsRow, MusicSpectrumFpsRow, MusicSpectrumRow } from "../ui";
+import { SettingsAbout } from "../ui";
+import { SettingsSwitch } from "../ui";
 import { islandCardAvailability, moveIslandCard, sortIslandCardManifests, updateIslandCardOrder } from "./islandSettings";
 import "./IslandSettingsPage.css";
 

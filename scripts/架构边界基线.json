@@ -1,0 +1,136 @@
+{
+    "frontend": [
+        {
+            "from": "components",
+            "to": "notifications"
+        },
+        {
+            "from": "components",
+            "to": "tile-content"
+        },
+        {
+            "from": "components",
+            "to": "tiles"
+        },
+        {
+            "from": "island",
+            "to": "components"
+        },
+        {
+            "from": "island",
+            "to": "music"
+        },
+        {
+            "from": "popup-layer",
+            "to": "tiles"
+        },
+        {
+            "from": "popup-layer",
+            "to": "weather"
+        },
+        {
+            "from": "settings",
+            "to": "notifications"
+        },
+        {
+            "from": "settings",
+            "to": "tiles"
+        },
+        {
+            "from": "settings",
+            "to": "weather"
+        },
+        {
+            "from": "tile-content",
+            "to": "components"
+        },
+        {
+            "from": "tile-content",
+            "to": "desktop-items"
+        },
+        {
+            "from": "tile-content",
+            "to": "music"
+        },
+        {
+            "from": "tile-content",
+            "to": "notifications"
+        },
+        {
+            "from": "tile-content",
+            "to": "popup-layer"
+        },
+        {
+            "from": "tile-content",
+            "to": "tiles"
+        },
+        {
+            "from": "tiles",
+            "to": "popup-layer"
+        },
+        {
+            "from": "tiles",
+            "to": "workspace"
+        },
+        {
+            "from": "workspace",
+            "to": "components"
+        },
+        {
+            "from": "workspace",
+            "to": "desktop-items"
+        },
+        {
+            "from": "workspace",
+            "to": "notifications"
+        },
+        {
+            "from": "workspace",
+            "to": "tile-content"
+        },
+        {
+            "from": "workspace",
+            "to": "tiles"
+        }
+    ],
+    "settings": [
+        {
+            "from": "features",
+            "to": "weather"
+        }
+    ],
+    "rust": [
+        {
+            "file": "src-tauri/src/component_runtime/mod.rs",
+            "to": "commands"
+        },
+        {
+            "file": "src-tauri/src/contracts/desktop_item.rs",
+            "to": "platform"
+        },
+        {
+            "file": "src-tauri/src/platform/windows/desktop_host.rs",
+            "to": "app"
+        },
+        {
+            "file": "src-tauri/src/platform/windows/desktop_host.rs",
+            "to": "commands"
+        },
+        {
+            "file": "src-tauri/src/platform/windows/island.rs",
+            "to": "commands"
+        },
+        {
+            "file": "src-tauri/src/platform/windows/music_details.rs",
+            "to": "app"
+        },
+        {
+            "file": "src-tauri/src/weather/activity.rs",
+            "to": "app"
+        },
+        {
+            "file": "src-tauri/src/workspace/mod.rs",
+            "to": "app"
+        }
+    ]
+}

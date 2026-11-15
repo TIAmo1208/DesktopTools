@@ -4,8 +4,8 @@ import { listAudioOutputDevices, listenAudioDeviceChanges, setAudioDeviceWatch }
 import type { AudioOutputDevice } from "../../../contracts/audio";
 import type { ApplicationPreferences } from "../../../contracts/settings";
 import type { FolderPortalInstance, WorkspaceCommand, WorkspaceSnapshot } from "../../../contracts/workspace";
-import { SettingsSwitch } from "../ui/SettingsSwitch";
-import { MusicLyricsRow, MusicSpectrumBarsRow, MusicSpectrumFpsRow, MusicSpectrumRow } from "../ui/MusicSettingsRows";
+import { SettingsSwitch } from "../ui";
+import { MusicLyricsRow, MusicSpectrumBarsRow, MusicSpectrumFpsRow, MusicSpectrumRow } from "../ui";
 import plusIcon from "../../../../resources/collect-new.svg?raw";
 import backIcon from "../../../../resources/weather-back.svg?raw";
 import chevronIcon from "../../../../resources/settings-chevron-right.svg?raw";

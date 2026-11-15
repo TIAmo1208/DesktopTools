@@ -21,7 +21,7 @@
         "test:plugin": "node --test \"plugin/AstrBot 状态/index.test.mjs\"",
         "test:browser": "node scripts/跑断言页.mjs",
         "test:rust": "node scripts/with-tmp.mjs cargo test --manifest-path src-tauri/Cargo.toml --all-targets",
-        "test:scripts": "node --test scripts/with-tmp.test.mjs scripts/同步插件.test.mjs scripts/文档影响.test.mjs",
+        "test:scripts": "node --test scripts/with-tmp.test.mjs scripts/同步插件.test.mjs scripts/文档影响.test.mjs scripts/架构边界.test.mjs",
         "sync:plugin": "node scripts/同步插件.mjs",
         "docs:impact": "node scripts/文档影响.mjs",
         "format": "prettier --write index.html package.json tsconfig.json src && npm run format:rust",
