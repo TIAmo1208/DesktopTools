@@ -2,33 +2,15 @@ use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Security::Cryptography::{BCRYPT_HASH_HANDLE, BCRYPT_SHA256_ALG_HANDLE, BCryptCreateHash, BCryptDestroyHash, BCryptFinishHash, BCryptHashData};
 use windows::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo, GetFileInformationByHandleEx};
 
-/// 文件树的一次完整身份与内容观察，不保存文件副本。
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct FileProof
-{
-    pub path: PathBuf,       // 当前可再次观察的真实文件系统路径。
-    entries: Vec<FileEntry>, // 根与后代的排序后身份、属性及摘要。
-}
+pub(crate) use crate::file_proof::FileProof; // 证据类型归 crate::file_proof，平台只提供采集与核对。
 
-/// 单个文件系统对象的补偿安全证据。
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-struct FileEntry
-{
-    relative: PathBuf,                // 根内部的精确相对路径。
-    volume: u64,                      // 文件身份所属卷。
-    identity: [u8; 16],               // Windows 128 位文件身份。
-    attributes: u32,                  // 包含目录、只读等属性，重解析点不进入补偿。
-    length: u64,                      // 当前文件长度。
-    modified: u64,                    // 文件系统最后写入时间。
-    digest: [u8; 32],                 // 常规文件的 SHA-256，目录本身不读内容。
-    streams: Vec<(String, [u8; 32])>, // NTFS 命名数据流同样属于不可丢失的文件内容。
-}
+use crate::file_proof::FileEntry;
 
 /// 在所有退出路径释放 CNG 哈希对象。
 struct HashHandle(BCRYPT_HASH_HANDLE);

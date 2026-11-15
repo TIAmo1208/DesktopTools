@@ -3,6 +3,7 @@ mod collect;
 mod commands;
 mod component_runtime;
 pub mod contracts;
+mod file_proof;
 mod host;
 mod notifications;
 mod persistence;

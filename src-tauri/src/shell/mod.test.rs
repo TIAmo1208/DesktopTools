@@ -102,7 +102,7 @@ fn recycle_history_builds_inverse_native_actions()
         message: "移入回收站完成：1 项".to_string(),
     }; // 已具备完整补偿元数据的回收结果。
     let mut entry = ShellHistoryEntry { busy: false, items: shell_history_items(&result), result, state: ShellHistoryState::Applied, timeline_at_unix_micros: 20, layout: None, layout_states: std::collections::HashMap::new(), pending_layout: Vec::new() };
-    entry.items[0].proof = Some(crate::platform::windows::file_proof::FileProof::capture(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap()); // 只读证据用于动作构建，本例不操作该文件。
+    entry.items[0].proof = Some(crate::file_proof::FileProof::capture(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap()); // 只读证据用于动作构建，本例不操作该文件。
     entry.items[0].state = ShellHistoryState::Applied;
 
     let undo = shell_compensation_actions(&entry, false);

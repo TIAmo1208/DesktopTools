@@ -1,5 +1,5 @@
 use super::{directory, items, resource_directory, safe_file};
-use crate::platform::windows::file_proof::FileProof;
+use crate::file_proof::FileProof;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,

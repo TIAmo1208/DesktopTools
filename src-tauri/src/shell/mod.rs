@@ -98,7 +98,7 @@ enum ShellRequest
     /// 使用新的 IFileOperation 执行统一时间线补偿。
     Compensate
     {
-        proofs: Vec<crate::platform::windows::file_proof::FileProof>, // 与动作一一对应的结果状态证据。
+        proofs: Vec<crate::file_proof::FileProof>, // 与动作一一对应的结果状态证据。
         /// 原始 Shell 操作类型。
         kind: ShellOperationKind,
         /// 本轮实际可执行的补偿项目集合。
@@ -509,7 +509,7 @@ impl ShellStaRuntime
     }
 
     /// 在专用 STA 线程执行一轮 Shell 补偿操作。
-    fn compensate(&self, kind: ShellOperationKind, actions: Vec<ShellCompensationAction>, proofs: Vec<crate::platform::windows::file_proof::FileProof>) -> Result<ShellOperationResult, String>
+    fn compensate(&self, kind: ShellOperationKind, actions: Vec<ShellCompensationAction>, proofs: Vec<crate::file_proof::FileProof>) -> Result<ShellOperationResult, String>
     {
         let (reply, response) = mpsc::sync_channel(0); // 等待 Shell 补偿结果的同步通道。
         self.send(ShellRequest::Compensate { kind, actions, proofs, reply })?;
@@ -576,9 +576,9 @@ enum ShellHistoryState
 #[derive(Clone)]
 struct ShellHistoryItem
 {
-    state: ShellHistoryState,                                       // 每项独立进入撤销或重做，部分失败不丢弃可重试项目。
-    proof: Option<crate::platform::windows::file_proof::FileProof>, // 当前文件树的安全依据。
-    blocked: Option<String>,                                        // 无法自动补偿的明确原因。
+    state: ShellHistoryState,                    // 每项独立进入撤销或重做，部分失败不丢弃可重试项目。
+    proof: Option<crate::file_proof::FileProof>, // 当前文件树的安全依据。
+    blocked: Option<String>,                     // 无法自动补偿的明确原因。
     /// 原始操作前源项目稳定引用。
     source_reference: String,
     /// 原始操作后结果项目稳定引用。
@@ -715,7 +715,7 @@ impl DesktopItemState
     }
 
     /// 收集项附件复用带文件证据的 Shell 回收，不允许身份变化后继续删除。
-    pub(crate) fn recycle_collect_resource(&self, proof: crate::platform::windows::file_proof::FileProof) -> Result<ShellOperationResult, DesktopItemError>
+    pub(crate) fn recycle_collect_resource(&self, proof: crate::file_proof::FileProof) -> Result<ShellOperationResult, DesktopItemError>
     {
         let reference = proof.path.to_string_lossy().into_owned(); // 复用补偿前及 Shell Pre 回调中的身份检查。
         self.runtime.compensate(ShellOperationKind::Recycle, vec![ShellCompensationAction::Recycle { reference }], vec![proof]).map_err(|error| DesktopItemError::shell_operation_failed(&error)).and_then(|result| self.record_operation(result))

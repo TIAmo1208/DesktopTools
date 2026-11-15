@@ -105,10 +105,6 @@
             "to": "commands"
         },
         {
-            "file": "src-tauri/src/contracts/desktop_item.rs",
-            "to": "platform"
-        },
-        {
             "file": "src-tauri/src/platform/windows/desktop_host.rs",
             "to": "app"
         },
