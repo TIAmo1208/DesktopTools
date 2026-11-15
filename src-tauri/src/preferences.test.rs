@@ -567,3 +567,23 @@ fn missing_entry_script_can_still_be_prepared()
     assert_eq!(prepared.name, "NoEntry");
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// 浮岛落点写端口：开启时写盘，关闭时丢弃，空边与 top 保持空串。
+#[test]
+fn island_landing_writes_through_port_and_skips_closed_island()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-island-landing-{}", std::process::id())); // 本测试独占配置。
+    let path = directory.join("settings.json");
+    let state = SettingsState::load(path.clone()).unwrap();
+    state.update(|preferences| { preferences.island_enabled = true; Ok(()) }).unwrap(); // 落点只在岛开启时写入。
+    let cleared = state.apply_island_landing("top", 0.0).unwrap().expect("开启时允许写入"); // 默认空边 + top 不固化成显式值。
+    assert!(cleared.island_edge.is_empty(), "默认空边拖动到 top 后仍保留空串");
+    assert_eq!(cleared.island_offset, 0.0);
+    let saved = state.apply_island_landing("left", 12.5).unwrap().expect("开启时写入落点");
+    assert_eq!(saved.island_edge, "left");
+    assert_eq!(saved.island_offset, 12.5);
+    state.update(|preferences| { preferences.island_enabled = false; Ok(()) }).unwrap(); // 关闭后不得再写落点。
+    assert!(state.apply_island_landing("right", 20.0).unwrap().is_none());
+    assert_eq!(state.preferences().unwrap().island_offset, 12.5, "关闭后的落点不覆盖已保存值");
+    assert_eq!(SettingsState::load(path).unwrap().preferences().unwrap().island_offset, 12.5, "落点已落盘");
+}
