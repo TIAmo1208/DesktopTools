@@ -429,7 +429,7 @@ pub(crate) fn install_host_events(app: &AppHandle)
 }
 
 /// 为正式宿主和 WebView2 子窗口注册 Shell 桌面 IDropTarget。
-fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHostMonitor) -> Result<(Vec<(isize, IDropTarget)>, bool), String>
+fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHostMonitor, drop_port: std::sync::Arc<dyn crate::drop_bridge::DesktopDropPort>) -> Result<(Vec<(isize, IDropTarget)>, bool), String>
 {
     unsafe { OleInitialize(None) }.map_err(|error| format!("初始化宿主 OLE 拖放失败: {error}"))?;
     let mut windows = vec![hwnd]; // 等待替换为 Shell 桌面投放目标的窗口集合。
@@ -444,6 +444,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
     for target_window in windows
     {
         let app = app.clone(); // 原生回调访问当前 Shell 操作代理。
+        let drop_port = drop_port.clone(); // 同一拖放端口服务该窗口的全部回调。
         let monitor = monitor.clone(); // 释放坐标所属宿主的物理空间与 DPI。
         let accepted = std::cell::Cell::new(false); // Enter 对完整来源集合的接受性结果。
         let content_offer = std::cell::RefCell::new(super::drop_content::ContentOffer::default()); // 进入时探测的有界业务内容摘要。
@@ -479,7 +480,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                         {
                             preferred_effect.set(super::shell::default_drop_effect(data, &source_paths.borrow()));
                         }
-                        let revision = crate::app::desktop_drop::snapshot(&app).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?.revision; // 原生要求页面确认相同布局版本。
+                        let revision = drop_port.snapshot().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?.revision; // 原生要求页面确认相同布局版本。
                         let payload = serde_json::json!({"session": format!("ole-{}", crate::tools::time::next_timeline_timestamp()), "sequence": 1, "revision": revision, "modifiers": keys.0, "source": "ole", "target": monitor.id, "phase": "move", "kind": "items", "itemIds": item_ids, "visuals": [], "origin": {"left": 0, "top": 0}, "pointer": {"left": (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, "top": (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor}}); // 原生坐标只用于预览，Drop 不等待页面回传。
                         let mut payload = payload;
                         payload["contentTargets"] = serde_json::json!(content_offer.borrow().targets);
@@ -522,7 +523,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                         if let Some(payload) = preview.borrow_mut().as_mut()
                         {
                             let pointer = serde_json::json!({"left": (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, "top": (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor}); // 当前工作区指针。
-                            let snapshot = crate::app::desktop_drop::snapshot(&app).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 同一次移动共用领域快照。
+                            let snapshot = drop_port.snapshot().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 同一次移动共用领域快照。
                             let revision = serde_json::json!(snapshot.revision); // 当前领域版本。
                             if payload["pointer"] != pointer || payload["revision"] != revision || payload["modifiers"] != serde_json::json!(keys.0)
                             {
@@ -540,7 +541,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                             let top = super::drop_target::hit_region_at_point(&geometry, &monitor, point);
                             if let Some(region) = top.as_ref()
                             {
-                                if let Some(target) = crate::app::desktop_drop::content_target(&app, &snapshot, region, &monitor.id).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?
+                                if let Some(target) = drop_port.content_target(&snapshot, region, &monitor.id).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?
                                 {
                                     let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 当前资源模式决定实际效果。
                                     let x = (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor; // 以当前指针命中正文目标。
@@ -589,13 +590,13 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                         {
                             return Ok(DROPEFFECT_NONE);
                         } // 释放对象身份变化不能进入业务路径。
-                        let current = crate::app::desktop_drop::snapshot(&app).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 释放时最新工作区。
+                        let current = drop_port.snapshot().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 释放时最新工作区。
                         let content_geometry = preview.borrow().as_ref().and_then(|payload| super::drop_target::confirmed_preview(payload["session"].as_str()?, payload["sequence"].as_u64()?, current.revision, &monitor, point)); // 与 Shell 路径共用版本化几何。
                         if let Some(geometry) = content_geometry.as_ref()
                         {
                             if let Some(region) = super::drop_target::hit_region_at_point(geometry, &monitor, point)
                             {
-                                if let Some(target) = crate::app::desktop_drop::content_target(&app, &current, &region, &monitor.id).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?
+                                if let Some(target) = drop_port.content_target(&current, &region, &monitor.id).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?
                                 {
                                     let paths = if target == super::drop_content::COLLECT && source_session.as_ref().is_some_and(|session| session.collect_names.is_some())
                                     {
@@ -608,7 +609,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                             Ok(paths) => paths,
                                             Err(error) =>
                                             {
-                                                crate::app::desktop_drop::report_content_error(&app, error);
+                                                drop_port.report_content_error(error);
                                                 return Ok(DROPEFFECT_NONE);
                                             }
                                         }
@@ -640,7 +641,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                         Ok(content) => content,
                                         Err(error) =>
                                         {
-                                            crate::app::desktop_drop::report_content_error(&app, error);
+                                            drop_port.report_content_error(error);
                                             return Ok(DROPEFFECT_NONE);
                                         }
                                     }; // 数据对象仅在原生回调生命周期内访问。
@@ -651,10 +652,11 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                     }
                                     let (sender, receiver) = std::sync::mpsc::channel(); // 仅传输自有内容和结果，不跨线程保存 COM 对象。
                                     let worker_app = app.clone(); // 后台业务拥有应用句柄。
+                                    let worker_port = drop_port.clone(); // 后台业务复用同一拖放端口。
                                     let monitor_id = monitor.id.clone(); // 固定释放显示器。
                                     let collect_names = source_session.as_ref().and_then(|session| session.collect_names.clone()).filter(|_| target == super::drop_content::COLLECT); // 外部对象不能伪造内部条目。
                                     tauri::async_runtime::spawn_blocking(move || {
-                                        let _ = sender.send(crate::app::desktop_drop::receive_content(&worker_app, region, monitor_id, name, content, mode, collect_names));
+                                        let _ = sender.send(worker_port.receive_content(region, monitor_id, name, content, mode, collect_names));
                                     });
                                     let result = super::drop_target::wait_transfer(receiver); // 沿用 OLE 消息泵等待真实执行结果。
                                     if selected == DROPEFFECT_MOVE || result.as_ref().is_ok_and(|result| result.had_move)
@@ -686,7 +688,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                         }
                                         Err(error) =>
                                         {
-                                            crate::app::desktop_drop::report_content_error(&app, error);
+                                            drop_port.report_content_error(error);
                                             return Ok(DROPEFFECT_NONE);
                                         }
                                     }
@@ -696,7 +698,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                         let portal_target = preview.borrow().as_ref().and_then(|payload| super::drop_target::confirmed_preview(payload["session"].as_str()?, payload["sequence"].as_u64()?, payload["revision"].as_u64()?, &monitor, point)).and_then(|geometry| super::drop_target::hit_region_at_point(&geometry, &monitor, point)).is_some_and(|region| region.kind == "component" && region.target_path.is_some());
                         if let Some(session) = source_session.as_ref().filter(|session| !session.portal_source && session.collect_names.is_none() && !portal_target)
                         {
-                            let snapshot = crate::app::desktop_drop::snapshot(&app).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 应用层提供释放时布局版本。
+                            let snapshot = drop_port.snapshot().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 应用层提供释放时布局版本。
                             let geometry = preview.borrow().as_ref().and_then(|payload| super::drop_target::confirmed_preview(payload["session"].as_str()?, payload["sequence"].as_u64()?, snapshot.revision, &monitor, point)); // 不同步等待页面，拒绝未确认或过期落点。
                             let Some(geometry) = geometry
                             else
@@ -709,7 +711,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                 return Ok(DROPEFFECT_NONE);
                             };
                             let source_positions = preview.borrow().as_ref().and_then(|payload| payload["visuals"].as_array()).map(|visuals| visuals.iter().filter_map(|visual| Some(crate::contracts::WorkspacePoint { left: visual["bounds"]["left"].as_f64()?, top: visual["bounds"]["top"].as_f64()? })).collect::<Vec<_>>()).unwrap_or_default(); // Enter 已冻结的真实来源排列，不使用旧桌面占位。
-                            let committed = crate::app::desktop_drop::commit_internal(&app, snapshot, crate::app::desktop_drop::DropInput { monitor_id: monitor.id.clone(), pointer: crate::contracts::WorkspacePoint { left: (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, top: (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor }, regions: geometry.regions, scrolls: geometry.fence_scrolls }, session.item_ids.clone(), &session.pointer_offset, keys.0 & windows::Win32::System::Ole::MK_ALT != 0, &source_positions).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 应用层只提交布局，原生会话保留独立完成标记。
+                            let committed = drop_port.commit_internal(snapshot, crate::drop_bridge::DropInput { monitor_id: monitor.id.clone(), pointer: crate::contracts::WorkspacePoint { left: (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, top: (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor }, regions: geometry.regions, scrolls: geometry.fence_scrolls }, session.item_ids.clone(), &session.pointer_offset, keys.0 & windows::Win32::System::Ole::MK_ALT != 0, &source_positions).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 应用层只提交布局，原生会话保留独立完成标记。
                             crate::log_info!("拖放：内部释放布局结果，显示器={}，已提交={}", monitor.id, committed);
                             if committed
                             {
@@ -739,14 +741,14 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                 return Ok(DROPEFFECT_NONE);
                             }; // 完整来源必须在释放时仍可解析。
                             let state = app.state::<crate::shell::DesktopItemState>();
-                            let snapshot = crate::app::desktop_drop::snapshot(&app).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?;
+                            let snapshot = drop_port.snapshot().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?;
                             let geometry = preview.borrow().as_ref().and_then(|payload| super::drop_target::confirmed_preview(payload["session"].as_str()?, payload["sequence"].as_u64()?, snapshot.revision, &monitor, point));
                             let Some(geometry) = geometry
                             else
                             {
                                 return Ok(DROPEFFECT_NONE);
                             }; // 缺少当前渲染确认不开始文件传输。
-                            let Some(plan) = crate::app::desktop_drop::prepare_external(&app, snapshot, crate::app::desktop_drop::DropInput { monitor_id: monitor.id.clone(), pointer: crate::contracts::WorkspacePoint { left: (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, top: (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor }, regions: geometry.regions, scrolls: geometry.fence_scrolls }, sources, keys.0 & windows::Win32::System::SystemServices::MK_CONTROL.0 != 0).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?
+                            let Some(plan) = drop_port.prepare_external(snapshot, crate::drop_bridge::DropInput { monitor_id: monitor.id.clone(), pointer: crate::contracts::WorkspacePoint { left: (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor, top: (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor }, regions: geometry.regions, scrolls: geometry.fence_scrolls }, sources, keys.0 & windows::Win32::System::SystemServices::MK_CONTROL.0 != 0).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?
                             else
                             {
                                 return Ok(DROPEFFECT_NONE);
@@ -774,7 +776,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                 .map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.message))?;
                                 super::drop_target::wait_transfer(result).unwrap_or_else(|error| crate::contracts::ShellOperationResult { operation_id: 0, completed_at_unix_micros: 0, kind: crate::contracts::ShellOperationKind::Paste, aborted: false, operation_error: Some(windows::Win32::Foundation::E_FAIL.0), reversible: false, permanent: false, effect: Some(if effect == DROPEFFECT_MOVE { "移动" } else { "复制" }.into()), items: Vec::new(), message: format!("文件结果无法完整确认：{error}") })
                             };
-                            let (succeeded, committed, result) = crate::app::desktop_drop::complete_external(&app, plan, completed); // 原生只交付文件事实，不解释布局结果归属。
+                            let (succeeded, committed, result) = drop_port.complete_external(plan, completed); // 原生只交付文件事实，不解释布局结果归属。
                             if committed && let Some(payload) = preview.borrow_mut().as_mut()
                             {
                                 payload["committed"] = serde_json::json!(true);
@@ -1609,7 +1611,7 @@ mod desktop_dev_tests
 }
 
 /// 创建一台显示器对应的正式透明 Windowed WebView2 宿主。
-fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, monitor: &DesktopHostMonitor, index: usize) -> Result<NativeDesktopHost, String>
+fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, drop_port: std::sync::Arc<dyn crate::drop_bridge::DesktopDropPort>, monitor: &DesktopHostMonitor, index: usize) -> Result<NativeDesktopHost, String>
 {
     // 当前模块句柄。
     let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(|error| format!("读取正式宿主模块句柄失败: {error}"))?;
@@ -1695,7 +1697,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     unsafe {
         controller.NotifyParentWindowPositionChanged().map_err(|error| format!("通知 WebView2 宿主位置变化失败: {error}"))?;
     }
-    let (drop_targets, ole_initialized) = register_shell_drop_targets(hwnd, app, monitor)?; // Desktop Tools 接收外部 Shell IDataObject 的窗口注册。
+    let (drop_targets, ole_initialized) = register_shell_drop_targets(hwnd, app, monitor, drop_port)?; // Desktop Tools 接收外部 Shell IDataObject 的窗口注册。
     crate::log_debug!("宿主：逐屏透明宿主已创建，显示器={}，主显示器={}，工作区：[{}, {}, {}, {}]，DPI：{}，栅格化比例：{}，BoundsMode：USE_RAW_PIXELS", monitor.id, u8::from(monitor.primary), monitor.work_x, monitor.work_y, monitor.work_width, monitor.work_height, monitor.dpi, monitor.scale_factor);
 
     NATIVE_HOSTS.with(|hosts| {
@@ -1705,7 +1707,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
 }
 
 /// 为每台显示器创建独立正式宿主。
-pub fn create_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, monitors: &[DesktopHostMonitor]) -> Result<Vec<NativeDesktopHost>, String>
+pub fn create_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, drop_port: std::sync::Arc<dyn crate::drop_bridge::DesktopDropPort>, monitors: &[DesktopHostMonitor]) -> Result<Vec<NativeDesktopHost>, String>
 {
     if monitors.is_empty()
     {
@@ -1715,7 +1717,7 @@ pub fn create_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_h
     let mut hosts = Vec::with_capacity(monitors.len()); // 已完整创建的逐屏原生宿主记录。
     for (index, monitor) in monitors.iter().enumerate()
     {
-        match create_desktop_host(app, shell, Arc::clone(&command_handler), monitor, index)
+        match create_desktop_host(app, shell, Arc::clone(&command_handler), Arc::clone(&drop_port), monitor, index)
         {
             Ok(host) => hosts.push(host),
             Err(error) =>
@@ -1732,7 +1734,7 @@ pub fn create_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_h
 pub(crate) fn shared_webview_environment() -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment> { NATIVE_HOSTS.with(|hosts| hosts.borrow().first().map(|host| host.webview.environment())) }
 
 /// 保留未变化且页面索引一致的宿主，只创建并导航发生变化的显示器。
-pub fn reconcile_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, monitors: &[DesktopHostMonitor], previous: &[NativeDesktopHost]) -> Result<Vec<NativeDesktopHost>, String>
+pub fn reconcile_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, drop_port: std::sync::Arc<dyn crate::drop_bridge::DesktopDropPort>, monitors: &[DesktopHostMonitor], previous: &[NativeDesktopHost]) -> Result<Vec<NativeDesktopHost>, String>
 {
     let retained = previous.iter().enumerate().filter(|(index, host)| monitors.get(*index) == Some(&host.monitor)).map(|(_, host)| host.clone()).collect::<Vec<_>>(); // 索引变化会改变页面身份，不能复用。
     destroy_matching_hosts(|id| !retained.iter().any(|host| host.monitor.id == id));
@@ -1748,7 +1750,7 @@ pub fn reconcile_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, comman
             result.push(host.clone());
             continue;
         }
-        let host = create_desktop_host(app, shell, Arc::clone(&command_handler), monitor, index)?; // 仅新建受影响的宿主。
+        let host = create_desktop_host(app, shell, Arc::clone(&command_handler), Arc::clone(&drop_port), monitor, index)?; // 仅新建受影响的宿主。
         NATIVE_HOSTS.with(|hosts| {
             let hosts = hosts.borrow(); // 同线程持有的新 WebView。
             let resource = hosts.iter().find(|resource| resource.hwnd == host.hwnd).ok_or("新宿主资源不存在")?; // 待导航资源。

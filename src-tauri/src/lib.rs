@@ -4,6 +4,7 @@ mod command_bridge;
 mod commands;
 mod component_runtime;
 pub mod contracts;
+mod drop_bridge;
 mod file_proof;
 mod host;
 mod notifications;

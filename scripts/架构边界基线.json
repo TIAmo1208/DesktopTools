@@ -99,10 +99,5 @@
             "to": "weather"
         }
     ],
-    "rust": [
-        {
-            "file": "src-tauri/src/platform/windows/desktop_host.rs",
-            "to": "app"
-        }
-    ]
+    "rust": []
 }
