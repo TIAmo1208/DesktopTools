@@ -403,13 +403,20 @@ impl HasWindowHandle for IslandHandle
 /// 岛页面命令处理器；由应用层在安装时注入，平台不直接依赖命令模块。
 static COMMAND_HANDLER: OnceLock<super::NativeCommandHandler> = OnceLock::new();
 
+/// 应用层注入的只读偏好读取器；岛内所有读数都经它。
+static READER: OnceLock<crate::preferences::PreferencesReader> = OnceLock::new();
+
+/// 读取当前偏好；未注入时给出可诊断错误。
+fn read_preferences() -> Result<crate::contracts::settings::ApplicationPreferences, String> { READER.get().ok_or_else(|| "岛偏好读取器未初始化".to_string())?() }
+
 /// 将全屏和锁屏事实映射为岛可见性；未知状态不伪造已确认覆盖。
 fn suppressed(snapshot: &super::refresh_policy::ForegroundSnapshot, hide_fullscreen: bool) -> bool { snapshot.locked == Some(true) || (hide_fullscreen && snapshot.exclusive_fullscreen == Some(true)) }
 
 /// 在既有前台事件上重新断言置顶，不启动轮询。
-pub(crate) fn install(app: &AppHandle, command_handler: super::NativeCommandHandler)
+pub(crate) fn install(app: &AppHandle, command_handler: super::NativeCommandHandler, read_preferences: crate::preferences::PreferencesReader)
 {
     let _ = COMMAND_HANDLER.set(command_handler); // 只注入一次，重复安装保留首个。
+    let _ = READER.set(read_preferences); // 读数经应用层注入，写回仍走存储。
     let handle = app.clone(); // 事件闭包不持有任何 Win32 资源。
     app.listen("desktop-refresh-policy-changed", move |_| {
         let _ = handle.run_on_main_thread(|| apply_policy(true));
@@ -423,7 +430,7 @@ pub(crate) fn reconcile(app: &AppHandle)
     let handle = app.clone(); // UI 回调所需的应用状态。
     if let Err(error) = app.run_on_main_thread(move || {
         let result = (|| {
-            let preferences = handle.state::<SettingsState>().preferences()?; // 保存后的最新事实。
+            let preferences = read_preferences()?; // 保存后的最新事实。
             if !preferences.island_enabled
             {
                 // 关闭只隐藏并保留窗口：关闭后立刻重开会重复创建 WebView2，环境交接会卡住 UI 线程；进程退出时统一释放。
@@ -572,7 +579,7 @@ fn create(app: &AppHandle) -> Result<(), String>
                 }
             })
             .with_initialization_script(&super::desktop_host::native_bridge_script(&format!("http://{ISLAND_PROTOCOL}.localhost")))
-            .with_url(island_page_url(super::desktop_host::boot_epoch(), super::desktop_host::active_theme_stylesheet(app).as_deref()).as_str());
+            .with_url(island_page_url(super::desktop_host::boot_epoch(), super::desktop_host::active_theme_stylesheet(app, &READER.get().cloned().ok_or("岛偏好读取器未初始化")?).as_deref()).as_str());
         // 开发构建启用本机 CDP 端口；若复用宿主已建环境，该参数按 WebView2 语义被忽略，属预期。
         #[cfg(debug_assertions)]
         {
@@ -802,7 +809,7 @@ fn apply_policy(reassert_topmost: bool)
     let target = ISLAND.with(|slot| {
         let slot = slot.borrow(); // 仅计算副作用所需的 Copy 数据，不调用窗口 API。
         let resource = slot.as_ref()?;
-        let preferences = resource.app.state::<SettingsState>().preferences().ok()?;
+        let preferences = read_preferences().ok()?;
         let foreground = screenshot_foreground();
         if foreground
         {
@@ -954,7 +961,7 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
     let (hwnd, webview, revision, state_changed, surface) = ISLAND.with(|slot| {
         let mut slot = slot.borrow_mut(); // 只校验并取出快照，不调用会泵消息的 API。
         let resource = slot.as_mut().ok_or("岛未开启")?;
-        if !resource.app.state::<SettingsState>().preferences()?.island_enabled
+        if !read_preferences()?.island_enabled
         {
             return Err("岛未开启".into());
         }
@@ -962,7 +969,7 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
         let scale = monitor.scale_factor; // 所有 HWND 和 HRGN 坐标只在这里转像素。
         if resource.geometry.is_none()
         {
-            let preferences = resource.app.state::<SettingsState>().preferences()?; // 首次状态按偏好落位。
+            let preferences = read_preferences()?; // 首次状态按偏好落位。
             // 按页面提交的窗口盒尺寸落位：刘海窗口已含沿边圆弧区，不能再用卡片联合盒尺寸。
             let placed = place_from_preference(&preferences.island_edge, preferences.island_offset, (request.window_box.width, request.window_box.height), area, island_margin(&preferences.island_form)).ok_or("岛贴边偏好无效")?;
             request.window_box.left = placed.left;
@@ -1148,7 +1155,7 @@ fn finish_drag(hwnd: HWND) -> Result<(), String>
     let window_top = f64::from(window.top) / scale;
     let center_x = window_left + active.left + active.width / 2.0; // 卡片中心跟随窗口，不跟随鼠标按下点。
     let center_y = window_top + active.top + active.height / 2.0;
-    let preferences = app.state::<SettingsState>().preferences()?; // 贴边方向只由设置决定，拖动只沿当前边移动。
+    let preferences = read_preferences()?; // 贴边方向只由设置决定，拖动只沿当前边移动。
     let edge = IslandEdge::from_preference(&preferences.island_edge).unwrap_or(IslandEdge::Top);
     let raw = match edge
     {

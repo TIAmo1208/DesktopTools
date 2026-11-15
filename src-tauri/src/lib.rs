@@ -234,7 +234,7 @@ pub fn run()
             app.manage(workspace);
 
             // 正式逐屏宿主运行时。
-            crate::platform::windows::install_host_events(app.handle());
+            crate::platform::windows::install_host_events(app.handle(), crate::preferences::reader(app.handle()));
             let session_handle = app.handle().clone(); // 锁屏时隐藏按需设置窗口，解锁后不强制打开。
             app.listen("desktop-refresh-policy-changed", move |event| {
                 let locked = serde_json::from_str::<serde_json::Value>(event.payload()).ok().and_then(|value| value.get("locked").and_then(serde_json::Value::as_bool)).unwrap_or(false);
@@ -245,14 +245,14 @@ pub fn run()
             });
             let desktop_host = DesktopHostRuntime::start(app.handle())?;
             app.manage(Arc::clone(&desktop_host));
-            crate::platform::windows::island::install(app.handle(), desktop_host_command_handler(app.handle().clone())); // 仅偏好开启时懒建独立岛页面。
+            crate::platform::windows::island::install(app.handle(), desktop_host_command_handler(app.handle().clone()), crate::preferences::reader(app.handle())); // 仅偏好开启时懒建独立岛页面。
             // Shell 变化通知由唯一协调线程消费。
             let changes = app.state::<DesktopItemState>().take_change_receiver().map_err(|error| error.message)?;
             start_desktop_item_change_monitor(app.handle().clone(), changes);
             DesktopHostRuntime::start_environment_watchdog(app.handle().clone(), Arc::clone(&app.state::<Arc<DesktopHostRuntime>>()));
             DesktopHostRuntime::start_renderer_watchdog(app.handle().clone(), Arc::clone(&app.state::<Arc<DesktopHostRuntime>>()));
-            ComponentRuntimeState::start_host_events(app.handle().clone());
-            crate::weather::activity::start(app.handle().clone());
+            ComponentRuntimeState::start_host_events(app.handle().clone(), crate::preferences::reader(app.handle()));
+            crate::weather::activity::start(app.handle().clone(), crate::preferences::reader(app.handle()));
             crate::platform::windows::music::start_monitor(app.handle().clone());
             app::desktop_menu::install(app.handle(), initial_menu_action)?;
             Ok(())

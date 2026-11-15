@@ -267,13 +267,13 @@ fn pending(request: PopupLayerRequest) -> Result<PendingRequest, String>
 }
 
 /// 弹层页面地址；与设置窗同源，才能复用内嵌资源与 `/plugins/` 资产。
-fn popup_page_url(app: &AppHandle) -> tauri::Url
+fn popup_page_url(app: &AppHandle, read_preferences: &crate::preferences::PreferencesReader) -> tauri::Url
 {
     let mut url = super::settings_page_url(); // 同一自定义协议来源。
     {
         let mut pairs = url.query_pairs_mut();
         pairs.append_pair("popup-layer", "1");
-        if let Some(stylesheet) = super::active_theme_stylesheet(app)
+        if let Some(stylesheet) = super::active_theme_stylesheet(app, read_preferences)
         {
             pairs.append_pair("theme-css", &stylesheet); // 首帧就挂主题样式表，避免弹层先闪默认皮肤。
         }
@@ -282,13 +282,13 @@ fn popup_page_url(app: &AppHandle) -> tauri::Url
 }
 
 /// 首次请求时创建隐藏的置顶弹层窗口；页面地址只在这里生成一次，建好后记一条可诊断的来源日志。
-fn create_window(app: &AppHandle, kind: PopupLayerKind) -> Result<WebviewWindow, String>
+fn create_window(app: &AppHandle, kind: PopupLayerKind, read_preferences: &crate::preferences::PreferencesReader) -> Result<WebviewWindow, String>
 {
     let monitors = super::enumerate_desktop_monitors()?;
     let monitor = monitors.iter().find(|monitor| monitor.primary).or_else(|| monitors.first()).ok_or("弹层缺少显示器")?; // 占位尺寸只服务首帧测量。
     let scale = if monitor.scale_factor > 0.0 { monitor.scale_factor } else { 1.0 };
     let (work_width, work_height) = monitor_work_dip(monitor);
-    let page_url = popup_page_url(app); // 只生成一次：boot 序号只推进一格，日志与建窗用同一地址。
+    let page_url = popup_page_url(app, read_preferences); // 只生成一次：boot 序号只推进一格，日志与建窗用同一地址。
     let mut builder = WebviewWindowBuilder::new(app, POPUP_LABEL, WebviewUrl::CustomProtocol(page_url.clone()))
         .title("Desktop Tools 弹层")
         .decorations(false)
@@ -436,7 +436,7 @@ fn enable_transparent_composition(hwnd: HWND) -> Result<(), String>
 }
 
 /// 打开或复用弹层窗口；窗口首次创建时由页面读取请求并上报尺寸。
-pub(crate) fn execute_open(app: &AppHandle, request: PopupLayerRequest) -> Result<(), String>
+pub(crate) fn execute_open(app: &AppHandle, request: PopupLayerRequest, read_preferences: &crate::preferences::PreferencesReader) -> Result<(), String>
 {
     let pending = pending(request)?;
     // 复用的窗口需要通知页面换请求；新窗口由页面加载后自行读取。
@@ -469,7 +469,7 @@ pub(crate) fn execute_open(app: &AppHandle, request: PopupLayerRequest) -> Resul
     {
         // 建窗与空闲销毁互斥：同一 label 不能被两次创建/销毁交错。
         let window_guard = WINDOW_LOCK.lock();
-        let window = match create_window(app, pending.view.kind)
+        let window = match create_window(app, pending.view.kind, read_preferences)
         {
             Ok(window) => window,
             Err(error) =>
@@ -489,7 +489,7 @@ pub(crate) fn execute_open(app: &AppHandle, request: PopupLayerRequest) -> Resul
         return Ok(());
     };
     mark_repaint_pending();
-    let result = window.hide().map_err(|error| error.to_string()).and_then(|()| notify_or_reload(app, &window, &pending.view));
+    let result = window.hide().map_err(|error| error.to_string()).and_then(|()| notify_or_reload(app, &window, &pending.view, read_preferences));
     if let Err(error) = result
     {
         // 页面收不到换请求就永远不会上报尺寸，必须把请求撤回并让宿主按失败收尾。
@@ -534,11 +534,11 @@ pub(crate) fn execute_open(app: &AppHandle, request: PopupLayerRequest) -> Resul
 ///
 /// 调试构建下前端会被反复重建，复用窗口若只发事件会继续跑旧 bundle；这里改为重新导航到
 /// 带新 `boot` 序号的入口页，保证页面就是当前构建产物。发布构建只发事件，省掉一次页面加载。
-fn notify_or_reload(app: &AppHandle, window: &WebviewWindow, view: &PopupLayerView) -> Result<(), String>
+fn notify_or_reload(app: &AppHandle, window: &WebviewWindow, view: &PopupLayerView, read_preferences: &crate::preferences::PreferencesReader) -> Result<(), String>
 {
     if cfg!(debug_assertions)
     {
-        return window.navigate(popup_page_url(app)).map_err(|error| format!("重新加载弹层页面失败：{error}"));
+        return window.navigate(popup_page_url(app, read_preferences)).map_err(|error| format!("重新加载弹层页面失败：{error}"));
     }
     let _ = view;
     window.emit(POPUP_REQUEST_EVENT, view).map_err(|error| error.to_string())

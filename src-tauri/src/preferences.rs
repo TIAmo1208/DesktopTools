@@ -1,10 +1,22 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
+
+use tauri::{AppHandle, Manager};
 
 use crate::contracts::settings::ApplicationPreferences;
 use crate::persistence::{load_json, save_json_atomic};
+
+/// 只读偏好读取器：平台与领域只通过它取当前偏好，不接触偏好存储。
+pub(crate) type PreferencesReader = Arc<dyn Fn() -> Result<ApplicationPreferences, String> + Send + Sync + 'static>;
+
+/// 从已装配的存储创建只读读取器；存储本身仍由应用层管理。
+pub(crate) fn reader(app: &AppHandle) -> PreferencesReader
+{
+    let app = app.clone(); // 读取器独立持有应用句柄，调用时才取当前偏好。
+    Arc::new(move || app.state::<SettingsState>().preferences())
+}
 
 /// 展开默认环境变量并拒绝相对路径、父级跳转和 Windows 特殊设备路径。
 pub fn resolve_config_directory(value: &str) -> Result<PathBuf, String>

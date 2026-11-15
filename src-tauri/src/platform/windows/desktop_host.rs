@@ -366,23 +366,25 @@ fn component_host_event_needs_time_consumers(payload: &str) -> bool { !host_even
 const FORWARDED_EVENTS: &[&str] = &[crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "music-timeline-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", "island-messages-changed", super::popup_layer::POPUP_RESULT_EVENT, crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, crate::contracts::PLUGIN_EVENT_CHANNEL];
 
 /// 将现有宿主事件转交 UI 线程的原生 WebView，页面重载后自动使用新的订阅入口。
-pub(crate) fn install_host_events(app: &AppHandle)
+pub(crate) fn install_host_events(app: &AppHandle, read_preferences: crate::preferences::PreferencesReader)
 {
     super::refresh_policy::start_events(app);
     for name in FORWARDED_EVENTS.iter().copied()
     {
         let handle = app.clone(); // 原生窗口所属的 UI 调度器。
+        let read_preferences = read_preferences.clone(); // 每个事件共用同一读取器。
         app.listen(name, move |event| {
             let payload = event.payload().to_string(); // Tauri 已序列化的结构化快照。
             let watcher_failed = name == "folder-portal-changed" && serde_json::from_str::<Value>(&payload).is_ok_and(|value| value.get("error").is_some()); // 暂停仍保留监听故障恢复通道。
             let spectrum_event = name == crate::platform::windows::audio::SPECTRUM_EVENT || name == crate::platform::windows::audio::SPECTRUM_DEVICE_EVENT; // 唯一按帧发布的高频事件。
             let loopback_event = name == crate::contracts::COMPONENT_HOST_EVENT && !component_host_event_needs_time_consumers(&payload); // 通道数据通知按通道订阅投递，不依赖时间消费者。
             let task_handle = handle.clone(); // 主线任务持有独立句柄，监听回调仍可重复执行。
+            let read_preferences = read_preferences.clone(); // 每次投递独立持有读取器。
             if let Err(error) = handle.run_on_main_thread(move || {
                 let script = format!("window.__DESKTOP_TOOLS_NATIVE__?.dispatch('{name}', {payload});"); // 内部白名单事件名，不执行外部脚本输入。
                 super::island::dispatch_script(&script); // 同一白名单事件投递到独立岛，不新增事件或轮询。
                 // 频谱只在同时开启音乐控件与频谱时才有订阅者，每帧读一次设置即可。
-                let spectrum_active = spectrum_event && task_handle.state::<crate::preferences::SettingsState>().preferences().is_ok_and(|preferences| preferences.music_enabled && preferences.music_spectrum_enabled);
+                let spectrum_active = spectrum_event && read_preferences().is_ok_and(|preferences| preferences.music_enabled && preferences.music_spectrum_enabled);
                 let workspace = task_handle.state::<crate::workspace::WorkspaceState>(); // 按显示器判断音乐控件归属，避免整份快照拷贝。
                 NATIVE_HOSTS.with(|hosts| {
                     for host in hosts.borrow().iter()
@@ -429,7 +431,7 @@ pub(crate) fn install_host_events(app: &AppHandle)
 }
 
 /// 为正式宿主和 WebView2 子窗口注册 Shell 桌面 IDropTarget。
-fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHostMonitor, drop_port: std::sync::Arc<dyn crate::drop_bridge::DesktopDropPort>) -> Result<(Vec<(isize, IDropTarget)>, bool), String>
+fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHostMonitor, drop_port: std::sync::Arc<dyn crate::drop_bridge::DesktopDropPort>, read_preferences: crate::preferences::PreferencesReader) -> Result<(Vec<(isize, IDropTarget)>, bool), String>
 {
     unsafe { OleInitialize(None) }.map_err(|error| format!("初始化宿主 OLE 拖放失败: {error}"))?;
     let mut windows = vec![hwnd]; // 等待替换为 Shell 桌面投放目标的窗口集合。
@@ -445,6 +447,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
     {
         let app = app.clone(); // 原生回调访问当前 Shell 操作代理。
         let drop_port = drop_port.clone(); // 同一拖放端口服务该窗口的全部回调。
+        let read_preferences = read_preferences.clone(); // 同一读取器服务该窗口的全部回调。
         let monitor = monitor.clone(); // 释放坐标所属宿主的物理空间与 DPI。
         let accepted = std::cell::Cell::new(false); // Enter 对完整来源集合的接受性结果。
         let content_offer = std::cell::RefCell::new(super::drop_content::ContentOffer::default()); // 进入时探测的有界业务内容摘要。
@@ -543,7 +546,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                             {
                                 if let Some(target) = drop_port.content_target(&snapshot, region, &monitor.id).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?
                                 {
-                                    let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 当前资源模式决定实际效果。
+                                    let preferences = read_preferences().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 当前资源模式决定实际效果。
                                     let x = (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor; // 以当前指针命中正文目标。
                                     let y = (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor;
                                     let appending = geometry.collect_items.iter().any(|item| item.instance_id == region.id && item.name.ends_with(".md") && x >= item.bounds.left && x < item.bounds.left + item.bounds.width && y >= item.bounds.top && y < item.bounds.top + item.bounds.height);
@@ -619,7 +622,7 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                         super::drop_target::filesystem_drop_items(data).unwrap_or_default()
                                     }; // 收集保留失效路径，其他目标仍整体校验。
                                     let offer = super::drop_content::offer(data, &paths); // 重新探测仍有效的源格式。
-                                    let preferences = app.state::<crate::preferences::SettingsState>().preferences().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 固定本次资源模式。
+                                    let preferences = read_preferences().map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?; // 固定本次资源模式。
                                     let x = (f64::from(point.x) - f64::from(monitor.work_x)) / monitor.scale_factor; // 释放实时横坐标。
                                     let y = (f64::from(point.y) - f64::from(monitor.work_y)) / monitor.scale_factor; // 释放实时纵坐标。
                                     let name = geometry.collect_items.iter().find(|item| item.instance_id == region.id && x >= item.bounds.left && x < item.bounds.left + item.bounds.width && y >= item.bounds.top && y < item.bounds.top + item.bounds.height).map(|item| item.name.clone()); // 命中条目才追加。
@@ -1392,9 +1395,9 @@ pub(crate) fn boot_epoch() -> u64
 }
 
 /// 当前生效主题的样式表地址；没有选中主题、已停用或清单缺失时为空。
-pub(crate) fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
+pub(crate) fn active_theme_stylesheet(app: &AppHandle, read_preferences: &crate::preferences::PreferencesReader) -> Option<String>
 {
-    let preferences = app.state::<crate::preferences::SettingsState>().preferences().ok()?;
+    let preferences = read_preferences().ok()?;
     let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).ok()?.manifests; // 只读清单，不碰实例。
     let manifest = crate::component_runtime::active_theme_manifest(&preferences, &manifests)?;
     if manifest.role != crate::contracts::ComponentRole::Theme || manifest.stylesheet.is_empty()
@@ -1417,9 +1420,9 @@ pub(crate) fn active_theme_stylesheet(app: &AppHandle) -> Option<String>
 }
 
 /// 当前生效主题声明的启动覆盖层时长；没声明时为空，前端用内置时长。
-fn active_theme_boot(app: &AppHandle) -> Option<u32>
+fn active_theme_boot(app: &AppHandle, read_preferences: &crate::preferences::PreferencesReader) -> Option<u32>
 {
-    let preferences = app.state::<crate::preferences::SettingsState>().preferences().ok()?;
+    let preferences = read_preferences().ok()?;
     let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).ok()?.manifests;
     crate::component_runtime::active_theme_manifest(&preferences, &manifests)?.theme_boot.as_ref()?.duration_ms // 0 也照原样传，表示不播。
 }
@@ -1610,7 +1613,7 @@ mod desktop_dev_tests
 }
 
 /// 创建一台显示器对应的正式透明 Windowed WebView2 宿主。
-fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, drop_port: std::sync::Arc<dyn crate::drop_bridge::DesktopDropPort>, monitor: &DesktopHostMonitor, index: usize) -> Result<NativeDesktopHost, String>
+fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, drop_port: std::sync::Arc<dyn crate::drop_bridge::DesktopDropPort>, read_preferences: crate::preferences::PreferencesReader, monitor: &DesktopHostMonitor, index: usize) -> Result<NativeDesktopHost, String>
 {
     // 当前模块句柄。
     let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(|error| format!("读取正式宿主模块句柄失败: {error}"))?;
@@ -1629,7 +1632,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     let native_origin = format!("http://{protocol}.localhost"); // 本屏桥接始终使用自己的协议。
     let dev_url = if tauri::is_dev() { app.config().build.dev_url.as_ref() } else { None }; // Debug 构建不等同于 Tauri 开发模式。
     let dev_origin = dev_url.map(|url| url.origin().ascii_serialization()); // 正式模式不会放行开发 Origin。
-    let page_url = desktop_page_url(&native_origin, dev_url, index, boot_epoch(), active_theme_stylesheet(app).as_deref(), active_theme_boot(app)).to_string(); // 页面与刷新共享当前模式地址。
+    let page_url = desktop_page_url(&native_origin, dev_url, index, boot_epoch(), active_theme_stylesheet(app, &read_preferences).as_deref(), active_theme_boot(app, &read_preferences)).to_string(); // 页面与刷新共享当前模式地址。
     let initialization_script = native_bridge_script(&native_origin); // JSON 编码避免脚本字符串转义错误，Hook 状态在宿主创建前确定。
     super::refresh_policy::set_paused(&monitor.id, false);
     crate::log_info!("宿主：页面来源={}，原生命令来源={}", page_url, native_origin);
@@ -1696,7 +1699,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     unsafe {
         controller.NotifyParentWindowPositionChanged().map_err(|error| format!("通知 WebView2 宿主位置变化失败: {error}"))?;
     }
-    let (drop_targets, ole_initialized) = register_shell_drop_targets(hwnd, app, monitor, drop_port)?; // Desktop Tools 接收外部 Shell IDataObject 的窗口注册。
+    let (drop_targets, ole_initialized) = register_shell_drop_targets(hwnd, app, monitor, drop_port, read_preferences.clone())?; // Desktop Tools 接收外部 Shell IDataObject 的窗口注册。
     crate::log_debug!("宿主：逐屏透明宿主已创建，显示器={}，主显示器={}，工作区：[{}, {}, {}, {}]，DPI：{}，栅格化比例：{}，BoundsMode：USE_RAW_PIXELS", monitor.id, u8::from(monitor.primary), monitor.work_x, monitor.work_y, monitor.work_width, monitor.work_height, monitor.dpi, monitor.scale_factor);
 
     NATIVE_HOSTS.with(|hosts| {
@@ -1706,7 +1709,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
 }
 
 /// 为每台显示器创建独立正式宿主。
-pub fn create_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, drop_port: std::sync::Arc<dyn crate::drop_bridge::DesktopDropPort>, monitors: &[DesktopHostMonitor]) -> Result<Vec<NativeDesktopHost>, String>
+pub fn create_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, drop_port: std::sync::Arc<dyn crate::drop_bridge::DesktopDropPort>, read_preferences: crate::preferences::PreferencesReader, monitors: &[DesktopHostMonitor]) -> Result<Vec<NativeDesktopHost>, String>
 {
     if monitors.is_empty()
     {
@@ -1716,7 +1719,7 @@ pub fn create_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_h
     let mut hosts = Vec::with_capacity(monitors.len()); // 已完整创建的逐屏原生宿主记录。
     for (index, monitor) in monitors.iter().enumerate()
     {
-        match create_desktop_host(app, shell, Arc::clone(&command_handler), Arc::clone(&drop_port), monitor, index)
+        match create_desktop_host(app, shell, Arc::clone(&command_handler), Arc::clone(&drop_port), read_preferences.clone(), monitor, index)
         {
             Ok(host) => hosts.push(host),
             Err(error) =>
@@ -1733,7 +1736,7 @@ pub fn create_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_h
 pub(crate) fn shared_webview_environment() -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment> { NATIVE_HOSTS.with(|hosts| hosts.borrow().first().map(|host| host.webview.environment())) }
 
 /// 保留未变化且页面索引一致的宿主，只创建并导航发生变化的显示器。
-pub fn reconcile_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, drop_port: std::sync::Arc<dyn crate::drop_bridge::DesktopDropPort>, monitors: &[DesktopHostMonitor], previous: &[NativeDesktopHost]) -> Result<Vec<NativeDesktopHost>, String>
+pub fn reconcile_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, command_handler: NativeCommandHandler, drop_port: std::sync::Arc<dyn crate::drop_bridge::DesktopDropPort>, read_preferences: crate::preferences::PreferencesReader, monitors: &[DesktopHostMonitor], previous: &[NativeDesktopHost]) -> Result<Vec<NativeDesktopHost>, String>
 {
     let retained = previous.iter().enumerate().filter(|(index, host)| monitors.get(*index) == Some(&host.monitor)).map(|(_, host)| host.clone()).collect::<Vec<_>>(); // 索引变化会改变页面身份，不能复用。
     destroy_matching_hosts(|id| !retained.iter().any(|host| host.monitor.id == id));
@@ -1749,7 +1752,7 @@ pub fn reconcile_desktop_hosts(app: &AppHandle, shell: ShellDesktopState, comman
             result.push(host.clone());
             continue;
         }
-        let host = create_desktop_host(app, shell, Arc::clone(&command_handler), Arc::clone(&drop_port), monitor, index)?; // 仅新建受影响的宿主。
+        let host = create_desktop_host(app, shell, Arc::clone(&command_handler), Arc::clone(&drop_port), read_preferences.clone(), monitor, index)?; // 仅新建受影响的宿主。
         NATIVE_HOSTS.with(|hosts| {
             let hosts = hosts.borrow(); // 同线程持有的新 WebView。
             let resource = hosts.iter().find(|resource| resource.hwnd == host.hwnd).ok_or("新宿主资源不存在")?; // 待导航资源。

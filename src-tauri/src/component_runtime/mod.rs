@@ -243,7 +243,7 @@ impl ComponentRuntimeState
     }
 
     /// 启动官方插件共享的低频宿主时间事件。
-    pub fn start_host_events(app: AppHandle)
+    pub fn start_host_events(app: AppHandle, read_preferences: crate::preferences::PreferencesReader)
     {
         crate::log_info!("插件：宿主事件发布器已启动，间隔=1秒");
         thread::spawn(move || {
@@ -265,7 +265,7 @@ impl ComponentRuntimeState
                 {
                     break;
                 };
-                if !app.state::<crate::preferences::SettingsState>().preferences().is_ok_and(|preferences| preferences.clock_enabled)
+                if !read_preferences().is_ok_and(|preferences| preferences.clock_enabled)
                 {
                     continue;
                 }

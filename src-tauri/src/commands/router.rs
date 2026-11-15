@@ -472,7 +472,8 @@ pub(crate) fn route_popup_layer(command: &str, app: &AppHandle, runtime: &Deskto
     {
         "open_popup_layer" => Some((|| -> Result<Value, Value> {
             let request = command_argument(&arguments, "request", "弹层请求参数无效").map_err(serialize_error)?; // 宿主页面与弹层页面共用同一请求结构。
-            crate::platform::windows::popup_layer::execute_open(app, request).map_err(serialize_error).and_then(serialize_result)
+            let read_preferences = crate::preferences::reader(app); // 弹层主题读取经应用层注入。
+            crate::platform::windows::popup_layer::execute_open(app, request, &read_preferences).map_err(serialize_error).and_then(serialize_result)
         })()),
         "update_popup_layer_payload" => Some((|| -> Result<Value, Value> {
             let request_id: u64 = command_argument(&arguments, "requestId", "弹层请求身份无效").map_err(serialize_error)?;

@@ -185,7 +185,8 @@ impl DesktopHostRuntime
         };
         let monitors = enumerate_desktop_monitors()?; // 当前全部显示器物理状态。
         let drop_port: Arc<dyn crate::drop_bridge::DesktopDropPort> = Arc::new(crate::app::desktop_drop::AppDesktopDrop { app: app.clone() }); // 拖放用例由应用层实现，原生只持有端口。
-        let hosts = create_desktop_hosts(app, shell, command_handler, drop_port, &monitors)?; // 每台显示器独立的正式宿主。
+        let read_preferences = crate::preferences::reader(app); // 只读偏好读取器，与存储同源。
+        let hosts = create_desktop_hosts(app, shell, command_handler, drop_port, read_preferences, &monitors)?; // 每台显示器独立的正式宿主。
         // 保存接管前 Explorer 可见性的门槛协调器。
         let mut coordinator = TakeoverCoordinator::new(shell.original_items_visible);
         coordinator.mark_guardian_ready();
@@ -661,6 +662,7 @@ impl DesktopHostRuntime
             Arc::new(move |command, arguments| crate::commands::dispatch_native_command(&command_app, &command_runtime, crate::commands::NativeCommandSource::DesktopHost, command, arguments))
         }; // 重建后全部 WebView2 共用的命令边界。
         let drop_port: Arc<dyn crate::drop_bridge::DesktopDropPort> = Arc::new(crate::app::desktop_drop::AppDesktopDrop { app: app.clone() }); // 重建后宿主共用同一拖放端口。
+        let read_preferences = crate::preferences::reader(app); // 重建后宿主共用同一只读读取器。
         let previous_hosts = {
             let data = self.data.lock().map_err(|_| "桌面宿主状态暂时不可用".to_string())?; // 复用前的原生宿主身份。
             if shell_replaced
@@ -672,7 +674,7 @@ impl DesktopHostRuntime
                 data.hosts.iter().map(|context| context.host.clone()).collect::<Vec<_>>()
             }
         };
-        let hosts = match crate::platform::windows::reconcile_desktop_hosts(app, latest_shell, command_handler, drop_port, &latest_monitors, &previous_hosts)
+        let hosts = match crate::platform::windows::reconcile_desktop_hosts(app, latest_shell, command_handler, drop_port, read_preferences, &latest_monitors, &previous_hosts)
         {
             Ok(hosts) => hosts,
             Err(error) =>
