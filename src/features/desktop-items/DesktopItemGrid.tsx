@@ -1,7 +1,7 @@
 import type { CSSProperties, MouseEventHandler, PointerEventHandler } from "react";
 
 import type { DesktopItemSnapshot } from "../../contracts/desktopItem";
-import { usePreferences } from "../settings/PreferencesProvider";
+import { usePreferences } from "../../app/preferences/PreferencesProvider";
 import { projectDesktopItems, type DesktopItemViewModel } from "./desktopItemViewModel";
 import "./DesktopItemGrid.css";
 import { registerDesktopItemImage } from "./desktopItemReadiness";

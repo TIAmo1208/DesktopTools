@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
-import { usePreferences } from "../../settings/PreferencesProvider";
+import { usePreferences } from "../../../app/preferences/PreferencesProvider";
 import { DesktopTileViewport } from "../../tiles/DesktopTileViewport";
 import {
     createCollectItem,

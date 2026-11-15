@@ -12,7 +12,7 @@ import {
 } from "../../../bridge/desktopHost";
 import type { DesktopHostSnapshot } from "../../../contracts/desktopHost";
 import type { DesktopItemSnapshot } from "../../../contracts/desktopItem";
-import { usePreferences } from "../../settings/PreferencesProvider";
+import { usePreferences } from "../../../app/preferences/PreferencesProvider";
 import { collectHitRegions } from "./workspaceSurfaceProjection";
 import { waitForDesktopItemImages } from "../../desktop-items/desktopItemReadiness";
 

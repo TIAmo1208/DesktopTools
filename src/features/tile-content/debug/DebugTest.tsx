@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { ComponentTile, type ComponentTileProps } from "../../components/ComponentTile";
 import { exitDesktopTools } from "../../../bridge/desktopHost";
 import type { DesktopHostMonitor, DesktopHostSnapshot } from "../../../contracts/desktopHost";
-import { usePreferences } from "../../settings/PreferencesProvider";
+import { usePreferences } from "../../../app/preferences/PreferencesProvider";
 import { MessageNotificationTest } from "../../notifications/MessageNotificationTest";
 import "./DebugTest.css";
 

@@ -11,7 +11,7 @@ import errorIcon from "../../../resources/message-error.svg?raw";
 import warningIcon from "../../../resources/message-warning.svg?raw";
 import { PluginSlot, pluginTileType } from "../components/PluginSlot";
 import { useMusicState, musicProgressRange, positionAt } from "../music/musicSource";
-import { usePreferences } from "../settings/PreferencesProvider";
+import { usePreferences } from "../../app/preferences/PreferencesProvider";
 import { ScrollingText } from "../../shared/ScrollingText";
 import {
     islandAttachedCorner,

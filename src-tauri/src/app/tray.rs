@@ -6,7 +6,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
-use crate::{app::settings::SettingsState, contracts::settings::ApplicationTheme};
+use crate::{contracts::settings::ApplicationTheme, preferences::SettingsState};
 
 /// 持有托盘显隐菜单，窗口事件与托盘动作共享同一状态来源。
 pub struct TrayState

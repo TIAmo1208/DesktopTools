@@ -1,5 +1,5 @@
-use crate::app::settings::SettingsState;
 use crate::collect::{self, CollectItem};
+use crate::preferences::SettingsState;
 use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -48,7 +48,7 @@ fn editor_path(root: &Path, name: &str) -> Result<std::path::PathBuf, String>
     Ok(std::path::PathBuf::from(path.to_string_lossy().to_lowercase()))
 }
 
-fn config(state: &State<'_, SettingsState>) -> Result<std::path::PathBuf, String> { crate::app::settings::resolve_config_directory(&state.preferences()?.config_directory) }
+fn config(state: &State<'_, SettingsState>) -> Result<std::path::PathBuf, String> { crate::preferences::resolve_config_directory(&state.preferences()?.config_directory) }
 fn changed(app: &AppHandle) { let _ = app.emit("collect-items-changed", ()); }
 
 /// 读取当前收集项引用的本地图片，显示数据不写回 Markdown。

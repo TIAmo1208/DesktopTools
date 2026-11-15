@@ -1,0 +1,589 @@
+use super::*;
+use crate::contracts::settings::ApplicationTheme;
+
+/// 缺省目录随可执行文件定位，显式偏好独立保存并拒绝不安全路径。
+#[test]
+fn plugin_directory_defaults_resolves_and_persists()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-plugin-preferences-{}", std::process::id())); // 本测试独占配置。
+    let config = directory.join("config"); // 模拟用户自定义配置目录。
+    let defaults: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 缺失字段直接使用当前默认值。
+    assert!(defaults.plugin_directory.is_empty());
+    let default_plugins = std::env::current_exe().unwrap().parent().unwrap().join("plugin"); // 默认根只取实际可执行文件同级目录。
+    assert_eq!(resolve_plugin_directory("", &config).unwrap(), default_plugins);
+    assert_eq!(resolve_plugin_directory("  ", &config).unwrap(), default_plugins);
+    assert_eq!(resolve_plugin_directory(r"%APPDATA%\TIAmo\plugin", &config).unwrap(), PathBuf::from(std::env::var_os("APPDATA").unwrap()).join("TIAmo/plugin"));
+    let path = config.join("settings.json"); // 使用正式保存入口验证字段往返。
+    let state = SettingsState::load(path.clone()).unwrap();
+    let mut preferences = state.preferences().unwrap(); // 显式路径不随配置目录变化。
+    preferences.plugin_directory = directory.join("custom-plugin").to_string_lossy().into_owned();
+    state.save(preferences.clone()).unwrap();
+    assert_eq!(SettingsState::load(path.clone()).unwrap().preferences().unwrap().plugin_directory, preferences.plugin_directory);
+    for invalid in ["relative", r"C:\data\..\other", "%UNKNOWN%\\data", r"\\.\device", r"C:\data\file:stream"]
+    {
+        let invalid_preferences = ApplicationPreferences { plugin_directory: invalid.into(), ..preferences.clone() }; // 每次错误都不得覆盖已存偏好。
+        assert!(state.save(invalid_preferences).is_err());
+    }
+    assert_eq!(state.preferences().unwrap(), preferences);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// 天气显示偏好沿用真实保存入口，缺失字段默认关闭且不接受伪布尔值。
+#[test]
+fn weather_visibility_defaults_and_persists()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-weather-preference-{}", std::process::id())); // 本测试独占目录。
+    let path = directory.join("settings.json"); // 普通偏好文件，不含凭据。
+    let state = SettingsState::load(path.clone()).unwrap(); // 真实加载入口。
+    let mut preferences = state.preferences().unwrap(); // 待保存偏好。
+    assert!(!preferences.weather_enabled);
+    for enabled in [true, false]
+    {
+        preferences.weather_enabled = enabled;
+        state.save(preferences.clone()).unwrap();
+        assert_eq!(SettingsState::load(path.clone()).unwrap().preferences().unwrap(), preferences);
+    }
+    assert!(!serde_json::from_str::<ApplicationPreferences>("{}").unwrap().weather_enabled);
+    assert!(serde_json::from_str::<ApplicationPreferences>(r#"{"weatherEnabled":"true"}"#).is_err());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// 已移除的天气来源偏好字段不参与反序列化，天气显隐仍按当前字段取值。
+#[test]
+fn retired_weather_source_preference_is_ignored()
+{
+    let enabled: ApplicationPreferences = serde_json::from_str(r#"{"weatherSource":"foreca","weatherEnabled":true}"#).unwrap(); // 旧版本遗留的来源字段。
+    assert!(enabled.weather_enabled, "天气显隐按当前字段恢复");
+    assert!(serde_json::to_value(&enabled).unwrap().get("weatherSource").is_none(), "已移除字段不再写回");
+    let disabled: ApplicationPreferences = serde_json::from_str(r#"{"weatherSource":"qweather","weatherEnabled":false}"#).unwrap();
+    assert!(!disabled.weather_enabled);
+}
+
+/// 格式正确的相对路径在应用层拒绝，文件和权威偏好保持原样。
+#[test]
+fn invalid_resolved_directory_preserves_saved_preferences()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-path-validation-{}", std::process::id())); // 独占测试目录。
+    let path = directory.join("settings.json"); // 本次检查的真实保存入口。
+    std::fs::create_dir_all(&directory).unwrap();
+    let state = SettingsState::load(path.clone()).unwrap(); // 当前有效配置。
+    let original = state.save(state.preferences().unwrap()).unwrap(); // 建立已保存事实。
+    let bytes = std::fs::read(&path).unwrap(); // 失败前的文件内容。
+    let invalid = ApplicationPreferences { config_directory: "relative-directory".into(), ..original.clone() }; // 格式层不解释实际路径。
+    assert!(invalid.validate().is_ok());
+    assert!(state.save(invalid).is_err());
+    assert_eq!(state.preferences().unwrap(), original);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// 缺失的桌面主题使用固定默认值，两组分别保存并在失败后保留权威状态。
+#[test]
+fn desktop_appearance_defaults_and_persists_independently()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-theme-split-{}", std::process::id())); // 本测试独占的持久化目录。
+    let path = directory.join("settings.json"); // 缺少桌面主题的配置文件。
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(&path, r##"{"theme":"dark","accentColor":"#aabbcc","useWindowsAccentColor":true}"##).unwrap();
+    let state = SettingsState::load(path.clone()).unwrap(); // 正式加载入口为缺失字段使用默认值。
+    let mut preferences = state.preferences().unwrap(); // 等待分组修改的配置。
+    assert_eq!(preferences.desktop_appearance.theme, ApplicationTheme::System);
+    assert_eq!(preferences.desktop_appearance.accent_color, "#2563eb");
+    assert!(!preferences.desktop_appearance.use_windows_accent_color);
+    preferences.desktop_appearance.theme = ApplicationTheme::Dark;
+    preferences.desktop_appearance.accent_color = "#b42318".to_string();
+    let desktop = preferences.desktop_appearance.clone(); // 桌面自定义设置不随界面修改。
+    preferences.theme = ApplicationTheme::Light;
+    preferences.accent_color = "#087f5b".to_string();
+    preferences.use_windows_accent_color = false;
+    state.save(preferences.clone()).unwrap();
+    let restored = SettingsState::load(path.clone()).unwrap().preferences().unwrap(); // 重启后两组保持不同值。
+    assert_eq!(restored, preferences);
+    assert_eq!(restored.desktop_appearance, desktop);
+    preferences.desktop_appearance.accent_color = "invalid".to_string();
+    assert!(state.save(preferences).is_err());
+    assert_eq!(state.preferences().unwrap(), restored);
+    let mut payload = serde_json::to_value(&restored).unwrap(); // 验证命令入口拒绝无效桌面主题。
+    payload["desktopAppearance"]["theme"] = "invalid".into();
+    assert!(serde_json::from_value::<ApplicationPreferences>(payload).is_err());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// 验证重启迁移两个配置及备份、源文件保留、冲突回退和路径校验。
+#[test]
+fn configuration_directory_moves_on_next_start_without_overwriting()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-migration-{}", std::process::id())); // 本测试独占目录。
+    let source = root.join("bootstrap"); // 模拟旧版本配置目录。
+    let target = root.join("target"); // 下次启动目录。
+    std::fs::create_dir_all(source.join("workspace-layout.snapshots")).unwrap();
+    let preferences = ApplicationPreferences { config_directory: target.to_string_lossy().into_owned(), ..Default::default() }; // 已保存的迁移意图。
+    save_json_atomic(&source.join("settings.json"), &preferences).unwrap();
+    std::fs::write(source.join("workspace-layout.json"), b"{\"revision\":7}").unwrap();
+    std::fs::write(source.join("workspace-layout.snapshots/backup.json"), b"{}").unwrap();
+    assert!(!target.exists());
+    assert_eq!(std::fs::canonicalize(prepare_config_directory(&source).unwrap()).unwrap(), std::fs::canonicalize(&target).unwrap());
+    assert_eq!(std::fs::read(target.join("workspace-layout.json")).unwrap(), std::fs::read(source.join("workspace-layout.json")).unwrap());
+    assert!(target.join("workspace-layout.snapshots/backup.json").exists());
+    assert!(source.join("settings.json").exists());
+    assert_eq!(load_json::<PathBuf>(&source.join("config-location.json")).unwrap(), Some(target.clone()), "配置指针写调用方目标路径，不含 verbatim 前缀");
+    assert_eq!(std::fs::canonicalize(prepare_config_directory(&source).unwrap()).unwrap(), std::fs::canonicalize(&target).unwrap());
+    let occupied = root.join("occupied"); // 有用户数据的目标必须拒绝覆盖。
+    std::fs::create_dir(&occupied).unwrap();
+    std::fs::write(occupied.join("settings.json"), b"keep").unwrap();
+    let conflicting = ApplicationPreferences { config_directory: occupied.to_string_lossy().into_owned(), ..preferences }; // 模拟再次更改目录。
+    save_json_atomic(&target.join("settings.json"), &conflicting).unwrap();
+    assert_eq!(std::fs::canonicalize(prepare_config_directory(&source).unwrap()).unwrap(), std::fs::canonicalize(&target).unwrap());
+    assert_eq!(std::fs::read(occupied.join("settings.json")).unwrap(), b"keep");
+    for invalid in ["", "relative", r"C:\data\..\other", "%UNKNOWN%\\data", r"\\.\device"]
+    {
+        assert!(resolve_config_directory(invalid).is_err());
+    }
+    assert_eq!(resolve_config_directory(r"%APPDATA%\TIAmo\DesktopTools").unwrap(), PathBuf::from(std::env::var_os("APPDATA").unwrap()).join("TIAmo/DesktopTools"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 验证配置重启恢复、失败不提交，以及不接受未知主题。
+#[test]
+fn preferences_are_persisted_and_validated()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-settings-{}", std::process::id())); // 当前测试独占目录。
+    let path = directory.join("settings.json"); // 当前测试配置路径。
+    let state = SettingsState::load(path.clone()).unwrap(); // 首次启动状态。
+    assert!(state.preferences().unwrap().double_click_to_open);
+    let next = ApplicationPreferences { theme: ApplicationTheme::Dark, double_click_to_open: false, use_windows_accent_color: true, accent_color: "#aabbcc".to_string(), ..Default::default() }; // 待保存的非默认配置。
+    state.save(next.clone()).unwrap();
+    assert_eq!(SettingsState::load(path.clone()).unwrap().preferences().unwrap(), next);
+    assert!(serde_json::from_str::<ApplicationPreferences>(r#"{"theme":"invalid","doubleClickToOpen":true}"#).is_err());
+    let blocked = SettingsState { path: path.join("blocked.json"), preferences: Mutex::new(ApplicationPreferences::default()) }; // 文件作为父目录时必定无法写入。
+    assert!(blocked.save(next).is_err());
+    let invalid = ApplicationPreferences { font_size: 19, ..Default::default() }; // 不能持久化的越界外观配置。
+    assert!(state.save(invalid).is_err());
+    let legacy: ApplicationPreferences = serde_json::from_str(r#"{"theme":"light","doubleClickToOpen":true}"#).unwrap(); // 旧版字段缺失时的兼容配置。
+    assert_eq!(legacy.font_size, 13);
+    assert_eq!(legacy.corner_radius, 6);
+    assert!(!legacy.use_windows_accent_color);
+    assert!(legacy.validate().is_ok());
+    assert_eq!(blocked.preferences().unwrap(), ApplicationPreferences::default());
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+}
+
+/// 已删除的顶层偏好不阻塞启动，并在下一次保存时自然移除。
+#[test]
+fn retired_preference_fields_do_not_block_startup()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-retired-settings-{}", std::process::id())); // 本测试独占目录。
+    let path = directory.join("settings.json"); // 包含已删除字段的旧设置文件。
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(&path, r#"{"theme":"light","musicEnabled":true,"musicShowArtwork":true}"#).unwrap();
+
+    let state = SettingsState::load(path.clone()).unwrap(); // 旧字段被忽略，当前字段继续恢复。
+    let preferences = state.preferences().unwrap();
+    assert_eq!(preferences.theme, ApplicationTheme::Light);
+    assert!(preferences.music_enabled);
+    state.save(preferences).unwrap();
+
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(saved.get("musicShowArtwork").is_none());
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+}
+
+/// 设置键是作者@插件ID。作者为空时仍保留 @。非法标识不产生键。
+#[test]
+fn plugin_settings_key_joins_author_and_rejects_illegal_ids()
+{
+    assert_eq!(plugin_settings_key("TIAmo", "plugin.item").unwrap(), "TIAmo@plugin.item");
+    assert_eq!(plugin_settings_key("", "plugin.item").unwrap(), "@plugin.item");
+    assert_eq!(plugin_settings_key("", "plugin.my-clock_2").unwrap(), "@plugin.my-clock_2");
+    assert!(plugin_settings_author(&[], "plugin.clock").unwrap_err().contains("清单不存在"));
+    for plugin_id in ["clock", "official.weather", "plugin.", "Plugin.clock", "plugin.时钟", "plugin.clock/../x", r"plugin.clock\..\x", "plugin.clock:stream", "plugin.clock ", "", "plugin.clock\0"]
+    {
+        assert!(plugin_settings_key("TIAmo", plugin_id).is_err(), "{plugin_id}");
+    }
+}
+
+/// 缺失文件返回空；损坏的 JSON 保持原字节，非法标识不另建文件。
+#[test]
+fn missing_or_corrupt_plugin_settings_do_not_overwrite()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-settings-{}", std::process::id())); // 本测试独占配置目录。
+    std::fs::create_dir_all(&root).unwrap();
+    assert_eq!(read_plugin_settings(&root, "", "plugin.clock").unwrap(), None);
+    assert!(!root.join("settings-plugins.json").exists());
+    let path = root.join("settings-plugins.json"); // 已损坏的用户文件。
+    let bytes = b"{not json";
+    std::fs::write(&path, bytes).unwrap();
+    assert_eq!(read_plugin_settings(&root, "", "plugin.clock").unwrap(), None);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(write_plugin_settings(&root, "", "plugin.clock/../outside", &serde_json::json!({})).is_err());
+    assert!(write_plugin_settings(&root, "TIAmo", "plugin.clock", &serde_json::json!({"hour": 12})).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(!root.join("outside").exists());
+    std::fs::remove_file(&path).unwrap();
+    write_plugin_settings(&root, "", "plugin.clock", &serde_json::json!({"hour": 12})).unwrap();
+    assert_eq!(read_plugin_settings(&root, "", "plugin.clock").unwrap(), Some(serde_json::json!({"hour": 12})));
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["@plugin.clock"]["hour"], 12);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 配置目录迁移复制整个目录，插件设置文件随目录离开。
+#[test]
+fn configuration_directory_migration_takes_plugin_settings()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-settings-migration-{}", std::process::id())); // 本测试独占目录。
+    let source = root.join("bootstrap"); // 当前生效配置目录。
+    let target = root.join("target"); // 下次启动目录。
+    std::fs::create_dir_all(source.join("nested")).unwrap();
+    let preferences = ApplicationPreferences { config_directory: target.to_string_lossy().into_owned(), ..Default::default() }; // 已保存的迁移意图。
+    save_json_atomic(&source.join("settings.json"), &preferences).unwrap();
+    std::fs::write(source.join("settings-plugins.json"), b"{\"@plugin.clock\":{\"hour\":1}}").unwrap();
+    std::fs::write(source.join("nested/extra.txt"), b"keep").unwrap();
+    assert_eq!(std::fs::canonicalize(prepare_config_directory(&source).unwrap()).unwrap(), std::fs::canonicalize(&target).unwrap());
+    assert_eq!(std::fs::read(target.join("settings-plugins.json")).unwrap(), b"{\"@plugin.clock\":{\"hour\":1}}");
+    assert_eq!(std::fs::read(target.join("nested/extra.txt")).unwrap(), b"keep");
+    assert_eq!(std::fs::read(source.join("settings-plugins.json")).unwrap(), b"{\"@plugin.clock\":{\"hour\":1}}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 停用名单缺失为空，非法与重复条目丢弃，超过 64 条截断。
+#[test]
+fn disabled_plugins_drop_invalid_entries_and_keep_sixty_four()
+{
+    let missing: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 旧文件没有该字段。
+    assert!(missing.disabled_plugins.is_empty());
+    let parsed: ApplicationPreferences = serde_json::from_str(r#"{"disabledPlugins":["plugin.clock","official.weather","plugin.clock","plugin.","plugin.b"]}"#).unwrap();
+    assert_eq!(parsed.disabled_plugins, vec!["plugin.clock".to_string(), "plugin.b".to_string()]);
+    let overflow = (0..70).map(|index| format!("plugin.n{index}")).collect::<Vec<_>>(); // 超过上限的合法标识。
+    assert_eq!(crate::contracts::settings::normalize_disabled_plugins(overflow).len(), 64);
+    let directory = std::env::temp_dir().join(format!("desktop-tools-disabled-plugins-{}", std::process::id())); // 本测试独占配置目录。
+    let path = directory.join("settings.json");
+    let state = SettingsState::load(path).unwrap();
+    let mut preferences = state.preferences().unwrap();
+    preferences.disabled_plugins = vec!["plugin.ok".into(), "bad".into(), "plugin.ok".into()];
+    assert_eq!(state.save(preferences).unwrap().disabled_plugins, vec!["plugin.ok".to_string()]);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// 卸载只删除该插件的清单和脚本，设置文件、其他插件和目录外文件都保留。
+#[test]
+fn uninstall_plugin_keeps_settings_and_rejects_illegal_paths()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-uninstall-{}", std::process::id())); // 本测试独占目录。
+    let directory = root.join("plugin"); // 插件根。
+    std::fs::create_dir_all(&directory).unwrap();
+    let package = directory.join("时钟"); // 卸载删的是整个文件夹。
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("main.js"), "var ok = 1;").unwrap();
+    std::fs::write(package.join("manifest.ini"), "[plugin]\nid = plugin.ok\nname = 时钟\nversion = 1.0.0\nentry = main.js\n").unwrap();
+    std::fs::write(directory.join("plugin.ok.json"), "{}").unwrap();
+    std::fs::write(directory.join("settings-plugins.json"), "{\"@plugin.ok\":{\"hour\":1}}").unwrap();
+    std::fs::write(directory.join("plugin.other.js"), "var other = 1;").unwrap();
+    std::fs::write(root.join("outside.js"), "pwned").unwrap();
+    assert_eq!(plugin_manifest_file(&directory, "plugin.ok").unwrap(), package.join("manifest.ini").canonicalize().unwrap());
+    assert_eq!(uninstall_plugin_files(&directory, &directory, "plugin.missing", false, "").unwrap(), Vec::<String>::new());
+    assert_eq!(uninstall_plugin_files(&directory, &directory, "plugin.ok", false, "").unwrap(), vec!["时钟".to_string()]);
+    assert!(!package.exists());
+    assert_eq!(std::fs::read(directory.join("plugin.ok.json")).unwrap(), b"{}");
+    assert_eq!(std::fs::read(directory.join("settings-plugins.json")).unwrap(), b"{\"@plugin.ok\":{\"hour\":1}}");
+    assert_eq!(std::fs::read(directory.join("plugin.other.js")).unwrap(), b"var other = 1;");
+    assert_eq!(std::fs::read(root.join("outside.js")).unwrap(), b"pwned");
+    for plugin_id in ["official.weather", "plugin.", "../outside", "plugin.ok/../../outside", r"plugin.ok\..\outside"]
+    {
+        assert!(uninstall_plugin_files(&directory, &directory, plugin_id, true, "").is_err(), "{plugin_id}");
+    }
+    assert_eq!(std::fs::read(directory.join("plugin.ok.json")).unwrap(), b"{}");
+    assert_eq!(std::fs::read(root.join("outside.js")).unwrap(), b"pwned");
+    let real = root.join("real"); // 联接文件夹不能被当成插件包删掉。
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("main.js"), "var link = 1;").unwrap();
+    std::fs::write(real.join("manifest.ini"), "[plugin]\nid = plugin.link\nname = 时钟\nversion = 1.0.0\nentry = main.js\n").unwrap();
+    let junction = directory.join("时钟");
+    assert!(std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&real).output().unwrap().status.success());
+    assert_eq!(uninstall_plugin_files(&directory, &directory, "plugin.link", true, "").unwrap(), Vec::<String>::new());
+    assert_eq!(std::fs::read(real.join("manifest.ini")).unwrap().is_empty(), false);
+    assert!(junction.exists());
+    std::fs::remove_dir(&junction).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// remove_settings 为假时保留配置目录中的设置；为真时只删这一份，且设置文件是重解析点时清单也不删。
+#[test]
+fn uninstall_plugin_remove_settings_is_optional_and_confined()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-remove-settings-{}", std::process::id())); // 本测试独占目录。
+    let plugin_directory = root.join("plugin"); // 清单与脚本所在目录。
+    let config_directory = root.join("config"); // 设置文件所在目录，与插件根分开。
+    std::fs::create_dir_all(&plugin_directory).unwrap();
+    std::fs::create_dir_all(&config_directory).unwrap();
+    let package = plugin_directory.join("时钟"); // 插件包是文件夹，不是扁平 json。
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("main.js"), "var ok = 1;").unwrap();
+    std::fs::write(package.join("manifest.ini"), "[plugin]\nid = plugin.ok\nname = 时钟\nversion = 1.0.0\nentry = main.js\n").unwrap();
+    std::fs::write(config_directory.join("settings-plugins.json"), "{\"@plugin.ok\":{\"hour\":1},\"TIAmo@plugin.other\":{}}").unwrap();
+    std::fs::write(root.join("outside.js"), "pwned").unwrap();
+    assert_eq!(plugin_settings_key("", "plugin.ok").unwrap(), "@plugin.ok");
+    assert_eq!(uninstall_plugin_files(&plugin_directory, &config_directory, "plugin.ok", false, "").unwrap(), vec!["时钟".to_string()]);
+    assert_eq!(std::fs::read(config_directory.join("settings-plugins.json")).unwrap(), b"{\"@plugin.ok\":{\"hour\":1},\"TIAmo@plugin.other\":{}}");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("main.js"), "var ok = 1;").unwrap();
+    std::fs::write(package.join("manifest.ini"), "[plugin]\nid = plugin.ok\nname = 时钟\nversion = 1.0.0\nentry = main.js\n").unwrap();
+    assert_eq!(uninstall_plugin_files(&plugin_directory, &config_directory, "plugin.ok", true, "").unwrap(), vec!["时钟".to_string()]);
+    let left: serde_json::Value = serde_json::from_slice(&std::fs::read(config_directory.join("settings-plugins.json")).unwrap()).unwrap();
+    assert!(left.get("@plugin.ok").is_none());
+    assert!(left.get("TIAmo@plugin.other").is_some());
+    assert_eq!(std::fs::read(root.join("outside.js")).unwrap(), b"pwned");
+    std::fs::write(config_directory.join("settings-plugins.json"), "{\"@plugin.ok\":{\"hour\":1}}").unwrap();
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("main.js"), "var ok = 1;").unwrap();
+    std::fs::write(package.join("manifest.ini"), "[plugin]\nid = plugin.ok\nname = 时钟\nversion = 1.0.0\nentry = main.js\n").unwrap();
+    assert_eq!(uninstall_plugin_files(&plugin_directory, &config_directory, "plugin.ok", true, "").unwrap(), vec!["时钟".to_string(), "settings-plugins.json".to_string()]);
+    assert!(!config_directory.join("settings-plugins.json").exists());
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("main.js"), "var ok = 1;").unwrap();
+    std::fs::write(package.join("manifest.ini"), "[plugin]\nid = plugin.ok\nname = 时钟\nversion = 1.0.0\nentry = main.js\n").unwrap();
+    let junction = config_directory.join("settings-plugins.json"); // 设置文件本身是重解析点时不得先删插件文件夹。
+    assert!(std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&plugin_directory).output().unwrap().status.success());
+    assert!(uninstall_plugin_files(&plugin_directory, &config_directory, "plugin.ok", true, "").is_err());
+    assert!(package.join("manifest.ini").exists());
+    assert!(junction.exists());
+    std::fs::remove_dir(&junction).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 主题没有入口脚本，卸载只删除自己的文件夹，插件根与其他插件保留。
+#[test]
+fn uninstall_theme_removes_only_its_folder()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-uninstall-theme-{}", std::process::id())); // 本测试独占目录。
+    let plugin_directory = root.join("plugins");
+    let config_directory = root.join("config");
+    let theme = plugin_directory.join("主题-宋律");
+    let other = plugin_directory.join("时钟");
+    std::fs::create_dir_all(theme.join("fonts")).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::create_dir_all(&config_directory).unwrap();
+    std::fs::write(theme.join("manifest.ini"), "[plugin]\nid = plugin.theme\nname = 主题-宋律\nversion = 1.0.0\nentry = index.js\nrole = theme\nstylesheet = theme.css\n").unwrap();
+    std::fs::write(theme.join("theme.css"), ":root {}").unwrap();
+    std::fs::write(theme.join("theme.json"), "{\"appearance\":{}}").unwrap();
+    std::fs::write(other.join("manifest.ini"), "[plugin]\nid = plugin.clock\nname = 时钟\nversion = 1.0.0\nentry = main.js\n").unwrap();
+    std::fs::write(other.join("main.js"), "").unwrap();
+    assert_eq!(uninstall_plugin_files(&plugin_directory, &config_directory, "plugin.theme", false, "").unwrap(), vec!["主题-宋律".to_string()]);
+    assert!(!theme.exists());
+    assert!(other.join("manifest.ini").exists(), "其他插件必须保留");
+    assert!(plugin_directory.exists(), "插件根必须保留");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn sample_manifest(id: &str, name: &str, version: &str) -> String { format!("[plugin]\nid = {id}\nname = {name}\nversion = {version}\nentry = main.js\n") }
+
+fn write_package(directory: &std::path::Path, name: &str, manifest: &str)
+{
+    let package = directory.join(name); // 一层子目录里的插件。
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("main.js"), "var ok = 1;").unwrap();
+    std::fs::write(package.join("manifest.ini"), manifest).unwrap();
+}
+
+/// 计划带上待装作者；同一作者的同一标识才算同一个插件，文件夹按作者@名称落盘。
+#[test]
+fn install_plan_carries_author_and_identity()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-plan-author-{}", std::process::id())); // 本测试独占目录。
+    let plugin_root = root.join("plugins");
+    let source = root.join("source");
+    write_package(&source, "Clock", "[plugin]\nid = plugin.clock\nname = Clock\nversion = 1.0.0\nentry = main.js\nauthor = 张三\n");
+    let fresh = inspect_plugin_folder(&source, &plugin_root).unwrap();
+    assert_eq!(fresh.author, "张三");
+    assert!(fresh.conflict.is_none());
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let plugin_id = install_prepared_plugin(&plugin_root, &fresh, false, &cancel, |_| panic!("新安装不应卸载"), |_, _| ()).unwrap();
+    assert_eq!(plugin_id, "plugin.clock");
+    assert!(plugin_root.join("张三@Clock/manifest.ini").is_file(), "装到 作者@名称 文件夹");
+    let again = root.join("again");
+    write_package(&again, "Clock", "[plugin]\nid = plugin.clock\nname = Clock\nversion = 1.1.0\nentry = main.js\nauthor = 李四\n");
+    assert!(inspect_plugin_folder(&again, &plugin_root).unwrap().conflict.is_none(), "作者不同不是同一个插件");
+    let upgraded = root.join("upgraded");
+    write_package(&upgraded, "Clock", "[plugin]\nid = plugin.clock\nname = Clock\nversion = 1.1.0\nentry = main.js\nauthor = 张三\n");
+    let upgrade = inspect_plugin_folder(&upgraded, &plugin_root).unwrap();
+    let conflict = upgrade.conflict.expect("同一作者的同一标识应带上冲突");
+    assert_eq!(conflict.installed_folder, "张三@Clock");
+    assert!(!conflict.downgrade);
+    let renamed = root.join("renamed");
+    write_package(&renamed, "Clock2", "[plugin]\nid = plugin.clock\nname = Clock2\nversion = 1.2.0\nentry = main.js\nauthor = 张三\n");
+    let renamed = inspect_plugin_folder(&renamed, &plugin_root).unwrap();
+    assert_eq!(install_prepared_plugin(&plugin_root, &renamed, false, &cancel, |_| Ok(()), |_, _| ()).unwrap(), "plugin.clock");
+    assert!(!plugin_root.join("张三@Clock").exists(), "改名后旧文件夹不留下");
+    assert!(plugin_root.join("张三@Clock2/manifest.ini").is_file());
+    std::fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn plugin_install_plans_versions_and_cancellation()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-install-plan-{}", std::process::id())); // 本测试独占目录。
+    let source = root.join("source");
+    let plugin_root = root.join("plugins");
+    write_package(&source, "Clock", &sample_manifest("author.bad", "Clock", "1.0.0"));
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let prepared = inspect_plugin_folder(&source, &plugin_root).unwrap();
+    assert!(prepared.conflict.is_none());
+    assert!(prepared.author.is_empty());
+    let plugin_id = install_prepared_plugin(&plugin_root, &prepared, false, &cancel, |_| panic!("新安装不应卸载"), |_, _| ()).unwrap();
+    assert_eq!(plugin_id, "author.bad"); // 清单标识原样保留，不重新命名。
+    assert!(std::fs::read_to_string(plugin_root.join("Clock/manifest.ini")).unwrap().contains("id = author.bad")); // 清单不被改写。
+    assert!(std::fs::read_dir(&plugin_root).unwrap().all(|entry| !entry.unwrap().file_name().to_string_lossy().starts_with(".install-")));
+    let newer = root.join("newer");
+    write_package(&newer, "Clock", &sample_manifest("author.bad", "Clock", "1.1.0"));
+    let upgrade = inspect_plugin_folder(&newer, &plugin_root).unwrap();
+    assert!(!upgrade.conflict.as_ref().unwrap().downgrade);
+    assert_eq!(upgrade.conflict.as_ref().unwrap().installed_folder, "Clock"); // 作者为空时文件夹就是名称。
+    let older = root.join("older");
+    write_package(&older, "Clock", &sample_manifest("author.bad", "Clock", "0.9.0"));
+    let downgrade = inspect_plugin_folder(&older, &plugin_root).unwrap();
+    assert!(downgrade.conflict.as_ref().unwrap().downgrade);
+    assert!(install_prepared_plugin(&plugin_root, &downgrade, false, &cancel, |_| panic!("未确认不得卸载"), |_, _| ()).is_err());
+    assert!(std::fs::read_to_string(plugin_root.join("Clock/manifest.ini")).unwrap().contains("version = 1.0.0"));
+    let mut removed = String::new();
+    install_prepared_plugin(
+        &plugin_root,
+        &downgrade,
+        true,
+        &cancel,
+        |id| {
+            removed = id.to_string();
+            std::fs::remove_dir_all(plugin_root.join("Clock")).unwrap();
+            Ok(())
+        },
+        |_, _| (),
+    )
+    .unwrap();
+    assert_eq!(removed, "author.bad"); // 降级卸载用的是清单标识。
+    assert!(std::fs::read_to_string(plugin_root.join("Clock/manifest.ini")).unwrap().contains("version = 0.9.0"));
+    let nested = root.join("nested-source");
+    std::fs::create_dir_all(nested.join("Inner")).unwrap();
+    std::fs::write(nested.join("Inner/main.js"), "var nested = 1;").unwrap();
+    std::fs::write(nested.join("Inner/manifest.ini"), sample_manifest("nope", "Inner", "1.0.0")).unwrap();
+    assert_eq!(inspect_plugin_folder(&nested, &plugin_root).unwrap().name, "Inner");
+    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    let fresh = inspect_plugin_folder(&nested, &plugin_root).unwrap();
+    assert!(install_prepared_plugin(&plugin_root, &fresh, false, &cancel, |_| Ok(()), |_, _| ()).unwrap_err().contains("取消"));
+    assert!(!plugin_root.join("Inner").exists());
+    assert!(reject_zip_entry("../evil.js", None, 1).is_err());
+    assert!(reject_zip_entry("main.js", Some(0o120777), 1).is_err());
+    assert!(reject_zip_entry("main.js", None, 64 * 1024 * 1024 + 1).is_err());
+    assert!(!install_progress_due(false, 99, 1));
+    assert!(install_progress_due(false, 100, 0));
+    assert!(install_progress_due(false, 0, 2));
+    let archive = root.join("plugin.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("Wrapped/manifest.ini", options).unwrap();
+    use std::io::Write;
+    zip.write_all(sample_manifest("author.bad", "Wrapped", "1.0.0").as_bytes()).unwrap();
+    zip.start_file("Wrapped/main.js", options).unwrap();
+    zip.write_all(b"var zip = 1;").unwrap();
+    zip.finish().unwrap();
+    let from_zip = inspect_plugin_archive(&archive, &plugin_root).unwrap();
+    cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(install_prepared_plugin(&plugin_root, &from_zip, false, &cancel, |_| Ok(()), |_, _| ()).unwrap(), "author.bad"); // 同一标识换名称仍按同一插件替换。
+    let escape = root.join("escape.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&escape).unwrap());
+    zip.start_file("../evil.js", options).unwrap();
+    zip.write_all(b"bad").unwrap();
+    zip.finish().unwrap();
+    assert!(inspect_plugin_archive(&escape, &plugin_root).is_err());
+    let crowded = root.join("crowded.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&crowded).unwrap());
+    for index in 0..=2000
+    {
+        zip.start_file(format!("f{index}.txt"), options).unwrap();
+    }
+    zip.finish().unwrap();
+    assert!(inspect_plugin_archive(&crowded, &plugin_root).unwrap_err().contains("2000"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 安装拒绝把缺键、版本区间、非法名称、越界入口和 zip 路径写进错误正文。
+#[test]
+fn plugin_install_rejections_name_the_reason()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-install-reason-{}", std::process::id())); // 本测试独占目录。
+    let plugin_root = root.join("plugins");
+    std::fs::create_dir_all(&plugin_root).unwrap();
+    let missing = root.join("missing");
+    write_package(&missing, "Pack", "[plugin]\nversion = 1.0.0\nentry = main.js\n");
+    let missing_name = inspect_plugin_folder(&missing, &plugin_root).unwrap_err();
+    assert!(missing_name.contains("缺少 name"), "{missing_name}");
+    let high = root.join("high");
+    write_package(&high, "High", "[plugin]\nname = High\nversion = 1.0.0\nentry = main.js\nminAppVersion = 99.0.0\n");
+    let too_new = inspect_plugin_folder(&high, &plugin_root).unwrap_err();
+    assert!(too_new.contains("99.0.0") && too_new.contains(env!("CARGO_PKG_VERSION")), "{too_new}");
+    let low = root.join("low");
+    write_package(&low, "Low", "[plugin]\nname = Low\nversion = 1.0.0\nentry = main.js\nmaxAppVersion = 0.0.1\n");
+    let too_old = inspect_plugin_folder(&low, &plugin_root).unwrap_err();
+    assert!(too_old.contains("0.0.1") && too_old.contains(env!("CARGO_PKG_VERSION")), "{too_old}");
+    let named = root.join("named");
+    write_package(&named, "Bad", "[plugin]\nname = a/b\nversion = 1.0.0\nentry = main.js\n");
+    let bad_name = inspect_plugin_folder(&named, &plugin_root).unwrap_err();
+    assert!(bad_name.contains("名称无效") && bad_name.contains("a/b"), "{bad_name}");
+    let escaped = root.join("escaped");
+    write_package(&escaped, "Out", "[plugin]\nname = Out\nversion = 1.0.0\nentry = ../main.js\n");
+    let outside = inspect_plugin_folder(&escaped, &plugin_root).unwrap_err();
+    assert!(outside.contains("../main.js"), "{outside}");
+    let absent = root.join("absent");
+    std::fs::create_dir_all(absent.join("Gone")).unwrap();
+    std::fs::write(absent.join("Gone/manifest.ini"), "[plugin]\nid = plugin.gone\nname = Gone\nversion = 1.0.0\nentry = missing.js\n").unwrap();
+    assert!(inspect_plugin_folder(&absent, &plugin_root).is_ok(), "入口脚本缺失不再拒绝安装");
+    let no_id = root.join("no-id");
+    write_package(&no_id, "NoId", "[plugin]\nname = NoId\nversion = 1.0.0\nentry = main.js\n");
+    assert!(inspect_plugin_folder(&no_id, &plugin_root).unwrap_err().contains("缺少 id"), "标识由作者声明，安装只要求存在");
+    let free_id = root.join("free-id");
+    write_package(&free_id, "FreeId", "[plugin]\nid = 任意标识\nname = FreeId\nversion = 1.0.0\nentry = main.js\n");
+    assert_eq!(inspect_plugin_folder(&free_id, &plugin_root).unwrap().id, "任意标识", "安装不校验标识内容");
+    let archive = root.join("escape.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+    zip.start_file("../evil.js", zip::write::SimpleFileOptions::default()).unwrap();
+    use std::io::Write;
+    zip.write_all(b"bad").unwrap();
+    zip.finish().unwrap();
+    let zip_error = inspect_plugin_archive(&archive, &plugin_root).unwrap_err();
+    assert!(zip_error.contains("非法路径") && zip_error.contains("../evil.js"), "{zip_error}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 入口脚本还没放进文件夹时，安装计划仍然成立。
+#[test]
+fn missing_entry_script_can_still_be_prepared()
+{
+    let root = std::env::temp_dir().join(format!("desktop-tools-plugin-missing-entry-{}", std::process::id())); // 本测试独占目录。
+    let plugin_root = root.join("plugins");
+    std::fs::create_dir_all(&plugin_root).unwrap();
+    let source = root.join("NoEntry"); // 只有清单，没有 main.js。
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("manifest.ini"), "[plugin]\nid = plugin.noentry\nname = NoEntry\nversion = 1.0.0\nentry = main.js\n").unwrap();
+    let prepared = inspect_plugin_folder(&source, &plugin_root).expect("缺入口脚本仍应得到安装计划");
+    assert_eq!(prepared.name, "NoEntry");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 浮岛落点写端口：开启时写盘，关闭时丢弃，空边与 top 保持空串。
+#[test]
+fn island_landing_writes_through_port_and_skips_closed_island()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-island-landing-{}", std::process::id())); // 本测试独占配置。
+    let path = directory.join("settings.json");
+    let state = SettingsState::load(path.clone()).unwrap();
+    state.update(|preferences| { preferences.island_enabled = true; Ok(()) }).unwrap(); // 落点只在岛开启时写入。
+    let cleared = state.apply_island_landing("top", 0.0).unwrap().expect("开启时允许写入"); // 默认空边 + top 不固化成显式值。
+    assert!(cleared.island_edge.is_empty(), "默认空边拖动到 top 后仍保留空串");
+    assert_eq!(cleared.island_offset, 0.0);
+    let saved = state.apply_island_landing("left", 12.5).unwrap().expect("开启时写入落点");
+    assert_eq!(saved.island_edge, "left");
+    assert_eq!(saved.island_offset, 12.5);
+    state.update(|preferences| { preferences.island_enabled = false; Ok(()) }).unwrap(); // 关闭后不得再写落点。
+    assert!(state.apply_island_landing("right", 20.0).unwrap().is_none());
+    assert_eq!(state.preferences().unwrap().island_offset, 12.5, "关闭后的落点不覆盖已保存值");
+    assert_eq!(SettingsState::load(path).unwrap().preferences().unwrap().island_offset, 12.5, "落点已落盘");
+}

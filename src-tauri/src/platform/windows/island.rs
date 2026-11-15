@@ -1,4 +1,6 @@
-use crate::{app::settings::SettingsState, contracts::DesktopHostMonitor};
+use crate::contracts::DesktopHostMonitor;
+#[cfg(test)]
+use crate::preferences::SettingsState;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -6,7 +8,7 @@ use std::{
     num::NonZeroIsize,
     rc::Rc,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
     },
 };
@@ -348,33 +350,19 @@ impl LandingOrder
     }
 
     /// 锁覆盖序号检查和原子字段更新；关闭后的落点不写盘。
-    fn save(&mut self, state: &SettingsState, sequence: u64, edge: IslandEdge, offset: f64) -> Result<Option<crate::contracts::settings::ApplicationPreferences>, String>
+    fn save(&mut self, writer: &dyn crate::preferences::PreferencesWriter, sequence: u64, edge: IslandEdge, offset: f64) -> Result<Option<crate::contracts::settings::ApplicationPreferences>, String>
     {
         if sequence != self.latest || sequence <= self.committed
         {
             crate::log_debug!("岛：丢弃过期落点，序号={}，最新={}，已提交={}", sequence, self.latest, self.committed);
             return Ok(None);
         }
-        let mut disabled = false; // patch 内确认真实开关，不能依赖拖动前的快照。
-        let saved = state.update(|preferences| {
-            if !preferences.island_enabled
-            {
-                disabled = true;
-                return Err("岛已关闭，不保存落点".into());
-            }
-            if !(preferences.island_edge.is_empty() && edge == IslandEdge::Top)
-            {
-                preferences.island_edge = edge.as_preference().into(); // 默认空边拖动后仍保留空串，不固化为显式 top。
-            }
-            preferences.island_offset = offset;
-            Ok(())
-        });
-        if disabled
+        let Some(saved) = writer.apply_island_landing(edge.as_preference(), offset)?
+        else
         {
             crate::log_debug!("岛：关闭后丢弃落点，序号={}", sequence);
             return Ok(None);
-        }
-        let saved = saved?;
+        };
         self.committed = sequence; // 仅磁盘与内存均成功后推进已提交序号。
         Ok(Some(saved))
     }
@@ -400,12 +388,27 @@ impl HasWindowHandle for IslandHandle
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> { Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Win32(Win32WindowHandle::new(self.0))) }) }
 }
 
+/// 岛页面命令处理器；由应用层在安装时注入，平台不直接依赖命令模块。
+static COMMAND_HANDLER: OnceLock<super::NativeCommandHandler> = OnceLock::new();
+
+/// 应用层注入的只读偏好读取器；岛内所有读数都经它。
+static READER: OnceLock<crate::preferences::PreferencesReader> = OnceLock::new();
+
+/// 应用层注入的偏好写入口；落点写回不再直接持有存储。
+static WRITER: OnceLock<std::sync::Arc<dyn crate::preferences::PreferencesWriter>> = OnceLock::new();
+
+/// 读取当前偏好；未注入时给出可诊断错误。
+fn read_preferences() -> Result<crate::contracts::settings::ApplicationPreferences, String> { READER.get().ok_or_else(|| "岛偏好读取器未初始化".to_string())?() }
+
 /// 将全屏和锁屏事实映射为岛可见性；未知状态不伪造已确认覆盖。
-fn suppressed(snapshot: &super::refresh_policy::ForegroundSnapshot, hide_fullscreen: bool) -> bool { snapshot.locked == Some(true) || (hide_fullscreen && snapshot.exclusive_fullscreen == Some(true)) }
+fn suppressed(snapshot: &super::refresh_policy::ForegroundSnapshot, hide_fullscreen: bool) -> bool { snapshot.locked == Some(true) || (hide_fullscreen && snapshot.fullscreen == Some(true)) }
 
 /// 在既有前台事件上重新断言置顶，不启动轮询。
-pub(crate) fn install(app: &AppHandle)
+pub(crate) fn install(app: &AppHandle, command_handler: super::NativeCommandHandler, read_preferences: crate::preferences::PreferencesReader, write_preferences: std::sync::Arc<dyn crate::preferences::PreferencesWriter>)
 {
+    let _ = COMMAND_HANDLER.set(command_handler); // 只注入一次，重复安装保留首个。
+    let _ = READER.set(read_preferences); // 读数经应用层注入。
+    let _ = WRITER.set(write_preferences); // 落点写回经应用层端口。
     let handle = app.clone(); // 事件闭包不持有任何 Win32 资源。
     app.listen("desktop-refresh-policy-changed", move |_| {
         let _ = handle.run_on_main_thread(|| apply_policy(true));
@@ -419,7 +422,7 @@ pub(crate) fn reconcile(app: &AppHandle)
     let handle = app.clone(); // UI 回调所需的应用状态。
     if let Err(error) = app.run_on_main_thread(move || {
         let result = (|| {
-            let preferences = handle.state::<SettingsState>().preferences()?; // 保存后的最新事实。
+            let preferences = read_preferences()?; // 保存后的最新事实。
             if !preferences.island_enabled
             {
                 // 关闭只隐藏并保留窗口：关闭后立刻重开会重复创建 WebView2，环境交接会卡住 UI 线程；进程退出时统一释放。
@@ -550,6 +553,7 @@ fn create(app: &AppHandle) -> Result<(), String>
     let build = (|| {
         let raw = IslandHandle(NonZeroIsize::new(hwnd.0 as isize).ok_or("岛 HWND 为空")?); // Wry 句柄借用只限本线程。
         let protocol_app = app.clone(); // 协议请求后台分派。
+        let command_handler = COMMAND_HANDLER.get().cloned().ok_or("岛命令处理器未初始化")?; // 应用层注入的命令边界。
         let island_hwnd = hwnd.0 as isize; // 页面回调仅捕获数值，不跨线程持有原生窗口对象。
         let mut builder = WebViewBuilder::new()
             .with_id("island")
@@ -557,7 +561,8 @@ fn create(app: &AppHandle) -> Result<(), String>
             .with_focused(false) // Wry 默认主动 MoveFocus；岛创建时不能抢走前台。
             .with_bounds(WryRect { position: dpi::PhysicalPosition::new(0, 0).into(), size: dpi::PhysicalSize::new(1, 1).into() })
             .with_asynchronous_custom_protocol(ISLAND_PROTOCOL.into(), move |_id, request, responder| {
-                dispatch_protocol(request, protocol_app.clone(), move |response| responder.respond(response));
+                let handler = command_handler.clone(); // 每次请求复用同一条命令边界。
+                dispatch_protocol(request, protocol_app.clone(), handler, move |response| responder.respond(response));
             })
             .with_on_page_load_handler(move |event, _| {
                 if matches!(event, wry::PageLoadEvent::Finished)
@@ -566,7 +571,7 @@ fn create(app: &AppHandle) -> Result<(), String>
                 }
             })
             .with_initialization_script(&super::desktop_host::native_bridge_script(&format!("http://{ISLAND_PROTOCOL}.localhost")))
-            .with_url(island_page_url(super::desktop_host::boot_epoch(), super::desktop_host::active_theme_stylesheet(app).as_deref()).as_str());
+            .with_url(island_page_url(super::desktop_host::boot_epoch(), super::desktop_host::active_theme_stylesheet(app, &READER.get().cloned().ok_or("岛偏好读取器未初始化")?).as_deref()).as_str());
         // 开发构建启用本机 CDP 端口；若复用宿主已建环境，该参数按 WebView2 语义被忽略，属预期。
         #[cfg(debug_assertions)]
         {
@@ -680,19 +685,12 @@ pub(crate) fn destroy()
 }
 
 /// 两套协议注册都走既有命令边界，来源白名单只允许岛协议自身。
-pub(crate) fn dispatch_protocol<F>(request: Request<Vec<u8>>, app: AppHandle, respond: F)
+pub(crate) fn dispatch_protocol<F>(request: Request<Vec<u8>>, app: AppHandle, handler: super::NativeCommandHandler, respond: F)
 where
     F: FnOnce(Response<Cow<'static, [u8]>>) + Send + 'static,
 {
     let invoke = request.uri().path().starts_with("/__desktop_tools_invoke/"); // 只有命令可能阻塞。
     let run = move || {
-        let handler: super::NativeCommandHandler = Arc::new({
-            let app = app.clone(); // 分派时读取同一运行时。
-            move |command, arguments| {
-                let runtime = app.try_state::<Arc<crate::host::DesktopHostRuntime>>().ok_or_else(|| serde_json::json!({"code": "desktop-host-starting", "message": "桌面宿主正在启动"}))?;
-                crate::commands::dispatch_native_command(&app, &runtime, crate::commands::NativeCommandSource::DesktopHost, command, arguments)
-            }
-        });
         respond(super::desktop_host::handle_desktop_request(request, &app, &handler, &format!("http://{ISLAND_PROTOCOL}.localhost"), None));
     };
     if invoke
@@ -803,7 +801,7 @@ fn apply_policy(reassert_topmost: bool)
     let target = ISLAND.with(|slot| {
         let slot = slot.borrow(); // 仅计算副作用所需的 Copy 数据，不调用窗口 API。
         let resource = slot.as_ref()?;
-        let preferences = resource.app.state::<SettingsState>().preferences().ok()?;
+        let preferences = read_preferences().ok()?;
         let foreground = screenshot_foreground();
         if foreground
         {
@@ -955,7 +953,7 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
     let (hwnd, webview, revision, state_changed, surface) = ISLAND.with(|slot| {
         let mut slot = slot.borrow_mut(); // 只校验并取出快照，不调用会泵消息的 API。
         let resource = slot.as_mut().ok_or("岛未开启")?;
-        if !resource.app.state::<SettingsState>().preferences()?.island_enabled
+        if !read_preferences()?.island_enabled
         {
             return Err("岛未开启".into());
         }
@@ -963,7 +961,7 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
         let scale = monitor.scale_factor; // 所有 HWND 和 HRGN 坐标只在这里转像素。
         if resource.geometry.is_none()
         {
-            let preferences = resource.app.state::<SettingsState>().preferences()?; // 首次状态按偏好落位。
+            let preferences = read_preferences()?; // 首次状态按偏好落位。
             // 按页面提交的窗口盒尺寸落位：刘海窗口已含沿边圆弧区，不能再用卡片联合盒尺寸。
             let placed = place_from_preference(&preferences.island_edge, preferences.island_offset, (request.window_box.width, request.window_box.height), area, island_margin(&preferences.island_form)).ok_or("岛贴边偏好无效")?;
             request.window_box.left = placed.left;
@@ -1149,7 +1147,7 @@ fn finish_drag(hwnd: HWND) -> Result<(), String>
     let window_top = f64::from(window.top) / scale;
     let center_x = window_left + active.left + active.width / 2.0; // 卡片中心跟随窗口，不跟随鼠标按下点。
     let center_y = window_top + active.top + active.height / 2.0;
-    let preferences = app.state::<SettingsState>().preferences()?; // 贴边方向只由设置决定，拖动只沿当前边移动。
+    let preferences = read_preferences()?; // 贴边方向只由设置决定，拖动只沿当前边移动。
     let edge = IslandEdge::from_preference(&preferences.island_edge).unwrap_or(IslandEdge::Top);
     let raw = match edge
     {
@@ -1185,10 +1183,10 @@ fn finish_drag(hwnd: HWND) -> Result<(), String>
     {
         let _ = done.send(IslandDragResult { pointer_inside, offset: Some(offset) }); // 先释放命令屏障，页面按同一落点重测。
     }
+    let writer = WRITER.get().cloned().ok_or("岛偏好写入口未初始化")?; // 后台写盘使用同一端口。
     tauri::async_runtime::spawn_blocking(move || {
         let result = (|| {
-            let state = app.state::<SettingsState>();
-            let saved = LANDINGS.lock().map_err(|_| "岛落点状态不可用")?.save(&state, landing_seq, edge, offset)?; // 同锁检查最新序号并写盘，不再重存整份旧偏好。
+            let saved = LANDINGS.lock().map_err(|_| "岛落点状态不可用")?.save(writer.as_ref(), landing_seq, edge, offset)?; // 同锁检查最新序号，写盘交给应用层。
             if let Some(saved) = saved
             {
                 app.emit("preferences-changed", &saved).map_err(|error| format!("岛落点已保存，但偏好事件发布失败：{error}"))?;

@@ -206,13 +206,8 @@ fn parse_theme_rgb(value: &str) -> Option<u32>
 pub fn active_palette(app: &tauri::AppHandle, preferences: &ApplicationPreferences) -> Option<ThemeNotification>
 {
     use tauri::Manager;
-    let id = preferences.theme_plugin_id.clone()?; // 内置主题没有额外配色。
-    if preferences.disabled_plugins.contains(&id)
-    {
-        return None;
-    }
     let manifests = app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&[]).ok()?.manifests; // 只读清单。
-    manifests.iter().find(|manifest| manifest.id == id)?.theme_notification.clone()
+    crate::component_runtime::active_theme_manifest(preferences, &manifests)?.theme_notification.clone()
 }
 
 /// 最后提交到窗口的消息画面，也是鼠标命中的唯一依据。

@@ -193,16 +193,16 @@ test("编辑窗清理只在成功保存关闭或明确放弃后执行", async ()
 
 test("收集项打开共用失败刷新入口", async () => {
     const { readFile } = await import("node:fs/promises");
-    const native = await readFile(new URL("../../src-tauri/src/commands/mod.rs", import.meta.url), "utf8");
+    const native = await readFile(new URL("../../src-tauri/src/commands/router.rs", import.meta.url), "utf8");
     const commands = await readFile(new URL("../../src-tauri/src/commands/collect.rs", import.meta.url), "utf8");
-    assert.match(native, /"open_collect_item"\s*=>\s*\{[^}]*collect::execute_open_collect_item\(app, name\)/);
+    assert.match(native, /"open_collect_item"\s*=>\s*Some\(\(\|\| -> Result<Value, Value> \{[\s\S]*?collect::execute_open_collect_item\(app, name\)/);
     assert.match(commands, /spawn_blocking\(move \|\| execute_open_collect_item\(&app, name\)\)/);
     assert.match(commands, /if let Err\(error\) = &result\s*\{\s*changed\(app\)/);
 });
 
 test("收集箱图片与拖动命令同时接入 Tauri 和独立宿主", async () => {
     const { readFile } = await import("node:fs/promises"); // 核对两个真实 transport 的注册，避免替代桥隐藏路由遗漏。
-    const native = await readFile(new URL("../../src-tauri/src/commands/mod.rs", import.meta.url), "utf8");
+    const native = await readFile(new URL("../../src-tauri/src/commands/router.rs", import.meta.url), "utf8");
     const tauri = await readFile(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8");
     for (const command of ["read_collect_image", "prepare_collect_drag"]) {
         assert.match(native, new RegExp(`"${command}"\\s*=>`), `独立宿主缺少 ${command}`);

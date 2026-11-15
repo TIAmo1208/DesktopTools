@@ -73,7 +73,7 @@ pub enum ShellOperationKind
 pub struct ShellOperationItemResult
 {
     #[serde(skip_serializing)]
-    pub(crate) proof: Option<crate::platform::windows::file_proof::FileProof>, // 自动补偿前必须重新验证的完整结果证据。
+    pub(crate) proof: Option<crate::file_proof::FileProof>, // 自动补偿前必须重新验证的完整结果证据。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compensation_blocked: Option<String>, // 覆盖、合并或缺少安全证据的明确原因。
     /// 操作前由 Shell 返回的稳定引用。

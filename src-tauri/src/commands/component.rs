@@ -1,4 +1,4 @@
-use crate::app::settings::SettingsState;
+use crate::preferences::SettingsState;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::component_runtime::ComponentRuntimeState;

@@ -671,7 +671,7 @@ test("数据更新与状态切换复用同一 DOM 骨架", async () => {
 
 // 设置页保存/清除 token 后写入 pairingVersion，插件据 settings 变化重试，不新增宿主命令。
 test("配对变化经插件设置通知格子重试", () => {
-    const settingsPage = readFileSync(new URL("../settings/PluginSettingsPage.tsx", import.meta.url), "utf8");
+    const settingsPage = readFileSync(new URL("../settings/plugins/PluginSettingsPage.tsx", import.meta.url), "utf8");
     assert.match(settingsPage, /bumpPairingVersion\(pluginId\)/);
     assert.match(settingsPage, /pairingVersion: Math\.max\(Date\.now\(\)/);
     const pluginSource = readFileSync(new URL("../../../plugin/AstrBot 状态/index.js", import.meta.url), "utf8");

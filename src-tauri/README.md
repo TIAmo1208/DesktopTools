@@ -9,13 +9,16 @@ src-tauri/
 ├─ src/
 │  ├─ main.rs             # 进程入口
 │  ├─ lib.rs              # Tauri 应用装配和命令注册
-│  ├─ app/                # 生命周期、运行时状态与桌面接管
-│  ├─ commands/           # 前端命令边界、校验、探活、loopback 通道与用例调度
+│  ├─ app/                # 生命周期、运行时状态、偏好写入口与桌面接管
+│  ├─ commands/           # 前端命令边界、按领域路由、参数校验、loopback 通道与用例调度
 │  ├─ workspace/          # 布局、围栏、门户、组件和事务规则
 │  ├─ shell/              # 桌面项目事实、Shell 身份、菜单、剪贴板和拖放
 │  ├─ collect/            # 文本、图片、文件映射、资源、收入取出与删除恢复
 │  ├─ host/               # 透明宿主、WebView2、DPI、命中图和接管
 │  ├─ persistence/        # 布局快照和备份
+│  ├─ command_bridge.rs    # 页面命令处理器类型（平台与命令边界的接缝）
+│  ├─ drop_bridge.rs       # 拖放用例端口与投放输入（平台与布局事务的接缝）
+│  ├─ preferences.rs      # 偏好存储、校验、读写端口与配置/插件目录解析
 │  ├─ weather/            # 天气凭据、按来源分派的请求与临时验证会话
 │  ├─ component_runtime/  # 组件清单、能力、类型级尺寸与运行时状态
 │  ├─ recovery/           # guardian、健康状态和异常恢复
@@ -40,13 +43,13 @@ src-tauri/
 - `app/settings.rs` 维护配置目录与插件目录。配置目录仍用启动定位目录里的 `config-location.json`。插件目录不迁移：`pluginDirectory` 为空时用可执行文件所在目录下的 `plugin`（安装后即安装目录 `\plugin`），显式路径仍按原有安全边界覆盖；取不到程序目录时报错，不回退到 `%APPDATA%`。运行期内目录冻结，改偏好下次启动再生效，不复制旧目录。插件安装按 `作者@名称` 落盘并原样保留清单标识，同一作者同一标识视为同一插件。
 - `installer/` 包含 NSIS 自定义重装页与生命周期钩子。`tauri.installer.conf.json` 把随包插件资源直接写到 `$INSTDIR\plugin`，`hooks.nsh` 不再在安装后复制插件，也不在卸载时按清单清理。真正卸载且非升级时删除 `$INSTDIR\plugin`。
 
-- `commands/` 负责跨边界校验与调度，不持有长期领域状态。`commands/probe.rs` 是插件能力 `probe-service-status` 的唯一探活实现：探测地址与 2 秒超时在宿主内固定，不进入命令入参或插件设置；它新开独立的 HTTP 客户端，不启用 cookie jar，也不带浏览器来源头，把观察结果判成在线、探测被拒、未运行或未知四档，只回传判定时刻与该服务的启动时间，不透传服务端返回原文。该文件不注册成平铺原生命令，只由能力通道按实例授权后调用。
+- `commands/` 负责跨边界校验与调度，不持有长期领域状态。`tools/probe.rs` 是插件能力 `probe-service-status` 的唯一探活实现：探测地址与 2 秒超时在宿主内固定，不进入命令入参或插件设置；它新开独立的 HTTP 客户端，不启用 cookie jar，也不带浏览器来源头，把观察结果判成在线、探测被拒、未运行或未知四档，只回传判定时刻与该服务的启动时间，不透传服务端返回原文。该文件不注册成平铺原生命令，只由能力通道按实例授权后调用。
 - `commands/loopback.rs` 与 `component_runtime/loopback.rs` 是插件能力 `loopback-channel` 的实现：`register_loopback_channel`、`read_loopback_channel`、`request_loopback` 三条命令在 Tauri 与本地 transport 共用同一门禁，按 `instanceId` 校验能力授权。监听只绑本机 IPv4 回环地址，`baseUrl` 只接受 `http://127.0.0.1:<port>` 或 `http://localhost:<port>` 并归一为本机 IPv4；每条通道保留最近 256 条、单条 body 上限 1 MiB、整体 300 秒的原始请求缓冲，读到即消费；凭据用 `CredReadW` 读取并清零系统缓冲区，出站自动注入、入站用常量时间比较校验，校验失败回 `401` 且不入缓冲，已校验的凭据头在交给插件前移除。缓冲更新复用 `component-host-event`（`kind = loopback-data:<channelId>`），首次读取后才投递；逐屏转发时通道数据通知不依赖时间消费者。实例移除与插件卸载都会释放端口并清缓冲。宿主不解析也缓存任何业务数据，过期判定归插件。
-- `workspace/` 负责自有布局、围栏归属、门户和组件布局事务，不执行文件操作。各类格子的持久展开边界统一使用工作区契约中的公共尺寸底线，临时投射单独校验；内容可读性和标题占位由前端负责。
+- `workspace/` 负责自有布局、围栏归属、门户和组件布局事务，不执行文件操作；偏好写入经 `PreferencesStore` 端口由应用层提交，不直接持有设置状态。各类格子的持久展开边界统一使用工作区契约中的公共尺寸底线，临时投射单独校验；内容可读性和标题占位由前端负责。
 - `shell/` 负责 Shell 项目身份、真实文件操作、菜单、剪贴板和 Shell OLE 数据对象。
 - `shell/images.rs` 持有独立图像 STA、去重队列和有界 LRU；`platform/windows/shell_image.rs` 在所属线程提取 Shell 缩略图、转换 PNG 及原生拖动位图。`get_desktop_item_image` 校验当前项目身份后请求图像，Shell 变化使缓存和在途结果失效，原生拖动只读取已完成缓存。
-- `host/` 负责逐显示器透明窗口、WebView2、坐标、命中图和桌面接管。
-- `platform/windows/` 集中维护 COM、OLE、DPI、窗口消息和 Windows API 适配。`island.rs` 持有独立浮岛 HWND 与 WebView，复用桌面协议的页面/插件资产处理器、原生桥和事件转发，但命令只接受浮岛自身来源；`commands/island.rs` 按偏好返回浮岛实例与注册投影，不写工作区注册集合或布局。浮岛消息投影与关闭命令在 `commands/notifications.rs`，事件 `island-messages-changed` 由原生消息队列在集合变化时广播，浮岛不另建队列。`integrity.rs` 在启动时读取本进程完整性级别：低于中完整性时显示原生错误对话框并以退出码 1 结束，不进入 Tauri 初始化，避免低完整性进程附着 Explorer 失败后以 setup panic 结束。
+- `host/` 负责逐显示器透明窗口、WebView2、坐标、命中图和桌面接管。桌面宿主只允许初始占位页与当前页面导航，鼠标侧键的前进/后退被拒绝，桌面层不会因导航被清空。
+- `platform/windows/` 集中维护 COM、OLE、DPI、窗口消息和 Windows API 适配；页面命令只接收组合根注入的处理器，原生拖放只持有应用层注入的端口，不直接调用应用用例。`island.rs` 持有独立浮岛 HWND 与 WebView，复用桌面协议的页面/插件资产处理器、原生桥和事件转发，但命令只接受浮岛自身来源；`commands/island.rs` 按偏好返回浮岛实例与注册投影，不写工作区注册集合或布局。浮岛消息投影与关闭命令在 `commands/notifications.rs`，事件 `island-messages-changed` 由原生消息队列在集合变化时广播，浮岛不另建队列。`integrity.rs` 在启动时读取本进程完整性级别：低于中完整性时显示原生错误对话框并以退出码 1 结束，不进入 Tauri 初始化，避免低完整性进程附着 Explorer 失败后以 setup panic 结束。
 - `platform/windows/popup_layer.rs` 维护唯一的置顶弹层窗口（透明、无边框、不进任务栏、`always_on_top`）：宿主提交命令表与锚点，页面先量后显并上报尺寸，Rust 换算屏幕物理像素、整体推回工作区后显示；失活按取消收束并还原前台，关闭后空闲 90 秒销毁以释放 WebView2。命令入口 `open_popup_layer` / `dismiss_popup_layer` / `update_popup_layer_payload`，页面入口 `get_popup_layer_request` / `set_popup_layer_frame` / `finish_popup_layer`，结果事件 `popup-layer-result`。决策见 ADR-0040。
 - `platform/windows/drop_content.rs` 探测有界源格式、声明业务白名单、协商效果并提取自有数据；`desktop_host.rs` 在既有 OLE 入口按最高命中目标分流。`app/desktop_drop.rs` 复核实例、功能开关与运行时注册，再交给 `collect/drop.rs` 或 Shell STA；后台不持有原生拖放数据对象。
 - `collect/drop.rs` 负责一次拖入的格式去重、Markdown 追加及资源收入，正文保存使用既有 Windows 原子替换能力，失败保留已保存正文与可追踪的资源路径。

@@ -51,7 +51,7 @@ fn one_bad_install_source_keeps_the_other_plan()
     std::fs::write(good.join("Clock/manifest.ini"), "[plugin]\nid = plugin.clock\nname = Clock\nversion = 1.0.0\nentry = main.js\n").unwrap();
     let bad = root.join("bad");
     std::fs::create_dir_all(&bad).unwrap();
-    let prepared = super::prepare_sources(vec![good.to_string_lossy().into_owned(), bad.to_string_lossy().into_owned()], &root.join("plugins"), crate::app::settings::inspect_plugin_folder);
+    let prepared = super::prepare_sources(vec![good.to_string_lossy().into_owned(), bad.to_string_lossy().into_owned()], &root.join("plugins"), crate::preferences::inspect_plugin_folder);
     assert_eq!(prepared.plans.len(), 1);
     assert_eq!(prepared.plans[0].name, "Clock");
     assert_eq!(prepared.errors.len(), 1);

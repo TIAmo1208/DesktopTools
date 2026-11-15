@@ -173,7 +173,7 @@ impl ComponentRuntimeState
                 "unixMillis": Utc::now().timestamp_millis()
             }),
             ComponentCapability::ReadCurrentMedia => crate::platform::windows::music::snapshot().map_err(|message| ComponentRuntimeError { code: "media-read-failed".to_string(), message })?,
-            ComponentCapability::ProbeServiceStatus => crate::commands::probe::probe(&json!({ "service": "astrbot" })),
+            ComponentCapability::ProbeServiceStatus => crate::tools::probe::probe(&json!({ "service": "astrbot" })),
             ComponentCapability::LoopbackChannel => json!({}), // 通道数据只从三条通道命令交付，能力调用本身没有载荷。
         }; // 当前授权能力的最小结构化结果。
         Ok(ComponentCapabilityResult { instance_id: instance_id.to_string(), capability, payload })
@@ -243,7 +243,7 @@ impl ComponentRuntimeState
     }
 
     /// 启动官方插件共享的低频宿主时间事件。
-    pub fn start_host_events(app: AppHandle)
+    pub fn start_host_events(app: AppHandle, read_preferences: crate::preferences::PreferencesReader)
     {
         crate::log_info!("插件：宿主事件发布器已启动，间隔=1秒");
         thread::spawn(move || {
@@ -265,7 +265,7 @@ impl ComponentRuntimeState
                 {
                     break;
                 };
-                if !app.state::<crate::app::settings::SettingsState>().preferences().is_ok_and(|preferences| preferences.clock_enabled)
+                if !read_preferences().is_ok_and(|preferences| preferences.clock_enabled)
                 {
                     continue;
                 }
@@ -1134,6 +1134,17 @@ fn island_instance(component_id: &str) -> ComponentInstanceSnapshot
 
 /// 创建不影响其他实例的插件加载失败快照。
 fn failed_registration(instance: &ComponentInstanceSnapshot, message: &str) -> ComponentRegistrationSnapshot { ComponentRegistrationSnapshot { instance_id: instance.instance_id.clone(), component_id: instance.component_id.clone(), entry: None, authorized_capabilities: Vec::new(), status: ComponentLoadStatus::Failed, error: Some(message.to_string()) } }
+
+/// 当前选中的主题清单：未选主题、已停用或清单缺失时为空。
+pub(crate) fn active_theme_manifest<'a>(preferences: &crate::contracts::settings::ApplicationPreferences, manifests: &'a [ComponentManifest]) -> Option<&'a ComponentManifest>
+{
+    let id = preferences.theme_plugin_id.as_deref()?; // 内置主题不需要额外清单。
+    if preferences.disabled_plugins.iter().any(|item| item == id)
+    {
+        return None;
+    }
+    manifests.iter().find(|manifest| manifest.id == id)
+}
 
 #[cfg(test)]
 #[path = "mod.test.rs"]

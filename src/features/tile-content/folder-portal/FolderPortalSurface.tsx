@@ -6,7 +6,7 @@ import { DesktopTileBase } from "../../tiles/DesktopTileBase";
 import { DesktopTileHeader } from "../../tiles/header/DesktopTileHeader";
 import { DesktopTileViewport } from "../../tiles/DesktopTileViewport";
 import { FolderPortal, type FolderPortalActions } from "./FolderPortal";
-import { usePreferences } from "../../settings/PreferencesProvider";
+import { usePreferences } from "../../../app/preferences/PreferencesProvider";
 import "./FolderPortalSurface.css";
 
 /** 文件夹门户复用公共格子几何交互；目录内容仍由门户自身负责。 */

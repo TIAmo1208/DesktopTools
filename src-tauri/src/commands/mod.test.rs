@@ -60,7 +60,7 @@ fn native_weather_arguments_are_rejected_before_business()
     // create_weather_tile 的 monitorId 读取表达式：类型错误必须在进入业务前失败，并与其他参数使用同一错误编码。
     let monitor: Result<Option<String>, _> = json!({"source": "qweather", "cityId": "101010100", "monitorId": 7}).get("monitorId").cloned().map(serde_json::from_value).transpose();
     assert!(monitor.expect_err("monitorId 非字符串必须在进入业务前被拒绝").to_string().contains("invalid type"), "错误必须说明参数类型无效");
-    assert!(include_str!("mod.rs").contains("map(serde_json::from_value).transpose().map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string())))?"), "monitorId 类型错误必须编码为 invalid-readiness 对象，不能返回裸字符串");
+    assert!(include_str!("router.rs").contains("map(serde_json::from_value).transpose().map_err(|error| serialize_error(DesktopHostError::invalid_readiness(error.to_string())))?"), "monitorId 类型错误必须编码为 invalid-readiness 对象，不能返回裸字符串");
     assert_eq!(command_argument::<crate::weather::Source>(&json!({"source": "foreca"}), "source", "天气来源参数无效").unwrap().key(), "foreca", "合法来源仍可解析");
     assert_eq!(command_argument::<String>(&json!({"cityId": "101010100"}), "cityId", "天气城市标识无效").unwrap(), "101010100", "合法城市标识仍可解析");
 }
@@ -70,9 +70,9 @@ fn native_weather_arguments_are_rejected_before_business()
 fn settings_window_is_opened_through_the_existing_entry()
 {
     // 命令分发表源码，覆盖原生 transport 与 Tauri command 两处登记。
-    let table = include_str!("mod.rs");
+    let table = include_str!("router.rs");
     assert!(table.contains(r#""open_settings_window" =>"#), "原生通道必须登记打开设置窗口");
-    assert!(table.contains("crate::app::tray::set_settings_visible(&app, true)"), "必须复用既有设置窗口显隐入口");
+    assert!(include_str!("mod.rs").contains("crate::app::tray::set_settings_visible(&app, true)"), "必须复用既有设置窗口显隐入口");
     assert!(!table.contains("WebviewWindowBuilder"), "命令层不得自建窗口");
 }
 
@@ -80,7 +80,7 @@ fn settings_window_is_opened_through_the_existing_entry()
 #[test]
 fn native_host_can_read_plugin_settings()
 {
-    let table = include_str!("mod.rs"); // 逐屏命令分发表。
+    let table = include_str!("router.rs"); // 逐屏命令分发表。
     assert!(table.contains(r#""get_plugin_settings" =>"#), "原生通道必须登记读取插件设置");
     assert!(table.contains(r#"command_argument(&arguments, "pluginId""#), "逐屏参数名是 pluginId");
     assert!(table.contains("read_plugin_settings"), "必须走与设置窗口相同的读取");

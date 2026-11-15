@@ -1,21 +1,21 @@
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::app::settings::SettingsState;
 use crate::component_runtime::ComponentRuntimeState;
 use crate::contracts::ComponentManifest;
+use crate::preferences::SettingsState;
 
 /// 读取一个插件的设置；没有文件或内容损坏时返回空，不改写磁盘。清单缺失不猜键。
 #[tauri::command]
 pub fn get_plugin_settings(app: AppHandle, state: State<'_, SettingsState>, plugin_id: String) -> Result<Option<serde_json::Value>, String>
 {
     let author = plugin_author(&app, &plugin_id)?; // 键里的作者来自当前清单。
-    crate::app::settings::read_plugin_settings(&state.directory()?, &author, &plugin_id)
+    crate::preferences::read_plugin_settings(&state.directory()?, &author, &plugin_id)
 }
 
 fn plugin_author(app: &AppHandle, plugin_id: &str) -> Result<String, String>
 {
     let manifests = app.state::<ComponentRuntimeState>().snapshot(&[]).map_err(|error| error.message)?.manifests; // 当前已注册的清单。
-    crate::app::settings::plugin_settings_author(&manifests, plugin_id)
+    crate::preferences::plugin_settings_author(&manifests, plugin_id)
 }
 
 /// 只打开该插件清单里声明的仓库，不接受调用方传入的地址。
@@ -33,7 +33,7 @@ pub fn open_plugin_repository(app: AppHandle, plugin_id: String) -> Result<(), S
 pub fn save_plugin_settings(app: AppHandle, state: State<'_, SettingsState>, plugin_id: String, value: serde_json::Value) -> Result<(), String>
 {
     let author = plugin_author(&app, &plugin_id)?; // 键里的作者来自当前清单。
-    crate::app::settings::write_plugin_settings(&state.directory()?, &author, &plugin_id, &value)?;
+    crate::preferences::write_plugin_settings(&state.directory()?, &author, &plugin_id, &value)?;
     if let Err(error) = app.emit(crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, serde_json::json!({ "pluginId": &plugin_id }))
     {
         crate::log_warn!("插件设置：变更通知失败，插件={plugin_id}，错误：{error}");
@@ -120,11 +120,11 @@ pub fn uninstall_plugin(app: AppHandle, plugin_id: String, remove_settings: bool
 {
     let author = if remove_settings { plugin_author(&app, &plugin_id)? } else { String::new() }; // 清理配置必须先拿到清单里的作者。
     let directory = app.state::<SettingsState>().directory()?; // 当前生效的配置目录。
-    let pending = crate::app::settings::plan_plugin_removal(app.state::<ComponentRuntimeState>().plugin_directory(), &directory, &plugin_id, remove_settings, &author)?; // 非法路径在改工作区前拒绝。
+    let pending = crate::preferences::plan_plugin_removal(app.state::<ComponentRuntimeState>().plugin_directory(), &directory, &plugin_id, remove_settings, &author)?; // 非法路径在改工作区前拒绝。
     let snapshot = app.state::<crate::workspace::WorkspaceState>().remove_uninstalled_plugin(&plugin_id).map_err(|error| error.message)?; // 不走用户移除门禁，也不进撤销历史。
     app.state::<ComponentRuntimeState>().loopback().release_component(&plugin_id); // 卸载即释放该插件在全部实例上的通道与端口。
-    let mut removed = crate::app::settings::commit_plugin_removal(pending)?; // 实例已清掉后再删文件，失败时可重入补删。
-    if remove_settings && crate::app::settings::remove_plugin_settings(&directory, &author, &plugin_id)?
+    let mut removed = crate::preferences::commit_plugin_removal(pending)?; // 实例已清掉后再删文件，失败时可重入补删。
+    if remove_settings && crate::preferences::remove_plugin_settings(&directory, &author, &plugin_id)?
     {
         removed.push("settings-plugins.json".to_string());
     }
@@ -139,7 +139,7 @@ pub fn uninstall_plugin(app: AppHandle, plugin_id: String, remove_settings: bool
 /// 选中默认插件目录时返回空串，前端据此把偏好写成跟随默认。
 pub(crate) fn plugin_directory_preference(chosen: &str, config_directory: &std::path::Path) -> String
 {
-    let follows_default = crate::app::settings::resolve_plugin_directory("", config_directory).is_ok_and(|default| same_directory(std::path::Path::new(chosen), &default)); // 空偏好解析出的可执行文件同级 plugin。
+    let follows_default = crate::preferences::resolve_plugin_directory("", config_directory).is_ok_and(|default| same_directory(std::path::Path::new(chosen), &default)); // 空偏好解析出的可执行文件同级 plugin。
     if follows_default { String::new() } else { chosen.to_string() }
 }
 
@@ -185,14 +185,14 @@ pub fn resolved_plugin_directory(state: State<'_, ComponentRuntimeState>) -> Str
 #[tauri::command]
 pub fn open_plugin_directory(app: AppHandle, plugin_id: String) -> Result<(), String>
 {
-    let manifest = crate::app::settings::plugin_manifest_file(app.state::<ComponentRuntimeState>().plugin_directory(), &plugin_id)?; // 已确认位于插件根内的普通文件。
+    let manifest = crate::preferences::plugin_manifest_file(app.state::<ComponentRuntimeState>().plugin_directory(), &plugin_id)?; // 已确认位于插件根内的普通文件。
     reveal_plugin_manifest(&manifest)
 }
 
 /// 还没落盘的安装计划。取消标记和来源一起放着。
 struct PluginInstallTask
 {
-    prepared: crate::app::settings::PreparedPlugin,        // 校验后的来源。
+    prepared: crate::preferences::PreparedPlugin,          // 校验后的来源。
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>, // 解压和复制循环看这个标记。
     running: std::sync::atomic::AtomicBool,                // 同一计划不能同时执行两次。
 }
@@ -227,7 +227,7 @@ pub struct PluginInstallConflictView
     downgrade: bool,           // 是否降级。
 }
 
-fn remember_install(prepared: crate::app::settings::PreparedPlugin) -> PluginInstallPlanView
+fn remember_install(prepared: crate::preferences::PreparedPlugin) -> PluginInstallPlanView
 {
     let plan_id = format!("install-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|value| value.as_nanos()).unwrap_or(0));
     let plugin_id = prepared.id.clone(); // 标识来自清单，安装时原样保留。
@@ -269,7 +269,7 @@ pub struct PluginInstallPreparation
     pub errors: Vec<String>,               // 没通过校验的来源。
 }
 
-fn prepare_sources(paths: Vec<String>, plugin_root: &std::path::Path, inspect: fn(&std::path::Path, &std::path::Path) -> Result<crate::app::settings::PreparedPlugin, String>) -> PluginInstallPreparation
+fn prepare_sources(paths: Vec<String>, plugin_root: &std::path::Path, inspect: fn(&std::path::Path, &std::path::Path) -> Result<crate::preferences::PreparedPlugin, String>) -> PluginInstallPreparation
 {
     let mut plans = Vec::new(); // 校验通过的计划。
     let mut errors = Vec::new(); // 单个来源的失败原因。
@@ -290,7 +290,7 @@ pub async fn prepare_plugin_install_from_folder(window: tauri::WebviewWindow) ->
 {
     settings_window(&window)?;
     let chosen = choose_on_main(&window, choose_install_folders).await?;
-    Ok(prepare_sources(chosen, window.state::<ComponentRuntimeState>().plugin_directory(), crate::app::settings::inspect_plugin_folder))
+    Ok(prepare_sources(chosen, window.state::<ComponentRuntimeState>().plugin_directory(), crate::preferences::inspect_plugin_folder))
 }
 
 /// 选择一个或多个 zip 并给出安装计划。取消时计划为空。
@@ -299,7 +299,7 @@ pub async fn prepare_plugin_install_from_archive(window: tauri::WebviewWindow) -
 {
     settings_window(&window)?;
     let chosen = choose_on_main(&window, crate::platform::windows::settings::choose_zip_archives).await?;
-    Ok(prepare_sources(chosen, window.state::<ComponentRuntimeState>().plugin_directory(), crate::app::settings::inspect_plugin_archive))
+    Ok(prepare_sources(chosen, window.state::<ComponentRuntimeState>().plugin_directory(), crate::preferences::inspect_plugin_archive))
 }
 
 /// 安装结果。设置窗口收不到桌面宿主那条事件转发，所以快照直接跟回来。
@@ -342,7 +342,7 @@ fn run_plugin_install(app: AppHandle, plan_id: String, task: PluginInstallTask, 
     let mut last_at = std::time::Instant::now() - std::time::Duration::from_secs(1); // 第一次进度允许立即发出。
     let emit = |stage: &str, percent: u8, last_stage: &mut String, last_percent: &mut u8, last_at: &mut std::time::Instant| {
         let stage_changed = stage != last_stage;
-        let due = crate::app::settings::install_progress_due(stage_changed, last_at.elapsed().as_millis(), percent.saturating_sub(*last_percent));
+        let due = crate::preferences::install_progress_due(stage_changed, last_at.elapsed().as_millis(), percent.saturating_sub(*last_percent));
         if !due
         {
             return;
@@ -355,7 +355,7 @@ fn run_plugin_install(app: AppHandle, plan_id: String, task: PluginInstallTask, 
         *last_percent = percent;
         *last_at = std::time::Instant::now();
     };
-    let result = crate::app::settings::install_prepared_plugin(app.state::<ComponentRuntimeState>().plugin_directory(), &task.prepared, confirm_downgrade, &task.cancel, |plugin_id| uninstall_plugin(app.clone(), plugin_id.to_string(), false).map(|_| ()), |stage, percent| emit(stage, percent, &mut last_stage, &mut last_percent, &mut last_at));
+    let result = crate::preferences::install_prepared_plugin(app.state::<ComponentRuntimeState>().plugin_directory(), &task.prepared, confirm_downgrade, &task.cancel, |plugin_id| uninstall_plugin(app.clone(), plugin_id.to_string(), false).map(|_| ()), |stage, percent| emit(stage, percent, &mut last_stage, &mut last_percent, &mut last_at));
     if let Err(error) = &result
     {
         emit("failed", last_percent, &mut last_stage, &mut last_percent, &mut last_at);

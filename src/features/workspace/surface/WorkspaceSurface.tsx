@@ -19,7 +19,7 @@ import { useDesktopHostSurface } from "./useDesktopHostSurface";
 import { useCrossMonitorPreview } from "./useCrossMonitorPreview";
 import { projectWorkspaceSurface } from "./workspaceSurfaceProjection";
 import { FolderPortalSurface } from "../../tile-content/folder-portal/FolderPortalSurface";
-import { usePreferences } from "../../settings/PreferencesProvider";
+import { usePreferences } from "../../../app/preferences/PreferencesProvider";
 
 /** 将未知错误转换为桌面项目操作说明。 */
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : "桌面项目请求失败");

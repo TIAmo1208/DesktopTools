@@ -1,27 +1,8 @@
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::contracts::{HitRegion, ShellOperationResult, WorkspaceFenceScroll, WorkspacePoint, WorkspaceSnapshot};
+use crate::contracts::{HitRegion, ShellOperationResult, WorkspacePoint, WorkspaceSnapshot};
+use crate::drop_bridge::{DropInput, ExternalDrop};
 use crate::workspace::{DropTarget, WorkspaceState};
-
-/// 原生层已经校验会话与版本的投放输入，不携带 COM 对象。
-pub(crate) struct DropInput
-{
-    pub monitor_id: String,                 // 目标显示器。
-    pub pointer: WorkspacePoint,            // 已确认的 DIP 指针。
-    pub regions: Vec<HitRegion>,            // 已渲染且裁剪后的命中区域。
-    pub scrolls: Vec<WorkspaceFenceScroll>, // 本次临时滚动结果。
-}
-
-/// 预检后固定的外部投放计划，文件执行期间不重新解释目标。
-pub(crate) struct ExternalDrop
-{
-    target: DropTarget,              // 共享归属与原视图空间意图。
-    snapshot: WorkspaceSnapshot,     // 预检时的布局，用于隔离同期新增项目。
-    sources: Vec<String>,            // 原始顺序。
-    existing: Vec<String>,           // 只改变布局的已知项目。
-    pub transfers: Vec<String>,      // 平台需要执行真实传输的完整来源。
-    pub portal_root: Option<String>, // 门户目标绑定根目录。
-}
 
 /// 向原生会话提供当前布局事实，应用状态访问集中于应用层。
 pub(crate) fn snapshot(app: &AppHandle) -> Result<WorkspaceSnapshot, String> { app.state::<WorkspaceState>().snapshot().map_err(|error| error.message) }
@@ -215,7 +196,7 @@ pub(crate) fn content_target(app: &AppHandle, snapshot: &WorkspaceSnapshot, regi
     {
         return Ok(None);
     }; // Renderer 不能伪造目标类型。
-    let preferences = app.state::<crate::app::settings::SettingsState>().preferences()?; // 原生复核功能开关。
+    let preferences = app.state::<crate::preferences::SettingsState>().preferences()?; // 原生复核功能开关。
     if app.state::<crate::component_runtime::ComponentRuntimeState>().snapshot(&snapshot.components).map_err(|error| error.message)?.instances.iter().find(|entry| entry.instance_id == component.instance_id).is_none_or(|entry| entry.status != crate::contracts::ComponentLoadStatus::Ready)
     {
         return Ok(None);
@@ -248,8 +229,8 @@ pub(crate) fn receive_content(app: &AppHandle, region: HitRegion, monitor_id: St
         app.state::<crate::shell::DesktopItemState>().open_media_drop(paths.remove(0))?;
         return Ok(crate::collect::ReceiveResult { processed: 1, skipped: 0, failures: Vec::new(), had_move: false });
     }
-    let preferences = app.state::<crate::app::settings::SettingsState>().preferences()?; // 当前配置目录。
-    let config = crate::app::settings::resolve_config_directory(&preferences.config_directory)?; // 与编辑窗共用收集目录。
+    let preferences = app.state::<crate::preferences::SettingsState>().preferences()?; // 当前配置目录。
+    let config = crate::preferences::resolve_config_directory(&preferences.config_directory)?; // 与编辑窗共用收集目录。
     let result = crate::commands::collect::with_collect_editor_state(app, &crate::collect::directory(&config), target_name.as_deref(), |editing| {
         if let Some(names) = collect_names
         {
@@ -363,3 +344,26 @@ fn drop_before_item_at(point: &WorkspacePoint, regions: &[HitRegion], fence: &cr
 #[cfg(test)]
 #[path = "desktop_drop.test.rs"]
 mod tests;
+
+/// 应用层拖放用例适配器：原生只持有该端口，不直接调用应用函数。
+pub(crate) struct AppDesktopDrop
+{
+    pub app: AppHandle, // 端口实现持有的应用句柄。
+}
+
+impl crate::drop_bridge::DesktopDropPort for AppDesktopDrop
+{
+    fn snapshot(&self) -> Result<WorkspaceSnapshot, String> { snapshot(&self.app) }
+
+    fn content_target(&self, snapshot: &WorkspaceSnapshot, region: &HitRegion, monitor_id: &str) -> Result<Option<String>, String> { content_target(&self.app, snapshot, region, monitor_id) }
+
+    fn commit_internal(&self, snapshot: WorkspaceSnapshot, input: DropInput, item_ids: Vec<String>, pointer_offset: &WorkspacePoint, free: bool, source_positions: &[WorkspacePoint]) -> Result<bool, String> { commit_internal(&self.app, snapshot, input, item_ids, pointer_offset, free, source_positions) }
+
+    fn prepare_external(&self, snapshot: WorkspaceSnapshot, input: DropInput, sources: Vec<String>, copy_all: bool) -> Result<Option<ExternalDrop>, String> { prepare_external(&self.app, snapshot, input, sources, copy_all) }
+
+    fn complete_external(&self, plan: ExternalDrop, completed: ShellOperationResult) -> (bool, bool, Option<ShellOperationResult>) { complete_external(&self.app, plan, completed) }
+
+    fn receive_content(&self, region: HitRegion, monitor_id: String, target_name: Option<String>, content: crate::collect::IncomingContent, mode: String, collect_names: Option<Vec<String>>) -> Result<crate::collect::ReceiveResult, String> { receive_content(&self.app, region, monitor_id, target_name, content, mode, collect_names) }
+
+    fn report_content_error(&self, error: String) { report_content_error(&self.app, error) }
+}

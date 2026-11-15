@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSPropert
 import type { LyricLine, MusicTimeline } from "../../../contracts/music";
 import { ScrollingText } from "../../../shared/ScrollingText";
 import { lyricIndex, lyricTickDelay, positionAt } from "../../music/musicState";
-import { usePreferences } from "../../settings/PreferencesProvider";
+import { usePreferences } from "../../../app/preferences/PreferencesProvider";
 import { isCompactMusicLayout, musicMediaMinimum } from "./musicLayout";
 import { musicLyricsLineRows, musicLyricsPlacement, musicLyricsRowCount, musicLyricsWindow, type MusicLyricsPlacement } from "./musicLyricsLayout";
 import { MusicSpectrum } from "./MusicSpectrum";

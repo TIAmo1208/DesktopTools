@@ -3,7 +3,7 @@ import type { ComponentInstanceSnapshot, ComponentRegistrationSnapshot } from ".
 import type { DesktopHostMonitor } from "../../contracts/desktopHost";
 import type { TileAppearance, TileAppearanceChange } from "../../contracts/tile";
 import type { WorkspaceCommand, WorkspaceInteractionCommand, WorkspaceFocusTarget, WorkspaceSnapshot } from "../../contracts/workspace";
-import { usePreferences } from "../settings/PreferencesProvider";
+import { usePreferences } from "../../app/preferences/PreferencesProvider";
 import { publishMessage } from "../notifications/messageNotification";
 import { DesktopTileBase } from "../tiles/DesktopTileBase";
 import { DesktopTileHeader } from "../tiles/header/DesktopTileHeader";

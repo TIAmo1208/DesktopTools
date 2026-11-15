@@ -2,6 +2,26 @@ use super::{ComponentRuntimeState, validate_manifest};
 use crate::contracts::{ComponentCapability, ComponentCapabilityDeclaration, ComponentInstanceSnapshot, ComponentLoadStatus, ComponentManifest, WorkspaceRect};
 use serde_json::json;
 
+/// 主题清单只按当前选中与停用名单挑选，三处主题解析共用这一条判定。
+#[test]
+fn active_theme_manifest_requires_selection_and_enabled_plugin()
+{
+    let mut manifest: ComponentManifest = serde_json::from_str(super::LOCAL_CLOCK_MANIFEST).unwrap();
+    manifest.id = "plugin.theme".to_string();
+    manifest.role = crate::contracts::ComponentRole::Theme;
+    manifest.stylesheet = "theme.css".to_string();
+    let manifests = vec![manifest]; // 当前清单里只有一个主题。
+    let mut preferences = crate::contracts::settings::ApplicationPreferences::default();
+    assert!(super::active_theme_manifest(&preferences, &manifests).is_none()); // 内置主题不读清单。
+    preferences.theme_plugin_id = Some("plugin.theme".to_string());
+    assert_eq!(super::active_theme_manifest(&preferences, &manifests).map(|manifest| manifest.id.as_str()), Some("plugin.theme")); // 选中即生效。
+    preferences.disabled_plugins = vec!["plugin.theme".to_string()];
+    assert!(super::active_theme_manifest(&preferences, &manifests).is_none()); // 停用后不生效。
+    preferences.disabled_plugins.clear();
+    preferences.theme_plugin_id = Some("plugin.missing".to_string());
+    assert!(super::active_theme_manifest(&preferences, &manifests).is_none()); // 清单缺失时按未选处理。
+}
+
 /// 岛布尔值沿用 ini 旗标规则，主题即使声明也不允许上岛。
 #[test]
 fn island_manifest_flags_and_theme_ignore()
