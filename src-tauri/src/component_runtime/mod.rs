@@ -173,7 +173,7 @@ impl ComponentRuntimeState
                 "unixMillis": Utc::now().timestamp_millis()
             }),
             ComponentCapability::ReadCurrentMedia => crate::platform::windows::music::snapshot().map_err(|message| ComponentRuntimeError { code: "media-read-failed".to_string(), message })?,
-            ComponentCapability::ProbeServiceStatus => crate::commands::probe::probe(&json!({ "service": "astrbot" })),
+            ComponentCapability::ProbeServiceStatus => crate::tools::probe::probe(&json!({ "service": "astrbot" })),
             ComponentCapability::LoopbackChannel => json!({}), // 通道数据只从三条通道命令交付，能力调用本身没有载荷。
         }; // 当前授权能力的最小结构化结果。
         Ok(ComponentCapabilityResult { instance_id: instance_id.to_string(), capability, payload })

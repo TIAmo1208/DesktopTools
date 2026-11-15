@@ -6,7 +6,7 @@ use std::{
     num::NonZeroIsize,
     rc::Rc,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
     },
 };
@@ -400,12 +400,16 @@ impl HasWindowHandle for IslandHandle
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> { Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Win32(Win32WindowHandle::new(self.0))) }) }
 }
 
+/// 岛页面命令处理器；由应用层在安装时注入，平台不直接依赖命令模块。
+static COMMAND_HANDLER: OnceLock<super::NativeCommandHandler> = OnceLock::new();
+
 /// 将全屏和锁屏事实映射为岛可见性；未知状态不伪造已确认覆盖。
 fn suppressed(snapshot: &super::refresh_policy::ForegroundSnapshot, hide_fullscreen: bool) -> bool { snapshot.locked == Some(true) || (hide_fullscreen && snapshot.exclusive_fullscreen == Some(true)) }
 
 /// 在既有前台事件上重新断言置顶，不启动轮询。
-pub(crate) fn install(app: &AppHandle)
+pub(crate) fn install(app: &AppHandle, command_handler: super::NativeCommandHandler)
 {
+    let _ = COMMAND_HANDLER.set(command_handler); // 只注入一次，重复安装保留首个。
     let handle = app.clone(); // 事件闭包不持有任何 Win32 资源。
     app.listen("desktop-refresh-policy-changed", move |_| {
         let _ = handle.run_on_main_thread(|| apply_policy(true));
@@ -550,6 +554,7 @@ fn create(app: &AppHandle) -> Result<(), String>
     let build = (|| {
         let raw = IslandHandle(NonZeroIsize::new(hwnd.0 as isize).ok_or("岛 HWND 为空")?); // Wry 句柄借用只限本线程。
         let protocol_app = app.clone(); // 协议请求后台分派。
+        let command_handler = COMMAND_HANDLER.get().cloned().ok_or("岛命令处理器未初始化")?; // 应用层注入的命令边界。
         let island_hwnd = hwnd.0 as isize; // 页面回调仅捕获数值，不跨线程持有原生窗口对象。
         let mut builder = WebViewBuilder::new()
             .with_id("island")
@@ -557,7 +562,8 @@ fn create(app: &AppHandle) -> Result<(), String>
             .with_focused(false) // Wry 默认主动 MoveFocus；岛创建时不能抢走前台。
             .with_bounds(WryRect { position: dpi::PhysicalPosition::new(0, 0).into(), size: dpi::PhysicalSize::new(1, 1).into() })
             .with_asynchronous_custom_protocol(ISLAND_PROTOCOL.into(), move |_id, request, responder| {
-                dispatch_protocol(request, protocol_app.clone(), move |response| responder.respond(response));
+                let handler = command_handler.clone(); // 每次请求复用同一条命令边界。
+                dispatch_protocol(request, protocol_app.clone(), handler, move |response| responder.respond(response));
             })
             .with_on_page_load_handler(move |event, _| {
                 if matches!(event, wry::PageLoadEvent::Finished)
@@ -680,19 +686,12 @@ pub(crate) fn destroy()
 }
 
 /// 两套协议注册都走既有命令边界，来源白名单只允许岛协议自身。
-pub(crate) fn dispatch_protocol<F>(request: Request<Vec<u8>>, app: AppHandle, respond: F)
+pub(crate) fn dispatch_protocol<F>(request: Request<Vec<u8>>, app: AppHandle, handler: super::NativeCommandHandler, respond: F)
 where
     F: FnOnce(Response<Cow<'static, [u8]>>) + Send + 'static,
 {
     let invoke = request.uri().path().starts_with("/__desktop_tools_invoke/"); // 只有命令可能阻塞。
     let run = move || {
-        let handler: super::NativeCommandHandler = Arc::new({
-            let app = app.clone(); // 分派时读取同一运行时。
-            move |command, arguments| {
-                let runtime = app.try_state::<Arc<crate::host::DesktopHostRuntime>>().ok_or_else(|| serde_json::json!({"code": "desktop-host-starting", "message": "桌面宿主正在启动"}))?;
-                crate::commands::dispatch_native_command(&app, &runtime, crate::commands::NativeCommandSource::DesktopHost, command, arguments)
-            }
-        });
         respond(super::desktop_host::handle_desktop_request(request, &app, &handler, &format!("http://{ISLAND_PROTOCOL}.localhost"), None));
     };
     if invoke

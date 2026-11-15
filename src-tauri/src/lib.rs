@@ -1,5 +1,6 @@
 mod app;
 mod collect;
+mod command_bridge;
 mod commands;
 mod component_runtime;
 pub mod contracts;
@@ -196,10 +197,14 @@ pub fn run()
             update_desktop_host_hit_map,
         ])
         .register_asynchronous_uri_scheme_protocol(crate::platform::windows::SETTINGS_PROTOCOL, |context, request, responder| {
-            crate::platform::windows::dispatch_settings_protocol(request, context.app_handle().clone(), move |response| responder.respond(response)); // wry 在创建 WebView 时调用 with_asynchronous_custom_protocol。
+            let app = context.app_handle().clone(); // 设置窗口页面来源。
+            let handler = settings_command_handler(app.clone()); // 设置来源只保留只读与设置命令。
+            crate::platform::windows::dispatch_settings_protocol(request, app, handler, move |response| responder.respond(response)); // wry 在创建 WebView 时调用 with_asynchronous_custom_protocol。
         })
         .register_asynchronous_uri_scheme_protocol(crate::platform::windows::island::ISLAND_PROTOCOL, |context, request, responder| {
-            crate::platform::windows::island::dispatch_protocol(request, context.app_handle().clone(), move |response| responder.respond(response));
+            let app = context.app_handle().clone(); // 独立岛页面来源。
+            let handler = desktop_host_command_handler(app.clone()); // 与逐屏宿主共用同一条命令边界。
+            crate::platform::windows::island::dispatch_protocol(request, app, handler, move |response| responder.respond(response));
         })
         .setup(move |app| {
             let bootstrap = app.path().app_data_dir()?; // 启动定位目录，配置目录指针放在这里。
@@ -239,7 +244,7 @@ pub fn run()
             });
             let desktop_host = DesktopHostRuntime::start(app.handle())?;
             app.manage(Arc::clone(&desktop_host));
-            crate::platform::windows::island::install(app.handle()); // 仅偏好开启时懒建独立岛页面。
+            crate::platform::windows::island::install(app.handle(), desktop_host_command_handler(app.handle().clone())); // 仅偏好开启时懒建独立岛页面。
             // Shell 变化通知由唯一协调线程消费。
             let changes = app.state::<DesktopItemState>().take_change_receiver().map_err(|error| error.message)?;
             start_desktop_item_change_monitor(app.handle().clone(), changes);
@@ -320,4 +325,30 @@ pub fn run()
     // Tauri Windows 运行时当前以零值结束事件循环，应用请求码保留 watchdog 等失败语义。
     let requested_exit_code = requested_exit_code.load(Ordering::Relaxed);
     std::process::exit(if requested_exit_code == 0 { runtime_exit_code } else { requested_exit_code });
+}
+
+/// 设置窗口页面命令处理器：来源白名单只保留只读与设置命令。
+fn settings_command_handler(app: tauri::AppHandle) -> crate::command_bridge::NativeCommandHandler
+{
+    Arc::new(move |command, arguments| {
+        let Some(runtime) = app.try_state::<Arc<DesktopHostRuntime>>()
+        else
+        {
+            return Err(serde_json::json!({ "code": "desktop-host-starting", "message": "桌面宿主正在启动" }));
+        }; // 设置窗口打开时运行时已经放进应用状态。
+        crate::commands::dispatch_native_command(&app, &runtime, crate::commands::NativeCommandSource::Settings, command, arguments)
+    })
+}
+
+/// 桌面宿主与独立岛页面共用的命令处理器。
+fn desktop_host_command_handler(app: tauri::AppHandle) -> crate::command_bridge::NativeCommandHandler
+{
+    Arc::new(move |command, arguments| {
+        let Some(runtime) = app.try_state::<Arc<DesktopHostRuntime>>()
+        else
+        {
+            return Err(serde_json::json!({ "code": "desktop-host-starting", "message": "桌面宿主正在启动" }));
+        }; // 与逐屏宿主同一条命令边界。
+        crate::commands::dispatch_native_command(&app, &runtime, crate::commands::NativeCommandSource::DesktopHost, command, arguments)
+    })
 }

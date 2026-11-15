@@ -101,20 +101,8 @@
     ],
     "rust": [
         {
-            "file": "src-tauri/src/component_runtime/mod.rs",
-            "to": "commands"
-        },
-        {
             "file": "src-tauri/src/platform/windows/desktop_host.rs",
             "to": "app"
-        },
-        {
-            "file": "src-tauri/src/platform/windows/desktop_host.rs",
-            "to": "commands"
-        },
-        {
-            "file": "src-tauri/src/platform/windows/island.rs",
-            "to": "commands"
         }
     ]
 }

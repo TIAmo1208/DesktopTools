@@ -34,7 +34,7 @@ use crate::contracts::{DesktopHostMonitor, DesktopItem, HitRegion};
 pub(crate) const DEV_WEBVIEW2_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port=9223";
 
 /// 独立页面向正式应用共享状态发送命令的桥接接口。
-pub type NativeCommandHandler = Arc<dyn Fn(&str, Value) -> Result<Value, Value> + Send + Sync + 'static>;
+pub(crate) use crate::command_bridge::NativeCommandHandler; // 页面命令处理器由中立模块定义，平台只接收注入。
 
 /// 接管前发现的 Explorer 桌面层状态。
 #[derive(Clone, Copy, Debug)]
@@ -1346,30 +1346,15 @@ pub(crate) fn settings_page_url() -> tauri::Url
 }
 
 /// 设置窗口协议入口。页面、插件资产和原生命令都交给现有处理函数。
-pub(crate) fn handle_settings_protocol_request(request: Request<Vec<u8>>, app: &AppHandle) -> Response<Cow<'static, [u8]>>
-{
-    // 请求到达时再取宿主运行时；设置窗口打开时运行时已经放进应用状态。
-    let handler: NativeCommandHandler = Arc::new({
-        let app = app.clone(); // 命令闭包独立持有应用句柄。
-        move |command, arguments| {
-            let Some(runtime) = app.try_state::<Arc<crate::host::DesktopHostRuntime>>()
-            else
-            {
-                return Err(json!({ "code": "desktop-host-starting", "message": "桌面宿主正在启动" }));
-            }; // 与逐屏宿主同一条命令边界。
-            crate::commands::dispatch_native_command(&app, &runtime, crate::commands::NativeCommandSource::Settings, command, arguments)
-        }
-    });
-    handle_protocol_request(request, app, &handler)
-}
+pub(crate) fn handle_settings_protocol_request(request: Request<Vec<u8>>, app: &AppHandle, handler: &NativeCommandHandler) -> Response<Cow<'static, [u8]>> { handle_protocol_request(request, app, handler) }
 
 /// 静态资产在协议线程直接返回；原生命令改到阻塞池，避免占用 WebView UI 线程。
-pub(crate) fn dispatch_settings_protocol<F>(request: Request<Vec<u8>>, app: AppHandle, respond: F)
+pub(crate) fn dispatch_settings_protocol<F>(request: Request<Vec<u8>>, app: AppHandle, handler: NativeCommandHandler, respond: F)
 where
     F: FnOnce(Response<Cow<'static, [u8]>>) + Send + 'static,
 {
     let invoke = request.uri().path().starts_with("/__desktop_tools_invoke/"); // 只有命令可能等待 Shell STA。
-    let run = move || respond(handle_settings_protocol_request(request, &app));
+    let run = move || respond(handle_settings_protocol_request(request, &app, &handler));
     if invoke
     {
         tauri::async_runtime::spawn_blocking(run);
