@@ -1,8 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../../bridge/components";
 import { requestLoopback } from "../../../bridge/loopback";
-import { SettingsAbout } from "../ui";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../../bridge/pluginSettings";
 import {
     applyPluginInstall,
@@ -11,18 +10,18 @@ import {
     commandErrorMessage,
     createPluginComponent,
     listenPluginInstallProgress,
+    listenPluginScripts,
+    loadPluginScript,
     openPluginDirectory,
     preparePluginInstallsFromArchive,
     preparePluginInstallsFromFolder,
-    resolvedPluginDirectory,
-    listenPluginScripts,
-    loadPluginScript,
-    pluginScriptLoaded,
-    pluginScriptFailure,
-    pluginSettingsShape,
     readPluginApi,
+    resolvedPluginDirectory,
     subscribePluginShell,
     uninstallPlugin,
+    pluginScriptFailure,
+    pluginScriptLoaded,
+    pluginSettingsShape,
     type PluginSettingsEntry,
 } from "../../../bridge/pluginScripts";
 import { applyWorkspaceCommand, getWorkspaceSnapshot, listenWorkspaceSnapshots } from "../../../bridge/workspace";
@@ -38,25 +37,27 @@ import trashIcon from "../../../../resources/weather-trash.svg?raw";
 import plusIcon from "../../../../resources/collect-new.svg?raw";
 import linkIcon from "../../../../resources/plugin-repository.svg?raw";
 import infoIcon from "../../../../resources/info.svg?raw";
-import { SettingsSwitch } from "../ui";
+import { SettingsSwitch, SettingsAbout } from "../ui";
 import { PluginTaskMenu } from "./PluginTaskMenu";
-import { cancelledInstallTask, failedInstallTask, installBoard, installStageLabel, progressedInstallTask, rememberInstallTask, type InstallTask } from "./pluginInstallTasks";
+import {
+    entriesFor,
+    installConfirmLabel,
+    installFailureMessage,
+    installNotice,
+    installSuccessMessage,
+    pluginDirectoryShown,
+    pluginRows,
+    requestPluginScript,
+    taskMenuPlacement,
+    type PluginConfirmRequest,
+    type PluginRow,
+} from "./pluginSettingsModel";
+import { cancelledInstallTask, installBoard, installStageLabel } from "./pluginInstallTasks";
+import { usePluginSettings } from "./usePluginSettings";
 import "./PluginSettingsPage.css";
 
-/** 设置页里的一个插件清单。 */
-interface PluginRow {
-    id: string; // 清单标识。
-    name: string; // 清单显示名。
-    creatable: boolean; // 清单是否允许创建格子。
-    maxTiles: number; // 格子上限。0 表示不限。
-    tileTypes: ComponentTileType[]; // 清单声明的格子类型。空表示隐式单类型，菜单不展开。
-    version?: string; // 清单版本。没有就不展示。
-    description?: string; // 插件简介。没有就不展示。
-    author?: string; // 作者。没有就不拼 @。
-    repository?: string; // 有仓库才显示入口，不拿来拼地址。
-    script: string; // 插件根内的脚本相对路径。
-    role?: ComponentManifest["role"]; // 主题只在带入口脚本时加载脚本。缺省按格子。
-}
+export { entriesFor, installConfirmLabel, installFailureMessage, installNotice, installSuccessMessage, pluginDirectoryShown, pluginRows, requestPluginScript, taskMenuPlacement };
+
 
 /** 设置页「插件」：一行一个插件，条目在本页展开。卸载确认、右键菜单和失效节不在这里。 */
 export const PluginSettingsPage = ({
@@ -68,307 +69,53 @@ export const PluginSettingsPage = ({
     disabled: boolean; // 保存进行中。
     onPreferences: (patch: Partial<ApplicationPreferences>) => void; // 写 disabledPlugins。
 }) => {
-    const [manifests, setManifests] = useState<ComponentManifest[]>(); // 未赋值表示清单还没到。
-    const [components, setComponents] = useState<ComponentInstanceSnapshot[]>(); // 工作区实例；未到时不判断失效。
-    const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set()); // 本次已卸载、快照尚未刷新的插件。
-    const [selectedId, setSelectedId] = useState<string>(); // 当前就地展开的插件；离开本页即丢掉。
-    const [openEntryIds, setOpenEntryIds] = useState<ReadonlySet<string>>(new Set()); // 本插件内展开的条目，互不联动。
-    const [, setShellEpoch] = useState(0); // 脚本注册或加载成功后重读条目。
-    const [loadedIds, setLoadedIds] = useState<ReadonlySet<string>>(new Set()); // 设置窗口里已经执行成功的脚本。
-    const [reloaded, setReloaded] = useState<Readonly<Record<string, string>>>({}); // 重新加载后的结果；ok 表示不再沿用旧失败。
-    const [menu, setMenu] = useState<{ pluginId: string; left: number; top: number; anchor: HTMLElement }>(); // 右键菜单锚点。
-    const [typeMenu, setTypeMenu] = useState<{ pluginId: string; tileTypes: ComponentTileType[]; maxTiles: number; left: number; top: number }>(); // 二级页加号展开的类型列表。
-    const [confirm, setConfirm] = useState<PluginConfirmRequest>(); // 当前模态确认。
-    const [confirming, setConfirming] = useState(false); // 确认命令进行中。
-    const [creating, setCreating] = useState(false); // 创建格子进行中。
-    const [installing, setInstalling] = useState(false); // 正在选择安装来源。
-    const [addOpen, setAddOpen] = useState(false); // 添加插件弹窗。
-    const [picked, setPicked] = useState<PluginInstallPlan[]>([]); // 弹窗里已选、尚未开始的计划。
-    const [taskMenu, setTaskMenu] = useState(false); // 任务进度菜单是否打开。
-    const [taskMenuUp, setTaskMenuUp] = useState(false); // 下方空间不够时向上展开。
-    const [tasks, setTasks] = useState<InstallTask[]>([]); // 本次打开设置页期间的安装任务，最多 20 条。
-    const installRest = useRef<PluginInstallPlan[]>([]); // 冲突确认之后还要继续的计划。
-    const [directoryDraft, setDirectoryDraft] = useState<string>(); // 尚未保存的插件目录。
-    const [resolvedDirectory, setResolvedDirectory] = useState<string>(); // 本次启动实际使用的目录。
-    const shownDirectory = (directoryDraft ?? "") || resolvedDirectory || pluginDirectoryShown(undefined, preferences?.pluginDirectory); // 草稿优先，其次是已生效路径。
-    const plugins = manifests === undefined ? undefined : pluginRows(manifests).filter((plugin) => !removedIds.has(plugin.id)); // 仍显示的插件行。
-    const selected = plugins?.find((plugin) => plugin.id === selectedId); // 仍在清单里的当前插件。
-    const stale = manifests && components ? components.filter((item) => !manifests.some((manifest) => manifest.id === item.componentId)) : []; // 清单里已经没有的实例。
-    const disabledIds = preferences?.disabledPlugins ?? []; // 停用名单。
-    const preferencesRef = useRef(preferences); // 安装完成时读最新偏好，避免闭包里的旧名单。
-    preferencesRef.current = preferences;
+    const {
+        components,
+        setSelectedId,
+        openEntryIds,
+        setOpenEntryIds,
+        setShellEpoch,
+        loadedIds,
+        setLoadedIds,
+        reloaded,
+        setReloaded,
+        menu,
+        setMenu,
+        typeMenu,
+        setTypeMenu,
+        confirm,
+        setConfirm,
+        confirming,
+        creating,
+        installing,
+        addOpen,
+        setAddOpen,
+        picked,
+        setPicked,
+        taskMenu,
+        setTaskMenu,
+        taskMenuUp,
+        tasks,
+        setTasks,
+        directoryDraft,
+        setDirectoryDraft,
+        shownDirectory,
+        plugins,
+        selected,
+        stale,
+        disabledIds,
+        handleEnabled,
+        enqueueInstalls,
+        pickInstallSource,
+        handleChooseDirectory,
+        handleCopyDirectory,
+        handleCreate,
+        handleOpenRepository,
+        handleUninstallRequest,
+        handleRemoveRequest,
+        handleConfirm,
+    } = usePluginSettings({ preferences, onPreferences });
 
-    useEffect(() => {
-        let alive = true; // 卸载后忽略迟到快照。
-        const subscription = listenComponentRuntimeSnapshots(
-            (snapshot) => alive && setManifests(snapshot.manifests),
-            () => undefined,
-        );
-        void getComponentRuntimeSnapshot()
-            .then((snapshot) => alive && setManifests(snapshot.manifests))
-            .catch(() => undefined);
-        const stopShell = subscribePluginShell(() => setShellEpoch((value) => value + 1));
-        const stopScripts = listenPluginScripts((pluginId) => {
-            setLoadedIds((current) => new Set(current).add(pluginId));
-            setShellEpoch((value) => value + 1);
-        });
-        return () => {
-            alive = false;
-            stopShell();
-            stopScripts();
-            void subscription.then((unlisten) => unlisten()).catch(() => undefined);
-        };
-    }, []);
-
-    useEffect(() => {
-        let alive = true; // 卸载后忽略迟到结果。
-        void resolvedPluginDirectory()
-            .then((path) => alive && setResolvedDirectory(path))
-            .catch(() => undefined);
-        return () => {
-            alive = false;
-        };
-    }, []);
-
-    useEffect(() => {
-        if (!plugins || !preferences) return;
-        for (const plugin of plugins) {
-            if (preferences.disabledPlugins.includes(plugin.id)) continue;
-            requestPluginScript(plugin, (id, script) => void loadPluginScript(id, script));
-        }
-    }, [plugins, preferences]);
-
-    useEffect(() => {
-        let alive = true; // 卸载后忽略迟到的工作区快照。
-        const apply = (snapshot: { components: ComponentInstanceSnapshot[] }) => alive && setComponents(snapshot.components);
-        const subscription = listenWorkspaceSnapshots(apply, () => undefined);
-        void getWorkspaceSnapshot()
-            .then(apply)
-            .catch(() => undefined);
-        return () => {
-            alive = false;
-            void subscription.then((unlisten) => unlisten()).catch(() => undefined);
-        };
-    }, []);
-
-    useEffect(() => {
-        setOpenEntryIds(new Set());
-    }, [selectedId]);
-
-    useEffect(() => {
-        if (!taskMenu) return;
-        const menu = document.querySelector(".plugin-settings__task-menu"); // 刚打开的任务菜单。
-        const frame = menu?.closest(".settings__content"); // 内容区右内边距就是菜单的右边界。
-        if (menu instanceof HTMLElement && frame instanceof HTMLElement) {
-            const menuBox = menu.getBoundingClientRect();
-            const frameBox = frame.getBoundingClientRect();
-            const place = taskMenuPlacement(
-                { top: menuBox.top, bottom: menuBox.bottom, height: menu.scrollHeight },
-                { top: frameBox.top, bottom: frameBox.bottom },
-            );
-            setTaskMenuUp(place.flipUp);
-        }
-        const close = (event: PointerEvent) => {
-            const target = event.target; // 点在菜单或下拉按钮上时不关。
-            if (!(target instanceof Element)) return;
-            if (target.closest(".plugin-settings__task-menu") || target.closest(".plugin-settings__add-more")) return;
-            setTaskMenu(false);
-        };
-        const onKey = (event: globalThis.KeyboardEvent) => {
-            if (event.key === "Escape") setTaskMenu(false);
-        };
-        document.addEventListener("pointerdown", close);
-        document.addEventListener("keydown", onKey);
-        return () => {
-            document.removeEventListener("pointerdown", close);
-            document.removeEventListener("keydown", onKey);
-        };
-    }, [taskMenu]);
-
-    /** 写入停用名单。启用后的加载由上面的效果在偏好落地后再发起。 */
-    const handleEnabled = (pluginId: string, enabled: boolean) => {
-        if (!preferences) return;
-        const next = enabled ? preferences.disabledPlugins.filter((id) => id !== pluginId) : [...preferences.disabledPlugins, pluginId];
-        onPreferences({ disabledPlugins: next });
-        if (!enabled) setOpenEntryIds(new Set());
-    };
-
-    useEffect(() => {
-        let alive = true; // 离开页面后不再写入进度。
-        let stop = () => {}; // 退订安装进度。
-        void listenPluginInstallProgress((progress) => {
-            if (!alive) return;
-            setTasks((current) => progressedInstallTask(current, progress)); // 已结束的行不被迟到进度改回进行中。
-        })
-            .then((unlisten) => {
-                if (!alive) unlisten();
-                else stop = unlisten;
-            })
-            .catch(() => undefined);
-        return () => {
-            alive = false;
-            stop();
-        };
-    }, []);
-
-    /** 执行计划并写入任务行。用户已取消的行不被失败覆盖。 */
-    const runInstall = (plan: PluginInstallPlan, confirmDowngrade: boolean) => {
-        setTasks((current) => rememberInstallTask(current, { id: plan.planId, name: plan.name, status: "running", stage: "validate", percent: 0 }));
-        void applyPluginInstall(plan.planId, confirmDowngrade)
-            .then(async (applied) => {
-                setTasks((current) => rememberInstallTask(current, { id: plan.planId, name: plan.name, status: "done", stage: "done", percent: 100 }));
-                publishMessage({ type: "success", content: installNotice(plan.name, installSuccessMessage()), source: "plugin-settings" });
-                const installedId = applied.pluginId; // 重新装回同一个标识时，之前记下的「已卸载」必须撤销，否则该行会被一直过滤掉。
-                const currentPreferences = preferencesRef.current; // 装完默认停用，等用户点启动才加载脚本。
-                if (installedId && currentPreferences && !currentPreferences.disabledPlugins.includes(installedId)) {
-                    onPreferences({ disabledPlugins: [...currentPreferences.disabledPlugins, installedId] });
-                }
-                if (installedId) {
-                    setRemovedIds((current) => {
-                        if (!current.has(installedId)) return current;
-                        const next = new Set(current);
-                        next.delete(installedId);
-                        return next;
-                    });
-                }
-                try {
-                    const snapshot = applied.snapshot ?? (await getComponentRuntimeSnapshot()); // 事件到不了设置窗口时也要刷新列表。
-                    setManifests(snapshot.manifests);
-                } catch {
-                    // 读不到快照时保留成功提示，列表仍可由订阅补上。
-                }
-            })
-            .catch((error: unknown) => {
-                const message = commandErrorMessage(error); // 后端 Err 原样显示。
-                setTasks((current) =>
-                    failedInstallTask(current, {
-                        id: plan.planId,
-                        name: plan.name,
-                        cancelled: message === "安装已取消",
-                        detail: message === "安装已取消" ? message : installFailureMessage(message),
-                    }),
-                );
-                if (message !== "安装已取消")
-                    publishMessage({ type: "error", content: installNotice(plan.name, installFailureMessage(message)), source: "plugin-settings" });
-            });
-    };
-
-    /** 把已选计划送进任务。有冲突的先确认，取消则跳过这一条。 */
-    const enqueueInstalls = (plans: PluginInstallPlan[]) => {
-        const pending = plans.length ? plans : installRest.current.splice(0); // 确认结束后继续剩下的。
-        const [next, ...rest] = pending;
-        if (!next) return;
-        if (next.conflict) {
-            installRest.current = rest;
-            setConfirm({ kind: "install", plan: next, returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : document.body });
-            return;
-        }
-        runInstall(next, false);
-        enqueueInstalls(rest);
-    };
-
-    /** 弹窗里再选一个来源。当前命令一次一个，多个来源就多次选择。 */
-    const pickInstallSource = (source: "folder" | "archive") => {
-        if (installing) return;
-        setInstalling(true);
-        const prepare = source === "folder" ? preparePluginInstallsFromFolder : preparePluginInstallsFromArchive;
-        void prepare()
-            .then((batch) => {
-                if (batch.plans.length === 0 && batch.errors.length === 0) {
-                    publishMessage({ type: "info", content: "已取消", source: "plugin-settings" });
-                    return;
-                }
-                for (const message of batch.errors) publishMessage({ type: "error", content: installFailureMessage(message), source: "plugin-settings" });
-                if (batch.plans.length) setPicked((current) => [...current, ...batch.plans]);
-            })
-            .catch((error: unknown) => publishMessage({ type: "error", content: installFailureMessage(commandErrorMessage(error)), source: "plugin-settings" }))
-            .finally(() => setInstalling(false));
-    };
-
-    /** 选择目录只改待保存值。取消不改。 */
-    const handleChooseDirectory = () => {
-        void choosePluginDirectory()
-            .then((path) => {
-                if (path === undefined) return;
-                setDirectoryDraft(path);
-            })
-            .catch((error: unknown) => publishMessage({ type: "error", content: commandErrorMessage(error), source: "plugin-settings" }));
-    };
-
-    /** 复制当前插件目录；剪贴板不可用时提示手动复制。 */
-    const handleCopyDirectory = () => {
-        const path = shownDirectory; // 复制正在显示的这一份。
-        const clipboard = navigator.clipboard; // 只有安全上下文才提供。
-        const failed = () => publishMessage({ type: "error", content: "复制失败，请手动选择路径", source: "plugin-settings" });
-        if (!clipboard) {
-            failed();
-            return;
-        }
-        void clipboard.writeText(path).then(() => publishMessage({ type: "success", content: "已复制插件目录", source: "plugin-settings" }), failed);
-    };
-
-    /** 在桌面创建一个该插件的格子。给了类型就写进实例 state。失败把错误说出来。 */
-    const handleCreate = (pluginId: string, tileType?: string) => {
-        if (creating) return;
-        setCreating(true);
-        void createPluginComponent(pluginId, tileType)
-            .then(async () => {
-                publishMessage({ type: "success", content: "已在桌面创建插件格子", source: "plugin-settings" });
-                const snapshot = await getWorkspaceSnapshot().catch(() => undefined); // 设置窗口收不到工作区事件时也要更新剩余额度。
-                if (snapshot) setComponents(snapshot.components);
-            })
-            .catch((error: unknown) => publishMessage({ type: "error", content: commandErrorMessage(error), source: "plugin-settings" }))
-            .finally(() => setCreating(false));
-    };
-
-    /** 打开清单声明的仓库。只走专用命令，不拼地址。 */
-    const handleOpenRepository = (pluginId: string) => {
-        void invokeRuntime("open_plugin_repository", { pluginId }).catch((error: unknown) =>
-            publishMessage({ type: "error", content: commandErrorMessage(error), source: "plugin-settings" }),
-        );
-    };
-
-    /** 打开卸载确认，焦点稍后落到「卸载」。 */
-    const handleUninstallRequest = (plugin: PluginRow, trigger: HTMLElement) => {
-        setMenu(undefined);
-        setConfirm({ kind: "uninstall", plugin, returnFocus: trigger });
-    };
-
-    /** 打开失效实例的移除确认，焦点稍后落到「移除」。 */
-    const handleRemoveRequest = (instance: ComponentInstanceSnapshot, trigger: HTMLElement) => {
-        setConfirm({ kind: "remove", instance, returnFocus: trigger });
-    };
-
-    /** 执行当前确认。卸载时 removeSettings 决定是否同时清掉插件配置。失败留在弹窗里。 */
-    const handleConfirm = async (removeSettings = false) => {
-        if (!confirm || confirming) return;
-        setConfirming(true);
-        try {
-            if (confirm.kind === "uninstall") {
-                await uninstallPlugin(confirm.plugin.id, removeSettings);
-                setRemovedIds((current) => new Set(current).add(confirm.plugin.id));
-                if (selectedId === confirm.plugin.id) setSelectedId(undefined);
-                publishMessage({
-                    type: "success",
-                    content: removeSettings ? "已卸载并清理配置，桌面上的格子已移除，重装后设置不再恢复" : "已卸载，桌面上的格子已移除",
-                    source: "plugin-settings",
-                });
-            } else if (confirm.kind === "install") {
-                const plan = confirm.plan; // 确认后才执行，取消不改磁盘。
-                setConfirm(undefined);
-                runInstall(plan, Boolean(plan.conflict?.downgrade));
-                enqueueInstalls([]);
-                return;
-            } else {
-                await applyWorkspaceCommand(confirm.instance.monitorId, { type: "remove-component", instanceId: confirm.instance.instanceId });
-            }
-            setConfirm(undefined);
-        } catch (error) {
-            publishMessage({ type: "error", content: commandErrorMessage(error), source: "plugin-settings" });
-        } finally {
-            setConfirming(false);
-        }
-    };
 
     const menuPlugin = plugins?.find((plugin) => plugin.id === menu?.pluginId); // 右键时仍在列表里的插件。
     const menuUsed = menuPlugin ? pluginTileCount(components, menuPlugin.id) : 0; // 这个插件已经在桌面上的格子。
@@ -816,12 +563,6 @@ const AddPluginDialog = ({
         </dialog>
     );
 };
-
-/** 卸载或移除共用的确认请求。 */
-type PluginConfirmRequest =
-    | { kind: "uninstall"; plugin: PluginRow; returnFocus: HTMLElement }
-    | { kind: "remove"; instance: ComponentInstanceSnapshot; returnFocus: HTMLElement }
-    | { kind: "install"; plan: PluginInstallPlan; returnFocus: HTMLElement };
 
 /** 模态确认。焦点显式落在确认按钮，不依赖对话框的默认聚焦。 */
 const PluginConfirmDialog = ({
@@ -1293,33 +1034,6 @@ export const pluginContextMenu = (
     return items;
 };
 
-/** 只要带 plugin. 前缀的清单，按显示名排序。 */
-export const pluginRows = (manifests: readonly ComponentManifest[]): PluginRow[] =>
-    manifests
-        .filter((manifest) => manifest.id.startsWith("plugin."))
-        .map((manifest) => ({
-            id: manifest.id,
-            name: manifest.name,
-            creatable: manifest.creatable === true,
-            maxTiles: manifest.maxTiles ?? 0,
-            tileTypes: manifest.tileTypes ?? [],
-            version: manifest.version,
-            description: manifest.description,
-            author: manifest.author,
-            repository: manifest.repository,
-            script: manifest.script,
-            role: manifest.role,
-        }))
-        .sort((left, right) => left.name.localeCompare(right.name, "zh"));
-
-const PLUGIN_DIRECTORY_DEFAULT = "程序所在目录\\plugin"; // 空偏好由后端解析实际可执行文件目录。
-
-/** 待保存路径。空串显示默认目录。 */
-export const pluginDirectoryShown = (draft: string | undefined, saved: string | undefined) => {
-    const value = draft !== undefined ? draft : (saved ?? ""); // 有草稿时以草稿为准。
-    return value || PLUGIN_DIRECTORY_DEFAULT;
-};
-
 /** 只有草稿和已保存值不同才允许保存。 */
 export const pluginDirectoryDirty = (draft: string | undefined, saved: string | undefined) => draft !== undefined && draft !== (saved ?? "");
 
@@ -1329,33 +1043,6 @@ export const installConflictIdentity = (author: string | undefined, pluginId: st
 
 /** 覆盖确认里的版本。降级不改这一行，仍用下面的说明。 */
 export const installVersionLine = (installed: string, incoming: string) => `版本：${installed} -> ${incoming}`;
-
-/** 升级和同版本覆盖，降级要先卸载。 */
-export const installConfirmLabel = (downgrade: boolean) => (downgrade ? "卸载并安装" : "覆盖安装");
-
-/** 下方放不下且上方更宽时向上翻。内容比两边都高就内部滚动。 */
-export const taskMenuPlacement = (menu: { top: number; bottom: number; height: number }, frame: { top: number; bottom: number }) => {
-    const spaceAbove = menu.top - frame.top; // 菜单顶到内容区顶。
-    const spaceBelow = frame.bottom - menu.top; // 菜单顶到内容区底。
-    return { flipUp: menu.bottom > frame.bottom && spaceAbove > spaceBelow, scroll: menu.height > Math.max(spaceAbove, spaceBelow) };
-};
-
-/** 已注册的条目。没有注册对象时返回 undefined，有注册但没有条目时返回空数组。 */
-export const entriesFor = (pluginId: string) => {
-    const api = readPluginApi(pluginId); // 首份外壳对象。
-    if (!api) return undefined;
-    return api.settingsEntries ?? [];
-};
-
-/** 主题只有带入口脚本时才加载脚本。格子即使 script 为空也交给加载函数，由它报路径无效。 */
-export const requestPluginScript = (
-    plugin: { id: string; role?: string; script?: string },
-    load: (id: string, script: string, reload?: boolean) => void,
-    reload = false,
-) => {
-    if (plugin.role === "theme" && !plugin.script) return;
-    load(plugin.id, plugin.script ?? "", reload);
-};
 
 /** 重新加载清掉旧失败，再导入一次插件模块。没有入口脚本的主题不提供这一步。 */
 const handleReload = (
@@ -1391,15 +1078,6 @@ const scriptFailure = (pluginId: string, reloaded: Readonly<Record<string, strin
     if (again) return again;
     return pluginScriptFailure(pluginId);
 };
-
-/** 安装成功后的提示。装完就能用，不再要求重启。 */
-/** 通知第一行是插件名，第二行是结果。宿主只收一段正文。 */
-export const installNotice = (name: string, body: string) => `${name}\n${body}`;
-
-export const installSuccessMessage = () => "安装成功";
-
-/** 安装失败只带后端原因，不再附加重启或默认停用说明。 */
-export const installFailureMessage = (reason: string) => (reason.startsWith("安装失败") ? reason : `安装失败：${reason}`);
 
 /** 一级行的条目数说明。 */
 export const entrySummary = (pluginId: string, pluginDisabled: boolean, loaded: boolean, ignoreFailure = false) => {

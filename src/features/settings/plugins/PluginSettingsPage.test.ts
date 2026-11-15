@@ -373,3 +373,11 @@ test("共享 token 元数据只在声明齐全时出现", () => {
     scripts.bindPluginApi("plugin.bad-pairing", { renderTile() {}, loopbackCredential: { target: "" } });
     assert.equal(page.pluginLoopbackCredential("plugin.bad-pairing"), undefined);
 });
+
+test("插件页在缺省偏好下渲染不抛错", async () => {
+    const { createElement } = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const html = renderToStaticMarkup(createElement(page.PluginSettingsPage, { preferences: undefined, disabled: false, onPreferences: () => undefined }));
+    assert.match(html, /plugin-settings/);
+    assert.match(html, /添加插件/);
+});
