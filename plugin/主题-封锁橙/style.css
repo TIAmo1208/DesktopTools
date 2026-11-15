@@ -1,0 +1,65 @@
+/* 封锁橙设置条目的私有样式：只作用于 blockade-options* 类名，不写全局选择器。 */
+
+/* 条目容器：纵向排列，行间距沿用设置条目的紧凑密度。 */
+.blockade-options {
+    display: grid;
+    gap: 10px;
+}
+
+/* 单行：左侧名称与提示，右侧控件；提示过长时换行，不挤宽控件。 */
+.blockade-options__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-width: 0;
+    cursor: pointer;
+}
+
+/* 文字列：名称在上，提示在下。 */
+.blockade-options__text {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+/* 名称使用正文字号，提示降一级。 */
+.blockade-options__label {
+    color: var(--color-text);
+    font-size: var(--interface-font-size);
+}
+
+.blockade-options__hint {
+    color: var(--color-muted);
+    font-size: 12px;
+    line-height: 18px;
+}
+
+/* 开关类控件保持原生外观，只跟随界面强调色。 */
+.blockade-options__input {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--color-focus);
+}
+
+/* 数值输入占固定宽度，切角由主题的控件规则负责，这里只给尺寸。 */
+.blockade-options__number {
+    flex: none;
+    width: 88px;
+    min-height: 32px;
+    padding: 4px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text);
+    background: var(--color-subtle);
+    font: inherit;
+    text-align: center;
+}
+
+/* 数值输入禁用时保持可读的弱化表面。 */
+.blockade-options__number:disabled {
+    color: var(--color-muted);
+    background: var(--color-surface);
+}

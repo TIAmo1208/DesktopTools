@@ -265,6 +265,11 @@ fn repo_preset_plugins_register()
     assert_eq!(night_city.script, "主题-夜之城/index.js");
     assert!(night_city.creatable); // 带入口脚本的主题可以创建格子。
     assert_eq!(night_city.max_tiles, 2);
+    let blockade = catalog.manifests.get("plugin.theme-blockade").unwrap(); // 封锁橙主题只有样式表与设置条目，不带格子。
+    assert_eq!(blockade.role, crate::contracts::ComponentRole::Theme);
+    assert_eq!(blockade.stylesheet, "主题-封锁橙/theme.css");
+    assert_eq!(blockade.script, "主题-封锁橙/index.js");
+    assert!(!blockade.creatable);
 }
 
 /// [tiles] 子节按行保留顺序，非法键、重复键和空节都让清单无效。

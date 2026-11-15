@@ -1,0 +1,649 @@
+/* 封锁橙主题：对齐 docs/设计语言.md（面板倾斜层按需求不做）。 */
+/* 焦点语言：同屏一条 2px 橙条；四角刻线永远是中性灰；橙色只标记「当前/可操作」。 */
+/* 本表的表现层一律用 :where(html:not([data-island="true"])) 门控：浮岛是贴壁纸的透明独立表面， */
+/* 只接收配色令牌与浮岛圆角，不接收刻线、橙条与等宽数字之类的主题装饰。 */
+
+/* ---------- 界面调色板：浅色暖中性纸、深色冷中性墨 ---------- */
+
+:root {
+    --color-background: #e6e2db;
+    --color-surface: #fcfbf8;
+    --color-subtle: #f4f1ea;
+    --color-border: #cec9c0;
+    --color-text: #16181b;
+    --color-muted: #4d5158;
+    --color-ready: #8a5600;
+    --color-active: #3f6b12;
+    --color-action: #b25100;
+    --color-action-hover: #9a4600;
+    --color-action-text: #ffffff;
+    --color-error: #b32400;
+    --color-error-surface: #f6e4df;
+}
+
+/* 界面深色调色板：炭灰装甲板是主形态。 */
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --color-background: #0d0e10;
+    --color-surface: #1b1c20;
+    --color-subtle: #23252a;
+    --color-border: #3a3c42;
+    --color-text: #f2f4f7;
+    --color-muted: #b9bfc7;
+    --color-ready: #e0a23a;
+    --color-active: #7dbb42;
+    --color-action: #ff7f00;
+    --color-action-hover: #f0a043;
+    --color-action-text: #14181b;
+    --color-error: #ff3000;
+    --color-error-surface: #2a0c06;
+}
+
+/* 日间变体让原生下拉弹层与滚动条使用浅色系统外观。 */
+:root[data-theme="light"] {
+    color-scheme: light;
+}
+
+/* ---------- 桌面网格表面 ---------- */
+
+/* 深色围栏：白 13% 发丝描边配 52% 半透明底，壁纸仍然透出。 */
+:root[data-desktop-theme="dark"] .fence-workspace,
+.fence-workspace {
+    --fence-border: rgb(255 255 255 / 13%);
+    --fence-surface: rgb(27 28 32 / 52%);
+    --fence-text: #f2f4f7;
+    --fence-active: #7dbb42;
+    --fence-warning: #e0a23a;
+    --fence-error: #ff5533;
+    --fence-muted: #8f949c;
+    --fence-focus-border: var(--desktop-accent, #ffb03a);
+    --fence-item-text-shadow: 0 1px 2px rgb(0 0 0 / 90%);
+}
+
+/* 浅色围栏：暖纸面按设计语言的不透明度下限取 86%，焦点色把琥珀压暗以保持在纸面上的可见度。 */
+:root[data-desktop-theme="light"] .fence-workspace {
+    --fence-border: rgb(28 26 22 / 20%);
+    --fence-surface: rgb(252 251 248 / 86%);
+    --fence-text: #16181b;
+    --fence-active: #3f6b12;
+    --fence-warning: #8a5600;
+    --fence-error: #b32400;
+    --fence-muted: #5a5f66;
+    --fence-focus-border: color-mix(in srgb, var(--desktop-accent, #ffb03a) 62%, #16181b);
+    --fence-item-text-shadow: none;
+}
+
+/* 材质：单层阴影语言（顶部内高光 + 底部内暗边 + 一层投影），不投影到内容上。 */
+.desktop-tile {
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%), inset 0 -1px 0 rgb(0 0 0 / 35%), 4px 10px 26px rgb(0 0 0 / 40%);
+}
+
+:root[data-desktop-theme="light"] .desktop-tile {
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 95%), inset 0 -1px 0 rgb(28 26 22 / 5%), 3px 8px 22px rgb(28 26 22 / 12%);
+}
+
+/* 四角刻线：中性灰发丝，内缩 6px、长 18px，只做装饰，不参与选中表达。 */
+.desktop-tile::after {
+    content: "";
+    position: absolute;
+    inset: 6px;
+    z-index: 1;
+    pointer-events: none;
+    background-image:
+        linear-gradient(var(--fence-border), var(--fence-border)), linear-gradient(var(--fence-border), var(--fence-border)),
+        linear-gradient(var(--fence-border), var(--fence-border)), linear-gradient(var(--fence-border), var(--fence-border)),
+        linear-gradient(var(--fence-border), var(--fence-border)), linear-gradient(var(--fence-border), var(--fence-border)),
+        linear-gradient(var(--fence-border), var(--fence-border)), linear-gradient(var(--fence-border), var(--fence-border));
+    background-position: 0 0, 0 0, 100% 0, 100% 0, 0 100%, 0 100%, 100% 100%, 100% 100%;
+    background-size: 18px 1px, 1px 18px, 18px 1px, 1px 18px, 18px 1px, 1px 18px, 18px 1px, 1px 18px;
+    background-repeat: no-repeat;
+}
+
+/* 键盘焦点也是行顶橙条：外扩整圈会盖到相邻格子与壁纸，且与「焦点是一个位置」冲突。 */
+/* 条画在 ::before（::after 已被四角刻线占用），从左侧 200ms 画出；标题栏透明，不会盖住条。 */
+.desktop-tile:focus {
+    outline: none;
+}
+
+/* 底座在焦点态把边框改成强调色；主题只保留行顶条，边框回到中性发丝。 */
+.desktop-tile:focus-visible,
+.desktop-tile[data-keyboard-focus="true"] {
+    border-color: var(--fence-border);
+}
+
+.desktop-tile::before {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    z-index: 2;
+    height: 2px;
+    pointer-events: none;
+    background: var(--fence-focus-border, var(--color-focus));
+    opacity: 0;
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform var(--blockade-bar-duration, 200ms) cubic-bezier(0.22, 0.88, 0.24, 1), opacity var(--blockade-bar-fade, 120ms) ease;
+}
+
+.desktop-tile:focus-visible::before,
+.desktop-tile[data-keyboard-focus="true"]::before {
+    opacity: 1;
+    transform: scaleX(1);
+}
+
+/* ---------- 焦点语言：行顶 2px 橙条 ---------- */
+
+/* 条动画只动 transform 与 opacity；动画开关或减少动效时两个时长一起归零，只保留最终态。 */
+:root {
+    --blockade-bar-duration: 200ms;
+    --blockade-bar-fade: 120ms;
+}
+
+:root[data-interface-animations="off"] {
+    --blockade-bar-duration: 0ms;
+    --blockade-bar-fade: 0ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --blockade-bar-duration: 0ms;
+        --blockade-bar-fade: 0ms;
+    }
+}
+
+/* 桌面项目基类没有定位上下文；排除已由组件绝对定位的未归类项与拖动预览，避免改掉它们的定位。 */
+.desktop-item:not(.desktop-item--unclassified):not(.desktop-item--drag-preview) {
+    position: relative;
+}
+
+/* 行底提亮走宿主动画时长；条本身只动 transform 与 opacity。 */
+.desktop-item {
+    transition: background-color var(--interface-transition-duration, 0ms) ease-out, border-color var(--interface-transition-duration, 0ms) ease-out;
+}
+
+/* 桌面项目的橙条：选中常亮，悬停时从左侧画出。 */
+.desktop-item::before {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    z-index: 1;
+    height: 2px;
+    pointer-events: none;
+    background: var(--fence-focus-border, var(--color-focus));
+    opacity: 0;
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform var(--blockade-bar-duration, 200ms) cubic-bezier(0.22, 0.88, 0.24, 1), opacity var(--blockade-bar-fade, 120ms) ease;
+}
+
+.desktop-item:hover::before,
+.desktop-item[data-selected="true"]::before {
+    opacity: 1;
+    transform: scaleX(1);
+}
+
+/* 桌面项目选中：中性行底（只比悬停略亮），边框回到中性发丝，不加第二处橙色。 */
+.desktop-item[data-selected="true"] {
+    border-color: var(--fence-border);
+    background-color: color-mix(in srgb, var(--fence-text) 12%, transparent);
+}
+
+.desktop-item[data-selected="true"]:hover {
+    background-color: color-mix(in srgb, var(--fence-text) 16%, transparent);
+}
+
+/* 桌面项目悬停：中性行底，橙色只出现在条上。 */
+.desktop-item:hover:not([data-selected="true"]) {
+    border-color: var(--fence-border);
+    background-color: color-mix(in srgb, var(--fence-text) 8%, transparent);
+}
+
+/* 桌面主题下组件用了更具体的选择器（浅色围栏选中/悬停），这里用同等具体度覆盖： */
+/* 否则浅色桌面会退回橙色整边框与橙色行底。 */
+:root[data-desktop-theme] .desktop-item[data-selected="true"] {
+    border-color: var(--fence-border);
+    background-color: color-mix(in srgb, var(--fence-text) 12%, transparent);
+}
+
+:root[data-desktop-theme] .desktop-item[data-selected="true"]:hover {
+    background-color: color-mix(in srgb, var(--fence-text) 16%, transparent);
+}
+
+:root[data-desktop-theme] .desktop-item:hover:not([data-selected="true"]) {
+    border-color: var(--fence-border);
+    background-color: color-mix(in srgb, var(--fence-text) 8%, transparent);
+}
+
+/* 门户条目选中：同一条橙条语言，行底用中性墨色而不是橙色。 */
+/* 门户条目：同样的行顶条语言；li 补定位上下文，条由 ::before 描画，行底用中性墨色。 */
+.folder-portal__items li {
+    position: relative;
+    transition: background-color var(--interface-transition-duration, 0ms) ease-out, border-color var(--interface-transition-duration, 0ms) ease-out;
+}
+
+.folder-portal__items li::before {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    z-index: 1;
+    height: 2px;
+    pointer-events: none;
+    background: var(--fence-focus-border, var(--color-focus));
+    opacity: 0;
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform var(--blockade-bar-duration, 200ms) cubic-bezier(0.22, 0.88, 0.24, 1), opacity var(--blockade-bar-fade, 120ms) ease;
+}
+
+.folder-portal__items li:hover::before,
+.folder-portal__items li.is-selected::before {
+    opacity: 1;
+    transform: scaleX(1);
+}
+
+.folder-portal__items li.is-selected {
+    border-color: var(--color-border);
+    background-color: color-mix(in srgb, var(--color-text) 10%, transparent);
+}
+
+.folder-portal__items li.is-selected:hover {
+    background-color: color-mix(in srgb, var(--color-text) 14%, transparent);
+}
+
+.folder-portal__items li:hover {
+    border-color: var(--color-border);
+    background-color: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+
+/* 收集箱条目的行顶条：li 补定位上下文，条由 ::before 描画；行底提亮走宿主动画时长。 */
+.official-component__collect li {
+    position: relative;
+    transition: background-color var(--interface-transition-duration, 0ms) ease-out, border-color var(--interface-transition-duration, 0ms) ease-out;
+}
+
+.official-component__collect li::before {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    z-index: 1;
+    height: 2px;
+    pointer-events: none;
+    background: var(--fence-focus-border, var(--color-focus));
+    opacity: 0;
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform var(--blockade-bar-duration, 200ms) cubic-bezier(0.22, 0.88, 0.24, 1), opacity var(--blockade-bar-fade, 120ms) ease;
+}
+
+.official-component__collect li:hover::before,
+.official-component__collect .collect-box__item--selected::before {
+    opacity: 1;
+    transform: scaleX(1);
+}
+
+/* 收集箱条目：选中与悬停只画行顶条，行底中性提亮；边框回到发丝，不用橙色整边框。 */
+.official-component__collect .collect-box__item--selected {
+    border-color: var(--fence-border);
+    background-color: color-mix(in srgb, var(--fence-text) 10%, transparent);
+}
+
+/* 选中项被悬停时保持选中行底，条由伪元素状态维持。 */
+.official-component__collect .collect-box__item--selected:hover {
+    background-color: color-mix(in srgb, var(--fence-text) 14%, transparent);
+}
+
+.official-component__collect li:hover {
+    border-color: var(--fence-border);
+    background-color: color-mix(in srgb, var(--fence-text) 6%, transparent);
+}
+
+/* ---------- 自绘菜单 ---------- */
+
+/* 菜单深色表面：90% 以上不透明、单层阴影、中性四角刻线；内距与行高仍归组件。 */
+.desktop-tile-menu,
+.folder-portal__breadcrumb-menu {
+    --menu-border: rgb(255 255 255 / 13%);
+    --menu-text: #f2f4f7;
+    --menu-surface: rgb(22 23 27 / 94%);
+    --menu-hover: rgb(255 255 255 / 6%);
+    --menu-shadow: 2px 3px 8px rgb(0 0 0 / 45%);
+    background-image:
+        linear-gradient(var(--menu-border), var(--menu-border)), linear-gradient(var(--menu-border), var(--menu-border)),
+        linear-gradient(var(--menu-border), var(--menu-border)), linear-gradient(var(--menu-border), var(--menu-border)),
+        linear-gradient(var(--menu-border), var(--menu-border)), linear-gradient(var(--menu-border), var(--menu-border)),
+        linear-gradient(var(--menu-border), var(--menu-border)), linear-gradient(var(--menu-border), var(--menu-border));
+    background-position:
+        6px 6px, 6px 6px, calc(100% - 6px) 6px, calc(100% - 6px) 6px,
+        6px calc(100% - 6px), 6px calc(100% - 6px), calc(100% - 6px) calc(100% - 6px), calc(100% - 6px) calc(100% - 6px);
+    background-size: 18px 1px, 1px 18px, 18px 1px, 1px 18px, 18px 1px, 1px 18px, 18px 1px, 1px 18px;
+    background-repeat: no-repeat;
+}
+
+/* 菜单浅色表面：暖纸 94%。 */
+:root[data-theme="light"] .desktop-tile-menu,
+:root[data-theme="light"] .folder-portal__breadcrumb-menu {
+    --menu-border: rgb(28 26 22 / 20%);
+    --menu-text: #16181b;
+    --menu-surface: rgb(252 251 248 / 94%);
+    --menu-hover: rgb(28 26 22 / 5%);
+    --menu-shadow: 2px 3px 8px rgb(28 26 22 / 14%);
+}
+
+/* 菜单命令的橙条：悬停、键盘焦点与展开中用同一条 2px 条，从左侧画出。 */
+.desktop-tile-menu button::before,
+.folder-portal__breadcrumb-menu button::before {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    height: 2px;
+    pointer-events: none;
+    background: var(--color-focus, #ff7f00);
+    opacity: 0;
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform var(--blockade-bar-duration, 200ms) cubic-bezier(0.22, 0.88, 0.24, 1), opacity var(--blockade-bar-fade, 120ms) ease;
+}
+
+.desktop-tile-menu button:hover:enabled::before,
+.desktop-tile-menu button:focus-visible:not([aria-disabled="true"])::before,
+.desktop-tile-menu button[data-expanded="true"]:not([aria-disabled="true"])::before,
+.folder-portal__breadcrumb-menu button:hover:not(:disabled)::before,
+.folder-portal__breadcrumb-menu button:focus-visible::before {
+    opacity: 1;
+    transform: scaleX(1);
+}
+
+/* 行底只比常态略亮，橙色只出现在条上。 */
+.desktop-tile-menu button:hover:enabled,
+.desktop-tile-menu button:focus-visible:not([aria-disabled="true"]),
+.desktop-tile-menu button[data-expanded="true"]:not([aria-disabled="true"]),
+.folder-portal__breadcrumb-menu button:hover:not(:disabled) {
+    background: var(--menu-hover);
+}
+
+/* ---------- 字面效果 ---------- */
+
+/* 等宽数字：数字列在走秒与读数时不抖动。浮岛不接收该表现层。 */
+:where(html:not([data-island="true"])):root {
+    font-variant-numeric: tabular-nums;
+}
+
+/* 关闭等宽数字时回到默认字形。 */
+:where(html:not([data-island="true"])):root[data-blockade-mono="off"] {
+    font-variant-numeric: normal;
+}
+
+/* 时钟读出与读数走本地技术字栈，缺字时回退到界面字体。 */
+.local-clock {
+    font-family: "Bahnschrift", "Cascadia Mono", "Segoe UI Variable", "Microsoft YaHei UI", sans-serif;
+}
+
+/* 页面标题拉出 HUD 的字距。 */
+:where(html:not([data-island="true"])) h1 {
+    letter-spacing: 0.08em;
+}
+
+/* 设置品牌名保持琥珀橙。 */
+.settings__brand span {
+    color: var(--desktop-accent, #ffb03a);
+}
+
+/* 状态标签与分组标签走紧凑技术排版：大写标签加字距，中文标签不加大写。 */
+.plugin-settings__label,
+.settings__status,
+.plugin-settings__status,
+.weather-settings__status {
+    font-family: "Bahnschrift", "Segoe UI Variable", "Microsoft YaHei UI", sans-serif;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.settings__status,
+.plugin-settings__status,
+.weather-settings__status {
+    color: var(--color-muted);
+}
+
+/* ---------- 45° 切角（可选装饰层） ---------- */
+
+/* 交互控件只切左上、右下；切角量由插件设置限制为 0–12px。整行命中层与结构表面不参与。 */
+:where(html:not([data-island="true"])) button:not([data-button="row-hit"]),
+:where(html:not([data-island="true"])) input:not([type="checkbox"]):not([type="radio"]),
+:where(html:not([data-island="true"])) select,
+:where(html:not([data-island="true"])) textarea {
+    border-start-start-radius: var(--blockade-bevel, 8px);
+    border-start-end-radius: 0;
+    border-end-start-radius: 0;
+    border-end-end-radius: var(--blockade-bevel, 8px);
+    corner-top-left-shape: bevel;
+    corner-top-right-shape: round;
+    corner-bottom-left-shape: round;
+    corner-bottom-right-shape: bevel;
+}
+
+/* 关闭切角时所有参与控件回到直角，不保留部分切角。 */
+:where(html:not([data-island="true"])):root[data-blockade-bevel="off"] button:not([data-button="row-hit"]),
+:where(html:not([data-island="true"])):root[data-blockade-bevel="off"] input:not([type="checkbox"]):not([type="radio"]),
+:where(html:not([data-island="true"])):root[data-blockade-bevel="off"] select,
+:where(html:not([data-island="true"])):root[data-blockade-bevel="off"] textarea {
+    border-radius: 0;
+    corner-shape: round;
+}
+
+/* 自绘菜单命令保持 2px 圆角：行高只有 28px，主题切角会吃掉文字两侧留白。 */
+.desktop-tile-menu button,
+.folder-portal__breadcrumb-menu button {
+    border-radius: 2px;
+    corner-shape: round;
+}
+
+/* ---------- 启动覆盖层 ---------- */
+
+/* 封锁橙的开机转场：炭灰底取代默认底色，亮带换成琥珀。 */
+#boot-splash {
+    background: #0d0e10;
+}
+
+#boot-splash::after {
+    background: linear-gradient(180deg, transparent, rgb(255 127 0 / 20%), transparent);
+}
+
+/* 品牌字换成琥珀橙。 */
+#boot-splash .boot-splash__mark {
+    color: #ff7f00;
+    letter-spacing: 0.32em;
+}
+
+/* ---------- 控件 ---------- */
+
+/* 设置内容滚动区使用深色轨道与主题边框滑块。 */
+.settings__content,
+.plugin-settings,
+.feature-settings {
+    scrollbar-color: var(--color-border) transparent;
+}
+
+/* 设置行与分组结构保持直角，只强化表面和边框。 */
+.settings__row,
+.appearance-settings__row,
+.feature-settings__row,
+.plugin-settings__row,
+.weather-settings__row {
+    border-color: var(--color-border);
+    border-radius: 0;
+    background-color: color-mix(in srgb, var(--color-surface) 86%, transparent);
+}
+
+.settings__row--link:hover,
+.feature-settings__row--link:hover,
+.plugin-settings__row--link:hover {
+    border-color: color-mix(in srgb, var(--color-text) 28%, var(--color-border));
+    background-color: color-mix(in srgb, var(--color-text) 5%, var(--color-surface));
+}
+
+/* 设置导航：直角行，悬停与当前页都用行顶橙条，不再用左侧竖条。 */
+.settings__navigation-item {
+    border-radius: 0;
+    color: var(--color-text);
+}
+
+.settings__navigation-item::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    height: 2px;
+    pointer-events: none;
+    background: var(--color-focus);
+    opacity: 0;
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform var(--blockade-bar-duration, 200ms) cubic-bezier(0.22, 0.88, 0.24, 1), opacity var(--blockade-bar-fade, 120ms) ease;
+}
+
+.settings__navigation-item:hover::after,
+.settings__navigation-item:focus-visible::after,
+.settings__navigation-item[aria-current="page"]::after {
+    opacity: 1;
+    transform: scaleX(1);
+}
+
+.settings__navigation-item:hover,
+.settings__navigation-toggle:hover {
+    color: var(--color-text);
+    background-color: color-mix(in srgb, var(--color-text) 5%, transparent);
+}
+
+.settings__navigation-item[aria-current="page"] {
+    color: var(--color-text);
+    background-color: color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+
+/* 当前页的条与悬停条同一位置，不再叠加左侧竖条。 */
+.settings__navigation-item[aria-current="page"]::before {
+    top: 0;
+    right: 0;
+    bottom: auto;
+    left: 0;
+    width: auto;
+    height: 2px;
+    border-radius: 0;
+    background-color: var(--color-focus);
+}
+
+/* 设置下拉关闭态和原生弹层都跟随界面令牌与 color-scheme。 */
+.settings__select {
+    border-color: var(--color-border);
+    color: var(--color-text);
+    background-color: var(--color-subtle);
+}
+
+/* 开关几何只由本主题持有：轨道改直角块，撤下主题样式表后恢复共享胶囊。 */
+.settings-switch__track {
+    padding: 0;
+    border: 1px solid var(--color-muted);
+    border-radius: 2px;
+    background: var(--color-surface);
+}
+
+.settings-switch__track::after {
+    inset-block-start: 1px;
+    inset-inline-start: 1px;
+    width: 16px;
+    height: 18px;
+    border-radius: 0;
+    clip-path: polygon(3px 0, 100% 0, 100% 100%, 0 100%, 0 3px);
+    background: color-mix(in oklch, var(--color-muted) 55%, transparent);
+}
+
+.settings-switch input:checked + .settings-switch__track,
+.settings-switch input:focus-visible + .settings-switch__track {
+    border-color: var(--color-focus);
+    background: var(--color-surface);
+}
+
+/* 已选滑块走界面焦点色，不再用状态色填充。 */
+.settings-switch input:checked + .settings-switch__track::after,
+.settings-switch input:focus-visible + .settings-switch__track::after {
+    inset-inline-start: 21px;
+    background: var(--color-focus);
+    filter: drop-shadow(0 0 5px color-mix(in oklch, var(--color-focus) 32%, transparent));
+}
+
+.settings-switch input:focus-visible + .settings-switch__track {
+    outline: none;
+}
+
+.settings-switch input:focus-visible + .settings-switch__track::before {
+    position: absolute;
+    inset: -3px;
+    border: 2px solid var(--color-focus);
+    border-radius: 4px;
+    pointer-events: none;
+    content: "";
+}
+
+.settings-switch input:disabled + .settings-switch__track {
+    border-color: var(--color-border);
+    background: var(--color-surface);
+}
+
+.settings-switch input:disabled + .settings-switch__track::after {
+    background: var(--color-border);
+    filter: none;
+}
+
+/* 文本输入、下拉与多行输入：切角由上方统一规则负责，不改变复选/开关几何。 */
+:where(html:not([data-island="true"])) input:not([type="checkbox"]):not([type="radio"]),
+:where(html:not([data-island="true"])) select,
+:where(html:not([data-island="true"])) textarea {
+    caret-color: var(--color-focus);
+    font-family: var(--interface-font);
+}
+
+/* 文本字段悬停先给强调色描边，复选与开关仍被排除。 */
+@media (hover: hover) and (pointer: fine) {
+    :where(html:not([data-island="true"])) input:not([type="checkbox"]):not([type="radio"]):hover:not(:disabled),
+    :where(html:not([data-island="true"])) select:hover:not(:disabled),
+    :where(html:not([data-island="true"])) textarea:hover:not(:disabled) {
+        border-color: color-mix(in srgb, var(--color-focus) 55%, var(--color-border));
+    }
+}
+
+/* 输入卡聚焦：0.5px 强调色描边加 20px 淡光，不覆盖开关与复选焦点。 */
+:where(html:not([data-island="true"])) input:not([type="checkbox"]):not([type="radio"]):focus-visible,
+:where(html:not([data-island="true"])) select:focus-visible,
+:where(html:not([data-island="true"])) textarea:focus-visible {
+    outline: none;
+    border-color: var(--color-focus);
+    box-shadow: 0 0 0 0.5px var(--color-focus), 0 0 20px color-mix(in srgb, var(--color-focus) 14%, transparent);
+}
+
+/* 原生勾选类控件仍跟随界面强调色，不接管外观几何。 */
+:where(html:not([data-island="true"])) input[type="checkbox"],
+:where(html:not([data-island="true"])) input[type="radio"] {
+    accent-color: var(--color-focus);
+}
+
+/* 按钮状态：颜色过渡加按下时的亮度反馈，切角由 corner-shape 负责；整行命中层不参与。 */
+:where(html:not([data-island="true"])) button:not([data-button="row-hit"]) {
+    transition: background-color var(--interface-transition-duration, 0ms) ease-out, border-color var(--interface-transition-duration, 0ms) ease-out, color var(--interface-transition-duration, 0ms) ease-out;
+}
+
+/* 按下只压亮度：缩放会改变命中面，与设计语言的「不改布局盒」在宿主里冲突。 */
+:where(html:not([data-island="true"])) button:not([data-button="row-hit"]):active:not(:disabled) {
+    filter: brightness(0.94);
+}
+
+/* 减少透明效果时不保留模糊，围栏改用不透明填充。 */
+@media (prefers-reduced-transparency: reduce) {
+    .desktop-tile {
+        background-color: var(--color-surface);
+        backdrop-filter: none;
+    }
+}

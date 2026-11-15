@@ -1,0 +1,22 @@
+{
+    "appearance": {
+        "accentColor": "#ff7f00",
+        "desktopAccentColor": "#ffb03a",
+        "cornerRadius": 4,
+        "fontFamily": "Microsoft YaHei UI",
+        "fontSize": 13
+    },
+    "notification": {
+        "surface": "#16171b",
+        "border": "#3a3c42",
+        "text": "#f2f4f7",
+        "muted": "#b9bfc7",
+        "subtle": "#23252a",
+        "success": "#7dbb42",
+        "warning": "#e0a23a",
+        "error": "#ff3000",
+        "weight": "medium",
+        "cornerStyle": "bevel",
+        "cornerSize": 10
+    }
+}
