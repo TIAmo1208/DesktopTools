@@ -651,7 +651,6 @@ fn register_shell_drop_targets(hwnd: HWND, app: &AppHandle, monitor: &DesktopHos
                                         let _ = relay_workspace_drag(payload.clone());
                                     }
                                     let (sender, receiver) = std::sync::mpsc::channel(); // 仅传输自有内容和结果，不跨线程保存 COM 对象。
-                                    let worker_app = app.clone(); // 后台业务拥有应用句柄。
                                     let worker_port = drop_port.clone(); // 后台业务复用同一拖放端口。
                                     let monitor_id = monitor.id.clone(); // 固定释放显示器。
                                     let collect_names = source_session.as_ref().and_then(|session| session.collect_names.clone()).filter(|_| target == super::drop_content::COLLECT); // 外部对象不能伪造内部条目。

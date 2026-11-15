@@ -10,7 +10,7 @@ src-tauri/
 │  ├─ main.rs             # 进程入口
 │  ├─ lib.rs              # Tauri 应用装配和命令注册
 │  ├─ app/                # 生命周期、运行时状态与桌面接管
-│  ├─ commands/           # 前端命令边界、校验、探活、loopback 通道与用例调度
+│  ├─ commands/           # 前端命令边界、按领域路由、参数校验、loopback 通道与用例调度
 │  ├─ workspace/          # 布局、围栏、门户、组件和事务规则
 │  ├─ shell/              # 桌面项目事实、Shell 身份、菜单、剪贴板和拖放
 │  ├─ collect/            # 文本、图片、文件映射、资源、收入取出与删除恢复
@@ -43,7 +43,7 @@ src-tauri/
 - `app/settings.rs` 维护配置目录与插件目录。配置目录仍用启动定位目录里的 `config-location.json`。插件目录不迁移：`pluginDirectory` 为空时用可执行文件所在目录下的 `plugin`（安装后即安装目录 `\plugin`），显式路径仍按原有安全边界覆盖；取不到程序目录时报错，不回退到 `%APPDATA%`。运行期内目录冻结，改偏好下次启动再生效，不复制旧目录。插件安装按 `作者@名称` 落盘并原样保留清单标识，同一作者同一标识视为同一插件。
 - `installer/` 包含 NSIS 自定义重装页与生命周期钩子。`tauri.installer.conf.json` 把随包插件资源直接写到 `$INSTDIR\plugin`，`hooks.nsh` 不再在安装后复制插件，也不在卸载时按清单清理。真正卸载且非升级时删除 `$INSTDIR\plugin`。
 
-- `commands/` 负责跨边界校验与调度，不持有长期领域状态。`commands/probe.rs` 是插件能力 `probe-service-status` 的唯一探活实现：探测地址与 2 秒超时在宿主内固定，不进入命令入参或插件设置；它新开独立的 HTTP 客户端，不启用 cookie jar，也不带浏览器来源头，把观察结果判成在线、探测被拒、未运行或未知四档，只回传判定时刻与该服务的启动时间，不透传服务端返回原文。该文件不注册成平铺原生命令，只由能力通道按实例授权后调用。
+- `commands/` 负责跨边界校验与调度，不持有长期领域状态。`tools/probe.rs` 是插件能力 `probe-service-status` 的唯一探活实现：探测地址与 2 秒超时在宿主内固定，不进入命令入参或插件设置；它新开独立的 HTTP 客户端，不启用 cookie jar，也不带浏览器来源头，把观察结果判成在线、探测被拒、未运行或未知四档，只回传判定时刻与该服务的启动时间，不透传服务端返回原文。该文件不注册成平铺原生命令，只由能力通道按实例授权后调用。
 - `commands/loopback.rs` 与 `component_runtime/loopback.rs` 是插件能力 `loopback-channel` 的实现：`register_loopback_channel`、`read_loopback_channel`、`request_loopback` 三条命令在 Tauri 与本地 transport 共用同一门禁，按 `instanceId` 校验能力授权。监听只绑本机 IPv4 回环地址，`baseUrl` 只接受 `http://127.0.0.1:<port>` 或 `http://localhost:<port>` 并归一为本机 IPv4；每条通道保留最近 256 条、单条 body 上限 1 MiB、整体 300 秒的原始请求缓冲，读到即消费；凭据用 `CredReadW` 读取并清零系统缓冲区，出站自动注入、入站用常量时间比较校验，校验失败回 `401` 且不入缓冲，已校验的凭据头在交给插件前移除。缓冲更新复用 `component-host-event`（`kind = loopback-data:<channelId>`），首次读取后才投递；逐屏转发时通道数据通知不依赖时间消费者。实例移除与插件卸载都会释放端口并清缓冲。宿主不解析也缓存任何业务数据，过期判定归插件。
 - `workspace/` 负责自有布局、围栏归属、门户和组件布局事务，不执行文件操作；偏好写入经 `PreferencesStore` 端口由应用层提交，不直接持有设置状态。各类格子的持久展开边界统一使用工作区契约中的公共尺寸底线，临时投射单独校验；内容可读性和标题占位由前端负责。
 - `shell/` 负责 Shell 项目身份、真实文件操作、菜单、剪贴板和 Shell OLE 数据对象。
