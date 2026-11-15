@@ -7,7 +7,7 @@ import { runInNewContext } from "node:vm";
 const source = (path: string) => readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
 
 test("浮岛消息命令已进入原生 transport 分发表", () => {
-    const commands = source("src-tauri/src/commands/mod.rs");
+    const commands = source("src-tauri/src/commands/router.rs");
     for (const name of ["get_island_messages", "dismiss_island_message"]) assert.ok(commands.includes(`"${name}" =>`), `原生 transport 缺少命令 ${name}`);
 });
 
