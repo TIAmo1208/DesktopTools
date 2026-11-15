@@ -1,4 +1,6 @@
-use crate::{contracts::DesktopHostMonitor, preferences::SettingsState};
+use crate::contracts::DesktopHostMonitor;
+#[cfg(test)]
+use crate::preferences::SettingsState;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -348,33 +350,19 @@ impl LandingOrder
     }
 
     /// 锁覆盖序号检查和原子字段更新；关闭后的落点不写盘。
-    fn save(&mut self, state: &SettingsState, sequence: u64, edge: IslandEdge, offset: f64) -> Result<Option<crate::contracts::settings::ApplicationPreferences>, String>
+    fn save(&mut self, writer: &dyn crate::preferences::PreferencesWriter, sequence: u64, edge: IslandEdge, offset: f64) -> Result<Option<crate::contracts::settings::ApplicationPreferences>, String>
     {
         if sequence != self.latest || sequence <= self.committed
         {
             crate::log_debug!("岛：丢弃过期落点，序号={}，最新={}，已提交={}", sequence, self.latest, self.committed);
             return Ok(None);
         }
-        let mut disabled = false; // patch 内确认真实开关，不能依赖拖动前的快照。
-        let saved = state.update(|preferences| {
-            if !preferences.island_enabled
-            {
-                disabled = true;
-                return Err("岛已关闭，不保存落点".into());
-            }
-            if !(preferences.island_edge.is_empty() && edge == IslandEdge::Top)
-            {
-                preferences.island_edge = edge.as_preference().into(); // 默认空边拖动后仍保留空串，不固化为显式 top。
-            }
-            preferences.island_offset = offset;
-            Ok(())
-        });
-        if disabled
+        let Some(saved) = writer.apply_island_landing(edge.as_preference(), offset)?
+        else
         {
             crate::log_debug!("岛：关闭后丢弃落点，序号={}", sequence);
             return Ok(None);
-        }
-        let saved = saved?;
+        };
         self.committed = sequence; // 仅磁盘与内存均成功后推进已提交序号。
         Ok(Some(saved))
     }
@@ -406,6 +394,9 @@ static COMMAND_HANDLER: OnceLock<super::NativeCommandHandler> = OnceLock::new();
 /// 应用层注入的只读偏好读取器；岛内所有读数都经它。
 static READER: OnceLock<crate::preferences::PreferencesReader> = OnceLock::new();
 
+/// 应用层注入的偏好写入口；落点写回不再直接持有存储。
+static WRITER: OnceLock<std::sync::Arc<dyn crate::preferences::PreferencesWriter>> = OnceLock::new();
+
 /// 读取当前偏好；未注入时给出可诊断错误。
 fn read_preferences() -> Result<crate::contracts::settings::ApplicationPreferences, String> { READER.get().ok_or_else(|| "岛偏好读取器未初始化".to_string())?() }
 
@@ -413,10 +404,11 @@ fn read_preferences() -> Result<crate::contracts::settings::ApplicationPreferenc
 fn suppressed(snapshot: &super::refresh_policy::ForegroundSnapshot, hide_fullscreen: bool) -> bool { snapshot.locked == Some(true) || (hide_fullscreen && snapshot.exclusive_fullscreen == Some(true)) }
 
 /// 在既有前台事件上重新断言置顶，不启动轮询。
-pub(crate) fn install(app: &AppHandle, command_handler: super::NativeCommandHandler, read_preferences: crate::preferences::PreferencesReader)
+pub(crate) fn install(app: &AppHandle, command_handler: super::NativeCommandHandler, read_preferences: crate::preferences::PreferencesReader, write_preferences: std::sync::Arc<dyn crate::preferences::PreferencesWriter>)
 {
     let _ = COMMAND_HANDLER.set(command_handler); // 只注入一次，重复安装保留首个。
-    let _ = READER.set(read_preferences); // 读数经应用层注入，写回仍走存储。
+    let _ = READER.set(read_preferences); // 读数经应用层注入。
+    let _ = WRITER.set(write_preferences); // 落点写回经应用层端口。
     let handle = app.clone(); // 事件闭包不持有任何 Win32 资源。
     app.listen("desktop-refresh-policy-changed", move |_| {
         let _ = handle.run_on_main_thread(|| apply_policy(true));
@@ -1191,10 +1183,10 @@ fn finish_drag(hwnd: HWND) -> Result<(), String>
     {
         let _ = done.send(IslandDragResult { pointer_inside, offset: Some(offset) }); // 先释放命令屏障，页面按同一落点重测。
     }
+    let writer = WRITER.get().cloned().ok_or("岛偏好写入口未初始化")?; // 后台写盘使用同一端口。
     tauri::async_runtime::spawn_blocking(move || {
         let result = (|| {
-            let state = app.state::<SettingsState>();
-            let saved = LANDINGS.lock().map_err(|_| "岛落点状态不可用")?.save(&state, landing_seq, edge, offset)?; // 同锁检查最新序号并写盘，不再重存整份旧偏好。
+            let saved = LANDINGS.lock().map_err(|_| "岛落点状态不可用")?.save(writer.as_ref(), landing_seq, edge, offset)?; // 同锁检查最新序号，写盘交给应用层。
             if let Some(saved) = saved
             {
                 app.emit("preferences-changed", &saved).map_err(|error| format!("岛落点已保存，但偏好事件发布失败：{error}"))?;

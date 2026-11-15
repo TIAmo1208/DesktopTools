@@ -172,7 +172,7 @@ fn read_snapshot(force_properties: bool) -> Result<serde_json::Value, String>
 }
 
 /// 由 WinRT 事件唤醒读取；正常空闲时阻塞，仅故障和有限收敛使用超时等待。
-pub fn start_monitor(app: tauri::AppHandle)
+pub fn start_monitor(app: tauri::AppHandle, read_preferences: crate::preferences::PreferencesReader)
 {
     std::thread::spawn(move || {
         use windows::Foundation::TypedEventHandler;
@@ -288,7 +288,7 @@ pub fn start_monitor(app: tauri::AppHandle)
             {
                 drop(cache);
             }
-            details::publish(&app); // 完整媒体先发布，第二事实不参与收敛比较。
+            details::publish(&app, &read_preferences); // 完整媒体先发布，第二事实不参与收敛比较。
             convergence = match wake
             {
                 MonitorWake::Signal(signal) if signal.starts_convergence() || convergence.is_some() => Some(Convergence::new(current)),

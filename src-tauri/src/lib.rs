@@ -245,7 +245,7 @@ pub fn run()
             });
             let desktop_host = DesktopHostRuntime::start(app.handle())?;
             app.manage(Arc::clone(&desktop_host));
-            crate::platform::windows::island::install(app.handle(), desktop_host_command_handler(app.handle().clone()), crate::preferences::reader(app.handle())); // 仅偏好开启时懒建独立岛页面。
+            crate::platform::windows::island::install(app.handle(), desktop_host_command_handler(app.handle().clone()), crate::preferences::reader(app.handle()), std::sync::Arc::new(crate::app::preferences_writer::AppPreferencesWriter { app: app.handle().clone() })); // 仅偏好开启时懒建独立岛页面。
             // Shell 变化通知由唯一协调线程消费。
             let changes = app.state::<DesktopItemState>().take_change_receiver().map_err(|error| error.message)?;
             start_desktop_item_change_monitor(app.handle().clone(), changes);
@@ -253,7 +253,7 @@ pub fn run()
             DesktopHostRuntime::start_renderer_watchdog(app.handle().clone(), Arc::clone(&app.state::<Arc<DesktopHostRuntime>>()));
             ComponentRuntimeState::start_host_events(app.handle().clone(), crate::preferences::reader(app.handle()));
             crate::weather::activity::start(app.handle().clone(), crate::preferences::reader(app.handle()));
-            crate::platform::windows::music::start_monitor(app.handle().clone());
+            crate::platform::windows::music::start_monitor(app.handle().clone(), crate::preferences::reader(app.handle()));
             app::desktop_menu::install(app.handle(), initial_menu_action)?;
             Ok(())
         })

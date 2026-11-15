@@ -119,11 +119,7 @@ pub fn update(timeline: Option<Timeline>, source: String)
 }
 
 /// 「显示歌词」关闭时清空缓存并停止取词；状态未就绪时按默认开启处理。
-fn lyrics_enabled(app: &tauri::AppHandle) -> bool
-{
-    use tauri::Manager;
-    app.try_state::<crate::preferences::SettingsState>().and_then(|state| state.preferences().ok()).map(|preferences| preferences.music_lyrics_enabled).unwrap_or(true)
-}
+fn lyrics_enabled(read_preferences: &crate::preferences::PreferencesReader) -> bool { read_preferences().map(|preferences| preferences.music_lyrics_enabled).unwrap_or(true) }
 
 /// 一次调试轮询的结果：不适用、读到位置、读取失败。
 #[derive(Clone, Copy, PartialEq)]
@@ -207,10 +203,10 @@ pub fn start_cdp_poller(app: &tauri::AppHandle)
 }
 
 /// 每代至多取词一次，网络不阻塞媒体线程；迟到响应不得污染下一首。
-pub fn publish(app: &tauri::AppHandle)
+pub fn publish(app: &tauri::AppHandle, read_preferences: &crate::preferences::PreferencesReader)
 {
     start_cdp_poller(app); // 位置轮询独立于取词开关，关闭歌词也要跟进度。
-    if !lyrics_enabled(app)
+    if !lyrics_enabled(read_preferences)
     {
         // 关闭取词：清空歌词并让在途请求失效，但时间轴仍要持续广播。
         let mut state = details_state().lock().unwrap_or_else(|e| e.into_inner());
@@ -244,10 +240,11 @@ pub fn publish(app: &tauri::AppHandle)
     *requested = Some(generation);
     drop(state);
     let app = app.clone();
+    let read_preferences = read_preferences.clone(); // 取词线程持有同一读取器。
     std::thread::spawn(move || {
         let fetched = fetch_lyrics(&timeline, &source).unwrap_or_default();
         crate::log_debug!("歌词：来源={}，行数={}，时长毫秒={:?}", source, fetched.lines.len(), fetched.duration_ms); // 只记数量与时长，不记正文。
-        if !lyrics_enabled(&app)
+        if !lyrics_enabled(&read_preferences)
         {
             // 关闭期间丢弃的结果必须释放该代请求，重新开启后才会再次取词。
             let mut requested = REQUESTED.lock().unwrap_or_else(|e| e.into_inner());

@@ -52,7 +52,7 @@ fn landing_wait_exposes_saved_preferences_and_stale_sequence_is_success()
     let (done, saved) = std::sync::mpsc::sync_channel(1);
     let worker_state = Arc::clone(&state);
     let worker = std::thread::spawn(move || {
-        assert!(order.save(&worker_state, sequence, IslandEdge::Bottom, 1547.0).unwrap().is_some());
+        assert!(order.save(worker_state.as_ref(), sequence, IslandEdge::Bottom, 1547.0).unwrap().is_some());
         done.send(IslandDragResult { pointer_inside: true, offset: Some(7.0) }).unwrap(); // 与生产一致：先发布完成信号，后台再保存偏好。
         order
     });
@@ -65,7 +65,7 @@ fn landing_wait_exposes_saved_preferences_and_stale_sequence_is_success()
     let stale = order.begin().unwrap();
     order.begin().unwrap(); // 模拟更新的拖动序号已开始。
     let (done, saved) = std::sync::mpsc::sync_channel(1);
-    assert!(order.save(&state, stale, IslandEdge::Left, 1.0).unwrap().is_none());
+    assert!(order.save(state.as_ref(), stale, IslandEdge::Left, 1.0).unwrap().is_none());
     done.send(IslandDragResult::default()).unwrap(); // 丢弃不是错误，依然确认完成，不走超时或失败分支。
     assert!(!wait_for_landing(saved, std::time::Duration::ZERO).pointer_inside);
     assert_eq!(state.preferences().unwrap().island_offset, 1547.0);

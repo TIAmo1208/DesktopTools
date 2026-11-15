@@ -9,7 +9,7 @@ src-tauri/
 ├─ src/
 │  ├─ main.rs             # 进程入口
 │  ├─ lib.rs              # Tauri 应用装配和命令注册
-│  ├─ app/                # 生命周期、运行时状态与桌面接管
+│  ├─ app/                # 生命周期、运行时状态、偏好写入口与桌面接管
 │  ├─ commands/           # 前端命令边界、按领域路由、参数校验、loopback 通道与用例调度
 │  ├─ workspace/          # 布局、围栏、门户、组件和事务规则
 │  ├─ shell/              # 桌面项目事实、Shell 身份、菜单、剪贴板和拖放
@@ -18,7 +18,7 @@ src-tauri/
 │  ├─ persistence/        # 布局快照和备份
 │  ├─ command_bridge.rs    # 页面命令处理器类型（平台与命令边界的接缝）
 │  ├─ drop_bridge.rs       # 拖放用例端口与投放输入（平台与布局事务的接缝）
-│  ├─ preferences.rs      # 偏好存储、校验、只读读取器与配置/插件目录解析
+│  ├─ preferences.rs      # 偏好存储、校验、读写端口与配置/插件目录解析
 │  ├─ weather/            # 天气凭据、按来源分派的请求与临时验证会话
 │  ├─ component_runtime/  # 组件清单、能力、类型级尺寸与运行时状态
 │  ├─ recovery/           # guardian、健康状态和异常恢复

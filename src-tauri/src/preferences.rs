@@ -18,6 +18,40 @@ pub(crate) fn reader(app: &AppHandle) -> PreferencesReader
     Arc::new(move || app.state::<SettingsState>().preferences())
 }
 
+/// 偏好写入口：平台把已校验的变更交给应用层，存储与写盘顺序仍由应用层掌握。
+pub(crate) trait PreferencesWriter: Send + Sync + 'static
+{
+    /// 写入浮岛落点；岛已关闭时返回 None，不写盘。
+    fn apply_island_landing(&self, edge: &str, offset: f64) -> Result<Option<ApplicationPreferences>, String>;
+}
+
+impl PreferencesWriter for SettingsState
+{
+    fn apply_island_landing(&self, edge: &str, offset: f64) -> Result<Option<ApplicationPreferences>, String>
+    {
+        let mut disabled = false; // patch 内确认真实开关，不能依赖拖动前的快照。
+        let saved = self.update(|preferences| {
+            if !preferences.island_enabled
+            {
+                disabled = true;
+                return Err("岛已关闭，不保存落点".into());
+            }
+            if !(preferences.island_edge.is_empty() && edge == "top")
+            {
+                preferences.island_edge = edge.into(); // 默认空边拖动后仍保留空串，不固化为显式 top。
+            }
+            preferences.island_offset = offset;
+            Ok(())
+        });
+        if disabled
+        {
+            crate::log_debug!("岛：关闭后丢弃落点");
+            return Ok(None);
+        }
+        saved.map(Some)
+    }
+}
+
 /// 展开默认环境变量并拒绝相对路径、父级跳转和 Windows 特殊设备路径。
 pub fn resolve_config_directory(value: &str) -> Result<PathBuf, String>
 {
