@@ -1,5 +1,6 @@
 import {
     WEATHER_SOURCES,
+    type WeatherAvailability,
     type WeatherCity,
     type WeatherCredentials,
     type WeatherField,
@@ -50,6 +51,9 @@ export const WEATHER_FIELDS: Record<
             "在 Foreca My API 页面复制当前套餐的 API key，以 Bearer 令牌提交；该密钥是较长的签名令牌，需要完整复制，不要填入账户邮箱、密码或试用链接。",
     },
 };
+
+/** 列表可用状态文案；颜色由主题语义色负责。 */
+export const AVAILABILITY: Record<WeatherAvailability, string> = { available: "可用", unavailable: "不可用", unconfirmed: "未确认" };
 
 /** 弹窗关闭后恢复的空白草稿。 */
 export const WEATHER_EMPTY_DRAFT: Record<WeatherField, string> = { host: "", developerId: "", projectId: "", credentialId: "", privateKey: "", apiKey: "" };

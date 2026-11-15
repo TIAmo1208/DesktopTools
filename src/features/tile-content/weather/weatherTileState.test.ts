@@ -96,7 +96,7 @@ test("切换来源只改来源标识并清空城市标识，城市确认同时�
 });
 
 test("验证只给结论、确认才写入城市列表，两条路径都不带副作用", async () => {
-    const settings = await readFile(new URL("../../settings/weather/WeatherSettings.tsx", import.meta.url), "utf8");
+    const settings = await readFile(new URL("../../settings/weather/useWeatherSettings.ts", import.meta.url), "utf8");
     const validate = settings.match(/\/\*\* 按已保存凭据验证候选城市[\s\S]*?\n        \}\);/)?.[0];
     assert.ok(validate); // 验证分支不能改用例掩盖：它只校验候选对象，不写入列表。
     assert.match(validate, /validateWeatherCity\(picker\.source, target\)/); // 候选对象直接交给 Rust 校验。
