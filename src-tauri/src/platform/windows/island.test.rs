@@ -294,30 +294,30 @@ fn screenshot_tool_process_names_are_recognized()
 }
 
 #[test]
-fn suppression_only_uses_lock_and_exclusive_fullscreen()
+fn suppression_uses_lock_and_screen_covering_fullscreen()
 {
     use super::super::refresh_policy::{Coverage, ForegroundSnapshot};
     let mut snapshot = ForegroundSnapshot::default(); // 未知事实不伪造全屏。
     assert!(!suppressed(&snapshot, true));
     snapshot.locked = Some(true);
-    assert!(suppressed(&snapshot, false));
+    assert!(suppressed(&snapshot, false)); // 锁屏不受全屏隐藏开关控制。
     snapshot.locked = Some(false);
     snapshot.exclusive_fullscreen = Some(true);
+    snapshot.fullscreen = Some(true);
     assert!(suppressed(&snapshot, true));
     assert!(!suppressed(&snapshot, false));
     snapshot.exclusive_fullscreen = Some(false);
-    snapshot.coverage = Some(vec![Coverage { monitor_id: "other".into(), work: true, screen: true }]);
-    assert!(!suppressed(&snapshot, true));
+    snapshot.coverage = Some(vec![Coverage { monitor_id: "main".into(), work: true, screen: true }]);
+    snapshot.fullscreen = Some(true);
+    assert!(suppressed(&snapshot, true)); // 覆盖物理屏幕的无边框全屏同样隐藏。
+    assert!(!suppressed(&snapshot, false));
     snapshot.coverage = Some(vec![Coverage { monitor_id: "main".into(), work: true, screen: false }]);
-    assert!(!suppressed(&snapshot, true));
+    snapshot.fullscreen = Some(false);
+    assert!(!suppressed(&snapshot, true)); // 只覆盖工作区的最大化不隐藏。
     snapshot.maximized = Some(true);
     assert!(!suppressed(&snapshot, true));
-    assert!(!suppressed(&snapshot, false));
-    snapshot.maximized = Some(false);
-    snapshot.coverage.as_mut().unwrap()[0].screen = true;
-    assert!(!suppressed(&snapshot, true)); // 即使覆盖整屏，也不能把普通应用最大化当独占全屏。
-    snapshot.locked = Some(true);
-    assert!(suppressed(&snapshot, false)); // 锁屏不受全屏隐藏开关控制。
+    snapshot.fullscreen = None;
+    assert!(!suppressed(&snapshot, true)); // 未知不隐藏。
 }
 
 #[test]

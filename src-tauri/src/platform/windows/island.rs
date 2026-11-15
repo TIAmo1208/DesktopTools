@@ -401,7 +401,7 @@ static WRITER: OnceLock<std::sync::Arc<dyn crate::preferences::PreferencesWriter
 fn read_preferences() -> Result<crate::contracts::settings::ApplicationPreferences, String> { READER.get().ok_or_else(|| "岛偏好读取器未初始化".to_string())?() }
 
 /// 将全屏和锁屏事实映射为岛可见性；未知状态不伪造已确认覆盖。
-fn suppressed(snapshot: &super::refresh_policy::ForegroundSnapshot, hide_fullscreen: bool) -> bool { snapshot.locked == Some(true) || (hide_fullscreen && snapshot.exclusive_fullscreen == Some(true)) }
+fn suppressed(snapshot: &super::refresh_policy::ForegroundSnapshot, hide_fullscreen: bool) -> bool { snapshot.locked == Some(true) || (hide_fullscreen && snapshot.fullscreen == Some(true)) }
 
 /// 在既有前台事件上重新断言置顶，不启动轮询。
 pub(crate) fn install(app: &AppHandle, command_handler: super::NativeCommandHandler, read_preferences: crate::preferences::PreferencesReader, write_preferences: std::sync::Arc<dyn crate::preferences::PreferencesWriter>)
