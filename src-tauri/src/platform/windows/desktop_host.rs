@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::num::NonZeroIsize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -1477,6 +1477,17 @@ pub(crate) fn handle_desktop_request(request: Request<Vec<u8>>, app: &AppHandle,
     response
 }
 
+/// 桌面宿主只允许初始占位页与当前页面导航；鼠标侧键的前进/后退被拒绝，桌面层不会被导航走。
+fn desktop_navigation_allowed(url: &str, page_url: &str, page_loaded: &AtomicBool) -> bool
+{
+    if url == page_url
+    {
+        page_loaded.store(true, Ordering::Relaxed);
+        return true;
+    }
+    url == "about:blank" && !page_loaded.load(Ordering::Relaxed) // 初始占位页之后不再放行空白页。
+}
+
 #[cfg(test)]
 mod desktop_dev_tests
 {
@@ -1594,6 +1605,22 @@ mod desktop_dev_tests
         assert!(first.is_some(), "设置页地址必须带 boot 序号");
         assert_ne!(first, second, "连续两次建窗的 boot 序号必须不同");
     }
+
+    /// 桌面宿主拒绝初始占位页之外的导航，鼠标侧键不会把桌面层导航走。
+    #[test]
+    fn desktop_navigation_is_limited_to_the_page()
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let loaded = AtomicBool::new(false);
+        let page = "http://desktop-tools-host-0.localhost/index.html"; // 当前页面地址。
+        assert!(super::desktop_navigation_allowed("about:blank", page, &loaded)); // 初始占位页。
+        assert!(super::desktop_navigation_allowed(page, page, &loaded)); // 当前页面。
+        assert!(!super::desktop_navigation_allowed("about:blank", page, &loaded)); // 后退回空白页。
+        assert!(!super::desktop_navigation_allowed("http://example.com/", page, &loaded)); // 外部页面。
+        let fresh = AtomicBool::new(false);
+        assert!(!super::desktop_navigation_allowed("http://desktop-tools-host-0.localhost/index.html?monitor=1", page, &fresh)); // 不同查询同样拒绝。
+        assert!(!fresh.load(Ordering::Relaxed));
+    }
 }
 
 /// 创建一台显示器对应的正式透明 Windowed WebView2 宿主。
@@ -1620,6 +1647,9 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
     let initialization_script = native_bridge_script(&native_origin); // JSON 编码避免脚本字符串转义错误，Hook 状态在宿主创建前确定。
     super::refresh_policy::set_paused(&monitor.id, false);
     crate::log_info!("宿主：页面来源={}，原生命令来源={}", page_url, native_origin);
+    // 桌面宿主不是可导航页面：只允许初始占位页与当前页面，鼠标侧键的前进/后退一律拒绝。
+    let navigation_page_url = page_url.clone();
+    let navigation_page_loaded = Arc::new(AtomicBool::new(false));
     // 正式 Windowed WebView2。
     let builder = WebViewBuilder::new()
         .with_id(&label)
@@ -1666,6 +1696,7 @@ fn create_desktop_host(app: &AppHandle, shell: ShellDesktopState, command_handle
             };
             crate::log_debug!("宿主：React 页面加载{}，URL：{}", stage, url);
         })
+        .with_navigation_handler(move |url| desktop_navigation_allowed(&url, &navigation_page_url, &navigation_page_loaded))
         .with_url("about:blank");
     // 开发构建启用本机 CDP：保留 wry 默认参数，发布构建不暴露调试端口。
     #[cfg(debug_assertions)]
