@@ -150,6 +150,13 @@ pub struct SettingsState
     preferences: Mutex<ApplicationPreferences>, // 仅保存成功后更新的权威内存状态。
 }
 
+/// 领域只依赖这个端口，不反向读取应用层状态。
+impl crate::workspace::PreferencesStore for SettingsState
+{
+    /// 保存完整偏好并返回权威结果；校验与路径解析仍在设置状态内部。
+    fn store(&self, preferences: ApplicationPreferences) -> Result<ApplicationPreferences, String> { SettingsState::save(self, preferences) }
+}
+
 /// 提供设置恢复与原子更新操作。
 impl SettingsState
 {

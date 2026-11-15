@@ -13,10 +13,15 @@ use std::time::Duration;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::app::settings::SettingsState;
 use crate::contracts::settings::{ApplicationPreferences, GridPreferences};
 use crate::contracts::{ComponentCapabilityDeclaration, ComponentInstanceSnapshot, DesktopHostMonitor, FenceLayoutMode, FenceSnapshot, FenceSortMode, TILE_MIN_HEIGHT, TILE_MIN_WIDTH, UnclassifiedItemSnapshot, WORKSPACE_BACKUP_SCHEMA_VERSION, WORKSPACE_GRID_BOTTOM_MARGIN, WORKSPACE_GRID_LEFT, WORKSPACE_GRID_TOP, WORKSPACE_SCHEMA_VERSION, WorkspaceBackupSummary, WorkspaceCommand, WorkspaceError, WorkspaceFenceScroll, WorkspaceFocusTarget, WorkspaceGrid, WorkspaceInteractionCommand, WorkspaceInteractionSnapshot, WorkspaceItemPlacement, WorkspaceMonitorGrid, WorkspacePoint, WorkspaceRect, WorkspaceRestoreResult, WorkspaceSelectionMode, WorkspaceSnapshot};
 use crate::persistence::{load_json, save_json_atomic};
+
+/// 偏好持久化端口：领域只提交完整偏好，路径解析与落盘归应用层。
+pub(crate) trait PreferencesStore
+{
+    fn store(&self, preferences: ApplicationPreferences) -> Result<ApplicationPreferences, String>;
+}
 
 /// 统一工作区持久化格式版本。
 const WORKSPACE_STORE_VERSION: u32 = WORKSPACE_BACKUP_SCHEMA_VERSION;
@@ -182,13 +187,12 @@ impl WorkspaceState
     }
 
     /// 校验工作区网格容量，再保存布局及偏好；偏好写入失败时恢复旧布局文件。
-    pub fn save_preferences(&self, settings: &SettingsState, preferences: ApplicationPreferences, monitors: &[DesktopHostMonitor]) -> Result<ApplicationPreferences, String>
+    pub fn save_preferences(&self, settings: &dyn PreferencesStore, preferences: ApplicationPreferences, monitors: &[DesktopHostMonitor]) -> Result<ApplicationPreferences, String>
     {
-        crate::app::settings::validate_preferences(&preferences)?;
         let mut grid_preferences = self.grid_preferences.lock().map_err(|_| "网格状态不可用")?; // 阻止网格配置并发提交。
         if *grid_preferences == preferences.desktop_grid
         {
-            return settings.save(preferences);
+            return settings.store(preferences);
         }
         let grids = monitor_grids(monitors, preferences.desktop_grid).map_err(|error| error.message)?; // 当前显示器的新网格。
         let mut current = self.snapshot.lock().map_err(|_| "工作区状态不可用")?; // 当前活动布局锁。
@@ -200,7 +204,7 @@ impl WorkspaceState
         next.revision += 1;
         next.validate().map_err(|error| error.message)?;
         let store = save_workspace_store(&self.persistence_path, &next, *imported).map_err(|error| format!("保存网格布局失败：{error}"))?; // 先保存布局，再保存偏好。
-        let saved = match settings.save(preferences)
+        let saved = match settings.store(preferences)
         {
             Ok(saved) => saved,
             Err(error) =>

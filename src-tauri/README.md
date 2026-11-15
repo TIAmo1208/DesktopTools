@@ -42,7 +42,7 @@ src-tauri/
 
 - `commands/` 负责跨边界校验与调度，不持有长期领域状态。`commands/probe.rs` 是插件能力 `probe-service-status` 的唯一探活实现：探测地址与 2 秒超时在宿主内固定，不进入命令入参或插件设置；它新开独立的 HTTP 客户端，不启用 cookie jar，也不带浏览器来源头，把观察结果判成在线、探测被拒、未运行或未知四档，只回传判定时刻与该服务的启动时间，不透传服务端返回原文。该文件不注册成平铺原生命令，只由能力通道按实例授权后调用。
 - `commands/loopback.rs` 与 `component_runtime/loopback.rs` 是插件能力 `loopback-channel` 的实现：`register_loopback_channel`、`read_loopback_channel`、`request_loopback` 三条命令在 Tauri 与本地 transport 共用同一门禁，按 `instanceId` 校验能力授权。监听只绑本机 IPv4 回环地址，`baseUrl` 只接受 `http://127.0.0.1:<port>` 或 `http://localhost:<port>` 并归一为本机 IPv4；每条通道保留最近 256 条、单条 body 上限 1 MiB、整体 300 秒的原始请求缓冲，读到即消费；凭据用 `CredReadW` 读取并清零系统缓冲区，出站自动注入、入站用常量时间比较校验，校验失败回 `401` 且不入缓冲，已校验的凭据头在交给插件前移除。缓冲更新复用 `component-host-event`（`kind = loopback-data:<channelId>`），首次读取后才投递；逐屏转发时通道数据通知不依赖时间消费者。实例移除与插件卸载都会释放端口并清缓冲。宿主不解析也缓存任何业务数据，过期判定归插件。
-- `workspace/` 负责自有布局、围栏归属、门户和组件布局事务，不执行文件操作。各类格子的持久展开边界统一使用工作区契约中的公共尺寸底线，临时投射单独校验；内容可读性和标题占位由前端负责。
+- `workspace/` 负责自有布局、围栏归属、门户和组件布局事务，不执行文件操作；偏好写入经 `PreferencesStore` 端口由应用层提交，不直接持有设置状态。各类格子的持久展开边界统一使用工作区契约中的公共尺寸底线，临时投射单独校验；内容可读性和标题占位由前端负责。
 - `shell/` 负责 Shell 项目身份、真实文件操作、菜单、剪贴板和 Shell OLE 数据对象。
 - `shell/images.rs` 持有独立图像 STA、去重队列和有界 LRU；`platform/windows/shell_image.rs` 在所属线程提取 Shell 缩略图、转换 PNG 及原生拖动位图。`get_desktop_item_image` 校验当前项目身份后请求图像，Shell 变化使缓存和在途结果失效，原生拖动只读取已完成缓存。
 - `host/` 负责逐显示器透明窗口、WebView2、坐标、命中图和桌面接管。桌面宿主只允许初始占位页与当前页面导航，鼠标侧键的前进/后退被拒绝，桌面层不会因导航被清空。

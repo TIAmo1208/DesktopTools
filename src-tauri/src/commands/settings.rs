@@ -93,6 +93,7 @@ pub(crate) fn execute_apply_preferences(app: &AppHandle, state: &SettingsState, 
     let monitors = app.state::<std::sync::Arc<crate::host::DesktopHostRuntime>>().snapshot().map_err(|error| error.message)?.hosts.into_iter().map(|host| host.monitor).collect::<Vec<_>>(); // 原生宿主的当前工作区尺寸。
     let workspace = app.state::<crate::workspace::WorkspaceState>(); // 全部布局共同使用的权威状态。
     let previous_lyrics = state.preferences().map(|value| value.music_lyrics_enabled).ok(); // 取词开关变化后需要重新请求第二事实。
+    crate::app::settings::validate_preferences(&preferences)?; // 保存前先做完整校验，失败不进入布局事务。
     let saved = workspace.save_preferences(state, preferences, &monitors).inspect_err(|error| crate::log_error!("设置：{error}"))?; // 原子保存后的权威偏好。
     if previous_lyrics != Some(saved.music_lyrics_enabled)
     {

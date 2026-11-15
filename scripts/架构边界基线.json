@@ -123,10 +123,6 @@
         {
             "file": "src-tauri/src/weather/activity.rs",
             "to": "app"
-        },
-        {
-            "file": "src-tauri/src/workspace/mod.rs",
-            "to": "app"
         }
     ]
 }
