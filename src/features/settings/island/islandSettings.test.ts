@@ -21,6 +21,15 @@ test("真实官方音乐清单进入岛设置列表，勾选才写入顺序", ()
     assert.deepEqual(updateIslandCardOrder([], cards[0].id, true), ["official.music-control"]);
 });
 
+test("收集箱与天气清单声明为浮岛卡且带卡片说明", () => {
+    for (const file of ["official.collect-box.json", "official.weather.json"]) {
+        const manifest = JSON.parse(readFileSync(new URL(`../../../../src-tauri/components/${file}`, import.meta.url), "utf8"));
+        assert.equal(manifest.island, true, `${file} 必须在设置页可开启`);
+        assert.equal(typeof manifest.description, "string");
+        assert.ok(manifest.description.length > 0);
+    }
+});
+
 test("岛卡顺序规范化、去重并限制为 32 项", () => {
     const cards = ["bad", "official.clock", "official.clock", ...Array.from({ length: 40 }, (_, index) => `plugin.card-${index}`)];
     const result = normalizeIslandCardOrder(cards);

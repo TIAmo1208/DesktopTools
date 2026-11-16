@@ -124,6 +124,8 @@ export interface ApplicationPreferences {
     islandOffset: number; // 沿贴边方向的有限 DIP 偏移。
     islandHideOnFullscreen: boolean; // 前台全屏时隐藏岛。
     islandCardOrder: string[]; // 已启用岛卡及展开顺序，最多 32 条。
+    islandWeatherSource: "" | "qweather" | "foreca"; // 浮岛天气卡选择的来源，空串表示尚未选择。
+    islandWeatherCityId: string; // 浮岛天气卡选择的城市标识，空串表示尚未选择。
     islandRadius: number; // 岛展开卡圆角，独立于界面圆角。
     islandForm: "capsule" | "notch"; // 胶囊离边 6px；刘海贴边并以贴边侧直角衔接。
     disabledPlugins: string[]; // 宿主停用的插件标识，不属于插件自己的设置文件。
@@ -230,6 +232,12 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     const islandCardOrder = [
         ...new Set(cards.filter((card: string) => ["official.", "plugin."].some((prefix) => card.startsWith(prefix) && card.length > prefix.length))),
     ].slice(0, 32); // 按首次出现顺序规范化。
+    const islandWeatherSource = candidate.islandWeatherSource === undefined ? "" : candidate.islandWeatherSource; // 缺失配置尚未选择来源。
+    if (islandWeatherSource !== "" && islandWeatherSource !== "qweather" && islandWeatherSource !== "foreca") throw new Error("浮岛天气来源无效");
+    const islandWeatherCityId = candidate.islandWeatherCityId === undefined ? "" : candidate.islandWeatherCityId; // 缺失配置尚未选择城市。
+    if (typeof islandWeatherCityId !== "string" || islandWeatherCityId.length > 1024 || /[\u0000-\u001f\u007f-\u009f]/.test(islandWeatherCityId))
+        throw new Error("浮岛天气城市标识无效");
+    if (islandWeatherCityId && !islandWeatherSource) throw new Error("浮岛天气城市必须同时选择来源");
     const disabledPlugins = parseDisabledPlugins(candidate.disabledPlugins); // 缺失、非数组和非法条目都按空或丢弃处理。
     const themePluginId = candidate.themePluginId ?? null; // 缺省不选择外部主题，不检查目录存在性。
     if (themePluginId !== null && (typeof themePluginId !== "string" || !themePluginId.trim())) throw new Error("主题插件标识无效");
@@ -264,6 +272,8 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         islandRadius,
         islandForm,
         islandCardOrder,
+        islandWeatherSource,
+        islandWeatherCityId,
         disabledPlugins,
     };
 };

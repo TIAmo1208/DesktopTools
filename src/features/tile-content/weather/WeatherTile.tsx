@@ -24,6 +24,7 @@ import { openPopupWeatherCity, openPopupWeatherSource } from "../../popup-layer/
 import { usePreferences } from "../../../app/preferences/PreferencesProvider";
 import { ComponentTile, type ComponentTileProps } from "../../components/ComponentTile";
 import type { DesktopTileMenuItem } from "../../tiles/DesktopTileMenu";
+import { WeatherGlyph } from "../../../shared/WeatherGlyph";
 import "./WeatherTile.css";
 import editorLinkIcon from "../../../../resources/editor-link.svg?raw";
 import { publishMessage } from "../../notifications/messageNotification";
@@ -78,21 +79,13 @@ const selectWeatherMode = (width: number, height: number, fontScale: number) => 
 
 const ModuleNotice = ({ state }: { state: ModuleState }) => <p className="weather-tile__module-notice">{state === "loading" ? "正在获取" : "暂不可用"}</p>;
 
-const WeatherGlyph = ({ code }: { code?: string }) => (
-    <svg className="weather-tile__glyph" viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="4" />
-        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
-        {code && Number(code) >= 300 && <path d="M7 17h9a3 3 0 0 0 0-6 4.5 4.5 0 0 0-8.5-1A3 3 0 0 0 7 17Z" />}
-    </svg>
-);
-
 const CurrentModule = ({ forecast, state }: { forecast?: Forecast; state: ModuleState }) => {
     const current = forecast?.current;
     const today = forecast?.daily?.days?.find((item) => isToday(item.forecastStartTime, forecast.city));
     return (
         <section className="weather-tile__module weather-tile__current" aria-label="当前天气">
             <div className="weather-tile__current-main">
-                <WeatherGlyph code={current?.condition?.code} />
+                <WeatherGlyph className="weather-tile__glyph" code={current?.condition?.code} />
                 <strong>{temperature(current?.temperature?.value)}</strong>
                 <span>{current?.condition?.text ?? (state === "loading" ? "正在获取天气" : "暂不可用")}</span>
             </div>
@@ -131,7 +124,7 @@ const HourlyModule = ({ forecast, state }: { forecast?: Forecast; state: ModuleS
                 {hours.slice(page * pageSize, page * pageSize + pageSize).map((item, index) => (
                     <div className="weather-tile__hour" key={`${item.forecastTime ?? "hour"}-${index}`}>
                         <small>{city ? formatHour(item.forecastTime, city) : "--:--"}</small>
-                        <WeatherGlyph code={item.condition?.code} />
+                        <WeatherGlyph className="weather-tile__glyph" code={item.condition?.code} />
                         <span>{temperature(item.temperature?.value)}</span>
                     </div>
                 ))}
@@ -151,7 +144,7 @@ const DailyModule = ({ forecast, state }: { forecast?: Forecast; state: ModuleSt
                 {(forecast?.daily?.days ?? []).slice(0, 7).map((item, index) => (
                     <div className="weather-tile__day" key={`${item.forecastStartTime ?? "day"}-${index}`}>
                         <span>{city ? (isToday(item.forecastStartTime, city) ? "今天" : formatDay(item.forecastStartTime, city)) : "--"}</span>
-                        <WeatherGlyph code={item.daytime?.condition?.code} />
+                        <WeatherGlyph className="weather-tile__glyph" code={item.daytime?.condition?.code} />
                         <small>{item.daytime?.condition?.text ?? "--"}</small>
                         <strong>
                             {temperature(item.temperatureMin?.value)} / {temperature(item.temperatureMax?.value)}

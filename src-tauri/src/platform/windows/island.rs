@@ -8,11 +8,11 @@ use std::{
     num::NonZeroIsize,
     rc::Rc,
     sync::{
-        Arc, Mutex, OnceLock,
+        Mutex, OnceLock,
         atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
     },
 };
-use tauri::{AppHandle, Emitter, Listener, Manager};
+use tauri::{AppHandle, Emitter, Listener};
 use windows::{
     Win32::{
         Foundation::{CloseHandle, ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SetLastError, WIN32_ERROR, WPARAM},
@@ -297,6 +297,8 @@ fn px_span(start: f64, length: f64, scale: f64) -> (i32, i32)
 struct IslandWindow
 {
     hwnd: HWND,                           // 外层不激活工具窗口。
+    #[allow(dead_code)] // 只靠声明顺序在 WebView 之前撤销投放目标，不参与读取。
+    drop_targets: Option<super::island_drop::IslandDropTargets>, // 根窗口与 WebView2 后代的 Shell 投放目标；先于 WebView 释放。
     webview: Rc<WebView>,                 // UI 线程可克隆快照，在借用期外调整 Controller。
     app: AppHandle,                       // 松手保存偏好所需应用状态。
     monitor: DesktopHostMonitor,          // 主屏当前工作区与缩放。
@@ -397,6 +399,9 @@ static READER: OnceLock<crate::preferences::PreferencesReader> = OnceLock::new()
 /// 应用层注入的偏好写入口；落点写回不再直接持有存储。
 static WRITER: OnceLock<std::sync::Arc<dyn crate::preferences::PreferencesWriter>> = OnceLock::new();
 
+/// 应用层注入的浮岛投放端口；平台不直接调用收集与岛卡状态。
+static DROP_PORT: OnceLock<std::sync::Arc<dyn crate::drop_bridge::IslandDropPort>> = OnceLock::new();
+
 /// 读取当前偏好；未注入时给出可诊断错误。
 fn read_preferences() -> Result<crate::contracts::settings::ApplicationPreferences, String> { READER.get().ok_or_else(|| "岛偏好读取器未初始化".to_string())?() }
 
@@ -404,11 +409,12 @@ fn read_preferences() -> Result<crate::contracts::settings::ApplicationPreferenc
 fn suppressed(snapshot: &super::refresh_policy::ForegroundSnapshot, hide_fullscreen: bool) -> bool { snapshot.locked == Some(true) || (hide_fullscreen && snapshot.fullscreen == Some(true)) }
 
 /// 在既有前台事件上重新断言置顶，不启动轮询。
-pub(crate) fn install(app: &AppHandle, command_handler: super::NativeCommandHandler, read_preferences: crate::preferences::PreferencesReader, write_preferences: std::sync::Arc<dyn crate::preferences::PreferencesWriter>)
+pub(crate) fn install(app: &AppHandle, command_handler: super::NativeCommandHandler, read_preferences: crate::preferences::PreferencesReader, write_preferences: std::sync::Arc<dyn crate::preferences::PreferencesWriter>, drop_port: std::sync::Arc<dyn crate::drop_bridge::IslandDropPort>)
 {
     let _ = COMMAND_HANDLER.set(command_handler); // 只注入一次，重复安装保留首个。
     let _ = READER.set(read_preferences); // 读数经应用层注入。
     let _ = WRITER.set(write_preferences); // 落点写回经应用层端口。
+    let _ = DROP_PORT.set(drop_port); // 投放收入经应用层端口。
     let handle = app.clone(); // 事件闭包不持有任何 Win32 资源。
     app.listen("desktop-refresh-policy-changed", move |_| {
         let _ = handle.run_on_main_thread(|| apply_policy(true));
@@ -622,7 +628,24 @@ fn create(app: &AppHandle) -> Result<(), String>
         return Err(format!("岛置顶失败：{error}"));
     }
     crate::log_info!("岛：已创建隐藏窗口，显示器={}，工作区=[{}, {}, {}, {}]，缩放={}", monitor.id, monitor.work_x, monitor.work_y, monitor.work_width, monitor.work_height, monitor.scale_factor);
-    ISLAND.with(|slot| *slot.borrow_mut() = Some(IslandWindow { hwnd, webview: Rc::new(webview), app: app.clone(), monitor, geometry: None, drag: DragProgress::default(), surface: AppliedSurface::default(), screenshot_hidden: false }));
+    let drop_targets = match DROP_PORT.get().cloned()
+    {
+        Some(port) => match super::island_drop::register(hwnd, port)
+        {
+            Ok(targets) => Some(targets),
+            Err(error) =>
+            {
+                crate::log_warn!("岛：拖放目标初始化失败，卡片仍显示但不接收投放，错误：{error}");
+                None
+            }
+        },
+        None =>
+        {
+            crate::log_warn!("岛：投放端口未注入，收集内容暂不接收");
+            None
+        }
+    }; // 拖放失败不阻止浮岛出现，设置页仍可开关卡片。
+    ISLAND.with(|slot| *slot.borrow_mut() = Some(IslandWindow { hwnd, drop_targets, webview: Rc::new(webview), app: app.clone(), monitor, geometry: None, drag: DragProgress::default(), surface: AppliedSurface::default(), screenshot_hidden: false }));
     ISLAND_HWND.store(hwnd.0 as isize, Ordering::Release);
     Ok(())
 }
@@ -631,7 +654,7 @@ fn create(app: &AppHandle) -> Result<(), String>
 pub(crate) fn dispatch_script(script: &str)
 {
     let target = ISLAND.with(|slot| slot.borrow().as_ref().map(|window| (Rc::clone(&window.webview), window.hwnd, window.app.clone()))); // 岛关闭时没有投递目标。
-    let Some((webview, hwnd, app)) = target
+    let Some((webview, hwnd, _app)) = target
     else
     {
         return;

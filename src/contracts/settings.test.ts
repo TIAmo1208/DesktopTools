@@ -29,8 +29,18 @@ test("主题字段缺省为 null，基线完整校验且不检查插件目录", 
 test("岛偏好默认值、整份保存往返与 Rust 一致的边界", () => {
     const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 从读取到整份提交使用同一个解析结果。
     assert.deepEqual(
-        [defaults.islandEnabled, defaults.islandForm, defaults.islandEdge, defaults.islandOffset, defaults.islandHideOnFullscreen, defaults.islandCardOrder, defaults.islandRadius],
-        [false, "capsule", "", 0, true, [], 12],
+        [
+            defaults.islandEnabled,
+            defaults.islandForm,
+            defaults.islandEdge,
+            defaults.islandOffset,
+            defaults.islandHideOnFullscreen,
+            defaults.islandCardOrder,
+            defaults.islandWeatherSource,
+            defaults.islandWeatherCityId,
+            defaults.islandRadius,
+        ],
+        [false, "capsule", "", 0, true, [], "", "", 12],
     );
     const selected = parsePreferences({
         ...defaults,
@@ -40,6 +50,8 @@ test("岛偏好默认值、整份保存往返与 Rust 一致的边界", () => {
         islandOffset: -12.5,
         islandHideOnFullscreen: false,
         islandCardOrder: ["official.music", "plugin.clock"],
+        islandWeatherSource: "qweather",
+        islandWeatherCityId: "101010100",
         islandRadius: 16,
     });
     assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify({ ...selected, fontSize: 14 }))), { ...selected, fontSize: 14 });
@@ -62,6 +74,11 @@ test("岛偏好默认值、整份保存往返与 Rust 一致的边界", () => {
         { islandRadius: null },
         { islandCardOrder: null },
         { islandCardOrder: [1] },
+        { islandWeatherSource: "owm" },
+        { islandWeatherSource: null },
+        { islandWeatherCityId: 101010100 },
+        { islandWeatherCityId: "line\nbreak" },
+        { islandWeatherCityId: "city" },
     ])
         assert.throws(() => parsePreferences({ ...defaults, ...patch }));
     const cards = ["official.music", "official.music", "plugin.", "other.card", ...Array.from({ length: 40 }, (_, index) => `plugin.card${index}`)]; // 同 Rust：丢弃非法标识、去重、截断。

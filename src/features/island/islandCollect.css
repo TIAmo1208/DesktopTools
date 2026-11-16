@@ -1,0 +1,168 @@
+/* 浮岛收集箱只复用浮岛令牌，不导入桌面格子的列表轨道与菜单样式。 */
+.island-collect {
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+    gap: 2px;
+}
+
+.island-collect__line,
+.island-collect__title,
+.island-collect__summary {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.island-collect__line {
+    font-size: 11px;
+    line-height: 16px;
+}
+
+/* 常态胶囊的内容盒固定 28 DIP，hover 固定 48 DIP，只垂直居中，不撑高卡片。 */
+.island-collect--collapsed,
+.island-collect--hover {
+    justify-content: center;
+    block-size: 100%;
+}
+
+.island-collect--hover {
+    gap: 0;
+}
+
+.island-collect--hover .island-collect__line {
+    line-height: 20px;
+}
+
+/* 竖向胶囊只有 28 DIP 内容宽：收起文字，用条目数或「箱」占位。 */
+.island[data-vertical="true"] .island-collect--collapsed::after {
+    content: attr(data-count);
+    font-size: 11px;
+    line-height: 16px;
+    text-align: center;
+}
+
+.island[data-vertical="true"] .island-collect--collapsed .island-collect__line {
+    display: none;
+}
+
+.island-collect__status {
+    margin: 0;
+    block-size: auto;
+    color: color-mix(in srgb, var(--fence-text) 78%, transparent);
+    font-size: 11px;
+    line-height: 20px;
+}
+
+.island[data-state="expanded"] .island-collect__status {
+    line-height: 24px;
+}
+
+.island-collect__heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    color: color-mix(in srgb, var(--fence-text) 78%, transparent);
+    font-size: 11px;
+    line-height: 18px;
+}
+
+.island-collect__heading small {
+    font-size: 11px;
+}
+
+/* 展开态加宽到 300 DIP，三列图片与整行文本混排，显示更多内容。 */
+.island-collect--expanded {
+    inline-size: 300px;
+}
+
+.island-collect__list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    min-inline-size: 0;
+}
+
+/* 展开态条目是收集箱的打开与拖出入口；按钮自身阻断卡片排序与窗口拖动。 */
+.island-collect__item {
+    display: flex;
+    grid-column: 1 / -1;
+    align-items: center;
+    gap: 8px;
+    min-inline-size: 0;
+    min-block-size: 44px;
+    padding: 6px;
+    border: 0;
+    border-radius: 4px;
+    color: var(--fence-text);
+    background: color-mix(in srgb, var(--fence-text) 5%, transparent);
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+}
+
+/* 图片项只显示缩略图，不显示名称；保持 3:2 比例并占一列。 */
+.island-collect__item--image {
+    grid-column: span 1;
+    aspect-ratio: 3 / 2;
+    min-block-size: 0;
+    padding: 0;
+    overflow: clip;
+    background: color-mix(in srgb, var(--fence-text) 8%, transparent);
+}
+
+.island-collect__item:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--fence-text) 12%, transparent);
+}
+
+.island-collect__item:active:not(:disabled) {
+    background: color-mix(in srgb, var(--fence-text) 20%, transparent);
+}
+
+.island-collect__item:disabled {
+    opacity: 0.48;
+    cursor: default;
+}
+
+.island-collect__body {
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+    gap: 0;
+}
+
+.island-collect__title {
+    font-size: 12px;
+    line-height: 18px;
+}
+
+.island-collect__summary {
+    color: color-mix(in srgb, var(--fence-text) 78%, transparent);
+    font-size: 11px;
+    line-height: 16px;
+}
+
+/* 图片缩略图与桌面列表同为 3:2 比例；展开图片项用整格填充。 */
+.island-collect__thumb {
+    display: block;
+    flex: none;
+    inline-size: 42px;
+    block-size: 28px;
+    border-radius: 4px;
+    overflow: clip;
+    background: color-mix(in srgb, var(--fence-text) 8%, transparent);
+}
+
+.island-collect__thumb--fill {
+    inline-size: 100%;
+    block-size: 100%;
+    border-radius: inherit;
+}
+
+.island-collect__thumb img {
+    inline-size: 100%;
+    block-size: 100%;
+    object-fit: cover;
+    -webkit-user-drag: none;
+}

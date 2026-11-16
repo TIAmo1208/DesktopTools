@@ -245,7 +245,13 @@ pub fn run()
             });
             let desktop_host = DesktopHostRuntime::start(app.handle())?;
             app.manage(Arc::clone(&desktop_host));
-            crate::platform::windows::island::install(app.handle(), desktop_host_command_handler(app.handle().clone()), crate::preferences::reader(app.handle()), std::sync::Arc::new(crate::app::preferences_writer::AppPreferencesWriter { app: app.handle().clone() })); // 仅偏好开启时懒建独立岛页面。
+            crate::platform::windows::island::install(
+                app.handle(),
+                desktop_host_command_handler(app.handle().clone()),
+                crate::preferences::reader(app.handle()),
+                std::sync::Arc::new(crate::app::preferences_writer::AppPreferencesWriter { app: app.handle().clone() }),
+                std::sync::Arc::new(crate::app::desktop_drop::AppDesktopDrop { app: app.handle().clone() }),
+            ); // 仅偏好开启时懒建独立岛页面；投放收入仍走应用层端口。
             // Shell 变化通知由唯一协调线程消费。
             let changes = app.state::<DesktopItemState>().take_change_receiver().map_err(|error| error.message)?;
             start_desktop_item_change_monitor(app.handle().clone(), changes);

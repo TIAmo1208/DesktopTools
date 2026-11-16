@@ -162,11 +162,9 @@ html[data-island="true"] #root {
     overflow: clip;
     text-overflow: ellipsis;
 }
+/* 展开态不再用卡片本体的拖动排序，卡片只保留键盘顺序入口。 */
 .island[data-state="expanded"] .island-card {
-    cursor: grab;
-}
-.island[data-state="expanded"] .island-card:active {
-    cursor: grabbing;
+    cursor: default;
 }
 /* 根只承接键盘入口，焦点视觉内绘到卡片，透明圆角不出现矩形 UA 外环。 */
 .island:focus-visible {
@@ -681,7 +679,85 @@ html[data-island="true"] #root {
     min-inline-size: 48px;
     max-inline-size: 176px;
 }
-/* 消息卡不参与排序，展开态不显示抓取光标。 */
-.island[data-state="expanded"] .island-card[data-island-message="true"] {
-    cursor: default;
+/* 展开态消息面板：默认折叠最新一条，按键切为最近消息列表。 */
+.island-message-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-inline-size: 0;
+    inline-size: 100%;
+}
+.island-message-panel__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: color-mix(in srgb, var(--fence-text) 78%, transparent);
+    font-size: 11px;
+    line-height: 18px;
+}
+.island-message-panel__toggle {
+    display: grid;
+    place-items: center;
+    flex: none;
+    inline-size: 28px;
+    block-size: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    color: var(--fence-text);
+    background: transparent;
+    cursor: pointer;
+}
+.island-message-panel__toggle svg {
+    inline-size: 16px;
+    block-size: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transform: rotate(90deg);
+}
+.island[data-animations="true"] .island-message-panel__toggle svg {
+    transition: transform 140ms ease-out;
+}
+.island-message-panel__toggle[data-open="true"] svg {
+    transform: rotate(-90deg);
+}
+.island-message-panel__toggle:active {
+    background: color-mix(in srgb, var(--fence-text) 18%, transparent);
+}
+@media (hover: hover) and (pointer: fine) {
+    .island-message-panel__toggle:hover {
+        background: color-mix(in srgb, var(--fence-text) 12%, transparent);
+    }
+}
+.island-message-panel__list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-inline-size: 0;
+}
+.island-message-panel__list .island-message {
+    align-items: flex-start;
+    padding-block: 0;
+}
+.island-message-panel__list .island-message + .island-message {
+    padding-block-start: 8px;
+    border-block-start: 1px solid color-mix(in srgb, var(--fence-text) 18%, transparent);
+}
+.island-message-panel__list .island-message__icon {
+    margin-block-start: 2px;
+}
+.island-message-panel__list .island-message__body {
+    display: -webkit-box;
+    max-block-size: 72px;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+}
+.island-message-panel__list .island-message__close {
+    margin-block-start: -6px;
+    margin-inline-end: -6px;
 }

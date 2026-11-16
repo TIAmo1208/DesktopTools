@@ -139,13 +139,13 @@ export const islandCollapseSettle = (token: number, activeToken: number, apply: 
     return true;
 };
 
-/** 同一次按下只走一条拖动路径，歌词与媒体图不属于控件。 */
-export const islandDragIntent = (mode: IslandStateRequest["state"], button: number, blocked: boolean, insideCard: boolean): "window" | "sort" | undefined => {
+/** 同一次按下只走一条拖动路径；展开态不拖动窗口，也不通过卡片拖动排序。 */
+export const islandDragIntent = (mode: IslandStateRequest["state"], button: number, blocked: boolean, insideCard: boolean): "window" | undefined => {
     if (button !== 0 || blocked || !insideCard) return undefined;
-    return mode === "expanded" ? "sort" : "window";
+    return mode === "expanded" ? undefined : "window";
 };
 
-/** 排序落点是卡片身份，不需要句柄；外部拖放与控件内落点不接管。 */
+/** 键盘排序落点是卡片身份，不需要句柄；外部拖放与控件内落点不接管。 */
 export const islandSortTarget = (
     mode: IslandStateRequest["state"],
     order: readonly string[],

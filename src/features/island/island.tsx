@@ -9,10 +9,13 @@ import successIcon from "../../../resources/editor-check.svg?raw";
 import infoIcon from "../../../resources/info.svg?raw";
 import errorIcon from "../../../resources/message-error.svg?raw";
 import warningIcon from "../../../resources/message-warning.svg?raw";
+import chevronIcon from "../../../resources/weather-chevron-right.svg?raw";
 import { PluginSlot, pluginTileType } from "../components/PluginSlot";
 import { useMusicState, musicProgressRange, positionAt } from "../music/musicSource";
 import { usePreferences } from "../../app/preferences/PreferencesProvider";
 import { ScrollingText } from "../../shared/ScrollingText";
+import { IslandCollectBox } from "./IslandCollectBox";
+import { IslandWeather } from "./IslandWeather";
 import {
     islandAttachedCorner,
     islandCardMaskPath,
@@ -43,8 +46,6 @@ import { ISLAND_LYRIC_OFFSETS, islandCapsuleLineLimit, islandLyricView, islandMu
 import { ISLAND_FENCE_TOKENS } from "./islandTokens";
 import "../../styles/fenceTokens.css"; // 探针读取的围栏内置值，来自桌面工作区与浮岛共用的那一份。
 import "./island.css";
-/** Debug 构建由后端注入的浮岛测试卡：只展示，不写偏好、不进卡片顺序与设置页列表。 */
-const ISLAND_DEBUG_CARD = "official.debug-island";
 const PAINTED_STYLE_PROPERTIES = [
     "position",
     "left",
@@ -244,7 +245,7 @@ const IslandMusic = ({ mode, side, motion }: { mode: IslandMode; side: boolean; 
                     )}
                 </div>
                 {mode === "collapsed" ? (
-                    <p ref={lineRef} className="island-music__line" title={view.line} data-motion={motion ? "on" : "off"} style={lineStyle}>
+                    <p ref={lineRef} className="island-music__line" data-motion={motion ? "on" : "off"} style={lineStyle}>
                         <span key={`active:${view.index}:${view.line}`} className="island-music__line-entry" data-active="true">
                             <span key={scrollKey} className="island-music__current" style={scrollStyle}>
                                 {view.line}
@@ -261,13 +262,13 @@ const IslandMusic = ({ mode, side, motion }: { mode: IslandMode; side: boolean; 
                 ) : (
                     <div className="island-music__info">
                         <div className="island-music__metadata">
-                            <p className="island-music__title" title={media?.title}>
+                            <p className="island-music__title">
                                 <ScrollingText text={media?.title || status} enabled={motion} />
                             </p>
-                            <p className="island-music__artist" title={media?.artist}>
+                            <p className="island-music__artist">
                                 <ScrollingText text={media?.artist || "\u00a0"} enabled={motion} />
                             </p>
-                            <p className="island-music__source" title={media?.source}>
+                            <p className="island-music__source">
                                 <ScrollingText text={failure ? "控制失败，请重试" : media?.source || "\u00a0"} enabled={motion} />
                             </p>
                         </div>
@@ -292,7 +293,7 @@ const IslandMusic = ({ mode, side, motion }: { mode: IslandMode; side: boolean; 
                             {ISLAND_LYRIC_OFFSETS.map((offset, slot) => {
                                 const lineIndex = view.index + offset;
                                 return (
-                                    <p key={lineIndex >= 0 ? `line:${lineIndex}` : `line:${lineIndex}:${slot}`} data-line-index={lineIndex} data-current={offset === 0} title={music.lyrics[lineIndex]?.text}>
+                                    <p key={lineIndex >= 0 ? `line:${lineIndex}` : `line:${lineIndex}:${slot}`} data-line-index={lineIndex} data-current={offset === 0}>
                                         {offset === 0 ? <ScrollingText text={view.slots[slot]} enabled={motion} /> : view.slots[slot]}
                                     </p>
                                 );
@@ -321,17 +322,17 @@ const IslandMessageCard = ({ message, mode, onDismiss }: { message: IslandMessag
         <div className="island-message" data-kind={message.type} data-loading={message.loading ? "true" : undefined}>
             <span className="island-message__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: ISLAND_MESSAGE_ICONS[message.type] }} />
             {mode === "collapsed" ? (
-                <p className="island-message__line" title={message.content}>
+                <p className="island-message__line">
                     {message.content}
                 </p>
             ) : (
                 <div className="island-message__info">
                     {mode === "expanded" ? (
-                        <p className="island-message__body" title={message.content}>
+                        <p className="island-message__body">
                             {message.content}
                         </p>
                     ) : (
-                        <p className="island-message__title" title={message.content}>
+                        <p className="island-message__title">
                             {message.content}
                         </p>
                     )}
@@ -349,6 +350,37 @@ const IslandMessageCard = ({ message, mode, onDismiss }: { message: IslandMessag
     );
 };
 
+/** 展开态消息面板：默认只显示最新一条，按键切换为最近消息列表。 */
+const IslandMessagePanel = ({ messages, onDismiss }: { messages: IslandMessage[]; onDismiss: (id: number) => void }) => {
+    const [open, setOpen] = useState(false); // 每次进入展开态默认折叠。
+    const visible = open ? messages : messages.slice(0, 1); // 折叠时只保留最新一条。
+    return (
+        <div className="island-message-panel">
+            <div className="island-message-panel__head">
+                <span>消息</span>
+                {messages.length > 1 ? (
+                    <button
+                        type="button"
+                        className="island-message-panel__toggle"
+                        data-island-no-drag="true"
+                        aria-expanded={open}
+                        aria-label={open ? "折叠消息" : `展开全部 ${messages.length} 条消息`}
+                        data-open={open ? "true" : "false"}
+                        onClick={() => setOpen((value) => !value)}
+                    >
+                        <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: chevronIcon }} />
+                    </button>
+                ) : null}
+            </div>
+            <div className="island-message-panel__list">
+                {visible.map((message) => (
+                    <IslandMessageCard key={message.id} message={message} mode="expanded" onDismiss={onDismiss} />
+                ))}
+            </div>
+        </div>
+    );
+};
+
 /** 岛独立挂载，不装配工作区、格子外壳或设置入口。 */
 export const IslandPage = () => {
     const { preferences, onPreferences, animationsEnabled } = usePreferences();
@@ -362,6 +394,7 @@ export const IslandPage = () => {
     const modeRef = useRef(mode); // 延时回调读取最新状态，不能覆盖键盘或点击后的展开。
     modeRef.current = mode;
     const [work, setWork] = useState<IslandRect>();
+    const [monitorId, setMonitorId] = useState<string>(); // 主屏身份供浮岛天气登记活动订阅。
     const root = useRef<HTMLElement>(null); // 只测量岛自身。
     const palette = useRef<HTMLDivElement>(null); // 只读取现有主题的围栏令牌，不呈现工作区。
     // 用布局副作用在首次绘制前完成复制：island.css 不再自带令牌回落，浮岛的令牌只有样式表与偏好两处来源。
@@ -399,8 +432,7 @@ export const IslandPage = () => {
     const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const dragHold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined); // 按下到进入原生拖动之间的长按计时。
     const dragging = useRef(false); // 原生移动循环期间不切 hover。
-    const cardDrag = useRef<string | undefined>(undefined); // 卡片排序身份，不保存布局。
-    const sortDragAllowed = useRef(false); // 保留按下的真实来源，阻止控件借父卡片发起 HTML 拖动。
+
     const geometryKey = useRef(""); // 同一实测结果不重复 IPC。
     const currentGeometry = useRef<IslandStateRequest | undefined>(undefined); // 最近实际完成的原生区域。
     const collapsedBox = useRef<IslandStateRequest | undefined>(undefined); // 最近胶囊态区域，hover 窗口与它取并集避免指针离开。
@@ -571,6 +603,7 @@ export const IslandPage = () => {
         void getDesktopHostSnapshot()
             .then((desktop) => {
                 const monitor = desktop.hosts.find((host) => host.monitor.primary)?.monitor;
+                if (active && monitor) setMonitorId(monitor.id);
                 if (active && monitor)
                     setWork({
                         left: monitor.workX / monitor.scaleFactor,
@@ -594,9 +627,9 @@ export const IslandPage = () => {
     const edge = preferences?.islandEdge ?? "";
     const vertical = mode === "collapsed" && (edge === "left" || edge === "right"); // 仅胶囊态在左右贴边时竖排；hover 与展开保持水平卡片。
     const instances = snapshot?.instances ?? [];
-    const sortable = instances.filter((instance) => instance.componentId !== ISLAND_DEBUG_CARD); // 测试卡不参与排序与持久化。
+    const sortable = instances; // 卡片身份同一份，不另生成排序列表。
     const visibleMessages = islandMessageView(messages, heldMessages.current, mode); // 消息优先占用常态胶囊与 hover。
-    const visibleInstances = mode === "expanded" ? instances : visibleMessages.length ? [] : sortable.slice(0, 1); // 测试卡只在展开态出现，胶囊不显示它。
+    const visibleInstances = mode === "expanded" ? instances : visibleMessages.length ? [] : sortable.slice(0, 1);
     const edgeKey = useRef(""); // 上次测量的贴边方向，变化时丢弃旧几何缓存。
     const formKey = useRef(""); // 上次测量的岛形态，变化时丢弃旧胶囊高度与并集缓存。
     useLayoutEffect(() => {
@@ -948,7 +981,8 @@ export const IslandPage = () => {
                                             clearFillets();
                                             applyViewportMargin(request);
                                             targetGeometry.current = request;
-                                            element.style.setProperty("--island-expanded-inline", `${expandedFrame.windowBox.width}px`);
+                                            // 宽度取展开目标本身而不是入态并集：目标宽度在动画前已实测，动画结束后不再被并集撑宽后重排。
+                                            element.style.setProperty("--island-expanded-inline", `${request.windowBox.width}px`);
                                             element.style.setProperty("--island-expanded-block", `${expandedFrame.windowBox.height}px`);
                                             currentGeometry.current = expandedFrame;
                                             paintedGeometry.current = {
@@ -1039,7 +1073,7 @@ export const IslandPage = () => {
         if (pending === undefined || !preferences) return;
         if ((preferences.islandEdge || "top") === (edge || "top") && Math.abs(preferences.islandOffset - pending) < 0.01) pendingOffset.current = undefined; // 权威落点已到，不再压住后续偏移。
     }, [preferences, edge]);
-    const interactionBusy = () => dragging.current || Boolean(gesture.current) || Boolean(cardDrag.current) || Boolean(scrollbarDrag.current);
+    const interactionBusy = () => dragging.current || Boolean(gesture.current) || Boolean(scrollbarDrag.current);
     // 常态关闭透明像素检测：门闩只在 hover 与展开态参与判定，常态进入仍是原 180ms 消抖。
     const hoverLatched = () => modeRef.current !== "collapsed" && marginState.current.latch !== "open";
     const scheduleHover = (inside: boolean) => {
@@ -1208,7 +1242,6 @@ export const IslandPage = () => {
     const handlePointerDown = (event: PointerEvent<HTMLElement>) => {
         const target = event.target as Element;
         const intent = islandDragIntent(mode, event.button, Boolean(target.closest(ISLAND_NO_DRAG)), Boolean(target.closest(".island-card")));
-        sortDragAllowed.current = intent === "sort";
         if (intent !== "window" || dragging.current) return;
         marginState.current.since = undefined;
         stopHoverTimer();
@@ -1315,13 +1348,21 @@ export const IslandPage = () => {
             <div ref={surface} className="island__surface" aria-hidden="true" />
             {visibleMessages.length || visibleInstances.length ? (
                 <>
-                    {visibleMessages.map((message) => (
-                        <section className="island-card" key={`island-message-${message.id}`} aria-label={`${message.source}消息`} data-island-message="true">
+                    {mode === "expanded" && visibleMessages.length ? (
+                        <section className="island-card" aria-label="消息" data-island-message="true">
                             <div className="island-card__content">
-                                <IslandMessageCard message={message} mode={mode} onDismiss={handleDismissMessage} />
+                                <IslandMessagePanel messages={visibleMessages} onDismiss={handleDismissMessage} />
                             </div>
                         </section>
-                    ))}
+                    ) : (
+                        visibleMessages.map((message) => (
+                            <section className="island-card" key={`island-message-${message.id}`} aria-label={`${message.source}消息`} data-island-message="true">
+                                <div className="island-card__content">
+                                    <IslandMessageCard message={message} mode={mode} onDismiss={handleDismissMessage} />
+                                </div>
+                            </section>
+                        ))
+                    )}
                     {visibleInstances.map((instance) => {
                     const manifest = snapshot!.runtime.manifests.find((item) => item.id === instance.componentId)!;
                     const registration = snapshot!.runtime.instances.find((item) => item.instanceId === instance.instanceId);
@@ -1330,57 +1371,8 @@ export const IslandPage = () => {
                             className="island-card"
                             key={instance.instanceId}
                             aria-label={manifest.name}
-                            data-island-debug-card={instance.componentId === ISLAND_DEBUG_CARD ? "true" : undefined}
-                            draggable={mode === "expanded" && instance.componentId !== ISLAND_DEBUG_CARD}
                             tabIndex={mode === "expanded" ? 0 : undefined}
-                            aria-description={mode === "expanded" ? "拖动卡片调整顺序，或聚焦卡片后使用上下方向键" : undefined}
-                            onDragStart={(event) => {
-                                if (instance.componentId === ISLAND_DEBUG_CARD) {
-                                    event.preventDefault(); // 测试卡不参与排序，也不写持久化顺序。
-                                    return;
-                                }
-                                if (
-                                    !sortDragAllowed.current ||
-                                    islandDragIntent(mode, 0, Boolean((event.target as Element).closest(ISLAND_NO_DRAG)), true) !== "sort"
-                                ) {
-                                    event.preventDefault();
-                                    return;
-                                }
-                                cardDrag.current = instance.componentId;
-                                event.dataTransfer.setData("text/plain", instance.componentId);
-                                event.dataTransfer.effectAllowed = "move";
-                            }}
-                            onDragEnd={() => {
-                                sortDragAllowed.current = false;
-                                cardDrag.current = undefined;
-                                if (root.current && !root.current.matches(":hover")) changeMode("collapsed");
-                            }}
-                            onDragOver={(event) => {
-                                if (
-                                    islandSortTarget(
-                                        mode,
-                                        sortable.map((item) => item.componentId),
-                                        cardDrag.current,
-                                        instance.componentId,
-                                        Boolean((event.target as Element).closest(ISLAND_NO_DRAG)),
-                                    )
-                                )
-                                    event.preventDefault();
-                            }}
-                            onDrop={(event) => {
-                                const from = cardDrag.current;
-                                const to = islandSortTarget(
-                                    mode,
-                                    instances.map((item) => item.componentId),
-                                    from,
-                                    instance.componentId,
-                                    Boolean((event.target as Element).closest(ISLAND_NO_DRAG)),
-                                );
-                                if (!from || !to) return;
-                                event.preventDefault();
-                                cardDrag.current = undefined;
-                                void handleReorder(from, to);
-                            }}
+                            aria-description={mode === "expanded" ? "聚焦卡片后使用上下方向键调整顺序" : undefined}
                             onKeyDown={(event) => {
                                 if (mode !== "expanded" || event.target !== event.currentTarget) return;
                                 const index = sortable.indexOf(instance);
@@ -1403,11 +1395,10 @@ export const IslandPage = () => {
                             <div className="island-card__content">
                                 {instance.componentId === "official.music-control" ? (
                                     <IslandMusic mode={mode} side={edge === "left" || edge === "right"} motion={animationsEnabled} />
-                                ) : instance.componentId === ISLAND_DEBUG_CARD ? (
-                                    <div data-island-debug-card="true" style={{ inlineSize: 192, minBlockSize: 168 }}>
-                                        <strong>Debug 浮岛卡</strong>
-                                        <p style={{ margin: "8px 0 0", opacity: 0.78 }}>仅 Debug 构建注入，不写偏好、不进卡片顺序与设置页列表。</p>
-                                    </div>
+                                ) : instance.componentId === "official.collect-box" ? (
+                                    <IslandCollectBox mode={mode} />
+                                ) : instance.componentId === "official.weather" ? (
+                                    <IslandWeather mode={mode} instanceId={instance.instanceId} monitorId={monitorId} />
                                 ) : registration?.status === "failed" ? (
                                     <p role="status">组件加载失败</p>
                                 ) : registration?.entry === "plugin:slot" ? (

@@ -124,6 +124,10 @@ pub struct ApplicationPreferences
     pub island_hide_on_fullscreen: bool,       // 前台全屏时隐藏岛。
     #[serde(default, deserialize_with = "deserialize_island_card_order")]
     pub island_card_order: Vec<String>, // 已启用岛卡及其展开态排列顺序。
+    #[serde(default)]
+    pub island_weather_source: String, // 浮岛天气卡选择的来源，空串表示尚未选择。
+    #[serde(default)]
+    pub island_weather_city_id: String, // 浮岛天气卡选择的城市标识，空串表示尚未选择。
     #[serde(default, deserialize_with = "deserialize_disabled_plugins")]
     pub disabled_plugins: Vec<String>, // 宿主停用的插件标识，不属于插件自己的设置文件。
 }
@@ -182,6 +186,8 @@ impl Default for ApplicationPreferences
             island_offset: 0.0,
             island_hide_on_fullscreen: true,
             island_card_order: Vec::new(),
+            island_weather_source: String::new(),
+            island_weather_city_id: String::new(),
             disabled_plugins: Vec::new(),
         }
     }
@@ -338,6 +344,18 @@ impl ApplicationPreferences
         {
             return Err("岛偏移必须为有限的 DIP 数值".to_string());
         }
+        if !matches!(self.island_weather_source.as_str(), "" | "qweather" | "foreca")
+        {
+            return Err("浮岛天气来源必须为空、qweather 或 foreca".to_string());
+        }
+        if self.island_weather_city_id.len() > 1024 || self.island_weather_city_id.chars().any(char::is_control)
+        {
+            return Err("浮岛天气城市标识无效".to_string());
+        }
+        if !self.island_weather_city_id.is_empty() && self.island_weather_source.is_empty()
+        {
+            return Err("浮岛天气城市必须同时选择来源".to_string());
+        }
         if !(16..=64).contains(&self.music_spectrum_bars)
         {
             return Err("频谱段数必须为 16 到 64 之间的整数".to_string());
@@ -378,8 +396,10 @@ mod island_tests
         assert_eq!(defaults.island_offset, 0.0);
         assert!(defaults.island_hide_on_fullscreen);
         assert!(defaults.island_card_order.is_empty());
+        assert!(defaults.island_weather_source.is_empty());
+        assert!(defaults.island_weather_city_id.is_empty());
         assert!(defaults.validate().is_ok());
-        let selected = ApplicationPreferences { island_radius: 16, island_form: "notch".into(), island_enabled: true, island_edge: "left".into(), island_offset: -12.5, island_hide_on_fullscreen: false, island_card_order: vec!["official.music".into(), "plugin.clock".into()], ..defaults }; // 非默认岛偏好。
+        let selected = ApplicationPreferences { island_radius: 16, island_form: "notch".into(), island_enabled: true, island_edge: "left".into(), island_offset: -12.5, island_hide_on_fullscreen: false, island_card_order: vec!["official.music".into(), "plugin.clock".into()], island_weather_source: "qweather".into(), island_weather_city_id: "101010100".into(), ..defaults }; // 非默认岛偏好。
         let value = serde_json::to_value(&selected).unwrap(); // 实际持久化字段名。
         assert_eq!(value["islandRadius"], 16);
         assert_eq!(value["islandForm"], "notch");
@@ -388,6 +408,8 @@ mod island_tests
         assert_eq!(value["islandOffset"], -12.5);
         assert_eq!(value["islandHideOnFullscreen"], false);
         assert_eq!(value["islandCardOrder"], serde_json::json!(["official.music", "plugin.clock"]));
+        assert_eq!(value["islandWeatherSource"], "qweather");
+        assert_eq!(value["islandWeatherCityId"], "101010100");
         assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap(), selected);
     }
 
@@ -439,6 +461,26 @@ mod island_tests
         let selected: ApplicationPreferences = serde_json::from_value(serde_json::json!({"islandForm": "notch"})).unwrap();
         assert_eq!(selected.island_form, "notch");
         assert!(selected.validate().is_ok());
+    }
+
+    /// 浮岛天气只接受已接入来源与有界城市标识，城市不能脱离来源单独保存。
+    #[test]
+    fn island_weather_binding_validates_source_and_city()
+    {
+        for source in ["", "qweather", "foreca"]
+        {
+            assert!(ApplicationPreferences { island_weather_source: source.into(), ..Default::default() }.validate().is_ok());
+        }
+        for source in ["Qweather", "owm", " qweather", "qweather "]
+        {
+            assert!(ApplicationPreferences { island_weather_source: source.into(), ..Default::default() }.validate().is_err());
+        }
+        assert!(ApplicationPreferences { island_weather_city_id: "city".into(), ..Default::default() }.validate().is_err()); // 没有来源不能只存城市。
+        assert!(ApplicationPreferences { island_weather_source: "qweather".into(), island_weather_city_id: "city".into(), ..Default::default() }.validate().is_ok());
+        assert!(ApplicationPreferences { island_weather_source: "qweather".into(), island_weather_city_id: "x".repeat(1025), ..Default::default() }.validate().is_err());
+        assert!(ApplicationPreferences { island_weather_source: "qweather".into(), island_weather_city_id: "line\nbreak".into(), ..Default::default() }.validate().is_err());
+        let parsed: ApplicationPreferences = serde_json::from_value(serde_json::json!({"islandWeatherSource": "foreca", "islandWeatherCityId": "abc"})).unwrap();
+        assert!(parsed.validate().is_ok());
     }
 
     /// 反序列化去重并丢弃非法项，只保留首次出现的前 32 个岛卡。

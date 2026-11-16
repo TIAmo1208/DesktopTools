@@ -13,6 +13,7 @@ import { MusicLyricsRow, MusicSpectrumBarsRow, MusicSpectrumFpsRow, MusicSpectru
 import { SettingsAbout } from "../ui";
 import { SettingsSwitch } from "../ui";
 import { islandCardAvailability, moveIslandCard, sortIslandCardManifests, updateIslandCardOrder } from "./islandSettings";
+import { IslandWeatherSettings } from "./IslandWeatherSettings";
 import "./IslandSettingsPage.css";
 
 /** 现成的垃圾桶图标缩到页头命令尺寸，与插件卸载按钮同一视觉。 */
@@ -107,11 +108,14 @@ export const IslandSettings = ({
                         <MusicSpectrumFpsRow className="settings__row" selectClassName="settings__select" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
                     </div>
                 ) : null}
+                {detail.id === "official.weather" ? <IslandWeatherSettings preferences={preferences} disabled={unavailable} onPreferences={onPreferences} /> : null}
                 {entries.length ? (
                     <div className="island-settings__entries">
                         {entries.map((entry) => <IslandPluginEntry key={entry.id} pluginId={detail.id} entry={entry} />)}
                     </div>
-                ) : detail.id === "official.music-control" ? null : (
+                ) : detail.id === "official.music-control" || detail.id === "official.weather" ? null : detail.id === "official.collect-box" ? (
+                    <p className="island-settings__empty">把文本、链接、图片或文件拖到浮岛上即可收入；展开后单击条目打开。</p>
+                ) : (
                     <p className="island-settings__empty">插件未提供设置条目</p>
                 )}
             </section>

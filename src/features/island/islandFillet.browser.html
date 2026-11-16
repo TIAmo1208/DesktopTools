@@ -137,14 +137,6 @@
                 runtime.instances.push({ ...runtime.instances[0], componentId, instanceId });
                 island.instances.push({ ...island.instances[0], componentId, instanceId });
             }
-            // 模拟 debug 构建由后端注入的浮岛测试卡：清单与实例都来自快照，页面不做额外注入。
-            if (query.get("debug-island") === "1") {
-                const componentId = "official.debug-island";
-                const instanceId = `island.${componentId}`;
-                runtime.manifests.push({ ...runtime.manifests[0], id: componentId, name: "Debug 浮岛" });
-                runtime.instances.push({ ...runtime.instances[0], componentId, instanceId });
-                island.instances.push({ ...island.instances[0], componentId, instanceId });
-            }
             const desktop = {
                 phase: "ready",
                 committed: true,
@@ -170,7 +162,6 @@
                 ],
             };
             const scrollbarCommits = []; // 新交互模式记录提交时是否已显示条，证明时序而非猜测。
-            const savedPreferences = []; // 记录偏好保存请求，用于断言排序不把 debug 测试卡写进顺序。
             const commits = []; // 页面提交的原生几何，用于核对并集窗口与最终态。
             // 多卡负角验证必须由确定性的时钟与提交握手冻结，不能用静态 hover（它只渲染首卡）冒充。
             const controlled = ["surface-frame", "seam-frame", "interaction", "interaction-scroll", "interaction-dynamic", "interaction-instant"].includes(query.get("mode"));
@@ -225,7 +216,6 @@
                             if (holdCommit) return new Promise((resolve) => { pendingCommit = resolve; });
                             return slowBridge ? new Promise((resolve) => setTimeout(resolve, 40)) : Promise.resolve();
                         case "save_preferences":
-                            savedPreferences.push(payload?.preferences);
                             return Promise.resolve(payload?.preferences);
                         default:
                             return Promise.resolve(undefined);
@@ -405,8 +395,8 @@
                     height: Math.max(from.windowBox.top + from.windowBox.height, targetTop + box.height) - Math.min(from.windowBox.top, targetTop),
                 };
                 for (const key of ["left", "top", "width", "height"]) check(Math.abs(final.windowBox[key] - expected[key]) < 1, `展开 ${edge} 并集 ${key} 应为 ${expected[key]}，实际 ${final.windowBox[key]}；提交 ${commits.map((item) => `${item.state}:${item.windowBox.width}x${item.windowBox.height}`).join(" → ")}`);
-                check(Math.abs(root.clientWidth - expected.width) < 1 && Math.abs(root.clientHeight - expected.height) < 1, "展开 root 实际尺寸必须保持并集");
-                check(Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-inline")) - expected.width) < 1 && Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-block")) - expected.height) < 1, "展开 CSS 尺寸变量必须保持并集");
+                check(Math.abs(root.clientWidth - box.width) < 1 && Math.abs(root.clientHeight - expected.height) < 1, "展开 root 宽度取目标宽，高度保留并集");
+                check(Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-inline")) - box.width) < 1 && Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-block")) - expected.height) < 1, "展开 CSS 宽度变量取目标宽，高度保留并集");
                 check(Math.abs(parseFloat(root.style.marginInlineStart) - (targetLeft - final.viewport.left)) < 1 && Math.abs(parseFloat(root.style.marginBlockStart) - (targetTop - final.viewport.top)) < 1, "展开内容仍按目标 margin 而非并集原点排布");
                 boxes.forEach((box, index) => {
                     const target = final.cards[index].rect;
@@ -491,38 +481,6 @@
                             check(root.dataset.state==='expanded','进入额外带未满120ms不得退回');
                             await wait(90);
                             check(root.dataset.state==='collapsed','额外带连续停留满120ms后退回');
-                        } else if(query.get('mode')==='interaction-debugcard') {
-                            // debug 构建由后端注入的浮岛测试卡：展开出现、胶囊不出现、不参与排序持久化。
-                            const debugCards=()=>root.querySelectorAll('.island-card[data-island-debug-card]');
-                            const sortableCards=()=>[...root.querySelectorAll('.island-card:not([data-island-debug-card])')];
-                            key('Enter');await flush('expanded');
-                            check(debugCards().length===1,'debug构建下展开态必须出现测试卡');
-                            check(sortableCards().length>=2,'需要至少两张真实卡片做排序对照');
-                            check(typeof DataTransfer==='function','断言环境必须支持 DataTransfer');
-                            if(typeof DataTransfer==='function'&&sortableCards().length>=2&&debugCards().length===1){
-                                const transfer=new DataTransfer();
-                                const [first,second]=sortableCards();
-                                const debugCard=debugCards()[0];
-                                const press=(card)=>{const box=card.getBoundingClientRect();card.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse',pointerId:9,button:0,buttons:1,clientX:box.x+box.width/2,clientY:box.y+box.height/2}));card.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerType:'mouse',pointerId:9,button:0}));};
-                                // 正控：真实卡片之间拖动必须保存顺序，且顺序里没有测试卡。
-                                press(first);
-                                first.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:transfer}));
-                                second.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:transfer}));
-                                second.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));
-                                await wait(80);
-                                check(savedPreferences.length===1,'真实卡片之间拖动必须保存顺序');
-                                check(!(savedPreferences[0]?.islandCardOrder??[]).includes('official.debug-island'),'保存的顺序不得包含测试卡');
-                                // 测试卡不可拖拽，也不是合法落点。
-                                check(debugCard.getAttribute('draggable')!=='true','测试卡不可拖拽');
-                                press(first);
-                                first.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:transfer}));
-                                debugCard.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:transfer}));
-                                debugCard.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));
-                                await wait(80);
-                                check(savedPreferences.length===1,'测试卡不得成为排序落点，也不写卡片顺序');
-                            }
-                            key('Escape');await flush('collapsed');
-                            check(debugCards().length===0,'胶囊态不得出现测试卡');
                         } else if(query.get('mode')==='interaction-dynamic') {
                             // 真实RO路径：卡片高度变化不改request/key，条仍必须随溢出出现并更新thumb/range。
                             const bar=root.querySelector('.island__scrollbar'),thumb=bar?.querySelector('.island__scrollbar-thumb');
@@ -764,12 +722,13 @@
                         root.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
                         await settledState("expanded");
                         checkExpanded(from);
-                        check(root.clientWidth >= from.windowBox.width - 1, "R3 360内容+刘海余量的root不得被360上限裁剪");
+                        check(root.clientWidth >= 359, "R3 360内容+刘海余量的root不得被360上限裁剪");
                         const checkAgreement = (label) => {
                             const last = commits.at(-1);
                             const origin = root.getBoundingClientRect();
                             const style = getComputedStyle(root);
-                            check(Math.abs(root.clientWidth - last.windowBox.width) < 1 && Math.abs(root.clientHeight - last.windowBox.height) < 1, `${label} root/windowBox必须相等`);
+                            const contentWidth = Math.max(...[...root.querySelectorAll(".island-card")].map((card) => card.getBoundingClientRect().width));
+                            check(Math.abs(root.clientWidth - contentWidth) < 1 && Math.abs(root.clientHeight - last.windowBox.height) < 1, `${label} 展开根宽取目标内容宽，高度保留并集`);
                             [...root.querySelectorAll(".island-card")].forEach((card, i) => {
                                 const box = card.getBoundingClientRect();
                                 const native = last.cards[i]?.rect;
@@ -1006,7 +965,7 @@
                         // 修复轮回归也进入默认清单：宽边界/内容重测四边两形态，加四边双卡负角确定性冻结。
                         const repairCases = ["top", "bottom", "left", "right"].flatMap((edge) => ["notch", "capsule"].map((form) => `mode=resize&edge=${edge}&form=${form}&multi=1`));
                         repairCases.push(...["top", "bottom", "left", "right"].map((edge) => `mode=surface-frame&edge=${edge}&multi=1`));
-                        repairCases.push('mode=interaction&edge=top&form=notch','mode=interaction-scroll&edge=top&form=notch&island-debug=6','mode=interaction-dynamic&edge=top&form=notch','mode=interaction-instant&edge=top&form=notch&island-debug=6&motion=off','mode=interaction-debugcard&edge=top&form=notch&debug-island=1&multi=1');
+                        repairCases.push('mode=interaction&edge=top&form=notch','mode=interaction-scroll&edge=top&form=notch&island-debug=6','mode=interaction-dynamic&edge=top&form=notch','mode=interaction-instant&edge=top&form=notch&island-debug=6&motion=off');
                         for (const scenario of repairCases) {
                             const frame = document.createElement("iframe");
                             frame.style.cssText = "position:absolute;left:-10000px;width:1920px;height:1040px";

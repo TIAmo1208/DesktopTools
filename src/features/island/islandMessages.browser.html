@@ -85,6 +85,8 @@
             const 全文 = () => document.querySelector(".island-message__body");
             const 元信息 = () => document.querySelector(".island-message__meta");
             const 关闭按钮 = () => document.querySelector(".island-message__close");
+            const 切换按钮 = () => document.querySelector(".island-message-panel__toggle");
+            const 消息行 = () => [...document.querySelectorAll(".island-message-panel__list .island-message")];
             const 按键 = (键) => 根().dispatchEvent(new KeyboardEvent("keydown", { key: 键, bubbles: true }));
             const 悬停 = () => 根().dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", relatedTarget: null }));
             const 近似 = (实际, 期望, 容差 = 1) => Math.abs(实际 - 期望) <= 容差;
@@ -129,20 +131,28 @@
                 断言(!单行(), "hover 不得同时保留常态简略行");
                 断言(卡().length === 1, `hover 只应保留一条，实际 ${卡().length}`);
 
-                // 场景五：展开给完整正文、来源与时间，正文允许换行。
+                // 场景五：展开消息收进一张卡，默认折叠最新一条，按键切换完整列表。
                 按键("Enter");
                 await 直到(() => 根().dataset.state === "expanded", "进入展开态");
+                断言(卡().length === 1, `展开态消息必须收进一张卡，实际 ${卡().length}`);
+                断言(Boolean(切换按钮()), "多条消息展开态必须提供折叠/展开按键");
+                断言(消息行().length === 1, `默认折叠只显示最新一条，实际 ${消息行().length}`);
                 断言(全文()?.textContent === "第三条通知正文", `展开应显示完整正文，实际 ${全文()?.textContent}`);
                 断言(getComputedStyle(全文()).whiteSpace === "pre-wrap", "展开正文必须保留换行");
                 断言(/^监控 · \d{1,2}:\d{2}$/.test(元信息()?.textContent ?? ""), `展开元信息应为来源与时分，实际 ${元信息()?.textContent}`);
                 断言(Boolean(关闭按钮()), "展开态必须可关闭");
+                切换按钮().click();
+                await 直到(() => 消息行().length === 3, "按键展开完整消息列表");
+                断言(切换按钮().getAttribute("aria-expanded") === "true", "展开后 aria-expanded 应为 true");
+                切换按钮().click();
+                await 直到(() => 消息行().length === 1, "再次按键折叠到最新一条");
 
                 // 场景六：关闭走原生离场路径，卡片随权威集合消失。
                 关闭按钮().click();
                 await 直到(() => 夹具.关闭记录.length === 1, "关闭命令送达原生");
                 断言(夹具.关闭记录[0] === 3, `关闭的消息身份应为 3，实际 ${夹具.关闭记录[0]}`);
                 await 直到(() => !卡().some((节点) => 节点.textContent.includes("第三条通知正文")), "关闭后该消息卡消失");
-                断言(卡().length === 2, `展开态关闭一条后应保留其余两条，实际 ${卡().length}`);
+                断言(卡().length === 1 && 全文()?.textContent === "第二条通知正文", `关闭最新一条后应折叠显示剩余最新一条，实际 ${卡().length} 张 / ${全文()?.textContent}`);
                 按键("Escape");
                 await 直到(() => 根().dataset.state === "collapsed", "关闭后回到常态");
 

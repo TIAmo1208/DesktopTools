@@ -21,6 +21,14 @@ pub(crate) struct ExternalDrop
     pub portal_root: Option<String>,        // 门户目标绑定根目录。
 }
 
+/// 浮岛投放端口：平台只负责 OLE 会话与格式提取，岛卡状态与收集收入在应用层。
+pub(crate) trait IslandDropPort: Send + Sync + 'static
+{
+    fn collect_accepting(&self) -> bool;
+    fn receive_collect(&self, content: crate::collect::IncomingContent, mode: String, collect_names: Option<Vec<String>>) -> Result<crate::collect::ReceiveResult, String>;
+    fn report_error(&self, error: String);
+}
+
 /// 拖放用例端口：平台只提交原生事实，布局事务与文件操作在应用层。
 pub(crate) trait DesktopDropPort: Send + Sync + 'static
 {

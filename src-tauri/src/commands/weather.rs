@@ -5,10 +5,27 @@ use tauri::{Emitter, Manager, WebviewWindow};
 #[tauri::command]
 pub fn subscribe_weather(app: tauri::AppHandle, instance_id: String, monitor_id: String, source: Source, city_id: String) -> Result<u64, String>
 {
-    let workspace = app.state::<crate::workspace::WorkspaceState>().snapshot().map_err(|error| error.message)?;
-    if !workspace.components.iter().any(|value| value.instance_id == instance_id && value.component_id == "official.weather" && value.projection_monitor_id.as_ref().unwrap_or(&value.monitor_id) == &monitor_id)
+    if instance_id == "island.official.weather"
     {
-        return Err("天气实例或显示器无效".into());
+        // 浮岛实例不进入工作区：以已启用岛卡和主屏身份作为等价校验，避免为合成实例伪造布局。
+        let preferences = app.state::<crate::preferences::SettingsState>().preferences()?;
+        if !preferences.island_card_order.iter().any(|id| id == "official.weather")
+        {
+            return Err("浮岛天气卡片未启用".into());
+        }
+        let primary = crate::platform::windows::enumerate_desktop_monitors()?.into_iter().find(|monitor| monitor.primary).ok_or("浮岛天气缺少主显示器")?;
+        if primary.id != monitor_id
+        {
+            return Err("浮岛天气显示器无效".into());
+        }
+    }
+    else
+    {
+        let workspace = app.state::<crate::workspace::WorkspaceState>().snapshot().map_err(|error| error.message)?;
+        if !workspace.components.iter().any(|value| value.instance_id == instance_id && value.component_id == "official.weather" && value.projection_monitor_id.as_ref().unwrap_or(&value.monitor_id) == &monitor_id)
+        {
+            return Err("天气实例或显示器无效".into());
+        }
     }
     let city = app.state::<WeatherState>().validated_city(source, &city_id)?; // 格子只提交两个标识，城市对象由该来源列表解析。
     Ok(crate::weather::activity::subscribe(source, monitor_id, city))

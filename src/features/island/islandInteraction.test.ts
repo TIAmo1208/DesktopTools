@@ -79,13 +79,13 @@ test("原生拖动释放后按最新命中结果重判，不沿用开始态", ()
     assert.equal(islandAfterDrag(true), "hover");
     assert.equal(islandAfterDrag(false), "collapsed");
 });
-test("展开态卡片本体只排序，不启动窗口拖动", () => {
-    assert.equal(islandDragIntent("expanded", 0, false, true), "sort");
+test("展开态卡片本体不启动窗口拖动", () => {
+    assert.equal(islandDragIntent("expanded", 0, false, true), undefined);
     assert.equal(islandDragIntent("expanded", 0, true, true), undefined);
     assert.equal(islandDragIntent("expanded", 1, false, true), undefined);
     assert.equal(islandDragIntent("expanded", 0, false, false), undefined);
 });
-test("无需句柄，合法卡片落点沿同一身份列表排序", () => {
+test("键盘排序落点沿同一身份列表移动", () => {
     const target = islandSortTarget("expanded", order, order[0], order[2]!, false);
     assert.equal(target, "plugin.two");
     assert.deepEqual(moveIslandCard(order, order[0]!, target!), ["plugin.one", "plugin.two", "official.music-control"]);
