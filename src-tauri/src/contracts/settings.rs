@@ -128,12 +128,26 @@ pub struct ApplicationPreferences
     pub island_weather_source: String, // 浮岛天气卡选择的来源，空串表示尚未选择。
     #[serde(default)]
     pub island_weather_city_id: String, // 浮岛天气卡选择的城市标识，空串表示尚未选择。
+    #[serde(default, deserialize_with = "deserialize_island_card_collapsed")]
+    pub island_card_collapsed: std::collections::BTreeMap<String, bool>, // 当前处于收起态的岛卡；只在记忆开启的卡片上写入。
+    #[serde(default, deserialize_with = "deserialize_island_card_collapse_memory")]
+    pub island_card_collapse_memory: std::collections::BTreeMap<String, bool>, // 逐卡「记忆收起状态」开关，缺失视为开启。
+    #[serde(default = "default_island_collect_collapsed_count")]
+    pub island_collect_collapsed_count: u8, // 收集箱收起时显示的最近条目数。
+    #[serde(default = "default_true")]
+    pub island_collect_collapsed_default: bool, // 收集箱默认收起；没有记忆状态时以此为准。
     #[serde(default, deserialize_with = "deserialize_disabled_plugins")]
     pub disabled_plugins: Vec<String>, // 宿主停用的插件标识，不属于插件自己的设置文件。
 }
 
 /// 岛展开卡默认圆角，偏好与主题基线共用。
 fn default_island_radius() -> u8 { 12 }
+
+/// 收集箱收起时默认显示的最近条目数。
+fn default_island_collect_collapsed_count() -> u8 { 3 }
+
+/// 缺省为真的开关字段只用于「记忆收起状态」这类默认开启项。
+fn default_true() -> bool { true }
 
 /// 首次启动跟随系统，并沿用现有双击打开行为。
 impl Default for ApplicationPreferences
@@ -188,6 +202,10 @@ impl Default for ApplicationPreferences
             island_card_order: Vec::new(),
             island_weather_source: String::new(),
             island_weather_city_id: String::new(),
+            island_card_collapsed: std::collections::BTreeMap::new(),
+            island_card_collapse_memory: std::collections::BTreeMap::new(),
+            island_collect_collapsed_count: default_island_collect_collapsed_count(),
+            island_collect_collapsed_default: true,
             disabled_plugins: Vec::new(),
         }
     }
@@ -253,6 +271,38 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(normalize_island_card_order(Vec::<String>::deserialize(deserializer)?))
+}
+
+/// 收起态与记忆开关共用同一条岛卡标识边界：official. 或 plugin. 前缀，去重后最多 32 项。
+pub fn normalize_island_card_flags(values: impl IntoIterator<Item = (String, bool)>) -> std::collections::BTreeMap<String, bool>
+{
+    let mut kept = std::collections::BTreeMap::new(); // 只保留合法岛卡标识。
+    for (card_id, value) in values
+    {
+        let valid = ["official.", "plugin."].iter().any(|prefix| card_id.starts_with(prefix) && card_id.len() > prefix.len()); // 前缀后必须有名称。
+        if !valid || kept.len() >= 32
+        {
+            continue;
+        }
+        kept.insert(card_id, value);
+    }
+    kept
+}
+
+/// 缺失字段走默认空表；出现的非法岛卡在反序列化时丢弃。
+fn deserialize_island_card_collapsed<'de, D>(deserializer: D) -> Result<std::collections::BTreeMap<String, bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(normalize_island_card_flags(std::collections::BTreeMap::<String, bool>::deserialize(deserializer)?.into_iter()))
+}
+
+/// 记忆开关与收起态共用同一份标识边界。
+fn deserialize_island_card_collapse_memory<'de, D>(deserializer: D) -> Result<std::collections::BTreeMap<String, bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(normalize_island_card_flags(std::collections::BTreeMap::<String, bool>::deserialize(deserializer)?.into_iter()))
 }
 
 /// 字体族名只做字形名边界校验：内置系统字体和插件自带字体共用这条规则。

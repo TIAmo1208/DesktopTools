@@ -26,6 +26,7 @@ pub(crate) fn route_island(command: &str, app: &AppHandle, runtime: &DesktopHost
             island::execute_set_island_state(app, request).map_err(serialize_error).and_then(serialize_result)
         })()),
         "begin_island_drag" => Some(island::execute_begin_island_drag(app).map_err(serialize_error).and_then(serialize_result)),
+        "island_cursor_inside" => Some(island::execute_island_cursor_inside(app).map_err(serialize_error).and_then(serialize_result)),
         _ => None,
     }
 }

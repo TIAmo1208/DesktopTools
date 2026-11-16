@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
+import { getCollectItems } from "../../bridge/collect";
 import { getDesktopHostSnapshot } from "../../bridge/desktopHost";
-import { beginIslandDrag, dismissIslandMessage, getIslandMessages, listenIslandMessages, listenIslandSnapshots, saveIslandCardOrder, setIslandState } from "../../bridge/island";
+import { beginIslandDrag, dismissIslandMessage, getIslandMessages, islandCursorInside, listenIslandDropActive, listenIslandMessages, listenIslandSnapshots, saveIslandCardCollapsed, saveIslandCardOrder, setIslandState } from "../../bridge/island";
 import { executeMusicAction } from "../../bridge/music";
 import { listenSpectrum } from "../../bridge/audio";
 import type { IslandMessage, IslandRect, IslandSnapshot, IslandStateRequest } from "../../contracts/island";
@@ -43,7 +44,10 @@ import {
 import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, ISLAND_EXPAND_STAGGER_MS, ISLAND_EXPAND_MOTION_MS, islandAttachedCornerAt, islandUnionFrame } from "./islandMotion";
 import { islandHoldMessages, islandMessageTime, islandMessageView } from "./islandMessages";
 import { ISLAND_LYRIC_OFFSETS, islandCapsuleLineLimit, islandLyricView, islandMusicTickDelay, islandPlaybackStatus, islandScrollAnimationName, islandScrollDistance, islandScrollKey, islandScrollPlan, islandScrollPlayState } from "./islandLyrics";
+import { readIslandCollectCache, writeIslandCollectCache } from "./islandCollect";
 import { ISLAND_FENCE_TOKENS } from "./islandTokens";
+import islandToggleCollapseIcon from "../../../resources/fence-toggle-collapse.svg?raw";
+import islandToggleExpandIcon from "../../../resources/fence-toggle-expand.svg?raw";
 import "../../styles/fenceTokens.css"; // 探针读取的围栏内置值，来自桌面工作区与浮岛共用的那一份。
 import "./island.css";
 const PAINTED_STYLE_PROPERTIES = [
@@ -91,7 +95,8 @@ const IslandMusic = ({ mode, side, motion }: { mode: IslandMode; side: boolean; 
         advancing: music.timeline?.advancing === true,
         animationsEnabled: motion,
     });
-    const lineMax = islandCapsuleLineLimit(vertical, view.hasLine); // 固定档位（胶囊档位减固定件），只随有无同步词与贴边变化。
+    const playing = media?.playback === "playing"; // 档位只看播放状态：歌词晚到或换句都不改胶囊宽度。
+    const lineMax = islandCapsuleLineLimit(vertical, playing); // 固定两档（播放中 / 未播放），只随播放状态与贴边变化。
     const overflowRef = useRef(0); // 与渲染值同步的测量缓存，同一尺寸不重复写状态。
     useLayoutEffect(() => {
         const box = lineRef.current;
@@ -391,6 +396,9 @@ export const IslandPage = () => {
     const heldMessages = useRef<IslandMessage[]>([]); // 阅读期暂存，回到常态清空。
     const messagesRevision = useRef(0); // 广播代次：关闭失败的补偿读取只在本轮无新事件时应用。
     const [mode, setMode] = useState<IslandMode>("collapsed");
+    const [collapsedCards, setCollapsedCards] = useState<Record<string, boolean>>({}); // 卡内收起态；默认值来自偏好与收集箱默认收起。
+    const [dropActive, setDropActive] = useState(false); // 原生投放进入后显示「松开加入收集箱」。
+    const dropActiveRef = useRef(false); // 退回判定与离开路径读取最新值，不依赖渲染。
     const modeRef = useRef(mode); // 延时回调读取最新状态，不能覆盖键盘或点击后的展开。
     modeRef.current = mode;
     const [work, setWork] = useState<IslandRect>();
@@ -624,12 +632,75 @@ export const IslandPage = () => {
     useEffect(() => {
         heldMessages.current = islandHoldMessages(heldMessages.current, messages, mode); // 阅读期间消失的消息暂留，回到常态清空。
     }, [mode, messages]);
+    useEffect(() => {
+        let active = true; // 卸载后拒绝迟到回调。
+        let stop: (() => void) | undefined;
+        void listenIslandDropActive(
+            (next) => {
+                if (!active) return;
+                dropActiveRef.current = next;
+                setDropActive(next);
+                if (next) {
+                    stopHoverTimer(); // 投放期间不按悬停消抖回落。
+                    if (modeRef.current === "collapsed") changeMode("hover");
+                    return;
+                }
+                if (!pointerInside.current && (modeRef.current === "hover" || modeRef.current === "expanded")) changeMode("collapsed");
+            },
+        )
+            .then((unlisten) => {
+                if (active) stop = unlisten;
+                else unlisten();
+            })
+            .catch((error: unknown) => console.warn("浮岛投放状态订阅失败", error));
+        return () => {
+            active = false;
+            stop?.();
+        };
+    }, []);
     const edge = preferences?.islandEdge ?? "";
     const vertical = mode === "collapsed" && (edge === "left" || edge === "right"); // 仅胶囊态在左右贴边时竖排；hover 与展开保持水平卡片。
     const instances = snapshot?.instances ?? [];
     const sortable = instances; // 卡片身份同一份，不另生成排序列表。
     const visibleMessages = islandMessageView(messages, heldMessages.current, mode); // 消息优先占用常态胶囊与 hover。
-    const visibleInstances = mode === "expanded" ? instances : visibleMessages.length ? [] : sortable.slice(0, 1);
+    // 投放进入时 hover 改由收集箱卡承接，避免音乐卡与提示叠在一起分不清收进哪里。
+    const dropInstance = instances.find((instance) => instance.componentId === "official.collect-box");
+    // 投放进入时 hover 由独立接收卡承接，不叠加收集箱卡内容，避免提示与最近条目同屏。
+    const dropCard = dropActive && mode !== "expanded" && Boolean(dropInstance);
+    const visibleInstances = mode === "expanded" ? instances : dropCard ? [] : visibleMessages.length ? [] : sortable.slice(0, 1);
+    // 收集箱启用时页面启动即预读一次条目：首次展开不再先按加载态测高，收起态首帧就是三条。
+    useEffect(() => {
+        if (!snapshot?.instances.some((instance) => instance.componentId === "official.collect-box") || readIslandCollectCache()) return;
+        void getCollectItems().then(writeIslandCollectCache).catch(() => undefined);
+    }, [snapshot]);
+    // 卡内收起态：记忆开启时读偏好，关闭记忆时回落到该卡默认；收集箱默认收起，其余默认展开。
+    const collapseMemory = preferences?.islandCardCollapseMemory ?? {};
+    const collapseDefault = (componentId: string) => componentId === "official.collect-box" ? (preferences?.islandCollectCollapsedDefault ?? true) : false;
+    // 记忆开关只决定是否写偏好，运行期收起态始终可切换。
+    const cardCollapsed = (componentId: string) => collapsedCards[componentId] ?? collapseDefault(componentId);
+    useLayoutEffect(() => {
+        // 只回填记忆开启的卡片；关闭记忆的卡片按默认值显示，不受旧保存值影响。
+        const memory = preferences?.islandCardCollapseMemory ?? {};
+        const stored = preferences?.islandCardCollapsed ?? {};
+        setCollapsedCards(Object.fromEntries(Object.entries(stored).filter(([cardId]) => memory[cardId] !== false)));
+    }, [preferences?.islandCardCollapsed, preferences?.islandCardCollapseMemory]);
+    /** 收起/展开一张卡；先更新页面，再把整份收起表写回偏好。 */
+    const handleToggleCard = (componentId: string) => {
+        const next = { ...collapsedCards, [componentId]: !cardCollapsed(componentId) };
+        setCollapsedCards(next);
+        if (collapseMemory[componentId] === false) return; // 关闭记忆时只改当前会话，不写偏好。
+        void saveIslandCardCollapsed(next).catch((error: unknown) => console.warn("浮岛卡收起状态保存失败", error));
+    };
+    /** 拖出结束后按原生光标判态：OLE 拖动期间页面收不到 pointerout，不能只等悬停事件。 */
+    const handleCollectDragEnd = () => {
+        void islandCursorInside()
+            .then((inside) => {
+                if (!mounted.current) return;
+                pointerInside.current = inside;
+                if (!inside && modeRef.current === "expanded") changeMode("collapsed");
+            })
+            .catch(() => undefined);
+    };
     const edgeKey = useRef(""); // 上次测量的贴边方向，变化时丢弃旧几何缓存。
     const formKey = useRef(""); // 上次测量的岛形态，变化时丢弃旧胶囊高度与并集缓存。
     useLayoutEffect(() => {
@@ -975,7 +1046,8 @@ export const IslandPage = () => {
                                         !from || request.windowBox.width > from.windowBox.width + 0.5 || request.windowBox.height > from.windowBox.height + 0.5;
                                     if (request.state === "expanded") {
                                         // 展开终态保留入态并集窗口，不收缩到目标盒；内容仍按目标 margin 落位。
-                                        const expandedFrame = islandUnionFrame(startGeometry ?? from ?? request, request, motionTotal, edge, work, staggerMs);
+                                        // 有切态动画时保留入态并集；同态重测（内容增减、卡内收起）直接提交自然目标，窗口随内容收缩。
+                                        const expandedFrame = animate ? islandUnionFrame(startGeometry ?? from ?? request, request, motionTotal, edge, work, staggerMs) : request;
                                         await commit(expandedFrame);
                                         if (active) {
                                             clearFillets();
@@ -1015,8 +1087,13 @@ export const IslandPage = () => {
                                 }
                             } finally {
                                 animating = false;
-                                // 成功结束回到自然布局，让常态胶囊继续随内容伸缩、展开态恢复 CSS 滚动。
-                                restoreStyles();
+                                // hover 终态维持动画帧几何：并集窗口与自然流的位置不同，切回自然流会让卡片
+                                // 先按自然布局重排一帧再被重测改回，表现为动画末尾宽度跳一下。
+                                if (settled && active && modeRef.current === "hover") {
+                                    // 保持 paint 写入的终帧，等下次内容重测再接管自然布局。
+                                } else {
+                                    restoreStyles();
+                                }
                                 if (settled && active && modeRef.current === mode) {
                                     inputGeometryKey.current = key;
                                     if (targetGeometry.current?.state === "expanded") {
@@ -1096,6 +1173,7 @@ export const IslandPage = () => {
         cancelDragHold(); marginState.current.since = undefined;
         if (interactionBusy()) return;
         marginState.current = islandMarginStep(marginState.current, { mode: modeRef.current, region: "outside", now: performance.now(), busy: false, outlineDistance: Infinity, coreDistance: Infinity, leave: true, detect: modeRef.current !== "collapsed" }).state;
+        if (dropActiveRef.current) return; // 投放拖动期间页面指针本就不可信，保持当前态等原生投放事件收口。
         if (modeRef.current === "expanded") changeMode("collapsed"); else scheduleHover(false);
     };
     const handleLeave = (event: PointerEvent<HTMLElement>) => {
@@ -1147,7 +1225,7 @@ export const IslandPage = () => {
             lastMarginInput.current = input;
             const next = islandMarginStep(marginState.current, input);
             marginState.current = next.state;
-            if (next.collapse) { changeMode("collapsed", modeRef.current === "hover"); return; }
+            if (next.collapse) { if (!dropActiveRef.current) changeMode("collapsed", modeRef.current === "hover"); return; }
             // hover 的透明边距与展开的额外带共用同一条 120ms 连续停留计时：进带开始计时，回内容盒取消。
             const delayRegion: "transparent" | "extra-band" = modeRef.current === "hover" ? "transparent" : "extra-band";
             if (region === delayRegion && marginState.current.since !== undefined) {
@@ -1161,7 +1239,7 @@ export const IslandPage = () => {
                     // setTimeout已达到deadline；受控断言时performance.now可暂停，仍不依赖rAF推进。
                     const result = islandMarginStep(marginState.current, { ...lastMarginInput.current, mode: modeRef.current, now: Math.max(performance.now(), deadline), busy: interactionBusy() || !inputReady.current });
                     marginState.current = result.state;
-                    if (result.collapse) changeMode("collapsed", modeRef.current === "hover");
+                    if (result.collapse && !dropActiveRef.current) changeMode("collapsed", modeRef.current === "hover");
                 }, Math.max(0, Math.ceil(deadline - performance.now())));
                 return;
             }
@@ -1320,6 +1398,7 @@ export const IslandPage = () => {
             data-state={mode}
             data-animations={animationsEnabled ? "true" : undefined}
             data-vertical={vertical}
+            data-scrollbar={edge === "right" ? "start" : "end"}
             data-fillets={preferences?.islandForm === "notch" && mode !== "expanded" ? "true" : undefined}
             onPointerEnter={handleEnter}
             onPointerLeave={handleLeave}
@@ -1346,8 +1425,15 @@ export const IslandPage = () => {
                 {visibleMessages[0] ? `${visibleMessages[0].source}：${visibleMessages[0].content}` : ""}
             </p>
             <div ref={surface} className="island__surface" aria-hidden="true" />
-            {visibleMessages.length || visibleInstances.length ? (
+            {visibleMessages.length || visibleInstances.length || dropCard ? (
                 <>
+                    {dropCard ? (
+                        <section className="island-card island-card--drop" aria-label="接收收集内容" data-island-no-drag="true">
+                            <div className="island-card__content island-drop-card" role="status" aria-live="polite">
+                                <span className="island-drop-card__text">松开鼠标加入收集箱</span>
+                            </div>
+                        </section>
+                    ) : null}
                     {mode === "expanded" && visibleMessages.length ? (
                         <section className="island-card" aria-label="消息" data-island-message="true">
                             <div className="island-card__content">
@@ -1392,13 +1478,38 @@ export const IslandPage = () => {
                                 }
                             }}
                         >
+                            {mode === "expanded" ? (
+                                <button
+                                    type="button"
+                                    className="island-card__toggle"
+                                    data-island-no-drag="true"
+                                    title={cardCollapsed(instance.componentId) ? "展开卡片" : "收起卡片"}
+                                    aria-label={cardCollapsed(instance.componentId) ? "展开卡片" : "收起卡片"}
+                                    aria-expanded={!cardCollapsed(instance.componentId)}
+                                    onPointerDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        handleToggleCard(instance.componentId);
+                                    }}
+                                >
+                                    <span
+                                        aria-hidden="true"
+                                        dangerouslySetInnerHTML={{ __html: cardCollapsed(instance.componentId) ? islandToggleExpandIcon : islandToggleCollapseIcon }}
+                                    />
+                                </button>
+                            ) : null}
                             <div className="island-card__content">
                                 {instance.componentId === "official.music-control" ? (
-                                    <IslandMusic mode={mode} side={edge === "left" || edge === "right"} motion={animationsEnabled} />
+                                    <IslandMusic mode={mode === "expanded" && cardCollapsed(instance.componentId) ? "hover" : mode} side={edge === "left" || edge === "right"} motion={animationsEnabled} />
                                 ) : instance.componentId === "official.collect-box" ? (
-                                    <IslandCollectBox mode={mode} />
+                                    <IslandCollectBox
+                                        mode={mode}
+                                        collapsed={mode === "expanded" && cardCollapsed(instance.componentId)}
+                                        collapsedCount={preferences?.islandCollectCollapsedCount ?? 3}
+                                        onDragEnd={handleCollectDragEnd}
+                                    />
                                 ) : instance.componentId === "official.weather" ? (
-                                    <IslandWeather mode={mode} instanceId={instance.instanceId} monitorId={monitorId} />
+                                    <IslandWeather mode={mode === "expanded" && cardCollapsed(instance.componentId) ? "hover" : mode} instanceId={instance.instanceId} monitorId={monitorId} />
                                 ) : registration?.status === "failed" ? (
                                     <p role="status">组件加载失败</p>
                                 ) : registration?.entry === "plugin:slot" ? (

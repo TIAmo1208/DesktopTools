@@ -100,6 +100,57 @@ export const IslandSettings = ({
                     </div>
                 </div>
                 <SettingsAbout text={detail.description || ""} />
+                <div className="settings__rows">
+                    <div className="settings__row">
+                        <label className="settings__row-title" htmlFor={`island-collapse-memory-${detail.id}`}>
+                            记忆收起状态
+                        </label>
+                        <SettingsSwitch
+                            id={`island-collapse-memory-${detail.id}`}
+                            label="记忆收起状态"
+                            checked={(preferences?.islandCardCollapseMemory ?? {})[detail.id] !== false}
+                            disabled={unavailable || !preferences}
+                            onChange={(checked) =>
+                                onPreferences({ islandCardCollapseMemory: { ...(preferences?.islandCardCollapseMemory ?? {}), [detail.id]: checked } })
+                            }
+                        />
+                    </div>
+                    {detail.id === "official.collect-box" ? (
+                        <>
+                            <div className="settings__row">
+                                <label className="settings__row-title" htmlFor="island-collect-collapsed-default">
+                                    默认收起
+                                </label>
+                                <SettingsSwitch
+                                    id="island-collect-collapsed-default"
+                                    label="默认收起"
+                                    checked={preferences?.islandCollectCollapsedDefault ?? true}
+                                    disabled={unavailable || !preferences}
+                                    onChange={(checked) => onPreferences({ islandCollectCollapsedDefault: checked })}
+                                />
+                            </div>
+                            <div className="settings__row">
+                                <span className="settings__row-title">收起时显示条数</span>
+                                <div className="island-settings__segmented" role="tablist" aria-label="收起时显示条数">
+                                    {[3, 5, 10].map((count) => (
+                                        <button
+                                            key={count}
+                                            type="button"
+                                            role="tab"
+                                            aria-selected={(preferences?.islandCollectCollapsedCount ?? 3) === count}
+                                            className={`island-settings__segment${(preferences?.islandCollectCollapsedCount ?? 3) === count ? " is-active" : ""}`}
+                                            disabled={unavailable || !preferences}
+                                            onClick={() => onPreferences({ islandCollectCollapsedCount: count })}
+                                            data-button="primary"
+                                        >
+                                            {count}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </>
+                    ) : null}
+                </div>
                 {detail.id === "official.music-control" ? (
                     <div className="settings__rows">
                         <MusicLyricsRow className="settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />

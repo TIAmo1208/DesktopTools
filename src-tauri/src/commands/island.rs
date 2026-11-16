@@ -52,3 +52,18 @@ pub(crate) async fn set_island_state(app: AppHandle, request: IslandStateRequest
 /// 先释放 WebView 鼠标捕获，再交给 Windows 移动循环。
 #[tauri::command]
 pub(crate) async fn begin_island_drag(app: AppHandle) -> Result<island::IslandDragResult, String> { tauri::async_runtime::spawn_blocking(move || execute_begin_island_drag(&app)).await.map_err(|error| error.to_string())? }
+
+/// 拖出结束后读取原生光标是否仍在岛内，页面据此决定是否回到常态。
+pub(crate) fn execute_island_cursor_inside(app: &AppHandle) -> Result<bool, String>
+{
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1); // 等待 UI 线程读取窗口矩形与光标。
+    app.run_on_main_thread(move || {
+        let _ = sender.send(island::cursor_inside());
+    })
+    .map_err(|error| error.to_string())?;
+    receiver.recv().map_err(|error| format!("岛光标查询中断：{error}"))?
+}
+
+/// 与窗口拖动使用同一物理客户区命中规则。
+#[tauri::command]
+pub(crate) async fn island_cursor_inside(app: AppHandle) -> Result<bool, String> { tauri::async_runtime::spawn_blocking(move || execute_island_cursor_inside(&app)).await.map_err(|error| error.to_string())? }

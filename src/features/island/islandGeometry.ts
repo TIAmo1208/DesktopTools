@@ -11,14 +11,18 @@ export const islandGeometry = (
     form: "capsule" | "notch" = "capsule",
 ): IslandStateRequest => {
     if (!measured.length) throw new Error("岛缺少实测卡片");
-    const width = Math.ceil(Math.max(...measured.map((rect) => rect.left + rect.width)));
+    const gutter = state === "expanded" ? ISLAND_SCROLLBAR_GUTTER : 0; // 展开态在卡片外留一条滚动条槽。
+    const gutterStart = edge === "right" ? gutter : 0; // 贴右边时槽在卡片左侧，保持卡片贴边。
+    const gutterEnd = gutter - gutterStart;
+    const contentWidth = Math.ceil(Math.max(...measured.map((rect) => rect.left + rect.width))); // 卡片右边界即内容宽，含贴右边时的起始槽。
+    const width = contentWidth + gutterEnd; // 窗口在内容之外补上滚动条槽。
     const height = Math.ceil(Math.max(...measured.map((rect) => rect.top + rect.height)));
     if (width > work.width || height > work.height) throw new Error("岛内容超过主屏工作区");
     const horizontalEdge = edge === "left" || edge === "right"; // 左右贴边时沿竖直方向居中，上下贴边时沿水平方向居中。
     const margin = form === "notch" ? 0 : 6; // 胶囊离工作区边 6px，刘海贴边。
     const notch = form === "notch" && state !== "expanded" ? 12 : 0; // 外凸负圆角只在常态与 hover 生效；展开态不额外扩大窗口。
     const alongSpan = horizontalEdge ? work.height : work.width; // 沿边方向的工作区尺寸。
-    const alongSize = (horizontalEdge ? height : width) + notch * 2; // 外凸圆弧占用的沿边尺寸。
+    const alongSize = (horizontalEdge ? height : width) + notch * 2; // 沿边居中按窗口宽计算，滚动条槽也留在工作区内。
     const maxOffset = Math.max(0, (alongSpan - alongSize) / 2); // 以居中为 0 的可偏移半幅。
     const alongOffset = Math.min(Math.max(offset, -maxOffset), maxOffset); // 空边按顶部同样应用持久偏移，不再强制居中。
     const alongStart = Math.max(0, alongSpan - alongSize) / 2 + alongOffset; // 居中后再应用持久偏移；尺寸变化时两侧对称扩展。
@@ -36,7 +40,7 @@ export const islandGeometry = (
             const previous = measured[index - 1]!;
             const current = measured[index]!;
             const gap = current.top - previous.top - previous.height;
-            if (gap > 0) cards.push({ rect: { left: growLeft, top: previous.top + previous.height + growTop, width, height: gap }, radius: 0 });
+            if (gap > 0) cards.push({ rect: { left: growLeft, top: previous.top + previous.height + growTop, width: contentWidth, height: gap }, radius: 0 });
         }
     }
     const windowBox = {
@@ -53,7 +57,10 @@ export const islandGeometry = (
     };
 };
 
-/** 固定页面视口带宽：覆盖最大窗口宽度（展开卡 360 + 刘海 24）并留余量。 */
+/** 展开态卡片外侧的滚动条槽：4 DIP 间距加 12 DIP 轨道。 */
+export const ISLAND_SCROLLBAR_GUTTER = 16;
+
+/** 固定页面视口带宽：覆盖最大窗口宽度（展开卡 360 + 滚动条槽 16 + 刘海 24）并留余量。 */
 export const ISLAND_VIEWPORT_WIDTH = 420;
 
 /**

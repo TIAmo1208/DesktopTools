@@ -75,6 +75,7 @@ pub(crate) fn register(hwnd: HWND, port: Arc<dyn crate::drop_bridge::IslandDropP
                     }
                     *handler_session.borrow_mut() = Some(IslandDropSession { collect_names, offer });
                     handler_accepted.set(true);
+                    handler_port.drop_active(true); // 页面据此切到 hover 并显示「松开加入收集箱」。
                     Ok(selected)
                 }
                 DropPhase::Over(_keys, _point, allowed) =>
@@ -87,6 +88,7 @@ pub(crate) fn register(hwnd: HWND, port: Arc<dyn crate::drop_bridge::IslandDropP
                 }
                 DropPhase::Drop(data, _keys, _point, allowed) =>
                 {
+                    handler_port.drop_active(false); // 放下即结束接收提示，不等后续 Leave。
                     if !handler_accepted.replace(false)
                     {
                         return Ok(DROPEFFECT_NONE);
@@ -139,6 +141,7 @@ pub(crate) fn register(hwnd: HWND, port: Arc<dyn crate::drop_bridge::IslandDropP
                 {
                     *handler_session.borrow_mut() = None;
                     handler_accepted.set(false);
+                    handler_port.drop_active(false);
                     Ok(DROPEFFECT_NONE)
                 }
             }),

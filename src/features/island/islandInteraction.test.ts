@@ -223,7 +223,7 @@ test("透明轮廓：胶囊圆角外四角与刘海补面透明扇区都算透�
     assert.equal(islandHitContour([{ rect: { left: 0, top: 0, width: 120, height: 60 }, radii: [6, 6, 6, 6] }], { left: 0, top: 0, width: 200, height: 100 }, "top", "notch", 0).arcs.length, 0);
 });
 
-test("展开态透明带命中：只有并集减目标内容盒的额外带退回，滚动条矩形先行扣除", () => {
+test("展开态透明带命中：只有并集减目标内容盒的额外带退回，卡片外侧滚动条槽整条扣除", () => {
     for (const edge of islandEdges) for (const form of islandForms) for (const dpr of islandDprs) {
         const { window, card } = islandLayoutCase(edge, form, dpr);
         const label = `${edge}/${form}/DPR${dpr}`;
@@ -251,7 +251,9 @@ test("展开态透明带命中：只有并集减目标内容盒的额外带退�
         // 未完成提交或未溢出时同一点不再归滚动条。
         const hidden = islandScrollGeometry(islandFrame("expanded", window), islandFrame("expanded", card), edge, { ...metrics, settled: false });
         assert.equal(hidden.visible, false, `${label} 未提交前不出条`);
-        assert.equal(islandHitRegion("expanded", trackPoint, hidden, contour) === "scrollbar", false, `${label} 未出条时不得占用命中`);
+        // 滚动条槽在卡片外，整条槽（间距 + 轨道）都不触发退回；未出条时槽仍是展示区，不把指针判成退回。
+        assert.ok(layout.gutter && islandPointInRect(trackPoint, layout.gutter), `${label} 轨道必须落在滚动条槽内`);
+        assert.equal(islandHitRegion("expanded", trackPoint, hidden, contour), "scrollbar", `${label} 未出条时槽仍不触发退回`);
         // 轨道与滑块都在并集窗口内，滑块不越出轨道，滚动位置线性映射。
         for (const point of [trackPoint, { x: thumb.left + thumb.width / 2, y: thumb.top + thumb.height / 2 }]) assert.ok(islandPointInRect(point, window), `${label} 滚动条必须落在并集窗口内`);
         assert.ok(thumb.height >= 24 - 1e-6 && thumb.height <= track.height + 1e-6, `${label} 滑块高度`);

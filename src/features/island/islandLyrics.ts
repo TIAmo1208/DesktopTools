@@ -74,18 +74,18 @@ export const ISLAND_CAPSULE_CHROME = 52;
 /** 无词回落文本的循环周期：每像素约 100ms（往返各 20px/s），并设最短周期保证可读。 */
 export const ISLAND_LOOP_MIN_MS = 4000;
 
-/** 档位选择：只看贴边方向与当前是否有歌词句，不看滚动偏移与句子长度。 */
-export const islandCapsuleLimit = (vertical: boolean, hasLine: boolean): number =>
+/** 档位选择：只看贴边方向与是否正在播放，不看歌词是否已到、滚动偏移与句子长度。 */
+export const islandCapsuleLimit = (vertical: boolean, playing: boolean): number =>
     vertical
-        ? hasLine
+        ? playing
             ? ISLAND_CAPSULE_LIMITS.vertical.lyric
             : ISLAND_CAPSULE_LIMITS.vertical.fallback
-        : hasLine
+        : playing
           ? ISLAND_CAPSULE_LIMITS.horizontal.lyric
           : ISLAND_CAPSULE_LIMITS.horizontal.fallback;
 
-/** 内容滚动盒上限：胶囊档位减固定件；短内容贴合实际内容，不因档位撑满。 */
-export const islandCapsuleLineLimit = (vertical: boolean, hasLine: boolean): number => islandCapsuleLimit(vertical, hasLine) - ISLAND_CAPSULE_CHROME;
+/** 内容滚动盒上限：胶囊档位减固定件；档位按播放状态固定，歌词晚到时不再改宽度。 */
+export const islandCapsuleLineLimit = (vertical: boolean, playing: boolean): number => islandCapsuleLimit(vertical, playing) - ISLAND_CAPSULE_CHROME;
 
 /** 超长判定：内容尺寸超过滚动盒才滚动，取整避免亚像素反复触发。 */
 export const islandScrollDistance = (contentSize: number, boxSize: number): number => {

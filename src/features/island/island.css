@@ -28,8 +28,7 @@ html[data-island="true"] #root {
     border: 0;
 }
 /* 超过工作区时只滚动内容，不扩大原生窗口盒。 */
-.island[data-state="expanded"] {
-    overflow-y: auto;
+.island[data-state="expanded"] {    overflow-y: auto;
     overflow-x: clip;
     overscroll-behavior: contain;
     scrollbar-width: none;
@@ -41,6 +40,27 @@ html[data-island="true"] #root {
     align-content: start;
     inline-size: var(--island-expanded-inline, max-content);
     block-size: var(--island-expanded-block, max-content);
+}
+/* 投放进入时的独立接收卡：只显示一句提示，不与收集箱的最近条目混排。 */
+.island-card--drop .island-drop-card {
+    display: grid;
+    place-items: center;
+    padding-inline: 4px;
+}
+.island-drop-card__text {
+    color: var(--fence-text);
+    font-size: 12px;
+    line-height: 18px;
+    white-space: nowrap;
+    overflow: clip;
+    text-overflow: ellipsis;
+}
+/* 展开态滚动条在卡片外：贴右边时槽在左侧，其余在右侧；槽宽 16 与几何一致。 */
+.island[data-state="expanded"][data-scrollbar="end"] {
+    padding-inline-end: 16px;
+}
+.island[data-state="expanded"][data-scrollbar="start"] {
+    padding-inline-start: 16px;
 }
 /* 刘海的窗口在非展开态沿边各留 12 DIP；padding 让自然布局与提交几何一致，重测时不会丢掉卡片内缩。 */
 .island[data-form="notch"][data-fillets="true"][data-edge="top"],
@@ -68,10 +88,7 @@ html[data-island="true"] #root {
 .island[data-state="expanded"] {
     --island-surface-alpha: 90%;
 }
-/* 开启动效时透明度随三态插值；关闭动效时保持瞬时切换。 */
-.island[data-animations="true"] {
-    transition: --island-surface-alpha 240ms linear;
-}
+/* 三态透明度直接切换：注册属性过渡在透明窗口重新合成时会留下可见跳变，改为瞬时切换。 */
 .island > .island__palette {
     position: absolute;
     display: none;
@@ -162,6 +179,33 @@ html[data-island="true"] #root {
     overflow: clip;
     text-overflow: ellipsis;
 }
+/* 卡片右上角的收起/展开按钮：沿用桌面格子的 28×28 命中区与 16 图标，悬停或聚焦时出现。 */
+.island[data-state="expanded"] .island-card__toggle {
+    position: absolute;
+    inset-block-start: 6px;
+    inset-inline-end: 6px;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    inline-size: 28px;
+    block-size: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    color: var(--fence-text);
+    background: color-mix(in srgb, var(--fence-text) 12%, transparent);
+    opacity: 0;
+    cursor: pointer;
+}
+.island-card:hover .island-card__toggle,
+.island-card__toggle:focus-visible {
+    opacity: 1;
+}
+.island-card__toggle span {
+    display: block;
+    inline-size: 16px;
+    block-size: 16px;
+}
 /* 展开态不再用卡片本体的拖动排序，卡片只保留键盘顺序入口。 */
 .island[data-state="expanded"] .island-card {
     cursor: default;
@@ -232,6 +276,10 @@ html[data-island="true"] #root {
 }
 .island-music {
     min-inline-size: 0;
+}
+/* 常态胶囊宽度按档位固定：换行/切歌不再让卡片按歌词文本重排，避免收起后窗口再调一次宽度。 */
+.island[data-state="collapsed"]:not([data-vertical="true"]) .island-music {
+    inline-size: 224px;
 }
 .island-music p {
     margin: 0;

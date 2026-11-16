@@ -390,6 +390,14 @@ impl crate::drop_bridge::IslandDropPort for AppDesktopDrop
 {
     fn collect_accepting(&self) -> bool { island_collect_accepting(&self.app).unwrap_or(false) }
 
+    fn drop_active(&self, active: bool)
+    {
+        if let Err(error) = self.app.emit("island-drop-active", active)
+        {
+            crate::log_warn!("浮岛投放：状态事件发布失败，错误={error}"); // 提示失败不影响投放本身。
+        }
+    }
+
     fn receive_collect(&self, content: crate::collect::IncomingContent, mode: String, collect_names: Option<Vec<String>>) -> Result<crate::collect::ReceiveResult, String> { receive_island_collect(&self.app, content, mode, collect_names) }
 
     fn report_error(&self, error: String) { report_content_error(&self.app, error) }

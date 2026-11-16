@@ -14,6 +14,19 @@ export const setIslandState = (request: IslandStateRequest) => invokeRuntime<voi
 /** 常态或 hover 进入原生移动循环，返回吸附完成时的权威指针位置。 */
 export const beginIslandDrag = async () => parseIslandDragResult(await invokeRuntime<unknown>("begin_island_drag"));
 
+/** 收起态逐卡保存；与排序共用偏好路径，提交前读取权威偏好。 */
+export const saveIslandCardCollapsed = async (islandCardCollapsed: Record<string, boolean>) => {
+    const preferences = await getPreferences();
+    return savePreferences(parsePreferences({ ...preferences, islandCardCollapsed }));
+};
+
+/** 投放目标进入/离开时由原生广播；载荷是当前是否处于接收状态。 */
+export const listenIslandDropActive = async (onActive: (active: boolean) => void): Promise<UnlistenFn> =>
+    listenRuntime<boolean>("island-drop-active", (active) => onActive(Boolean(active)));
+
+/** 拖出结束后读取原生光标是否仍在岛内；OLE 拖动期间页面收不到 pointerout。 */
+export const islandCursorInside = async () => await invokeRuntime<boolean>("island_cursor_inside");
+
 /** 两个排序入口共用偏好路径；提交前读取权威偏好，避免使用页面旧副本。 */
 export const saveIslandCardOrder = async (islandCardOrder: string[]) => {
     const preferences = await getPreferences(); // 保留岛位置及其他已保存字段。

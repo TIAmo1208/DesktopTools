@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type PointerEvent } from "rea
 import { cancelDesktopItemDragPreparation, startDesktopItemDrag } from "../../bridge/desktopItems";
 import { getCollectItems, listenCollectChanges, openCollectItem, prepareCollectDrag, readCollectImage, type CollectItem } from "../../bridge/collect";
 import { settingsErrorMessage } from "../../bridge/settings";
-import { islandCollectItems, islandCollectLimit, islandCollectSummary, islandCollectTitle } from "./islandCollect";
+import { islandCollectItems, islandCollectLimit, islandCollectSummary, islandCollectTitle, readIslandCollectCache, writeIslandCollectCache } from "./islandCollect";
 import "./islandCollect.css";
 
 type IslandCollectMode = "collapsed" | "hover" | "expanded"; // 与浮岛三态一致，不新增第四种展示档位。
@@ -49,9 +49,9 @@ const IslandCollectThumb = ({ item, fill = false }: { item: CollectItem; fill?: 
 };
 
 /** 浮岛收集箱卡：胶囊取最新一条，hover 取两条，展开为可拖出、可单击打开的列表。 */
-export const IslandCollectBox = ({ mode }: { mode: IslandCollectMode }) => {
-    const [items, setItems] = useState<CollectItem[]>([]);
-    const [ready, setReady] = useState(false); // 首次读取成功前不把失败当成空收集箱。
+export const IslandCollectBox = ({ mode, collapsed = false, collapsedCount = 3, onDragEnd }: { mode: IslandCollectMode; collapsed?: boolean; collapsedCount?: number; onDragEnd?: () => void }) => {
+    const [items, setItems] = useState<CollectItem[]>(() => [...(readIslandCollectCache() ?? [])]); // 预读命中时首帧就有条目。
+    const [ready, setReady] = useState(() => readIslandCollectCache() !== undefined); // 首次读取成功前不把失败当成空收集箱。
     const [failure, setFailure] = useState<string>();
     const revision = useRef(0); // 拒绝刷新、删除与卸载后的迟到读取。
     const dragCleanup = useRef<(() => void) | undefined>(undefined); // 当前条目拖出的窗口级清理。
@@ -64,6 +64,7 @@ export const IslandCollectBox = ({ mode }: { mode: IslandCollectMode }) => {
             .then((next) => {
                 if (current !== revision.current) return;
                 setItems(next);
+                writeIslandCollectCache(next); // 后续展开直接复用最近一次读取结果。
                 setReady(true);
                 setFailure(undefined);
             })
@@ -127,7 +128,10 @@ export const IslandCollectBox = ({ mode }: { mode: IslandCollectMode }) => {
             suppressClick.current = true;
             void startDesktopItemDrag(token, { left: 0, top: 0 })
                 .catch((error: unknown) => console.warn("浮岛收集项拖出失败", settingsErrorMessage(error)))
-                .finally(cleanup);
+                .finally(() => {
+                    cleanup();
+                    onDragEnd?.(); // 原生拖动期间页面收不到 pointerout，结束后由岛按真实光标位置判态。
+                });
         };
         const move = (next: globalThis.PointerEvent) => {
             if (next.pointerId !== event.pointerId || finished) return;
@@ -164,9 +168,19 @@ export const IslandCollectBox = ({ mode }: { mode: IslandCollectMode }) => {
         window.addEventListener("blur", cleanup);
     };
 
-    if (!ready && !items.length) return <p className="island-collect__status">{failure ?? "正在读取收集箱"}</p>;
-    if (failure && !items.length) return <p className="island-collect__status">{failure}</p>;
-    const rows = islandCollectItems(items, islandCollectLimit(mode));
+    // 加载与空态也占展开卡内容宽，首次实测就得到最终宽度，展开动画结束后不再二次调宽。
+    const status = (text: string) =>
+        mode === "expanded" ? (
+            <div className="island-collect island-collect--expanded">
+                <p className="island-collect__status">{text}</p>
+            </div>
+        ) : (
+            <p className="island-collect__status">{text}</p>
+        );
+    if (!ready && !items.length) return status(failure ?? "正在读取收集箱");
+    if (failure && !items.length) return status(failure);
+    // 展开态下卡内收起只列最近几条，仍保持 300 DIP 内容宽与三列混排；其余状态沿用三态上限。
+    const rows = islandCollectItems(items, mode === "expanded" ? (collapsed ? collapsedCount : islandCollectLimit(mode)) : islandCollectLimit(mode));
     if (mode === "collapsed") {
         const first = rows[0];
         return (

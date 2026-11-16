@@ -294,11 +294,12 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
       eventName === "weather-forecast-changed" ||
       eventName === "audio-spectrum-changed" ||
       eventName === "audio-spectrum-device-changed" ||
-      eventName === "popup-layer-result"
+      eventName === "popup-layer-result" ||
+      eventName === "island-drop-active"
     ) {
       // 刷新暂停只用来省掉重建数据的开销：一次性的请求完成消息与主动删除必须照常送达，
       // 否则弹层确认/菜单选择的 Promise 永远等不到结果。
-      const always = eventName === "popup-layer-result" || eventName === "weather-configuration-changed";
+      const always = eventName === "popup-layer-result" || eventName === "weather-configuration-changed" || eventName === "island-drop-active"; // 投放提示不受刷新暂停影响。
       const subscription = { receive: (payload) => { if (!refreshPaused || always || payload?.error || payload?.deletedName) handler(payload); } }; // 主动删除即使暂停也必须移除会话缓存。
       if (!eventSubscriptions.has(eventName)) eventSubscriptions.set(eventName, new Set());
       eventSubscriptions.get(eventName).add(subscription);
@@ -363,7 +364,7 @@ fn component_host_event_needs_time_consumers(payload: &str) -> bool { !host_even
 
 /// 需要转发到原生 WebView 的宿主事件白名单；独立岛与逐屏宿主共用同一份。
 /// 新增事件必须同时写入注入桥的 `eventCommands`，否则岛侧 `listen` 会静默丢弃。
-const FORWARDED_EVENTS: &[&str] = &[crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "music-timeline-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", "island-messages-changed", super::popup_layer::POPUP_RESULT_EVENT, crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, crate::contracts::PLUGIN_EVENT_CHANNEL];
+const FORWARDED_EVENTS: &[&str] = &[crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "music-timeline-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", "island-messages-changed", "island-drop-active", super::popup_layer::POPUP_RESULT_EVENT, crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, crate::contracts::PLUGIN_EVENT_CHANNEL];
 
 /// 将现有宿主事件转交 UI 线程的原生 WebView，页面重载后自动使用新的订阅入口。
 pub(crate) fn install_host_events(app: &AppHandle, read_preferences: crate::preferences::PreferencesReader)

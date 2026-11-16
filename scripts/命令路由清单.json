@@ -6,6 +6,7 @@
         "apply_workspace_interaction",
         "begin_desktop_host_input_drag",
         "begin_island_drag",
+        "island_cursor_inside",
         "cancel_desktop_item_drag_preparation",
         "clear_loopback_credential",
         "create_collect_box",

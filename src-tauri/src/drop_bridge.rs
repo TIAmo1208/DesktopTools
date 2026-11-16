@@ -25,6 +25,7 @@ pub(crate) struct ExternalDrop
 pub(crate) trait IslandDropPort: Send + Sync + 'static
 {
     fn collect_accepting(&self) -> bool;
+    fn drop_active(&self, active: bool); // 投放进入/离开时通知页面显示接收提示。
     fn receive_collect(&self, content: crate::collect::IncomingContent, mode: String, collect_names: Option<Vec<String>>) -> Result<crate::collect::ReceiveResult, String>;
     fn report_error(&self, error: String);
 }

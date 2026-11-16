@@ -186,7 +186,7 @@ test("岛音乐卡调用点消费投影与调度，回退到内联定时或旧�
     assert.match(component, /\{view\.slots\[slot\]\}/);
     assert.match(component, /\{view\.line\}/);
     // 尺寸输入只有「是否有同步词 + 贴边方向」，换句不重设窗口。
-    assert.match(component, /islandCapsuleLineLimit\(vertical, view\.hasLine\)/);
+    assert.match(component, /islandCapsuleLineLimit\(vertical, playing\)/); // 档位只看播放状态，不看歌词是否已到。
     assert.match(component, /islandScrollPlan\(\{/);
     assert.match(component, /islandScrollKey\(\{/);
     assert.match(component, /islandScrollAnimationName\(scroll\.kind, vertical\)/);
@@ -208,10 +208,10 @@ test("岛音乐卡调用点消费投影与调度，回退到内联定时或旧�
 test("常态胶囊按贴边方向与是否有同步词分档，内容盒扣除固定件", () => {
     assert.deepEqual(ISLAND_CAPSULE_LIMITS, { horizontal: { lyric: 240, fallback: 168 }, vertical: { lyric: 176, fallback: 96 } });
     assert.equal(ISLAND_CAPSULE_CHROME, 52);
-    assert.equal(islandCapsuleLimit(false, true), 240); // 贴上下、有同步词。
-    assert.equal(islandCapsuleLimit(false, false), 168); // 贴上下、无同步词或首句前。
-    assert.equal(islandCapsuleLimit(true, true), 176); // 贴左右、有同步词。
-    assert.equal(islandCapsuleLimit(true, false), 96); // 贴左右、无同步词。
+    assert.equal(islandCapsuleLimit(false, true), 240); // 贴上下、播放中。
+    assert.equal(islandCapsuleLimit(false, false), 168); // 贴上下、未播放。
+    assert.equal(islandCapsuleLimit(true, true), 176); // 贴左右、播放中。
+    assert.equal(islandCapsuleLimit(true, false), 96); // 贴左右、未播放。
     // 内容盒 = 档位 − 固定件（内边距 8×2＋媒体图 28＋间距 8）；固定档位，换句不变。
     assert.equal(islandCapsuleLineLimit(false, true), 188);
     assert.equal(islandCapsuleLineLimit(false, false), 116);
@@ -283,19 +283,18 @@ test("零时间轴末句没有结束时间时回退慢速循环，不静默裁�
     assert.equal(islandScrollPlan({ ...base, lineEndMs: 8000 }).kind, "progress");
 });
 
-test("整首尺寸不随句子变化：同一贴边方向下只由有无同步词与换边决定", () => {
-    // 逐点扫描整首歌：尺寸输入只有 hasLine 与贴边方向，换句（index 变化）不改变它，因此不会逐句重设窗口。
+test("整首尺寸不随句子变化：同一贴边方向下只由播放状态与换边决定", () => {
+    // 逐点扫描整首歌：档位只看播放状态与贴边方向，换句（index 变化）与歌词晚到都不改变它。
     for (let position = 0; position <= 10000; position += 250) {
-        const current = view(position);
-        assert.equal(islandCapsuleLimit(false, current.hasLine), current.hasLine ? 240 : 168);
-        assert.equal(islandCapsuleLimit(true, current.hasLine), current.hasLine ? 176 : 96);
+        view(position); // 扫描仍覆盖各句，确认档位与当前句无关。
+        assert.equal(islandCapsuleLimit(false, true), 240);
+        assert.equal(islandCapsuleLimit(true, true), 176);
     }
     const first = view(1000);
     const second = view(3000);
     assert.notEqual(first.index, second.index); // 确实是不同句。
-    assert.equal(islandCapsuleLineLimit(false, first.hasLine), islandCapsuleLineLimit(false, second.hasLine));
-    assert.equal(islandCapsuleLineLimit(true, first.hasLine), islandCapsuleLineLimit(true, second.hasLine));
-    // 唯一会改变尺寸的状态变化：换边（false↔true）与有词/无词（hasLine）。
+    assert.equal(islandCapsuleLineLimit(false, true), islandCapsuleLineLimit(false, true));
+    // 唯一会改变尺寸的状态变化：换边（false↔true）与是否播放。
     assert.notEqual(islandCapsuleLineLimit(false, true), islandCapsuleLineLimit(true, true));
     assert.notEqual(islandCapsuleLineLimit(false, false), islandCapsuleLineLimit(false, true));
 });

@@ -79,6 +79,7 @@ pub fn run()
             commands::island::get_island_snapshot,
             commands::island::set_island_state,
             commands::island::begin_island_drag,
+            commands::island::island_cursor_inside,
             commands::get_foreground_snapshot,
             commands::settings::get_settings,
             commands::weather::weather_settings,

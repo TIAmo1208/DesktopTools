@@ -94,15 +94,18 @@ export const islandScrollGeometry = (frame: IslandStateRequest, target: IslandSt
     const bands = islandExtraBands(window, content, edge);
     const maxScroll = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
     const visible = metrics.mode === "expanded" && metrics.settled && Number.isFinite(maxScroll) && maxScroll > 0 && window.height > 8;
-    const track: IslandRect | undefined = visible ? { left: window.left + Math.max(0, window.width - 16), top: window.top + 4, width: 12, height: window.height - 8 } : undefined;
+    // 滚动条在卡片外：贴右边时槽在卡片左侧，其余贴边方向槽在右侧；整条槽都不参与退回判定。
+    const gutterAtStart = edge === "right"; // 槽的位置与卡片贴边方向相反，卡片始终贴边。
+    const gutter: IslandRect | undefined = metrics.mode === "expanded" ? { left: gutterAtStart ? window.left : window.left + Math.max(0, window.width - 16), top: window.top, width: 16, height: window.height } : undefined;
+    const track: IslandRect | undefined = visible ? { left: gutterAtStart ? window.left : window.left + Math.max(0, window.width - 12), top: window.top + 4, width: 12, height: window.height - 8 } : undefined;
     const thumbHeight = track ? Math.min(track.height, Math.max(24, track.height * metrics.clientHeight / metrics.scrollHeight)) : 0;
     const travel = track ? track.height - thumbHeight : 0;
     const thumb: IslandRect | undefined = track ? { left: track.left + 3, top: track.top + travel * Math.max(0, Math.min(1, metrics.scrollTop / maxScroll)), width: 6, height: thumbHeight } : undefined;
-    return { window, content, bands, visible, track, thumb, travel, maxScroll };
+    return { window, content, bands, gutter, visible, track, thumb, travel, maxScroll };
 };
 /** 保留原生矩形命中，只把批准的透明区作为页面侧退回特例。 */
 export const islandHitRegion = (mode: IslandStateRequest["state"], point: IslandPoint, layout: ReturnType<typeof islandScrollGeometry>, contour: IslandContour): IslandHitRegion =>
-    !islandPointInRect(point, layout.window) ? "outside" : layout.track && islandPointInRect(point, layout.track) ? "scrollbar" : mode === "expanded" && layout.bands.some((band) => islandPointInRect(point, band)) ? "extra-band" : islandContourDistance(point, contour) <= 1e-8 ? "content" : "transparent";
+    !islandPointInRect(point, layout.window) ? "outside" : layout.gutter && islandPointInRect(point, layout.gutter) ? "scrollbar" : mode === "expanded" && layout.bands.some((band) => islandPointInRect(point, band)) ? "extra-band" : islandContourDistance(point, contour) <= 1e-8 ? "content" : "transparent";
 /** 120ms连续停留与门闩纯状态机；leave只代理窗外无法继续观察的指针，detect=false关闭常态透明检测。 */
 export const islandMarginStep = (state: IslandMarginState, input: { mode: IslandStateRequest["state"]; region: IslandHitRegion; now: number; busy: boolean; outlineDistance: number; coreDistance: number; leave?: boolean; detect?: boolean }) => {
     // 常态透明边距不承载本次切态语义，且检测会与 180ms 进入、拖动释放重判冲突：关闭检测既不写门闩也不产生切态副作用，逻辑保留以便恢复。

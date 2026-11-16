@@ -1091,6 +1091,13 @@ fn cursor_inside_client(hwnd: HWND) -> bool
     unsafe { GetAsyncKeyState(VK_ESCAPE.0 as i32) >= 0 && GetCursorPos(&mut point).is_ok() && ScreenToClient(hwnd, &mut point).as_bool() && GetClientRect(hwnd, &mut rect).is_ok() && point_inside_client(point, rect) }
 }
 
+/// 拖出结束后读取真实光标是否仍在岛窗口内；不依赖 WebView2 是否补发 pointerleave。
+pub(crate) fn cursor_inside() -> Result<bool, String>
+{
+    let hwnd = ISLAND.with(|slot| slot.borrow().as_ref().map(|resource| resource.hwnd)).ok_or("岛未开启")?; // 窗口尚未创建时按未开启处理。
+    Ok(cursor_inside_client(hwnd))
+}
+
 /// 常态与 hover 均可进入原生移动循环，展开态只允许卡片排序，不移动窗口。
 pub(crate) fn begin_drag() -> Result<std::sync::mpsc::Receiver<IslandDragResult>, String>
 {

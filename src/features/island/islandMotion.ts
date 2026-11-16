@@ -52,7 +52,9 @@ const islandStaggeredFrame = (from: IslandStateRequest, to: IslandStateRequest, 
             const start = origin
                 ? { left: origin.rect.left + (from.windowBox.left - union.left), top: origin.rect.top + (from.windowBox.top - union.top), width: origin.rect.width, height: origin.rect.height }
                 : anchor;
-            const rect = clamp({ left: mix(start.left, card.rect.left, progress), top: mix(start.top, card.rect.top, progress), width: mix(start.width, card.rect.width, progress), height: mix(start.height, card.rect.height, progress) });
+            // 宽度只用不回弹的进度：back 曲线越过 1 时会让卡宽先缩到目标以下再胀回，观感是展开前先向内收一下。
+            const widthProgress = Math.min(1, progress);
+            const rect = clamp({ left: mix(start.left, card.rect.left, progress), top: mix(start.top, card.rect.top, progress), width: mix(start.width, card.rect.width, widthProgress), height: mix(start.height, card.rect.height, progress) });
             return { rect, radius: Math.max(0, Math.min(mix(origin?.radius ?? card.radius, card.radius, progress), rect.width / 2, rect.height / 2)) };
         }
         const local = Math.min(1, Math.max(0, islandMotionProgress(elapsed - stagger)));

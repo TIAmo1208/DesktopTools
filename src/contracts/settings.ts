@@ -126,6 +126,10 @@ export interface ApplicationPreferences {
     islandCardOrder: string[]; // 已启用岛卡及展开顺序，最多 32 条。
     islandWeatherSource: "" | "qweather" | "foreca"; // 浮岛天气卡选择的来源，空串表示尚未选择。
     islandWeatherCityId: string; // 浮岛天气卡选择的城市标识，空串表示尚未选择。
+    islandCardCollapsed: Record<string, boolean>; // 处于收起态的岛卡；只在记忆开启的卡片上写入。
+    islandCardCollapseMemory: Record<string, boolean>; // 逐卡「记忆收起状态」开关，缺失视为开启。
+    islandCollectCollapsedCount: number; // 收集箱收起时显示的最近条目数。
+    islandCollectCollapsedDefault: boolean; // 收集箱默认收起。
     islandRadius: number; // 岛展开卡圆角，独立于界面圆角。
     islandForm: "capsule" | "notch"; // 胶囊离边 6px；刘海贴边并以贴边侧直角衔接。
     disabledPlugins: string[]; // 宿主停用的插件标识，不属于插件自己的设置文件。
@@ -238,6 +242,13 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     if (typeof islandWeatherCityId !== "string" || islandWeatherCityId.length > 1024 || /[\u0000-\u001f\u007f-\u009f]/.test(islandWeatherCityId))
         throw new Error("浮岛天气城市标识无效");
     if (islandWeatherCityId && !islandWeatherSource) throw new Error("浮岛天气城市必须同时选择来源");
+    const islandCardCollapsed = parseIslandCardFlags(candidate.islandCardCollapsed); // 缺失或非法项按未收起的空表处理。
+    const islandCardCollapseMemory = parseIslandCardFlags(candidate.islandCardCollapseMemory); // 缺失视为逐卡记忆开启。
+    const islandCollectCollapsedCount = candidate.islandCollectCollapsedCount === undefined ? 3 : candidate.islandCollectCollapsedCount; // 收起时默认显示三条。
+    if (typeof islandCollectCollapsedCount !== "number" || !Number.isInteger(islandCollectCollapsedCount) || islandCollectCollapsedCount < 1 || islandCollectCollapsedCount > 10)
+        throw new Error("收集箱收起条数无效");
+    const islandCollectCollapsedDefault = candidate.islandCollectCollapsedDefault === undefined ? true : candidate.islandCollectCollapsedDefault; // 收集箱默认收起。
+    if (typeof islandCollectCollapsedDefault !== "boolean") throw new Error("收集箱默认收起开关无效");
     const disabledPlugins = parseDisabledPlugins(candidate.disabledPlugins); // 缺失、非数组和非法条目都按空或丢弃处理。
     const themePluginId = candidate.themePluginId ?? null; // 缺省不选择外部主题，不检查目录存在性。
     if (themePluginId !== null && (typeof themePluginId !== "string" || !themePluginId.trim())) throw new Error("主题插件标识无效");
@@ -274,8 +285,24 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         islandCardOrder,
         islandWeatherSource,
         islandWeatherCityId,
+        islandCardCollapsed,
+        islandCardCollapseMemory,
+        islandCollectCollapsedCount,
+        islandCollectCollapsedDefault,
         disabledPlugins,
     };
+};
+
+/** 岛卡布尔表只保留 official. 或 plugin. 前缀的标识，最多 32 项。 */
+const parseIslandCardFlags = (value: unknown): Record<string, boolean> => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+    const kept: Record<string, boolean> = {}; // 合法岛卡及其开关值。
+    for (const [key, flag] of Object.entries(value as Record<string, unknown>)) {
+        if (typeof flag !== "boolean" || !["official.", "plugin."].some((prefix) => key.startsWith(prefix) && key.length > prefix.length)) continue;
+        if (Object.keys(kept).length >= 32) break;
+        kept[key] = flag;
+    }
+    return kept;
 };
 
 /** 停用名单只保留带 plugin. 前缀且前缀后仍有名称的标识，去重后最多 64 条。 */
