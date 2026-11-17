@@ -12,6 +12,10 @@ import infoIcon from "../../../resources/info.svg?raw";
 import errorIcon from "../../../resources/message-error.svg?raw";
 import warningIcon from "../../../resources/message-warning.svg?raw";
 import chevronIcon from "../../../resources/weather-chevron-right.svg?raw";
+import musicFunctionIcon from "../../../resources/music-play.svg?raw";
+import collectFunctionIcon from "../../../resources/menu-collect.svg?raw";
+import weatherFunctionIcon from "../../../resources/menu-weather.svg?raw";
+import pluginFunctionIcon from "../../../resources/settings-plugin.svg?raw";
 import { PluginSlot, pluginTileType } from "../components/PluginSlot";
 import { useMusicState, musicProgressRange, positionAt } from "../music/musicSource";
 import { usePreferences } from "../../app/preferences/PreferencesProvider";
@@ -45,7 +49,7 @@ import {
 } from "./islandInteraction";
 import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, ISLAND_EXPAND_STAGGER_MS, ISLAND_EXPAND_MOTION_MS, islandAttachedCornerAt, islandUnionFrame } from "./islandMotion";
 import { islandHoldMessages, islandMessageTime, islandMessageView } from "./islandMessages";
-import { ISLAND_MESSAGE_ANCHOR_TTL_MS, ISLAND_ANCHOR_GAP, ISLAND_ANCHOR_GROW_MS, ISLAND_ANCHOR_SHRINK_MS, ISLAND_ANCHOR_SIZE, ISLAND_ANCHOR_SLOTS, ISLAND_STATUS_SPECS, islandAnchorDeadline, islandAnchorGlyph, islandAnchorId, islandAnchorValue, islandArrive, islandCapsuleFace, islandClockLabel, islandDropFace, islandExpireAnchors, islandHoverContent, islandHoverEnter, islandHoverSelect, islandHoverStep, islandLayerRank, islandMergeHiddenAnchors, islandOverlayAction, islandStatusProgress, islandStatusSpec, type IslandAnchor, type IslandAnchorArrival, type IslandDropTarget, type IslandHiddenArrival, type IslandStatus, type IslandStatusSpec } from "./islandContent";
+import { ISLAND_MESSAGE_ANCHOR_TTL_MS, ISLAND_ANCHOR_GAP, ISLAND_ANCHOR_GROW_MS, ISLAND_ANCHOR_SHRINK_MS, ISLAND_ANCHOR_SIZE, ISLAND_ANCHOR_SLOTS, ISLAND_STATUS_SPECS, islandAnchorDeadline, islandAnchorGlyph, islandAnchorId, islandAnchorValue, islandArrive, islandCapsuleFace, islandClockLabel, islandDropFace, islandExpireAnchors, islandHoverContent, islandHoverEnter, islandHoverSelect, islandHoverStep, islandLayerRank, islandMergeHiddenAnchors, islandOverlayAction, islandStatusProgress, islandStatusSpec, islandAnchorKind, type IslandAnchor, type IslandAnchorArrival, type IslandDropTarget, type IslandFunctionKind, type IslandHiddenArrival, type IslandStatus, type IslandStatusSpec } from "./islandContent";
 import { ISLAND_LYRIC_OFFSETS, islandCapsuleLineLimit, islandLyricView, islandMusicTickDelay, islandPlaybackStatus, islandScrollAnimationName, islandScrollDistance, islandScrollKey, islandScrollPlan, islandScrollPlayState } from "./islandLyrics";
 import { islandCollectTitle, readIslandCollectCache, writeIslandCollectCache } from "./islandCollect";
 import { ISLAND_FENCE_TOKENS } from "./islandTokens";
@@ -368,7 +372,21 @@ const ISLAND_ANCHOR_PATHS = {
     "link-off": "m2 2 16 16m-6-13 1.5-1.5a3.5 3.5 0 0 1 5 5L15 8m-7 4-1.5 1.5a3.5 3.5 0 0 1-5-5L3 7",
     lock: "M5 9h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Zm2 0V6a3 3 0 0 1 6 0v3m-3 4v1",
     release: "M10 2v10m-4-4 4 4 4-4M3 12v5h14v-5",
+    clock: "M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14Zm0 3.4V10l2.6 1.6",
 };
+
+/** hover 顶部锚点的功能图标：先认出锚点属于哪个功能，状态符号改到内容行左侧。 */
+const ISLAND_FUNCTION_ICONS: Record<IslandFunctionKind, string> = {
+    music: musicFunctionIcon,
+    collect: collectFunctionIcon,
+    weather: weatherFunctionIcon,
+    message: infoIcon,
+    plugin: pluginFunctionIcon,
+    event: infoIcon,
+};
+
+/** 功能图标只作身份标识，不表达状态；状态仍由内容行左侧的状态符号表达。 */
+const IslandFunctionIcon = ({ kind }: { kind: IslandFunctionKind }) => <span className="island-anchor__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: ISLAND_FUNCTION_ICONS[kind] }} />;
 
 /** 在 20×20 安全盒内绘制一个状态、计数或空态符号。 */
 const IslandAnchorVisual = ({ anchor, special, motion, children, entering = false, specs }: { anchor?: IslandAnchor; special?: string; motion: boolean; children?: ReactNode; entering?: boolean; specs?: readonly IslandStatusSpec[] }) => {
@@ -388,7 +406,8 @@ const IslandAnchorVisual = ({ anchor, special, motion, children, entering = fals
     const progress = value?.kind === "percent" ? value.value / 100 : 0;
     const glyph = builtin ? islandAnchorGlyph(builtin, progress) :
         spec?.visual.kind === "ring" ? { kind: "ring" as const, arc: spec.visual.source === "empty" ? 0 : islandStatusProgress("running", progress) ?? 0 } : spec?.visual;
-    const symbol = glyph?.kind === "glyph" ? glyph.symbol : special === "release" ? "release" : undefined;
+    const specialSymbol = special && special in ISLAND_ANCHOR_PATHS ? special as keyof typeof ISLAND_ANCHOR_PATHS : undefined;
+    const symbol = glyph?.kind === "glyph" ? glyph.symbol : specialSymbol;
     const asset = symbol && symbol in ISLAND_ANCHOR_ICONS ? ISLAND_ANCHOR_ICONS[symbol as keyof typeof ISLAND_ANCHOR_ICONS] : undefined;
     const path = symbol && symbol in ISLAND_ANCHOR_PATHS ? ISLAND_ANCHOR_PATHS[symbol as keyof typeof ISLAND_ANCHOR_PATHS] : undefined;
     return <span ref={ink} className="island-anchor__ink" aria-hidden="true" data-status={status} data-symbol={symbol} data-glyph={glyph?.kind}>
@@ -409,6 +428,7 @@ const islandMessageArrival = (message: IslandMessage): IslandAnchorArrival => ({
     source: message.source,
     layer: "message",
     nowMs: message.receivedAtMs,
+    kind: "message",
     unit: { primary: message.content, status: message.loading ? "indeterminate" : message.type === "error" ? "failed" : message.type === "success" ? "completed" : "pending" },
 });
 
@@ -912,7 +932,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             const registration = snapshot?.runtime.instances.find((item) => item.instanceId === instance.instanceId);
             const source = manifest?.name ?? instance.componentId;
             const status = registration?.status === "failed" ? "failed" : registration?.status === "ready" ? "pending" : "disconnected";
-            return { source, layer: "resident", nowMs: 0, unit: instance.componentId === "official.music-control"
+            const kind: IslandFunctionKind = instance.componentId === "official.music-control" ? "music" : instance.componentId === "official.collect-box" ? "collect" : instance.componentId === "official.weather" ? "weather" : "plugin";
+            return { source, layer: "resident", nowMs: 0, kind, unit: instance.componentId === "official.music-control"
                 ? { status: musicStatus, primary: musicView.line, secondary: musicStatus === "running" ? `${musicPercent}%` : undefined }
                 : instance.componentId === "official.weather" ? { status: weather.unit.status, primary: weather.unit.primary }
                     : { status, primary: instance.componentId === "official.collect-box" ? collectTitle : source } };
@@ -966,6 +987,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     }, [announcement, baseAnchors.map((anchor) => anchor.id).join("\n")]);
     const hoverContentRef = useRef<HTMLDivElement>(null);
     const hoverList = useRef<HTMLDivElement>(null);
+    /** 胶囊卡片宽度：hover 卡片不得窄于它，否则指针停在原胶囊范围会被判成透明边距而回退。 */
+    const capsuleInline = useRef(0);
     const handleHoverKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
         if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
             event.preventDefault();
@@ -1104,6 +1127,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                     const geometryEdge = pending !== undefined && edge === "" ? "top" : edge;
                     let request = islandGeometry(mode, measured, radius, work, geometryEdge, pending ?? preferences.islandOffset, preferences.islandForm);
                     if (mode === "collapsed") {
+                        capsuleInline.current = measured[0]?.width ?? 0;
                         const circles = Array.from(root.current.querySelectorAll<HTMLElement>(".island-anchor-row .island-anchor"));
                         request = { ...request, anchors: circles.slice(0, ISLAND_ANCHOR_SLOTS + 1).map((circle) => {
                             const bounds = circle.getBoundingClientRect();
@@ -1752,11 +1776,11 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                 </section>
             ) : null}
             {mode !== "expanded" ? (
-                <section className="island-card island-card--anchors" aria-label={mode === "collapsed" ? "浮岛概览" : "浮岛摘要"}>
+                <section className="island-card island-card--anchors" aria-label={mode === "collapsed" ? "浮岛概览" : "浮岛摘要"} style={mode === "hover" && capsuleInline.current > 0 ? { minInlineSize: `${capsuleInline.current}px` } : undefined}>
                     <div className="island-card__content">
                         {mode === "collapsed" ? (
                             <div className="island-anchor-row" data-layout="capsule">
-                                {face.kind === "clock" ? <span className="island-anchor" data-anchor="clock"><IslandAnchorVisual special={face.text} motion={false} /></span> : <>
+                                {face.kind === "clock" ? <div className="island-anchor-item"><span className="island-anchor" data-anchor="clock"><IslandAnchorVisual special="clock" motion={false} /></span><span className="island-anchor__text island-anchor__clock">{face.text}</span></div> : <>
                                     {face.visible.map((anchor) => {
                                         const active = capsuleActive?.id === anchor.id ? anchor : undefined;
                                         const musicAnchor = isMusic(anchor);
@@ -1782,9 +1806,10 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                     aria-label={`${anchor.source} ${islandStatusSpec(anchor.unit?.status ?? "", statusSpecs)?.word ?? ""}`.trim()} aria-pressed={anchor.id === selected?.id}
                                     onPointerEnter={(event) => { if (event.pointerType !== "touch" && !drop) content.setSelected(anchor.id); }}
                                     onClick={() => { if (!drop) content.setSelected(anchor.id); }}
-                                ><IslandAnchorVisual anchor={anchor} specs={statusSpecs} special={anchor === dropAnchor ? "release" : undefined} motion={contentMotion}>{weatherIcon(anchor)}</IslandAnchorVisual></button>) : <span className="island-anchor" data-anchor="clock"><IslandAnchorVisual special={islandClockLabel(content.clockNow)} motion={false} /></span>}
+                                >{anchor === dropAnchor ? <IslandAnchorVisual anchor={anchor} special="release" motion={contentMotion} /> : <IslandFunctionIcon kind={islandAnchorKind(anchor)} />}</button>) : <div className="island-anchor-item"><span className="island-anchor" data-anchor="clock"><IslandAnchorVisual special="clock" motion={false} /></span><span className="island-anchor__text island-anchor__clock">{islandClockLabel(content.clockNow)}</span></div>}
                             </div>
                             {hoverText.expandable ? <div className="island-anchor-detail" ref={hoverContentRef} tabIndex={-1} role="group" aria-label={`${selected?.source}内容`}>
+                                <span className="island-anchor island-anchor--detail" aria-hidden="true"><IslandAnchorVisual anchor={selected} specs={statusSpecs} motion={false} /></span>
                                 <div className="island-anchor-detail__lines">
                                     <span className="island-anchor__text">{islandShortText(hoverText.lines[0] ?? "")}</span>
                                     {selectedMessage ? <span className="island-anchor__text">{selectedMessage.source} · {islandMessageTime(selectedMessage.receivedAtMs, content.clockNow)}</span> :

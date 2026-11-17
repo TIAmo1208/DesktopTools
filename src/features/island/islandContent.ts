@@ -132,6 +132,9 @@ export const islandAnchorValue = (text: string): IslandAnchorValue | undefined =
     return undefined;
 };
 
+/** 锚点承载的功能身份：hover 顶部用功能图标区分锚点，状态符号移到内容行左侧。 */
+export type IslandFunctionKind = "music" | "collect" | "weather" | "message" | "plugin" | "event";
+
 /** 一个锚点：身份由层级与来源决定，顺序按插入先后，收起与重开都不换位。 */
 export interface IslandAnchor
 {
@@ -139,9 +142,13 @@ export interface IslandAnchor
     source: string;
     layer: IslandContentLayer;
     updatedAtMs: number; // 最近一次换内容时刻；普通消息的 30s 从这里起算。
+    kind?: IslandFunctionKind; // 功能身份；缺省按普通事件处理。
     unit?: IslandContentUnit; // 只剩锚点或合并计数锚点没有内容单元。
     count?: number; // 圆内数字：系统隐藏期间合并的计数，封顶 99 由渲染层显示「99+」。
 }
+
+/** 功能身份缺省为普通事件；插件卡没有单独身份时也走事件图标。 */
+export const islandAnchorKind = (anchor: IslandAnchor): IslandFunctionKind => anchor.kind ?? "event";
 
 /** 新到达的内容；同一来源同一层级复用锚点，其余情况在右侧插入。 */
 export interface IslandAnchorArrival
@@ -149,6 +156,7 @@ export interface IslandAnchorArrival
     source: string;
     layer: IslandContentLayer;
     nowMs: number;
+    kind?: IslandFunctionKind; // 功能身份；消息、常驻卡与插件各自标注。
     unit?: IslandContentUnit;
 }
 
@@ -161,8 +169,8 @@ export const islandArrive = (anchors: readonly IslandAnchor[], arrival: IslandAn
     const id = islandAnchorId(arrival.layer, arrival.source);
     const index = anchors.findIndex((anchor) => anchor.id === id);
     if (index < 0)
-        return [...anchors, { id, source: arrival.source, layer: arrival.layer, updatedAtMs: arrival.nowMs, unit: arrival.unit }];
-    return anchors.map((anchor, position) => (position === index ? { ...anchor, updatedAtMs: arrival.nowMs, unit: arrival.unit, count: undefined } : anchor));
+        return [...anchors, { id, source: arrival.source, layer: arrival.layer, updatedAtMs: arrival.nowMs, kind: arrival.kind, unit: arrival.unit }];
+    return anchors.map((anchor, position) => (position === index ? { ...anchor, updatedAtMs: arrival.nowMs, kind: arrival.kind ?? anchor.kind, unit: arrival.unit, count: undefined } : anchor));
 };
 
 /** 叠加时的三种处理：同来源在内容内滚动、不同来源等当前结束、更高层级立即切换。 */

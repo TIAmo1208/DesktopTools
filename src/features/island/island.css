@@ -380,7 +380,10 @@ button.island-anchor:active {
     min-inline-size: 0;
     margin-block-start: 8px;
 }
-.island-anchor-detail__lines { min-inline-size: 0; }
+.island-anchor-detail__lines { flex: 1 1 auto; min-inline-size: 0; }
+
+/* hover 内容行左侧的状态符号：功能身份在顶部图标，状态在内容行左侧；用 20 视觉层，避免两行文本被 28 圆顶住而不再长高。 */
+.island-anchor--detail { flex: none; inline-size: 20px; block-size: 20px; }
 .island-anchor-detail__lines > :first-child { line-height: 18px; }
 .island-anchor-detail__lines > :nth-child(2) {
     font-size: 11px;
@@ -851,5 +854,11 @@ button.island-anchor:active {
     font-variant-numeric: tabular-nums;
 }
 
-/* 时钟的五个字符适配20 DIP安全区。 */
-.island-anchor[data-anchor="clock"] .island-anchor__number { font-size: 7px; }
+/* 空态时钟：圆锚点只画表盘，hh:mm 放到右侧按内容行字号显示；压过胶囊通用 11px。 */
+.island-anchor-row[data-layout="capsule"] .island-anchor__clock,
+.island-anchor-row[data-layout="hover"] .island-anchor__clock {
+    margin-inline-start: 8px;
+    font-size: 13px;
+    line-height: var(--island-anchor-size);
+    font-variant-numeric: tabular-nums;
+}

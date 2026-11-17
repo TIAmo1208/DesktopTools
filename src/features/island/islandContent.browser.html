@@ -193,8 +193,10 @@
                 阶段 = "一、零锚点空态与胶囊只读语义";
                 const 时钟 = 锚点("clock");
                 断言(Boolean(时钟), "零锚点必须显示空态圆锚点");
-                const 时钟文本 = 时钟?.querySelector(".island-anchor__number")?.textContent ?? "";
-                断言(/^\d{2}:\d{2}$/.test(时钟文本), `空态圆内应为 hh:mm，实际 ${时钟文本}`);
+                const 时钟文本节点 = 时钟?.parentElement?.querySelector(".island-anchor__clock") ?? null;
+                const 时钟文本 = 时钟文本节点?.textContent ?? "";
+                断言(/^\d{2}:\d{2}$/.test(时钟文本), `空态时钟应显示在圆锚点右侧，实际 ${时钟文本}`);
+                断言(时钟文本节点 !== null && Number.parseFloat(getComputedStyle(时钟文本节点).fontSize) >= 13, `空态时钟字号应不小于 13px，实际 ${时钟文本节点 ? getComputedStyle(时钟文本节点).fontSize : "无节点"}`);
                 const [时, 分] = 时钟文本.split(":").map(Number);
                 const 当前时间 = new Date();
                 断言(Math.abs(时 * 60 + 分 - (当前时间.getHours() * 60 + 当前时间.getMinutes())) <= 1, `空态时钟应与当前时间一致，实际 ${时钟文本}`);
@@ -355,9 +357,11 @@
                 await 稳定("collapsed");
                 渲染({ contentFacts: [事实("宽度-1", "pending", "短"), 事实("宽度-2", "pending", "短二")] });
                 await 直到(() => 胶囊锚点().length === 2, "两枚锚点胶囊");
+                const 胶囊宽 = 卡片().getBoundingClientRect().width;
                 悬停();
                 await 稳定("hover");
                 const 短框 = 卡片().getBoundingClientRect();
+                断言(短框.width >= 胶囊宽 - 1, `hover 宽度不得窄于胶囊，实际胶囊 ${胶囊宽} / hover ${短框.width}`);
                 渲染({ contentFacts: [事实("宽度-1", "pending", 长中文, "12:30"), 事实("宽度-2", "pending", "短二")] });
                 await 直到(() => 详情文本().includes("一二三"), "hover 内容切到长文本", 4000);
                 await 稳定("hover");
