@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>浮岛内容层十态、边界与切换时序检查</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            background: #d6c3bb;
+        }
+        #fixture {
+            position: relative;
+            padding: 24px;
+            width: 900px;
+            height: 520px;
+            background: linear-gradient(120deg, #d8c3b8 0%, #e7d7cd 45%, #c9a89f 100%);
+        }
+        #result {
+            position: fixed;
+            left: 8px;
+            bottom: 8px;
+            margin: 0;
+            padding: 8px;
+            background: #000c;
+            color: #7dff9b;
+            font: 12px/1.5 monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+    <body>
+        <script>
+            // 模块加载失败、未处理异常和隐藏页面也必须有界写出结论。
+            const failAssertion = (reason) => {
+                const result = document.getElementById("result");
+                if (result && !/^(PASS|FAIL)/.test(result.textContent)) {
+                    result.textContent = `FAIL\\n- ${reason}`;
+                    document.body.dataset.phase = "fail";
+                }
+            };
+            window.addEventListener("error", (event) => failAssertion(event.message || "断言模块加载失败"), true);
+            window.addEventListener("unhandledrejection", (event) => failAssertion(String(event.reason)));
+            setTimeout(() => failAssertion("断言总时限 60000ms：页面状态或动画未收敛"), 60000);
+        </script>
+        <main id="fixture"></main>
+        <pre id="result">RUNNING</pre>
+        <script type="module">
+            // 证据层：L1 浏览器断言（真实 React 组件 + 真实 CSS）。原生投放 OLE 进入/离开顺序、WebView2
+            // 真实合成的材质与观感仍由 L3 真机覆盖；本页只判定 DOM、dataset 与计算样式。
+            import { 创建夹具, 消息, 媒体, 时间轴, 逐句歌词, 等待, 直到 } from "./islandFixture.js";
+
+            // 夹具必须先于产品模块的副作用安装，否则桥与订阅会拿到未替换的运行时。
+            const 夹具 = 创建夹具();
+            // 本页只验证内容层：清空岛快照里的常驻实例，避免真实音乐/天气卡抢占锚点可见位与前台排序。
+            // 快照形状仍是生产读取路径（get_island_snapshot）给出的同一份数据。
+            const 原生 = window.__DESKTOP_TOOLS_NATIVE__;
+            const 原invoke = 原生.invoke.bind(原生);
+            let 清空实例 = true; // 内容层场景用空快照；音乐档位场景再切回夹具自带的真实音乐实例。
+            原生.invoke = (命令, 载荷) =>
+                命令 === "get_island_snapshot" ? 原invoke(命令, 载荷).then((快照) => ({ ...快照, instances: 清空实例 ? [] : 快照.instances })) : 原invoke(命令, 载荷);
+
+            const [岛模块, 内容模块, React模块, 根模块, 偏好模块, 样式模块] = await Promise.all([
+                import("./island.tsx"),
+                import("./islandContent.ts"),
+                import("react"),
+                import("react-dom/client"),
+                import("../../app/preferences/PreferencesProvider.tsx"),
+                import("../../styles/global.css"),
+            ]);
+            void 样式模块; // 只要求样式表加载完成，不读导出。
+            const { IslandPage } = 岛模块;
+            const { ISLAND_STATUS_SPECS, islandAnchorGlyph, islandAnchorValue } = 内容模块;
+            const React = React模块.default;
+            const { createRoot } = 根模块;
+            const { PreferencesProvider } = 偏好模块;
+
+            // 独立岛页面标记与主题，与窗口入口保持一致。
+            document.documentElement.dataset.island = "true";
+            document.documentElement.dataset.theme = "dark";
+            document.documentElement.dataset.desktopTheme = "dark";
+            const 容器 = document.getElementById("fixture");
+            let 根 = createRoot(容器);
+            const 渲染 = (属性 = {}) => 根.render(React.createElement(PreferencesProvider, null, React.createElement(IslandPage, 属性)));
+            // 音乐实例场景结束后重建岛页：用空快照重新挂载，后续内容层时序不受常驻锚点影响。
+            const 重新挂载 = () => {
+                根.unmount();
+                根 = createRoot(容器);
+                渲染();
+            };
+
+            const 结果 = document.getElementById("result");
+            const 失败 = [];
+            // 失败先写出的结论不被迟到的成功覆盖。
+            const report = (text) => {
+                if (!结果.textContent.startsWith("FAIL")) 结果.textContent = text;
+                document.body.dataset.phase = 结果.textContent.startsWith("FAIL") ? "fail" : "pass";
+            };
+            const 断言 = (条件, 说明) => {
+                if (!条件) 失败.push(说明);
+            };
+            const 近似 = (实际, 期望, 容差 = 1) => Math.abs(实际 - 期望) <= 容差;
+
+            const 岛 = () => document.querySelector("main.island");
+            const 当前态 = () => 岛()?.dataset.state;
+            const 卡片 = () => document.querySelector(".island-card--anchors") ?? document.querySelector(".island-card");
+            const 胶囊行 = () => document.querySelector('.island-anchor-row[data-layout="capsule"]');
+            const 悬停行 = () => document.querySelector('.island-anchor-row[data-layout="hover"]');
+            const 锚点 = (身份) => document.querySelector(`.island-anchor[data-anchor="${CSS.escape(身份)}"]`);
+            const 墨 = (身份) => 锚点(身份)?.querySelector(".island-anchor__ink");
+            const 条目 = (身份) => 锚点(身份)?.closest(".island-anchor-item");
+            const 文案 = (身份) => 条目(身份)?.querySelector(".island-anchor__text");
+            const 标签 = (身份) => 条目(身份)?.querySelector(".island-anchor-label");
+            const 胶囊锚点 = () => [...(胶囊行()?.querySelectorAll(".island-anchor") ?? [])];
+            const 悬停按钮 = () => [...(悬停行()?.querySelectorAll("button.island-anchor") ?? [])];
+            const 播报 = () => document.querySelector(".island__announcer")?.textContent ?? "";
+            const 详情 = () => document.querySelector(".island-anchor-detail");
+            const 详情文本 = () => [...(详情()?.querySelectorAll(".island-anchor__text") ?? [])].map((节点) => 节点.textContent).join(" / ");
+            const 行 = () => document.querySelector(".island-music__line");
+            const 按键 = (键) => 岛().dispatchEvent(new KeyboardEvent("keydown", { key: 键, bubbles: true }));
+            const 悬停 = () => 岛().dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", relatedTarget: null }));
+
+            // 等切态完成并恢复自然布局后再测量；动画期间根节点带内联尺寸。
+            const 稳定 = async (期望) => {
+                await 直到(() => 当前态() === 期望, `切到 ${期望}`, 5000);
+                await 直到(() => !岛().style.inlineSize && !岛().style.blockSize, `${期望} 恢复自然布局`, 5000);
+                await 等待(40);
+            };
+
+            // 合成 PointerEvent 没有 OS 活动指针；只替换 capture 平台方法，命中、拖动意图与展开判定仍走生产处理器。
+            const 单击元素 = async (节点) => {
+                const 框 = 节点.getBoundingClientRect();
+                const 原set = 岛().setPointerCapture;
+                const 原has = 岛().hasPointerCapture;
+                const 原release = 岛().releasePointerCapture;
+                岛().setPointerCapture = () => {};
+                岛().hasPointerCapture = () => false;
+                岛().releasePointerCapture = () => {};
+                try {
+                    const 点 = { clientX: 框.x + 框.width / 2, clientY: 框.y + 框.height / 2, screenX: 11, screenY: 11 };
+                    节点.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse", pointerId: 7, button: 0, buttons: 1, ...点 }));
+                    岛().dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "mouse", pointerId: 7, button: 0, ...点 }));
+                } finally {
+                    岛().setPointerCapture = 原set;
+                    岛().hasPointerCapture = 原has;
+                    岛().releasePointerCapture = 原release;
+                }
+            };
+            const 单击卡片 = () => 单击元素(document.querySelector(".island-card"));
+
+            // 浮岛令牌由页面探针复制到岛根；用隐藏探针取当前主题下的计算色，避免把十六进制与 rgb 直接比较。
+            const 令牌色 = (名) => {
+                const 探针 = document.createElement("span");
+                探针.style.color = `var(${名})`;
+                探针.style.display = "none";
+                岛().appendChild(探针);
+                const 值 = getComputedStyle(探针).color;
+                探针.remove();
+                return 值;
+            };
+
+            // Web Animations 关键帧按属性名取值，兼容 camelCase 与连字符两种序列化。
+            const 帧值 = (帧, 属性) => {
+                const 目标 = 属性.replace(/-/g, "").toLowerCase();
+                for (const [键, 值] of Object.entries(帧 ?? {})) {
+                    if (键.replace(/-/g, "").toLowerCase() === 目标) return 值;
+                }
+                return undefined;
+            };
+            const 动画摘要 = (节点) =>
+                (节点?.getAnimations?.({ subtree: true }) ?? []).map((动画) => {
+                    const 时间 = 动画.effect.getTiming();
+                    const 帧 = 动画.effect.getKeyframes();
+                    return { 时长: 时间.duration, 延迟: 时间.delay ?? 0, 缓动: 时间.easing, 首帧: 帧[0], 末帧: 帧[帧.length - 1] };
+                });
+
+            const 事实 = (来源, 状态, 主信息, 附加, 层 = "event") => ({
+                source: 来源,
+                layer: 层,
+                nowMs: Date.now(),
+                unit: { status: 状态, primary: 主信息, secondary: 附加 },
+            });
+            const 主信息 = "任务正文";
+            const 长中文 = "一二三四五六七八九十一二三四五六七八九十"; // 20 个汉字，触发 18 字截断。
+            const 长英文 = "abcdefghijklmnopqrstuvwxyzabcdefghijklmn"; // 40 个字符，触发 36 字符截断。
+
+            let 阶段 = "启动"; // 失败结论带上阶段，便于定位断言。
+            const 运行 = async () => {
+                await 直到(() => 岛(), "岛根节点挂载");
+                await 直到(() => 夹具.提交.length > 0, "岛完成首次原生几何提交", 8000);
+                await 稳定("collapsed");
+
+                // ---- 一、零锚点空态与胶囊只读语义 ----
+
+                阶段 = "一、零锚点空态与胶囊只读语义";
+                const 时钟 = 锚点("clock");
+                断言(Boolean(时钟), "零锚点必须显示空态圆锚点");
+                const 时钟文本 = 时钟?.querySelector(".island-anchor__number")?.textContent ?? "";
+                断言(/^\d{2}:\d{2}$/.test(时钟文本), `空态圆内应为 hh:mm，实际 ${时钟文本}`);
+                const [时, 分] = 时钟文本.split(":").map(Number);
+                const 当前时间 = new Date();
+                断言(Math.abs(时 * 60 + 分 - (当前时间.getHours() * 60 + 当前时间.getMinutes())) <= 1, `空态时钟应与当前时间一致，实际 ${时钟文本}`);
+                断言(胶囊锚点().length === 1, `零锚点只应有一个空态圆，实际 ${胶囊锚点().length}`);
+                断言(胶囊行().querySelectorAll("button").length === 0, "胶囊必须是只读的，不得出现按钮");
+                断言(岛().tabIndex === -1, `胶囊不得进入 Tab 顺序，实际 tabIndex=${岛().tabIndex}`);
+                断言([...胶囊行().querySelectorAll("*")].every((节点) => 节点.tabIndex < 0), "胶囊内不得有可聚焦元素");
+                断言(胶囊锚点().every((节点) => 节点.tagName === "SPAN" && !节点.hasAttribute("role")), "胶囊锚点必须是只读 span，不得成为按钮或可聚焦控件");
+                await 单击卡片();
+                await 稳定("expanded");
+                断言(Boolean(卡片()), "零锚点空态仍必须可单击展开");
+                按键("Escape");
+                await 稳定("collapsed");
+
+                // ---- 二、十种基础状态逐条：视觉差异、固定短词与结束后去向 ----
+
+                阶段 = "二、十种基础状态逐条：视觉差异、固定短词与结束后去向";
+                // 取消/完成的去向是「直接消失」「收成圆点」，其符号与短词由真实模型给出并在本页断言；
+                // 取消态按规格不渲染 DOM，因此同时断言它没有留下锚点或播报。
+                const 状态用例 = [
+                    { 状态: "pending", 词: "待开始", 形: "ring", 符号: "", 去向: "linger", 强调: "--fence-text" },
+                    { 状态: "running", 词: "进行中", 形: "ring", 符号: "", 去向: "linger", 强调: "--fence-active", 附加: "40%" },
+                    { 状态: "paused", 词: "暂停", 形: "glyph", 符号: "pause", 去向: "linger", 强调: "--fence-text" },
+                    { 状态: "completed", 词: "完成", 形: "glyph", 符号: "check", 去向: "dot", 强调: "--fence-text" },
+                    { 状态: "failed", 词: "失败", 形: "glyph", 符号: "alert", 去向: "linger", 强调: "--fence-error" },
+                    { 状态: "cancelled", 词: "取消", 形: "glyph", 符号: "cross", 去向: "vanish", 强调: "--fence-text" },
+                    { 状态: "awaiting", 词: "待确认", 形: "glyph", 符号: "question", 去向: "linger", 强调: "--fence-warning" },
+                    { 状态: "disconnected", 词: "未连接", 形: "glyph", 符号: "link-off", 去向: "linger", 强调: "--fence-text" },
+                    { 状态: "unauthorized", 词: "未授权", 形: "glyph", 符号: "lock", 去向: "linger", 强调: "--fence-text" },
+                    { 状态: "indeterminate", 词: "运行中", 形: "sweep", 符号: "", 去向: "linger", 强调: "--fence-active" },
+                ];
+                for (const 用例 of 状态用例) {
+                    const 来源 = `状态-${用例.状态}`;
+                    const 身份 = `event:${来源}`;
+                    const 规格 = ISLAND_STATUS_SPECS[用例.状态];
+                    const 模型字形 = islandAnchorGlyph(用例.状态, 0.4);
+                    断言(规格?.word === 用例.词, `${用例.状态} 的固定短词应为 ${用例.词}，实际 ${规格?.word}`);
+                    断言(规格?.disposition === 用例.去向, `${用例.状态} 的结束去向应为 ${用例.去向}，实际 ${规格?.disposition}`);
+                    断言(模型字形.kind === 用例.形, `${用例.状态} 的视觉种类应为 ${用例.形}，实际 ${模型字形.kind}`);
+                    if (用例.形 === "glyph") 断言(模型字形.symbol === 用例.符号, `${用例.状态} 的符号应为 ${用例.符号}，实际 ${模型字形.symbol}`);
+                    if (用例.状态 === "running") 断言(模型字形.arc === 0.4, `进行中弧长应随 40% 进度，实际 ${模型字形.arc}`);
+                    if (用例.状态 === "pending") 断言(模型字形.arc === 0, "待开始必须是空环");
+
+                    渲染({ contentFacts: [事实(来源, 用例.状态, 主信息, 用例.附加)] });
+                    if (用例.去向 === "vanish") {
+                        await 直到(() => 播报() === "" && Boolean(锚点("clock")), `${用例.状态} 直接消失并回落空态`, 4000);
+                        断言(!锚点(身份), "取消状态必须直接消失，不保留锚点");
+                        断言(!播报().includes(用例.词), "取消状态不得进入播报");
+                        continue;
+                    }
+                    await 直到(() => 墨(身份), `${用例.状态} 锚点渲染`);
+                    const 墨节点 = 墨(身份);
+                    断言(墨节点.dataset.status === 用例.状态, `${用例.状态} 锚点 data-status 应为自身，实际 ${墨节点.dataset.status}`);
+                    断言(墨节点.dataset.glyph === 用例.形, `${用例.状态} 锚点 data-glyph 应为 ${用例.形}，实际 ${墨节点.dataset.glyph}`);
+                    断言((墨节点.dataset.symbol ?? "") === 用例.符号, `${用例.状态} 锚点 data-symbol 应为 ${用例.符号}，实际 ${墨节点.dataset.symbol}`);
+                    if (用例.形 === "ring") {
+                        断言(Boolean(墨节点.querySelector(".island-anchor__track")), `${用例.状态} 必须绘制轨道`);
+                        const 实线弧 = [...墨节点.querySelectorAll("svg path")];
+                        if (用例.状态 === "pending") 断言(实线弧.length === 0, "待开始为空环，不得绘制已播弧");
+                        else 断言(实线弧.length === 1 && /A8\.5/.test(实线弧[0].getAttribute("d") ?? ""), "进行中必须用 SVG path 实线弧表示进度");
+                        断言(!墨节点.innerHTML.includes("stroke-dasharray"), `${用例.状态} 进度环不得用 stroke-dasharray 模拟`);
+                    } else if (用例.形 === "sweep") {
+                        const 扫 = 墨节点.querySelector(".island-anchor__sweep");
+                        断言(Boolean(扫), "无总量运行中必须绘制不定弧");
+                        断言(扫.dataset.motion === "true", `不定弧应带 data-motion=true，实际 ${扫.dataset.motion}`);
+                        断言(/^M10 1\.5 A8\.5/.test(扫.getAttribute("d") ?? ""), "不定弧必须是 SVG 实线弧");
+                        断言(!墨节点.innerHTML.includes("stroke-dasharray"), "不定弧不得用 stroke-dasharray 模拟");
+                    } else if (["pause", "check", "alert", "cross"].includes(用例.符号)) {
+                        断言(Boolean(墨节点.querySelector(".island-anchor__icon svg")), `${用例.状态} 必须使用内置图标绘制符号`);
+                    } else {
+                        断言(Boolean(墨节点.querySelector("svg path")?.getAttribute("d")), `${用例.状态} 必须用路径绘制符号`);
+                        断言(!墨节点.querySelector(".island-anchor__icon"), `${用例.状态} 不应复用其他状态的图标`);
+                    }
+                    const 颜色 = getComputedStyle(墨节点).color;
+                    断言(颜色 === 令牌色(用例.强调), `${用例.状态} 锚点颜色应为 ${用例.强调}，实际 ${颜色}`);
+                    断言(播报().includes(`${来源} · ${用例.词}`), `${用例.状态} 播报必须包含来源与短词，实际 ${播报()}`);
+                    if (用例.状态 === "running") 断言(播报().includes(" · 25%"), `进行中播报应带 25% 里程碑，实际 ${播报()}`);
+                    else 断言(播报().includes(主信息), `${用例.状态} 播报必须带关键值（主信息），实际 ${播报()}`);
+                    if (用例.去向 === "dot") {
+                        断言(!文案(身份), "完成状态必须收成圆点，不得保留内容行");
+                        断言(卡片().getBoundingClientRect().width < 100, `完成后宽度应按圆收缩，实际 ${卡片().getBoundingClientRect().width}`);
+                    } else {
+                        断言(文案(身份)?.textContent?.startsWith(主信息), `${用例.状态} 应显示一行主信息，实际 ${文案(身份)?.textContent}`);
+                    }
+                }
+
+                // ---- 三、几何与排版 ----
+
+                阶段 = "三、几何与排版";
+                断言(getComputedStyle(岛()).getPropertyValue("--island-anchor-size").trim() === "28px", "锚点尺寸令牌应为 28px");
+                断言(getComputedStyle(岛()).getPropertyValue("--island-anchor-gap").trim() === "12px", "锚点间距令牌应为 12px");
+                断言(getComputedStyle(岛()).getPropertyValue("--island-anchor-grow").trim() === "300ms", "生长节奏令牌应为 300ms");
+                断言(getComputedStyle(岛()).getPropertyValue("--island-anchor-shrink").trim() === "240ms", "收缩节奏令牌应为 240ms");
+
+                const 九枚 = Array.from({ length: 9 }, (_, 序) => 事实(`数量-${序 + 1}`, "pending", `锚点${序 + 1}`));
+                渲染({ contentFacts: 九枚 });
+                await 直到(() => 胶囊锚点().length === 4, "胶囊折成 3 枚实体 + ＋N", 4000);
+                const 实体锚点 = 胶囊锚点().filter((节点) => 节点.dataset.anchor !== "overflow");
+                断言(实体锚点.length === 3, `胶囊最多并排 3 枚实体锚点，实际 ${实体锚点.length}`);
+                断言(胶囊锚点().length === 4, "第 4 枚起必须折成一枚「＋N」圆");
+                // F9：用真实 pointerdown/pointerup 落在锚点区域内，验证整条胶囊均可单击展开；
+                // 不再用 dispatchEvent(new MouseEvent("click")) 这种绕过命中与长按判定的事件伪造通过。
+                await 单击元素(实体锚点[0]);
+                await 稳定("expanded");
+                断言(当前态() === "expanded", "在锚点区域真实按下/抬起必须展开整条胶囊");
+                按键("Escape");
+                await 稳定("collapsed");
+                const 测量锚点 = 胶囊锚点().filter((节点) => 节点.dataset.anchor !== "overflow"); // 展开会重挂载胶囊，重新取节点。
+                断言(测量锚点.length === 3, `回到胶囊仍应保留 3 枚实体锚点，实际 ${测量锚点.length}`);
+                断言(锚点("overflow")?.querySelector(".island-anchor__number")?.textContent === "＋6", `＋N 应为 ＋6，实际 ${锚点("overflow")?.querySelector(".island-anchor__number")?.textContent}`);
+                for (const 节点 of 测量锚点) {
+                    const 框 = 节点.getBoundingClientRect();
+                    断言(近似(框.width, 28, 0.6) && 近似(框.height, 28, 0.6), `锚点应为 28×28，实际 ${框.width}×${框.height}`);
+                }
+                const 第二框 = 测量锚点[1].getBoundingClientRect();
+                const 第三框 = 测量锚点[2].getBoundingClientRect();
+                断言(近似(第三框.left - 第二框.right, 12, 0.8), `胶囊相邻锚点间距应为 12，实际 ${第三框.left - 第二框.right}`);
+                断言(getComputedStyle(胶囊行()).columnGap === "12px", `锚点行间距应为 12px，实际 ${getComputedStyle(胶囊行()).columnGap}`);
+
+                // ---- 四、hover：全部锚点、单选内容、2px 轮廓与键盘 ----
+
+                阶段 = "四、hover：全部锚点、单选内容、2px 轮廓与键盘";
+                悬停();
+                await 稳定("hover");
+                const 全部按钮 = 悬停按钮();
+                断言(全部按钮.length === 9, `hover 必须列出全部 9 个未消失锚点，实际 ${全部按钮.length}`);
+                断言(全部按钮.every((节点) => 节点.tagName === "BUTTON"), "hover 锚点列表必须由按钮承载，可被指针与键盘切换");
+                断言(document.querySelectorAll(".island-anchor-detail").length === 1, "hover 下方只能显示一个锚点的内容");
+                const 悬停间距 = 全部按钮[1].getBoundingClientRect().left - 全部按钮[0].getBoundingClientRect().right;
+                断言(近似(悬停间距, 12, 0.8), `hover 锚点间距应为 12，实际 ${悬停间距}`);
+                断言(悬停行().getBoundingClientRect().height > 40, `9 枚锚点必须换行，实际行高 ${悬停行().getBoundingClientRect().height}`);
+                const 选中态 = () => 悬停按钮().find((节点) => 节点.getAttribute("aria-pressed") === "true");
+                断言(选中态() === 全部按钮[0], "hover 默认选中第一枚锚点");
+                const 选中样式 = getComputedStyle(选中态());
+                断言(选中样式.outlineStyle === "solid" && 选中样式.outlineWidth === "2px", `选中锚点应有 2px 实线轮廓，实际 ${选中样式.outlineWidth}/${选中样式.outlineStyle}`);
+                断言(选中样式.outlineColor === 令牌色("--fence-text"), `选中轮廓应使用正文色，实际 ${选中样式.outlineColor}`);
+                const 未选样式 = getComputedStyle(全部按钮[1]);
+                断言(未选样式.outlineStyle === "none" || 未选样式.outlineWidth === "0px", `未选中锚点不得带轮廓，实际 ${未选样式.outlineWidth}/${未选样式.outlineStyle}`);
+                断言(全部按钮[0].getAttribute("aria-label") === "数量-1 待开始", `锚点无障碍名应含来源与短词，实际 ${全部按钮[0].getAttribute("aria-label")}`);
+                悬停行().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+                await 直到(() => 选中态() === 悬停按钮()[1], "右方向键切到下一枚锚点", 3000);
+                断言(详情文本().includes("锚点2"), `下方内容应切到第二枚，实际 ${详情文本()}`);
+                断言(document.activeElement === 悬停按钮()[1], "方向键切换后焦点应落在选中锚点");
+                悬停行().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+                await 直到(() => 选中态() === 悬停按钮()[0], "左方向键切回", 3000);
+                悬停行().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+                await 等待(60);
+                断言(选中态() === 悬停按钮()[0], "左端必须停住，不循环到末尾");
+                悬停行().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+                await 直到(() => document.activeElement === 详情(), "Enter 进入选中锚点的内容", 3000);
+                const 播报节点 = document.querySelector(".island__announcer");
+                断言(播报节点?.getAttribute("role") === "status" && 播报节点?.getAttribute("aria-live") === "polite", "播报节点应为 role=status 且 aria-live=polite");
+
+                // ---- 五、hover 宽高随内容与锚点列表变化（普通锚点按内容测量；音乐胶囊的固定档位另见七续） ----
+
+                阶段 = "五、hover 宽高随内容与锚点列表变化";
+                按键("Escape");
+                await 稳定("collapsed");
+                渲染({ contentFacts: [事实("宽度-1", "pending", "短"), 事实("宽度-2", "pending", "短二")] });
+                await 直到(() => 胶囊锚点().length === 2, "两枚锚点胶囊");
+                悬停();
+                await 稳定("hover");
+                const 短框 = 卡片().getBoundingClientRect();
+                渲染({ contentFacts: [事实("宽度-1", "pending", 长中文, "12:30"), 事实("宽度-2", "pending", "短二")] });
+                await 直到(() => 详情文本().includes("一二三"), "hover 内容切到长文本", 4000);
+                await 稳定("hover");
+                const 长框 = 卡片().getBoundingClientRect();
+                断言(长框.width > 短框.width + 20, `hover 宽度应随内容变化，实际 ${短框.width} → ${长框.width}`);
+                断言(长框.height > 短框.height + 8, `hover 高度应随内容行数变化，实际 ${短框.height} → ${长框.height}`);
+
+                // ---- 六、文本单行省略与数值格式 ----
+
+                阶段 = "六、文本单行省略与数值格式";
+                按键("Escape");
+                await 稳定("collapsed");
+                渲染({ contentFacts: [事实("文本-中文", "pending", 长中文)] });
+                await 直到(() => 文案("event:文本-中文")?.textContent?.endsWith("…"), "中文超长省略");
+                const 中文标签 = 文案("event:文本-中文");
+                断言([...中文标签.textContent].length === 18, `中文应截到 18 字（含省略号），实际 ${[...中文标签.textContent].length}`);
+                断言(getComputedStyle(中文标签).whiteSpace === "nowrap", "内容必须单行不换行");
+                断言(getComputedStyle(中文标签).textOverflow === "ellipsis", "超长内容必须省略");
+                断言(标签("event:文本-中文").getBoundingClientRect().height <= 30, "单行内容不得撑高胶囊");
+                渲染({ contentFacts: [事实("文本-英文", "pending", 长英文)] });
+                await 直到(() => 文案("event:文本-英文")?.textContent?.endsWith("…"), "英文超长省略");
+                断言([...文案("event:文本-英文").textContent].length === 36, `英文应截到 36 字符（含省略号），实际 ${[...文案("event:文本-英文").textContent].length}`);
+                // F5：附加项白名单由 islandAnchorValue 统一放行，只接受整数百分比、99+ 与 mm:ss。
+                断言(islandAnchorValue("40%")?.kind === "percent" && islandAnchorValue("100%")?.kind === "percent", "整数百分比应被白名单放行");
+                断言(islandAnchorValue("99+")?.kind === "count", "99+ 计数应被白名单放行");
+                断言(islandAnchorValue("12:30")?.kind === "time" && islandAnchorValue("00:00")?.kind === "time", "mm:ss 应被白名单放行");
+                断言(!islandAnchorValue("42") && !islandAnchorValue("5+") && !islandAnchorValue("12:60") && !islandAnchorValue("40.5%") && !islandAnchorValue("101%"), "裸整数、N+、越界秒与小数百分比必须被白名单拒绝");
+                渲染({ contentFacts: [事实("数值-进度", "running", "下载", "40%")] });
+                await 直到(() => 条目("event:数值-进度")?.querySelector(".island-anchor__value")?.textContent === "40%", "整数百分比可显示");
+                渲染({ contentFacts: [事实("数值-时间", "awaiting", "上传", "12:30")] });
+                await 直到(() => 条目("event:数值-时间")?.querySelector(".island-anchor__value")?.textContent === "12:30", "mm:ss 剩余时间可显示");
+                渲染({ contentFacts: [事实("数值-计数", "pending", "已完成", "99+")] });
+                await 直到(() => 条目("event:数值-计数")?.querySelector(".island-anchor__value")?.textContent === "99+", "99+ 计数可显示");
+                for (const 非法 of ["42", "5+", "12:60"]) {
+                    const 来源 = `数值-拒绝-${非法}`;
+                    渲染({ contentFacts: [事实(来源, "pending", "上传", 非法)] });
+                    await 直到(() => 文案(`event:${来源}`)?.textContent === "上传", `非法数值 ${非法} 只保留主信息`);
+                    断言(!条目(`event:${来源}`)?.querySelector(".island-anchor__value"), `非法附加项 ${非法} 不得渲染`);
+                }
+
+                // ---- 七、边界：只剩锚点、拖放接收与回退 ----
+
+                阶段 = "七、边界：只剩锚点、拖放接收与回退";
+                渲染({ contentFacts: [{ source: "仅锚点", layer: "event", nowMs: Date.now() }] });
+                await 直到(() => 锚点("event:仅锚点"), "只剩锚点仍渲染");
+                断言(!文案("event:仅锚点"), "只剩锚点不得显示内容行");
+                断言(Boolean(墨("event:仅锚点").querySelector(".island-anchor__dot")), "只剩锚点应绘制圆点");
+                断言(岛().getBoundingClientRect().height > 0, "只剩锚点不得自动隐藏");
+                断言(卡片().getBoundingClientRect().width < 100, `只剩锚点宽度应按锚点数量收缩，实际 ${卡片().getBoundingClientRect().width}`);
+                断言(播报() === "", "只剩锚点没有可播报内容");
+
+                渲染({ contentFacts: [事实("投放底稿", "pending", "原内容")] });
+                await 直到(() => 播报().includes("原内容"), "投放前恢复原内容");
+                // 原生投放事实（t8）只有 collect / reject 两种 kind；fixture 原样转发事件载荷。
+                夹具.pushDrop({ active: true, kind: "collect" });
+                await 稳定("hover");
+                断言(Boolean(锚点("drop")), "投放进入必须显示接收锚点");
+                断言(墨("drop").dataset.symbol === "release", `接收锚点应换成松手图标，实际 ${墨("drop").dataset.symbol}`);
+                断言(播报() === "松开加入收集箱", `收集箱接收文案应固定，实际 ${播报()}`);
+                断言(详情文本().includes("松开加入收集箱"), "hover 内容行必须给出松手结果");
+                断言(悬停按钮()[0]?.dataset.anchor === "drop", "拖放层级最高，接收锚点应排在最前");
+                夹具.pushDrop({ active: true, kind: "reject" });
+                await 直到(() => 播报() === "无法接收", `无匹配插件应显示无法接收，实际 ${播报()}`, 3000);
+                夹具.pushDrop({ active: false, kind: "collect" });
+                await 直到(() => !锚点("drop"), "投放离开必须回退接收态");
+                await 稳定("collapsed");
+                断言(播报().includes("原内容"), `回退后应恢复原内容，实际 ${播报()}`);
+
+                // 音乐投放当前没有原生来源（原生只上报 collect/reject）；这里只验证同一渲染分支的固定文案，
+                // 不把它记作原生可达，也不伪造 kind:"music" 事件。
+                渲染({ contentFacts: [事实("投放底稿", "pending", "原内容")], dropFact: "music" });
+                await 直到(() => 播报() === "交给音乐播放", `音乐接收文案应固定，实际 ${播报()}`);
+                断言(墨("drop").dataset.symbol === "release", "音乐接收态同样使用松手图标");
+                渲染({ contentFacts: [事实("投放底稿", "pending", "原内容")] });
+                await 直到(() => !锚点("drop"), "撤销注入后回落原内容");
+
+                // ---- 七（续）、F1 音乐胶囊固定档位与 F9 hover 控件上限 ----
+                阶段 = "七（续）、音乐胶囊固定档位与 hover 控件上限";
+                渲染({ contentFacts: [] });
+                await 直到(() => !锚点("event:投放底稿"), "清理内容事实，准备音乐档位场景");
+                // 切回夹具自带的真实音乐实例；偏好事件触发岛快照重读。此前的空快照只是内容层场景的隔离手段。
+                清空实例 = false;
+                夹具.pushPreferences({});
+                await 直到(() => 锚点("resident:音乐控制"), "音乐常驻锚点挂载", 5000);
+                await 等待(200); // 共享音乐源在音乐卡挂载后才建立订阅。
+                const 标题 = "这是一个足够长的歌曲标题用于常态胶囊滚动";
+                夹具.pushMusic(媒体(标题, "测试艺人"));
+                夹具.pushDetails({ timeline: 时间轴(12000, 标题, "测试艺人"), lyrics: 逐句歌词 });
+                await 直到(() => 行()?.textContent === 逐句歌词[1].text, "播放中显示当前句", 5000);
+                await 稳定("collapsed");
+                const 档位卡宽 = 卡片().getBoundingClientRect().width;
+                const 档位根宽 = 岛().getBoundingClientRect().width;
+                const 档位行宽 = 行().clientWidth;
+                const 档位窗宽 = 夹具.提交.at(-1)?.windowBox.width;
+                const 档位提交数 = 夹具.提交.length;
+                断言(档位卡宽 === 240 && 档位行宽 === 188, `播放档位内容盒应固定为 240−52，实际 卡 ${档位卡宽} / 行 ${档位行宽}`);
+                for (const 位置 of [22000, 12000, 22000]) {
+                    const 期望句 = 位置 >= 20000 ? 逐句歌词[2].text : 逐句歌词[1].text;
+                    夹具.pushDetails({ timeline: 时间轴(位置, 标题, "测试艺人"), lyrics: 逐句歌词 });
+                    await 直到(() => 行()?.textContent === 期望句, `换句到「${期望句}」`);
+                    await 等待(120); // 给 ResizeObserver、帧合并与串行提交落地的机会，再断言「没有提交」。
+                    // F1（按 t5 纠正）：短句不再收紧胶囊；同一播放档跨句根宽与原生窗口提交都不得变化。
+                    断言(卡片().getBoundingClientRect().width === 档位卡宽 && 行().clientWidth === 档位行宽, "F1：短句不再收紧胶囊，固定内容盒在跨句时不变");
+                    断言(岛().getBoundingClientRect().width === 档位根宽, "F1：跨句根宽不变");
+                    断言(夹具.提交.at(-1)?.windowBox.width === 档位窗宽 && 夹具.提交.length === 档位提交数, "F1：同档换句原生窗口盒宽度不变且零提交");
+                }
+
+                // F9：hover 下方最多 3 个控件，且只允许可立即执行/可撤销/低风险动作；需要确认/删除/批准的操作只在展开。
+                悬停();
+                await 稳定("hover");
+                const 控件 = [...document.querySelectorAll(".island-anchor-detail .island-music__controls button")];
+                断言(控件.length > 0 && 控件.length <= 3, `hover 下方最多 3 个控件，实际 ${控件.length}`);
+                const 安全动作 = new Set(["上一首", "暂停", "播放", "下一首", "关闭"]);
+                断言(控件.every((节点) => 安全动作.has(节点.getAttribute("aria-label") ?? "")), `hover 控件必须属于可立即执行/可撤销/低风险动作，实际 ${控件.map((节点) => 节点.getAttribute("aria-label")).join("/")}`);
+                断言(!控件.some((节点) => /删除|批准|确认|卸载|移除/.test(节点.getAttribute("aria-label") ?? "")), "需要确认/删除/批准的操作不得出现在 hover");
+                断言(document.querySelectorAll(".island-anchor-detail__lines > *").length <= 2, "hover 下方最多两行");
+
+                // F9：焦点外描边是 2px + offset 2；与选中锚点的 2px、offset 0 轮廓是两条不同规则。
+                悬停行().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+                await 直到(() => document.activeElement === 悬停按钮()[0], "键盘焦点落在锚点按钮", 3000);
+                断言(document.activeElement.matches(":focus-visible"), "键盘焦点应命中 :focus-visible");
+                const 锚点焦点样式 = getComputedStyle(document.activeElement);
+                断言(锚点焦点样式.outlineWidth === "2px" && 锚点焦点样式.outlineStyle === "solid" && 锚点焦点样式.outlineOffset === "2px", `锚点焦点外描边应为 2px + offset 2，实际 ${锚点焦点样式.outlineWidth}/${锚点焦点样式.outlineStyle}/${锚点焦点样式.outlineOffset}`);
+                控件[0].focus();
+                await 等待(40);
+                const 控件焦点样式 = getComputedStyle(控件[0]);
+                断言(document.activeElement === 控件[0] && 控件焦点样式.outlineWidth === "2px" && 控件焦点样式.outlineStyle === "solid" && 控件焦点样式.outlineOffset === "2px", `控件焦点外描边应为 2px + offset 2，实际 ${控件焦点样式.outlineWidth}/${控件焦点样式.outlineStyle}/${控件焦点样式.outlineOffset}`);
+
+                按键("Escape");
+                await 稳定("collapsed");
+                // 恢复空实例，后续接力/隐藏合并场景仍按内容层空快照运行。
+                夹具.pushMusic(null);
+                清空实例 = true;
+                重新挂载();
+                await 直到(() => 岛() && Boolean(锚点("clock")) && !锚点("resident:音乐控制"), "以内容层空快照重新挂载", 5000);
+                await 稳定("collapsed");
+
+                // ---- 八、切换时序：同来源滚动、跨来源追加、跨层级立即切换 ----
+
+                阶段 = "八、切换时序：同来源滚动、跨来源追加、跨层级立即切换";
+                // 系统开启减少动效时内容层按既有规则直接落终态，200–320ms 节奏无法观察；先明确判定环境。
+                断言(!matchMedia("(prefers-reduced-motion: reduce)").matches, "环境：系统开启了减少动效，无法验证 200–320ms 接力节奏；请关闭后重跑");
+                渲染({ contentFacts: [] });
+                await 直到(() => !锚点("event:投放底稿"), "清理内容事实");
+
+                const 甲来源 = "接力源甲";
+                const 甲首刻 = Date.now(); // 固定到达时刻：重推同一集合时锚点身份与内容必须仍能对齐。
+                const 甲一条 = 消息(101, "info", "第一条正文", 甲来源, 甲首刻);
+                const 甲二条 = 消息(102, "info", "第二条正文", 甲来源, 甲首刻 + 1);
+                const 乙消息 = 消息(201, "info", "来源乙正文", "接力源乙", 甲首刻 + 2);
+                夹具.pushMessages([甲一条]);
+                await 直到(() => 文案(`message:${甲来源}`)?.textContent === "第一条正文", "同来源首条消息显示", 4000);
+                夹具.pushMessages([甲一条, 甲二条]);
+                await 直到(
+                    () => 文案(`message:${甲来源}`)?.textContent === "第二条正文" && 标签(`message:${甲来源}`)?.querySelector(".island-anchor-label__outgoing")?.textContent === "第一条正文",
+                    "同来源换文在内容内滚动",
+                    4000,
+                );
+                const 滚动摘要 = 动画摘要(标签(`message:${甲来源}`));
+                const 入场滚动 = 滚动摘要.find((项) => 帧值(项.首帧, "transform") === "translateY(100%)");
+                const 离场滚动 = 滚动摘要.find((项) => 帧值(项.末帧, "transform") === "translateY(-100%)");
+                断言(入场滚动?.时长 === 300 && 入场滚动?.延迟 === 0, `新内容应 300ms 自下向上进入，实际 ${入场滚动?.时长}/${入场滚动?.延迟}`);
+                断言(帧值(入场滚动?.末帧, "transform") === "none", "新内容滚动终点应回正");
+                断言(离场滚动?.时长 === 300, `旧内容应 300ms 向上离场，实际 ${离场滚动?.时长}`);
+                await 等待(350); // 等滚动结束，再验证跨来源追加。
+
+                夹具.pushMessages([甲一条, 甲二条, 乙消息]);
+                await 直到(() => 墨("message:接力源乙")?.getAnimations().some((动画) => 动画.effect.getTiming().duration === 300), "新来源锚点插入并自下而上渐入", 4000);
+                断言(!文案("message:接力源乙"), "不同来源插入新锚点后不得立即展开内容");
+                断言(文案(`message:${甲来源}`)?.textContent === "第二条正文", "新来源不得打断当前内容");
+                断言(标签(`message:${甲来源}`).getAnimations({ subtree: true }).length === 0, "等当前消息结束前，当前锚点内容不得先收回");
+                const 插入摘要 = 动画摘要(墨("message:接力源乙")).find((项) => Number(帧值(项.首帧, "opacity")) === 0);
+                断言(插入摘要?.时长 === 300 && 插入摘要?.延迟 === 0, `新锚点应 300ms 渐入，实际 ${插入摘要?.时长}/${插入摘要?.延迟}`);
+                断言(帧值(插入摘要?.首帧, "transform") === "translateY(6px)" && 帧值(插入摘要?.末帧, "transform") === "none", "新锚点必须自下而上渐入");
+                断言(插入摘要?.缓动 === "ease-out", `锚点渐入应使用 ease-out，实际 ${插入摘要?.缓动}`);
+                const 甲框 = 锚点(`message:${甲来源}`).getBoundingClientRect();
+                const 乙框 = 锚点("message:接力源乙").getBoundingClientRect();
+                断言(乙框.left >= 甲框.right, `新锚点应从右侧插入，实际 ${甲框.right} → ${乙框.left}`);
+                await 等待(350); // 等插入动画结束后再结束当前消息。
+
+                夹具.pushMessages([乙消息]); // 甲来源的当前消息结束：集合里不再有该来源，前台交给右侧新锚点。
+                await 直到(() => 文案("message:接力源乙")?.textContent === "来源乙正文", "当前消息结束后新锚点再伸展", 4000);
+                const 收起项 = 动画摘要(标签(`message:${甲来源}`)).find((项) => 项.时长 === 240 && 项.延迟 === 0);
+                const 展开项 = 动画摘要(标签("message:接力源乙")).find((项) => 项.时长 === 300);
+                断言(Boolean(收起项) && 帧值(收起项?.末帧, "inlineSize") === "0px", "旧内容应先收回（240ms，宽度缩到 0）");
+                断言(展开项?.延迟 === 240, `新内容应在旧内容收回后展开（延迟 240ms），实际 ${展开项?.延迟}`);
+                断言(帧值(展开项?.首帧, "inlineSize") === "0px", "新内容必须从锚点处向右展开（宽度 0 → 自然宽）");
+                断言(Number(帧值(展开项?.首帧, "opacity")) === 0, "新内容应从透明渐入");
+                断言((展开项?.延迟 ?? 0) >= (收起项?.时长 ?? Infinity), "接力顺序必须先收后展");
+                await 等待(600); // 展开动画 300ms + 延迟 240ms 全部结束，避免下一次切换被当作「动画中被打断」直接落终态。
+
+                渲染({ contentFacts: [事实("确认源", "awaiting", "需要确认", undefined, "confirm")] });
+                // 先抓 240ms 的收回动画：它完成后会自行取消，等播报被动更新可能已经错过。
+                await 直到(() => 动画摘要(标签("message:接力源乙")).some((项) => 项.时长 === 240), "被抢占的消息内容开始收回", 4000);
+                const 乙标签动画 = 动画摘要(标签("message:接力源乙"));
+                断言(Boolean(乙标签动画.find((项) => 项.时长 === 240)), "被抢占的消息内容应收回（240ms）");
+                断言(文案("confirm:确认源")?.textContent === "需要确认", "更高优先级层级应立即显示新内容，不等旧内容收完");
+                断言(锚点("confirm:确认源").getBoundingClientRect().left >= 锚点("message:接力源乙").getBoundingClientRect().right, "层级切换的新锚点应从右侧插入");
+                const 丙插入 = 动画摘要(墨("confirm:确认源")).find((项) => 项.时长 === 300 && Number(帧值(项.首帧, "opacity")) === 0);
+                断言(Boolean(丙插入) && 帧值(丙插入?.首帧, "transform") === "translateY(6px)", "新锚点应先自下而上渐入（300ms）");
+                const 丙展开 = 动画摘要(标签("confirm:确认源")).find((项) => 项.时长 === 300);
+                断言(丙展开?.延迟 === 300, `新内容应在锚点渐入后再向右展开（延迟 300ms），实际 ${丙展开?.延迟}`);
+                断言(帧值(丙展开?.首帧, "inlineSize") === "0px", "新内容必须从新锚点向右展开");
+                断言((丙展开?.延迟 ?? 0) >= (丙插入?.时长 ?? Infinity), "顺序：先插入锚点，再展开内容");
+                await 直到(() => 播报().includes("确认源 · 待确认"), "更高优先级层级进入播报", 4000);
+
+                // 状态变化取消未完成动画并直接落终态。
+                渲染({ contentFacts: [事实("确认源", "failed", "需要确认", undefined, "confirm")] });
+                await 直到(() => 墨("confirm:确认源")?.dataset.status === "failed", "状态变化立即落终态", 3000);
+                断言(动画摘要(标签("confirm:确认源")).length === 0, "状态变化必须取消未完成的接力动画");
+                断言(!标签("confirm:确认源")?.querySelector(".island-anchor-label__outgoing")?.textContent, "落终态后不得保留旧内容层");
+                断言(文案("confirm:确认源")?.textContent === "需要确认", "状态变化后应直接显示终态内容");
+
+                // 减少动效分支：直接落终态，不产生渐入、伸缩或滚动动画。
+                夹具.pushPreferences({ interfaceAnimations: false });
+                await 直到(() => 岛().dataset.animations === undefined, "关闭界面动效生效", 4000);
+                await 等待(350);
+                夹具.pushMessages([]); // 清空消息投影与上层确认内容，静默测试才能看到自己的内容行。
+                渲染({ contentFacts: [] });
+                await 直到(() => 播报() === "", "消息结束且没有前台锚点", 4000);
+                渲染({ contentFacts: [事实("静默源", "awaiting", "静默内容")] });
+                await 直到(() => 文案("event:静默源")?.textContent === "静默内容", "减少动效直接显示内容", 4000);
+                断言(!锚点("event:静默源").dataset.inserting, "减少动效时锚点不得带插入标记");
+                断言(动画摘要(墨("event:静默源")).length === 0, "减少动效时锚点不得有渐入动画");
+                断言(动画摘要(标签("event:静默源")).length === 0, "减少动效时内容不得有伸缩动画");
+                渲染({ contentFacts: [事实("静默源", "awaiting", "静默新内容")] });
+                await 直到(() => 文案("event:静默源")?.textContent === "静默新内容", "换文直接落终态");
+                断言(动画摘要(标签("event:静默源")).length === 0, "减少动效时换文不得有滚动/伸缩动画");
+                断言(!标签("event:静默源").querySelector(".island-anchor-label__outgoing")?.textContent, "减少动效时不得保留离场层");
+                夹具.pushPreferences({ interfaceAnimations: true });
+                await 直到(() => 岛().dataset.animations === "true", "恢复界面动效", 4000);
+
+                // ---- 九、系统隐藏合并：一个计数锚点、不逐个补播、过期丢弃、封顶 99+ ----
+
+                阶段 = "九、系统隐藏合并：一个计数锚点、不逐个补播、过期丢弃、封顶 99+";
+                渲染({ contentFacts: [] });
+                await 直到(() => !锚点("event:静默源"), "清理静默内容");
+                夹具.pushMessages([]);
+                await 等待(100);
+                夹具.setRefreshPaused(true);
+                夹具.pushMessages([
+                    消息(301, "info", "隐藏一", "隐藏源一"),
+                    消息(302, "info", "隐藏二", "隐藏源二"),
+                    消息(303, "info", "过期消息", "隐藏源三", Date.now() - 31_000),
+                ]);
+                await 等待(200);
+                夹具.setRefreshPaused(false);
+                await 直到(() => 锚点("message:system-hidden"), "系统隐藏期间消息合并为一个计数锚点", 5000);
+                const 计数文本 = () => 锚点("message:system-hidden")?.querySelector(".island-anchor__number")?.textContent;
+                断言(计数文本() === "2", `已过期消息应丢弃，合并计数应为 2，实际 ${计数文本()}`);
+                断言(!锚点("message:隐藏源一") && !锚点("message:隐藏源二"), "隐藏期间消息不得逐个补播");
+                夹具.setRefreshPaused(true);
+                // 原生消息投影单次最多 32 条，隐藏批次按 30 条分四次广播。
+                for (let 批 = 0; 批 < 4; 批 += 1) {
+                    const 条数 = 批 < 3 ? 30 : 10;
+                    夹具.pushMessages(Array.from({ length: 条数 }, (_, 序) => 消息(400 + 批 * 30 + 序, "info", `批量${批}-${序}`, `批量源${批}-${序}`, Date.now())));
+                    await 等待(80);
+                }
+                夹具.setRefreshPaused(false);
+                await 直到(() => 计数文本() !== "2", "隐藏批次合并进计数锚点", 5000);
+                断言(
+                    计数文本() === "99+",
+                    `合并计数封顶应显示 99+，实际 ${计数文本()}；当前锚点=${[...document.querySelectorAll(".island-anchor[data-anchor]")].map((节点) => 节点.dataset.anchor).join(" | ")}`,
+                );
+                断言(!锚点("message:批量源0-0"), "批量消息不得逐个补播");
+
+                // ---- 十、进度环实现总检 ----
+
+                阶段 = "十、进度环实现总检";
+                断言(!岛().innerHTML.includes("stroke-dasharray"), "页面不得用 stroke-dasharray 画进度环（必须 SVG 实线弧）");
+                断言(岛().isConnected && 岛().getBoundingClientRect().height > 0, "全部场景后岛内容仍必须可见");
+
+                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : "PASS 浮岛内容层：十态/几何/hover/键盘/边界/切换时序/进度环实现");
+            };
+
+            渲染();
+            运行().catch((错误) => {
+                report(`FAIL\n- ${阶段}：${错误 instanceof Error ? 错误.message : String(错误)}${失败.length ? `\n- ${失败.join("\n- ")}` : ""}`);
+            });
+        </script>
+    </body>
+</html>

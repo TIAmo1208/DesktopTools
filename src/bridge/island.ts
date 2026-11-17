@@ -1,5 +1,5 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { parseIslandMessages, parseIslandSnapshot, parseIslandStateRequest, parseIslandDragResult, type IslandMessage, type IslandSnapshot, type IslandStateRequest } from "../contracts/island";
+import { parseIslandDropFact, parseIslandMessages, parseIslandSnapshot, parseIslandStateRequest, parseIslandDragResult, type IslandDropFact, type IslandMessage, type IslandSnapshot, type IslandStateRequest } from "../contracts/island";
 import { parsePreferences } from "../contracts/settings";
 import { COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT } from "./components";
 import { getPreferences, savePreferences } from "./settings";
@@ -20,9 +20,15 @@ export const saveIslandCardCollapsed = async (islandCardCollapsed: Record<string
     return savePreferences(parsePreferences({ ...preferences, islandCardCollapsed }));
 };
 
-/** 投放目标进入/离开时由原生广播；载荷是当前是否处于接收状态。 */
-export const listenIslandDropActive = async (onActive: (active: boolean) => void): Promise<UnlistenFn> =>
-    listenRuntime<boolean>("island-drop-active", (active) => onActive(Boolean(active)));
+/** 投放目标进入/离开时由原生广播；载荷是带类型的投放事实，坏载荷只记警告、不改页面投放状态。 */
+export const listenIslandDropActive = async (onFact: (fact: IslandDropFact) => void): Promise<UnlistenFn> =>
+    listenRuntime<unknown>("island-drop-active", (payload) => {
+        try {
+            onFact(parseIslandDropFact(payload));
+        } catch (error) {
+            console.warn("浮岛投放事实无效，已忽略", error);
+        }
+    });
 
 /** 拖出结束后读取原生光标是否仍在岛内；OLE 拖动期间页面收不到 pointerout。 */
 export const islandCursorInside = async () => await invokeRuntime<boolean>("island_cursor_inside");

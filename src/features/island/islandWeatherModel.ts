@@ -1,3 +1,4 @@
+import type { IslandContentUnit } from "./islandContent.ts";
 import { WEATHER_SOURCES, type WeatherCity, type WeatherSource, type WeatherSourceStatus } from "../../contracts/weather.ts";
 
 /** 浮岛天气卡读取的最小预报字段；完整模块仍由桌面天气格子呈现。 */
@@ -48,14 +49,14 @@ const dayKey = (value: string | undefined, tz: string | undefined) => {
 };
 
 /** 今天取城市时区内的同一天，不以下标推断供应商日界线。 */
-export const islandWeatherToday = (forecast: IslandWeatherForecast | undefined, city: WeatherCity) => {
-    const today = dayKey(new Date().toISOString(), city.tz);
+export const islandWeatherToday = (forecast: IslandWeatherForecast | undefined, city: WeatherCity, nowMs = Date.now()) => {
+    const today = dayKey(new Date(nowMs).toISOString(), city.tz);
     return forecast?.daily?.days?.find((day) => dayKey(day.forecastStartTime, city.tz) === today);
 };
 
 /** 浮岛只显示当天摘要，当前值与最高最低温缺失时保留占位而不是整卡空白。 */
-export const islandWeatherSummary = (forecast: IslandWeatherForecast | undefined, city: WeatherCity) => {
-    const today = islandWeatherToday(forecast, city);
+export const islandWeatherSummary = (forecast: IslandWeatherForecast | undefined, city: WeatherCity, nowMs = Date.now()) => {
+    const today = islandWeatherToday(forecast, city, nowMs);
     const current = forecast?.current;
     return {
         temperature: temperature(current?.temperature?.value),
@@ -64,4 +65,21 @@ export const islandWeatherSummary = (forecast: IslandWeatherForecast | undefined
         low: temperature(today?.temperatureMin?.value),
         code: current?.condition?.code,
     };
+};
+
+/** 预报绑定切换时不要把旧城市的天气送到新锚点。温度属于主信息文案，不是状态数值附加项。 */
+export const islandWeatherProjection = (binding: IslandWeatherBinding | undefined, forecast: IslandWeatherForecast | undefined, failure?: string, nowMs = Date.now()): {
+    unit: IslandContentUnit;
+    summary?: ReturnType<typeof islandWeatherSummary>;
+    detail?: string;
+} => {
+    if (!binding) return { unit: { status: failure ? "failed" : "indeterminate", primary: failure ?? "正在读取天气" } };
+    if (binding.state !== "ready") return { unit: { status: failure ? "failed" : "disconnected", primary: failure ?? binding.message } };
+    const current = forecast?.source === binding.source && forecast.city?.id === binding.city.id ? forecast : undefined;
+    const summary = islandWeatherSummary(current, binding.city, nowMs);
+    const detail = current ? `${binding.city.name} · 今天 ${summary.low}–${summary.high}` : binding.city.name;
+    return { unit: {
+        status: failure ? "failed" : current ? "pending" : "indeterminate",
+        primary: failure ?? (current ? `${summary.temperature} ${summary.condition}` : "正在获取天气"),
+    }, summary, detail };
 };

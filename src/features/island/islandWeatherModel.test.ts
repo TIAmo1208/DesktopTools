@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { islandWeatherBinding, islandWeatherSummary, islandWeatherToday } from "./islandWeatherModel.ts";
+import { islandWeatherBinding, islandWeatherProjection, islandWeatherSummary, islandWeatherToday } from "./islandWeatherModel.ts";
 import type { WeatherCity, WeatherSourceStatus } from "../../contracts/weather.ts";
 
 const city: WeatherCity = {
@@ -55,3 +55,15 @@ const todayStart = (tz: string) => {
     const key = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
     return `${key}T00:00:00+08:00`;
 };
+
+test("紧凑天气共用真实预报与当天摘要，并拒绝上一城市的迟到预报", () => {
+    const binding = islandWeatherBinding(sources, "qweather", city.id);
+    const now = Date.parse("2026-01-02T15:30:00+08:00");
+    const forecast = { source: "qweather" as const, city, current: { temperature: { value: 12.6 }, condition: { text: "多云", code: "101" } } };
+    const value = islandWeatherProjection(binding, forecast, undefined, now);
+    assert.deepEqual(value.unit, { status: "pending", primary: "13° 多云" });
+    assert.equal(value.summary?.code, "101");
+    assert.match(value.detail ?? "", /^北京 · 今天/);
+    assert.deepEqual(islandWeatherProjection(binding, { ...forecast, city: { id: "old" } }, undefined, now).unit, { status: "indeterminate", primary: "正在获取天气" });
+    assert.deepEqual(islandWeatherProjection(binding, undefined, "天气订阅失败", now).unit, { status: "failed", primary: "天气订阅失败" });
+});

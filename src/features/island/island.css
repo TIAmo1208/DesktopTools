@@ -41,20 +41,6 @@ html[data-island="true"] #root {
     inline-size: var(--island-expanded-inline, max-content);
     block-size: var(--island-expanded-block, max-content);
 }
-/* 投放进入时的独立接收卡：只显示一句提示，不与收集箱的最近条目混排。 */
-.island-card--drop .island-drop-card {
-    display: grid;
-    place-items: center;
-    padding-inline: 4px;
-}
-.island-drop-card__text {
-    color: var(--fence-text);
-    font-size: 12px;
-    line-height: 18px;
-    white-space: nowrap;
-    overflow: clip;
-    text-overflow: ellipsis;
-}
 /* 展开态滚动条在卡片外：贴右边时槽在左侧，其余在右侧；槽宽 16 与几何一致。 */
 .island[data-state="expanded"][data-scrollbar="end"] {
     padding-inline-end: 16px;
@@ -235,51 +221,194 @@ html[data-island="true"] #root {
 .island[data-filleted="true"] .island-card {
     background: transparent;
 }
+/* hover 按锚点列表与选中内容实测，不沿用胶囊档位。 */
 .island[data-state="hover"] .island-card {
-    block-size: 72px;
     padding: 12px;
     border-radius: 16px;
 }
-/* 左右贴边的 hover 沿用根上记录的胶囊高度；自然流与内联几何一致，restoreStyles 不再造成高度回落。 */
-.island[data-state="hover"][data-edge="left"] .island-card,
-.island[data-state="hover"][data-edge="right"] .island-card {
-    block-size: var(--island-capsule-height, 72px);
-}
-.island[data-state="hover"][data-edge="left"] .island-card__content,
-.island[data-state="hover"][data-edge="right"] .island-card__content {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-}
-.island[data-state="collapsed"] .island-card__content > p {
-    block-size: 28px;
-    line-height: 28px;
-    font-size: 11px;
-}
-.island[data-state="hover"] .island-card__content > p {
-    block-size: 48px;
-    line-height: 48px;
-}
-.island[data-state="collapsed"] [data-plugin-container] {
-    block-size: 28px;
-}
-.island[data-state="hover"] [data-plugin-container] {
-    block-size: 48px;
-}
-.island[data-vertical="true"] {
-    inline-size: 44px;
-}
+
+/* 左右贴边的胶囊沿该边竖排，44 DIP 来自圆与两侧内边距。 */
 .island[data-vertical="true"] .island-card {
     block-size: auto;
-    min-block-size: 52px;
     inline-size: 44px;
 }
-.island-music {
+
+/* 胶囊沿一轴排列；hover 让全部真实锚点在顶端换行。 */
+.island-anchor-row {
+    display: flex;
+    align-items: center;
+    gap: var(--island-anchor-gap);
+}
+
+/* hover 锚点列表按自然内容测量，不引入卷动槽。 */
+.island-anchor-row[data-layout="hover"] {
+    flex-wrap: wrap;
+    max-inline-size: 336px;
+}
+
+/* 左右边按同一锚点次序向下排列。 */
+.island[data-vertical="true"] .island-anchor-row[data-layout="capsule"],
+.island[data-vertical="true"] .island-anchor-item {
+    flex-direction: column;
+}
+
+/* 普通圆与它自己的文字在同一个内容单元。 */
+.island-anchor-item {
+    display: flex;
+    align-items: center;
     min-inline-size: 0;
 }
-/* 常态胶囊宽度按档位固定：换行/切歌不再让卡片按歌词文本重排，避免收起后窗口再调一次宽度。 */
-.island[data-state="collapsed"]:not([data-vertical="true"]) .island-music {
-    inline-size: 224px;
+
+/* 圆只做绘制蒙版；不加额外描边、填色或阴影。 */
+.island-anchor {
+    display: grid;
+    place-items: center;
+    flex: none;
+    box-sizing: border-box;
+    inline-size: var(--island-anchor-size);
+    block-size: var(--island-anchor-size);
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    color: var(--fence-text);
+    background: transparent;
+}
+
+/* 不把 hover 选择视觉画在胶囊的只读圆上。 */
+.island-anchor-row button.island-anchor[aria-pressed="true"] {
+    outline: 2px solid var(--fence-text);
+    outline-offset: 0;
+}
+
+/* 列表与控件一致，键盘焦点在外侧，选择仍由 2px 轮廓区分。 */
+.island .island-anchor-row button.island-anchor:focus-visible,
+.island .island-anchor-detail:focus-visible,
+.island .island-anchor-detail button:focus-visible {
+    outline: 2px solid var(--fence-focus-border);
+    outline-offset: 2px;
+}
+
+/* 锚点选择是瞬时的，按下不改变尺寸。 */
+button.island-anchor:active {
+    background: color-mix(in oklch, var(--fence-text) 12%, transparent);
+}
+
+/* 20×20 安全区容下图标、环、计数或时钟。 */
+.island-anchor__ink,
+.island-anchor__icon {
+    display: grid;
+    place-items: center;
+    inline-size: 20px;
+    block-size: 20px;
+    overflow: clip;
+    border-radius: 50%;
+}
+
+/* 描边来自当前文字色或同组语义色，轨道独立。 */
+.island-anchor__ink svg {
+    inline-size: 20px;
+    block-size: 20px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.island-anchor__ink[data-status="running"],
+.island-anchor__ink[data-status="indeterminate"] { color: var(--fence-active); }
+.island-anchor__ink[data-status="awaiting"] { color: var(--fence-warning); }
+.island-anchor__ink[data-status="failed"] { color: var(--fence-error); }
+.island-anchor__track { stroke: var(--fence-border); }
+
+/* 数字不遮盖环，也不会被普通文本的截断规则影响。 */
+.island-anchor__number {
+    font-size: 8px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* 只剩锚点的内容仍保留可辨识的圆点。 */
+.island-anchor__dot {
+    inline-size: 6px;
+    block-size: 6px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+/* 普通文字单行省略，动态内联尺寸只在这层测量，文字不参与形状动画。 */
+.island-anchor-label {
+    position: relative;
+    inline-size: max-content;
+    max-inline-size: 180px;
+    overflow: clip;
+}
+/* 同源换文旧行仅作离场层，不参与宽度与窗口几何。 */
+.island-anchor-label__outgoing {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.island-anchor__text {
+    display: block;
+    white-space: nowrap;
+    overflow: clip;
+    text-overflow: ellipsis;
+}
+.island-anchor-row[data-layout="capsule"] .island-anchor__text,
+.island-anchor-row[data-layout="capsule"] .island-music__line {
+    margin-inline-start: 8px;
+    font-size: 11px;
+    line-height: var(--island-anchor-size);
+}
+
+/* 竖排沿 inline 轴保持单行和同样的空间上限。 */
+.island[data-vertical="true"] .island-anchor-label,
+.island[data-vertical="true"] .island-anchor-item > .island-anchor__text {
+    writing-mode: vertical-rl;
+    inline-size: max-content;
+    max-inline-size: 180px;
+    text-orientation: upright;
+}
+
+/* 详情只有一组，两行和控件随内容测量而非固定高度。 */
+.island-anchor-detail {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-inline-size: 0;
+    margin-block-start: 8px;
+}
+.island-anchor-detail__lines { min-inline-size: 0; }
+.island-anchor-detail__lines > :first-child { line-height: 18px; }
+.island-anchor-detail__lines > :nth-child(2) {
+    font-size: 11px;
+    line-height: 14px;
+    opacity: 0.78;
+}
+
+/* 展开使用原卡片尺寸，只复用内容符号。 */
+.island-anchor-expanded {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* 收到动效偏好后只复用锚点生长时长；无需循环移动轨道本身。 */
+@media (prefers-reduced-motion: no-preference) {
+    .island[data-animations="true"] .island-anchor__sweep[data-motion="true"] {
+        transform-origin: center;
+        animation: island-anchor-sweep var(--island-anchor-grow) linear infinite;
+    }
+}
+@keyframes island-anchor-sweep {
+    to { transform: rotate(1turn); }
+}
+
+
+.island-music {
+    min-inline-size: 0;
 }
 .island-music p {
     margin: 0;
@@ -450,73 +579,32 @@ html[data-island="true"] #root {
         opacity 200ms ease-out 80ms,
         color 200ms ease-out 80ms;
 }
-.island[data-state="hover"] .island-music__artwork {
-    inline-size: 48px;
-    block-size: 48px;
-    border-radius: 16px;
+/* 音乐居前时使用固定档位，短句、同期无词回落与长句共享内容盒。 */
+.island-anchor-row[data-layout="capsule"] .island-anchor-label[data-music="true"] {
+    max-inline-size: none; /* 单个音乐盒不受普通公告的 180px 上限。 */
 }
-.island[data-state="hover"] .island-music__header {
-    gap: 8px;
-}
-.island[data-state="hover"] .island-music__info {
-    block-size: 48px;
-}
-.island[data-state="collapsed"] .island-music__header {
-    gap: 8px;
-}
-.island[data-state="collapsed"] .island-music__artwork {
-    inline-size: 28px;
-    block-size: 28px;
-    border-radius: 50%;
-}
-/* 常态胶囊内容盒：固定为档位值（胶囊档位减 52 固定件），换句不改变尺寸，超出部分在盒内滚动。 */
-.island[data-state="collapsed"] .island-music__line {
-    position: relative;
-    font-size: 11px;
-    line-height: 28px;
-    block-size: 28px;
-    inline-size: var(--island-capsule-line-max, 116px);
-    min-inline-size: 0;
-    max-inline-size: var(--island-capsule-line-max, 116px);
+
+/* 只夹住歌词与回落文案；播放进度只移动其后代，绝不改盒尺寸。 */
+.island-anchor-label[data-music="true"] .island-anchor__text,
+.island-music__line {
+    margin-block: 0;
+    inline-size: var(--island-capsule-line-max);
     overflow: clip;
 }
 .island-music__line[data-motion="off"] .island-music__current {
     inline-size: 100%;
-    overflow: hidden;
+    overflow: clip;
     text-overflow: ellipsis;
 }
-.island-music__line[data-motion="off"] .island-music__line-entry {
-    inline-size: 100%;
-    animation: none;
-}
-/* 常态换句：上一句渐出并上移，下一句延迟 60ms 从下方渐入上移到位；两句重叠，位移限制在行盒内。 */
-.island-music__line-entry {
+/* 歌词度量节点在动画子层外，滚动键变化不会观察到已卸下的 DOM。 */
+.island-music__measure {
     display: block;
     inline-size: max-content;
-    animation: island-line-enter 200ms ease-out 60ms both;
 }
-.island-music__line-entry[data-active="true"] {
-    position: relative;
+.island-music__line[data-motion="off"] .island-music__measure {
+    inline-size: 100%;
 }
-.island-music__line-entry[data-leaving="true"] {
-    position: absolute;
-    inset-block-start: 0;
-    inset-inline-start: 0;
-    pointer-events: none;
-    animation: island-line-leave 180ms ease-out 0ms both;
-}
-@keyframes island-line-enter {
-    from {
-        opacity: 0;
-        transform: translateY(6px);
-    }
-}
-@keyframes island-line-leave {
-    to {
-        opacity: 0;
-        transform: translateY(-6px);
-    }
-}
+
 /* 当前行按内容撑开，超出内容盒的部分由 transform 位移滚动；减少动效时改为单行截断。 */
 .island-music__current {
     display: block;
@@ -561,30 +649,6 @@ html[data-island="true"] #root {
     100% {
         transform: translate3d(0, 0, 0);
     }
-}
-.island[data-state="collapsed"] [data-island-plugin] > p {
-    block-size: 28px;
-    line-height: 28px;
-    font-size: 11px;
-}
-.island[data-state="hover"] [data-island-plugin] > p {
-    block-size: 48px;
-    line-height: 48px;
-}
-.island[data-vertical="true"] .island-music__header {
-    flex-direction: column;
-}
-.island[data-vertical="true"] .island-music__line {
-    writing-mode: vertical-rl;
-    text-orientation: upright;
-    block-size: 28px;
-    line-height: 28px;
-}
-.island[data-vertical="true"] .island-card__content > p {
-    writing-mode: vertical-rl;
-    text-orientation: upright;
-    inline-size: max-content;
-    block-size: 28px;
 }
 /* 刘海形态：贴边侧为 12 DIP 外凸负圆角，窗口沿边各扩 12px，角部弧面衔接屏幕边。 */
 .island[data-form="notch"] {
@@ -655,11 +719,6 @@ html[data-island="true"] #root {
     min-inline-size: 0;
     flex: 1;
 }
-.island-message__title {
-    font-size: 13px;
-    line-height: 16px;
-    block-size: 16px;
-}
 .island-message__meta {
     font-size: 11px;
     line-height: 14px;
@@ -702,30 +761,6 @@ html[data-island="true"] #root {
     .island-message__close:hover {
         background: color-mix(in srgb, var(--fence-text) 12%, transparent);
     }
-}
-.island[data-state="collapsed"] .island-message__line {
-    font-size: 11px;
-    line-height: 28px;
-    block-size: 28px;
-    min-inline-size: 72px;
-    max-inline-size: 240px;
-}
-.island[data-state="hover"] .island-message__info {
-    block-size: 48px;
-    justify-content: center;
-}
-/* 左右贴边的胶囊沿用音乐卡的竖排：图标在上，正文竖排。 */
-.island[data-vertical="true"] .island-message {
-    flex-direction: column;
-}
-.island[data-vertical="true"] .island-message__line {
-    writing-mode: vertical-rl;
-    text-orientation: upright;
-    inline-size: max-content;
-    block-size: 28px;
-    line-height: 28px;
-    min-inline-size: 48px;
-    max-inline-size: 176px;
 }
 /* 展开态消息面板：默认折叠最新一条，按键切为最近消息列表。 */
 .island-message-panel {
@@ -809,3 +844,12 @@ html[data-island="true"] #root {
     margin-block-start: -6px;
     margin-inline-end: -6px;
 }
+
+/* 文字单位的可选数值单行附着，不另起一栏。 */
+.island-anchor__value {
+    margin-inline-start: 4px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 时钟的五个字符适配20 DIP安全区。 */
+.island-anchor[data-anchor="clock"] .island-anchor__number { font-size: 7px; }

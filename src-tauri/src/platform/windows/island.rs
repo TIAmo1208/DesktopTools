@@ -177,7 +177,7 @@ pub(crate) fn island_page_url(boot: u64, theme_css: Option<&str>) -> tauri::Url
     url
 }
 
-/// 页面提交的窗口内局部卡片区域，圆角半径也使用 DIP。
+/// 页面提交的窗口内局部卡片区域，圆角半径也使用 DIP；锚点行复用同一形状，只是必须为圆形。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct IslandCard
@@ -185,6 +185,9 @@ pub(crate) struct IslandCard
     pub rect: IslandRect,
     pub radius: f64,
 }
+
+/// 胶囊最多并排 3 枚锚点，多出的折成一枚「＋N」圆；锚点区域上限与页面契约一致。
+const ISLAND_ANCHOR_REGION_LIMIT: usize = 4;
 
 /// 一次状态切换的完整几何；window_box 为屏幕绝对 DIP 窗口盒，viewport 为固定页面原点视口。
 #[derive(Clone, Debug, Deserialize)]
@@ -195,24 +198,35 @@ pub(crate) struct IslandStateRequest
     pub window_box: IslandRect,
     pub viewport: IslandRect,
     pub cards: Vec<IslandCard>,
+    #[serde(default)]
+    pub anchors: Vec<IslandCard>, // 只由常态提交的胶囊锚点行；悬停列表与展开卡片不提交几何。
 }
 
 impl IslandStateRequest
 {
-    /// IPC 不接受非有限数、无界区域、盒外卡片、超出视口的窗口或未知状态。
+    /// IPC 不接受非有限数、无界区域、盒外卡片、非圆形锚点、超出视口的窗口或未知状态。
     pub(crate) fn validate(&self) -> Result<(), String>
     {
         if !matches!(self.state.as_str(), "collapsed" | "hover" | "expanded")
         {
             return Err("未知岛状态".into());
         }
-        if !valid_rect(self.window_box) || !valid_rect(self.viewport) || self.viewport.width > 16_384.0 || self.viewport.height > 16_384.0 || self.cards.is_empty() || self.cards.len() > 128
+        if !valid_rect(self.window_box) || !valid_rect(self.viewport)
         {
-            return Err("岛窗口盒、视口或卡片数量无效".into());
+            return Err("岛区域无效".into());
+        }
+        if self.viewport.width > 16_384.0 || self.viewport.height > 16_384.0
+        {
+            return Err("岛固定视口过大".into());
         }
         if !window_in_viewport(self.window_box, self.viewport)
         {
             return Err("岛窗口盒超出固定视口".into());
+        }
+        // 卡片区域数量上限与其他两态共用；常态另有「恰好一个胶囊区域」的门禁。
+        if self.cards.is_empty() || self.cards.len() > 128
+        {
+            return Err("岛卡片数量无效".into());
         }
         for card in &self.cards
         {
@@ -221,9 +235,27 @@ impl IslandStateRequest
                 return Err("岛卡片区域或圆角无效".into());
             }
         }
+        // 常态是恰好一个胶囊区域：原生拖动中心与窗口夹紧按它计算，锚点行另由 anchors 承载。
         if self.state == "collapsed" && self.cards.len() != 1
         {
-            return Err("常态岛必须只有一个胶囊区域".into());
+            return Err("常态必须恰好一个胶囊区域".into());
+        }
+        // 锚点行只由常态提交：悬停锚点列表与展开卡片由渲染层绘制，不参与原生几何。
+        if !self.anchors.is_empty() && self.state != "collapsed"
+        {
+            return Err("锚点行只由常态提交".into());
+        }
+        if self.anchors.len() > ISLAND_ANCHOR_REGION_LIMIT
+        {
+            return Err("岛锚点数量无效".into());
+        }
+        for anchor in &self.anchors
+        {
+            // 锚点只作圆形蒙版：宽高相等、圆角等于半边长，且整体落在窗口盒内。
+            if !valid_rect(anchor.rect) || anchor.rect.left < 0.0 || anchor.rect.top < 0.0 || anchor.rect.left + anchor.rect.width > self.window_box.width || anchor.rect.top + anchor.rect.height > self.window_box.height || (anchor.rect.width - anchor.rect.height).abs() > 0.5 || !anchor.radius.is_finite() || (anchor.radius - anchor.rect.width.min(anchor.rect.height) / 2.0).abs() > 0.5
+            {
+                return Err("岛锚点区域或圆形无效".into());
+            }
         }
         Ok(())
     }
@@ -1324,7 +1356,7 @@ mod reentrancy_tests
     #[test]
     fn island_state_failure_injection_always_clears_geometry_and_disables_drag()
     {
-        let previous = IslandStateRequest { state: "collapsed".into(), window_box: IslandRect { left: 0.0, top: 0.0, width: 100.0, height: 40.0 }, viewport: IslandRect { left: -10.0, top: -10.0, width: 120.0, height: 60.0 }, cards: vec![] }; // 不创建真实 HWND。
+        let previous = IslandStateRequest { state: "collapsed".into(), window_box: IslandRect { left: 0.0, top: 0.0, width: 100.0, height: 40.0 }, viewport: IslandRect { left: -10.0, top: -10.0, width: 120.0, height: 60.0 }, cards: vec![], anchors: vec![] }; // 不创建真实 HWND。
         for stage in [StateStage::WindowBox, StateStage::WebView, StateStage::Commit]
         {
             let mut geometry = Some(previous.clone());

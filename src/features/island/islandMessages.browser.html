@@ -80,8 +80,10 @@
             const 盒 = () => 根().getBoundingClientRect();
             const 卡 = () => [...document.querySelectorAll(".island-card[data-island-message]")];
             const 消息体 = () => document.querySelector(".island-message");
-            const 单行 = () => document.querySelector(".island-message__line");
-            const 摘要 = () => document.querySelector(".island-message__title");
+            const 单行 = () => [...document.querySelectorAll(".island-anchor-label > :first-child")].find((节点) => 节点.textContent);
+            const 锚点 = (来源) => 根().querySelector(`.island-anchor[data-anchor="message:${来源}"]`);
+            const 摘要 = () => document.querySelector(".island-anchor-detail__lines > :first-child");
+            const 选中 = (来源) => 锚点(来源).dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", relatedTarget: null }));
             const 全文 = () => document.querySelector(".island-message__body");
             const 元信息 = () => document.querySelector(".island-message__meta");
             const 关闭按钮 = () => document.querySelector(".island-message__close");
@@ -100,36 +102,35 @@
                 断言(卡().length === 0, `通道挂起时不应凭空出现消息卡，实际 ${卡().length}`);
                 断言(盒().height > 0, "通道挂起时岛卡必须仍然渲染并具备高度");
 
-                // 场景二：常态只给一行简略，不给关闭按钮，也不出现摘要块。
+                // 一行消息显示在自己的圆锚点后，不替换音乐锚点，也不出现控件。
                 夹具.pushMessages([消息(1, "info", "通知正文", "测试来源")]);
                 await 直到(() => 单行()?.textContent === "通知正文", "常态显示消息简略");
-                断言(卡().length === 1, `常态只应有一张消息卡，实际 ${卡().length}`);
-                断言(消息体().dataset.kind === "info", `消息类型应写入 data-kind，实际 ${消息体().dataset.kind}`);
-                断言(!document.querySelector(".island-message__info"), "常态不得渲染摘要块");
-                断言(!关闭按钮(), "常态不得渲染关闭按钮");
-                const 单行样式 = getComputedStyle(单行());
-                断言(单行样式.lineHeight === "28px", `常态简略行高应为 28px，实际 ${单行样式.lineHeight}`);
-                const 行上限 = 单行样式.maxInlineSize || 单行样式.maxWidth;
-                断言(String(行上限).includes("240"), `常态简略最大宽度应为 240px，实际 ${行上限}`);
-                const 常态高度 = 盒().height;
+                await 直到(() => 夹具.提交.at(-1)?.anchors?.length === 2, "实测两个圆进入严格几何契约");
+                断言(夹具.提交.at(-1).anchors.every(({ rect, radius }) => rect.width === 28 && rect.height === 28 && radius === 14), "提交圆来自实测 28×28 DOM");
+                const 同源锚点 = 锚点("测试来源");
+                断言(同源锚点.offsetWidth === 28 && 同源锚点.offsetHeight === 28, "消息锚点应为28×28");
+                断言(卡().length === 0 && !消息体() && !关闭按钮(), "常态不渲染完整消息卡与控件");
+                断言(盒().height === 44 && 根().querySelector('[data-anchor^="resident:"]'), "常态尺寸与音乐锚点保留");
 
-                // 场景三：多条消息在常态只保留最新一条，顺序由身份决定。
+                // 不同来源追加在右侧，同来源就地换文；只有现有消息离场才让下一个来源伸展。
                 夹具.pushMessages([
-                    消息(1, "info", "通知正文", "测试来源"),
-                    消息(2, "success", "第二条通知正文", "构建"),
+                    消息(1, "info", "通知已更新", "测试来源"),
+                    消息(2, "info", "第二条通知正文", "构建"),
                     消息(3, "warning", "第三条通知正文", "监控"),
                 ]);
-                await 直到(() => 卡().length === 1 && 单行()?.textContent === "第三条通知正文", "常态只保留最新一条");
-                断言(消息体().dataset.kind === "warning", `最新一条的类型应生效，实际 ${消息体().dataset.kind}`);
-
-                // 场景四：hover 给摘要、来源时间与关闭按钮，仍只有一条。
+                await 直到(() => 锚点("构建") && 根().querySelector('[data-anchor="overflow"]') && 单行()?.textContent === "通知已更新", "同来源更新、跨来源折叠和等待");
+                断言(锚点("测试来源") === 同源锚点 && !锚点("监控"), "同源不重建，第四枚在胶囊中折成＋N");
+                const 圆与圆 = [...根().querySelectorAll(".island-anchor-row .island-anchor")];
+                断言(圆与圆.length === 4 && 根().querySelector('[data-anchor="overflow"]').textContent === "＋1", "最多三个实体锚点加一个折叠圆");
+                断言(Number.parseInt(getComputedStyle(圆与圆[0].closest(".island-anchor-row")).gap, 10) === 12, "胶囊各内容单元之间 gap 为 12");
                 悬停();
-                await 直到(() => 根().dataset.state === "hover", "进入 hover");
-                断言(摘要()?.textContent === "第三条通知正文", `hover 摘要应显示正文，实际 ${摘要()?.textContent}`);
-                断言(/^监控 · \d{1,2}:\d{2}$/.test(元信息()?.textContent ?? ""), `hover 元信息应为来源与时分，实际 ${元信息()?.textContent}`);
-                断言(关闭按钮()?.getAttribute("aria-label") === "关闭监控消息", `关闭按钮应带来源名，实际 ${关闭按钮()?.getAttribute("aria-label")}`);
-                断言(!单行(), "hover 不得同时保留常态简略行");
-                断言(卡().length === 1, `hover 只应保留一条，实际 ${卡().length}`);
+                await 直到(() => 根().dataset.state === "hover" && 锚点("监控"), "hover 顶部显示全部锚点");
+                await 直到(() => 摘要()?.textContent === "通知已更新", "hover 保持原前台来源");
+                选中("监控");
+                await 直到(() => 摘要()?.textContent === "第三条通知正文", "移入监控锚点切换下方内容");
+                断言(/^监控 · \d{2}:\d{2}$/.test(摘要().nextElementSibling?.textContent ?? ""), "hover 第二行显示来源与时分");
+                断言(关闭按钮()?.getAttribute("aria-label") === "关闭监控消息" && !全文() && !单行(), "hover 只渲染选中内容和低风险关闭");
+                断言(getComputedStyle(锚点("监控")).outlineWidth === "2px", "选中锚点有2px描边");
 
                 // 场景五：展开消息收进一张卡，默认折叠最新一条，按键切换完整列表。
                 按键("Enter");
@@ -156,30 +157,25 @@
                 按键("Escape");
                 await 直到(() => 根().dataset.state === "collapsed", "关闭后回到常态");
 
-                // 场景七：阅读期间消息过期，hover 暂存到回到常态才清空。
+                // 原生离场与内容层锚点期限不同：阅读期间不清除，即使已满30秒，回常态才清除。
                 夹具.pushMessages([消息(4, "info", "第四条通知正文", "测试来源"), 消息(5, "error", "第五条通知正文", "监控")]);
-                await 直到(() => 单行()?.textContent === "第五条通知正文", "常态显示最新一条");
                 悬停();
-                await 直到(() => 根().dataset.state === "hover", "进入 hover 阅读");
-                夹具.pushMessages([]); // 后端到期清空，阅读视图应保留当前消息。
+                await 直到(() => 根().dataset.state === "hover" && 锚点("监控"), "进入 hover 阅读");
+                选中("监控");
+                await 直到(() => 摘要()?.textContent === "第五条通知正文", "选择失败锚点");
+                夹具.pushMessages([]);
                 await 等待(200);
-                断言(
-                    卡().length === 1 && 摘要()?.textContent === "第五条通知正文",
-                    `阅读期暂存应保留当前消息，实际 ${卡().length} 张 / ${摘要()?.textContent}`,
-                );
+                断言(摘要()?.textContent === "第五条通知正文" && 锚点("监控"), "原生离场不移除正在阅读的失败消息");
                 按键("Escape");
-                await 直到(() => 根().dataset.state === "collapsed", "暂存消息后回到常态");
-                await 等待(120);
-                断言(卡().length === 0, `回到常态必须清空暂存消息，实际 ${卡().length}`);
+                await 直到(() => 根().dataset.state === "collapsed" && 夹具.提交.at(-1)?.state === "collapsed", "退出后完成常态提交");
+                断言(根().textContent.includes("第五条通知正文") && !卡().length, "失败不超时；常态仍只显示锚点内容，不构建消息卡");
 
-                // 场景八：坏载荷只报告，不覆盖已有消息，也不阻塞岛卡。
-                await 等待(400); // 等收起后的原生几何提交落定，再取基线高度。
-                const 无消息高度 = 盒().height;
+                // 坏载荷只报告，不覆盖已渲染内容，也不使浮岛失去几何。
+                const 基线内容 = 根().textContent;
+                const 基线高度 = 盒().height;
                 夹具.pushRawMessages([{ id: 9 }]);
                 await 等待(200);
-                断言(卡().length === 0, `坏载荷不得生成消息卡，实际 ${卡().length}`);
-                断言(近似(盒().height, 无消息高度), `坏载荷不得改变岛卡高度，实际 ${盒().height}（基准 ${无消息高度}）`);
-                断言(根().isConnected && 盒().height > 0, "坏载荷后岛卡必须仍然可用");
+                断言(根().textContent === 基线内容 && 盒().height === 基线高度, "坏载荷不改变已渲染锚点及其尺寸");
 
                 report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : "PASS 浮岛消息三态/关闭/阅读期暂存/通道降级");
             };

@@ -4,13 +4,13 @@ import { settingsErrorMessage } from "../../bridge/settings";
 import type { WeatherSourceStatus } from "../../contracts/weather";
 import { usePreferences } from "../../app/preferences/PreferencesProvider";
 import { WeatherGlyph } from "../../shared/WeatherGlyph";
-import { islandWeatherBinding, islandWeatherSourceName, islandWeatherSummary, type IslandWeatherForecast } from "./islandWeatherModel";
+import { islandWeatherBinding, islandWeatherProjection, islandWeatherSourceName, type IslandWeatherForecast } from "./islandWeatherModel";
 import "./islandWeather.css";
 
 type IslandWeatherMode = "collapsed" | "hover" | "expanded"; // 与浮岛三态一致。
 
-/** 浮岛天气卡读取所选来源与城市，只呈现当天摘要；完整预报仍由桌面天气格子承载。 */
-export const IslandWeather = ({ mode, instanceId, monitorId }: { mode: IslandWeatherMode; instanceId: string; monitorId?: string }) => {
+/** 浮岛页持有唯一一份天气订阅；卡片和锚点只读同一份投影。 */
+export const useIslandWeather = (instanceId: string | undefined, monitorId?: string) => {
     const { preferences } = usePreferences();
     const [sources, setSources] = useState<WeatherSourceStatus[]>();
     const [failure, setFailure] = useState<string>();
@@ -22,6 +22,7 @@ export const IslandWeather = ({ mode, instanceId, monitorId }: { mode: IslandWea
     const binding = sources ? islandWeatherBinding(sources, source, cityId) : undefined;
 
     useEffect(() => {
+        if (!instanceId) return;
         let active = true; // 卸载后拒绝迟到读取。
         let stop: (() => void) | undefined; // 配置通知退订入口。
         const load = () => {
@@ -50,7 +51,7 @@ export const IslandWeather = ({ mode, instanceId, monitorId }: { mode: IslandWea
             active = false;
             stop?.();
         };
-    }, []);
+    }, [instanceId]);
 
     // 设置页新增城市不广播配置事件；来源或城市标识变化时重读一次列表，避免新城市被判为已移除。
     const selectionLoaded = useRef(false);
@@ -59,7 +60,7 @@ export const IslandWeather = ({ mode, instanceId, monitorId }: { mode: IslandWea
             selectionLoaded.current = true;
             return;
         }
-        if (!source) return;
+        if (!instanceId || !source) return;
         let active = true; // 选择连续变化后拒绝迟到列表。
         void listWeatherSources()
             .then((next) => {
@@ -69,14 +70,14 @@ export const IslandWeather = ({ mode, instanceId, monitorId }: { mode: IslandWea
         return () => {
             active = false;
         };
-    }, [source, cityId]);
+    }, [source, cityId, instanceId]);
 
     const readySource = binding?.state === "ready" ? binding.source : "";
     const readyCityId = binding?.state === "ready" ? binding.city.id : "";
     useEffect(() => {
         setForecast(undefined);
         setFailure(undefined);
-        if (!islandEnabled || !readySource || !readyCityId || !monitorId) return;
+        if (!islandEnabled || !instanceId || !readySource || !readyCityId || !monitorId) return;
         let active = true; // 换来源、换城市或卸载后拒绝旧响应。
         let revision = 0; // 隐藏恢复和配置变化共用同一代次。
         let stop: (() => void) | undefined; // 活动订阅退订入口。
@@ -128,11 +129,17 @@ export const IslandWeather = ({ mode, instanceId, monitorId }: { mode: IslandWea
         };
     }, [islandEnabled, readySource, readyCityId, instanceId, monitorId, configurationEpoch]);
 
-    if (!sources) return <p className="island-weather__status">正在读取天气</p>;
-    if (failure && !sources.length) return <p className="island-weather__status">{failure}</p>;
-    if (!binding || binding.state !== "ready") return <p className="island-weather__status">{binding?.message ?? "未选择天气"}</p>;
-    const summary = islandWeatherSummary(forecast, binding.city);
-    const detail = forecast ? `${binding.city.name} · 今天 ${summary.low}–${summary.high}` : binding.city.name;
+    return {
+        ...islandWeatherProjection(binding, forecast, failure),
+        binding,
+        failure,
+    };
+};
+
+/** 展开卡保留当天详情与来源，紧凑态只消费投影中的锚点摘要。 */
+export const IslandWeather = ({ mode, weather }: { mode: IslandWeatherMode; weather: ReturnType<typeof useIslandWeather> }) => {
+    const { binding, summary, detail, failure, unit } = weather;
+    if (binding?.state !== "ready" || !summary) return <p className="island-weather__status">{unit.primary}</p>;
     return (
         <div className={`island-weather island-weather--${mode}`} aria-label={`${binding.city.name}天气`}>
             <div className="island-weather__main">

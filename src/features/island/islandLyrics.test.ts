@@ -5,13 +5,10 @@ import type { MusicMediaSnapshot, MusicTimeline } from "../../contracts/music.ts
 import { parseMusicDetails } from "../../contracts/music.ts";
 import { positionAt } from "../music/musicState.ts";
 import {
-    ISLAND_CAPSULE_CHROME,
-    ISLAND_CAPSULE_LIMITS,
     ISLAND_EXPANDED_TICK_MS,
     ISLAND_LOOP_MIN_MS,
     ISLAND_LYRIC_EMPTY,
     ISLAND_LYRIC_OFFSETS,
-    islandCapsuleLimit,
     islandCapsuleLineLimit,
     islandLyricView,
     islandMusicFallback,
@@ -185,13 +182,12 @@ test("岛音乐卡调用点消费投影与调度，回退到内联定时或旧�
     assert.match(component, /ISLAND_LYRIC_OFFSETS\.map\(\(offset, slot\)/);
     assert.match(component, /\{view\.slots\[slot\]\}/);
     assert.match(component, /\{view\.line\}/);
-    // 尺寸输入只有「是否有同步词 + 贴边方向」，换句不重设窗口。
-    assert.match(component, /islandCapsuleLineLimit\(vertical, playing\)/); // 档位只看播放状态，不看歌词是否已到。
+    assert.match(component, /islandCapsuleLineLimit\(vertical, media\?\.playback === "playing"\)/); // F1：只看播放状态与贴边方向。
     assert.match(component, /islandScrollPlan\(\{/);
     assert.match(component, /islandScrollKey\(\{/);
     assert.match(component, /islandScrollAnimationName\(scroll\.kind, vertical\)/);
     assert.match(component, /islandScrollPlayState\(scroll\.paused\)/);
-    assert.match(component, /--island-capsule-line-max/);
+    assert.match(component, /islandScrollDistance\(vertical/);
     assert.match(component, /data-motion=\{motion \? "on" : "off"\}/);
     assert.doesNotMatch(component, /island-music__reserve/);
     assert.doesNotMatch(component, /island-lyric-scroll-[xy]"/); // 轴向只由 islandScrollAnimationName 决定。
@@ -205,20 +201,14 @@ test("岛音乐卡调用点消费投影与调度，回退到内联定时或旧�
     assert.doesNotMatch(component, /formatTime\(music\.timeline\?\.durationMs \?\? 0\)/);
 });
 
-test("常态胶囊按贴边方向与是否有同步词分档，内容盒扣除固定件", () => {
-    assert.deepEqual(ISLAND_CAPSULE_LIMITS, { horizontal: { lyric: 240, fallback: 168 }, vertical: { lyric: 176, fallback: 96 } });
-    assert.equal(ISLAND_CAPSULE_CHROME, 52);
-    assert.equal(islandCapsuleLimit(false, true), 240); // 贴上下、播放中。
-    assert.equal(islandCapsuleLimit(false, false), 168); // 贴上下、未播放。
-    assert.equal(islandCapsuleLimit(true, true), 176); // 贴左右、播放中。
-    assert.equal(islandCapsuleLimit(true, false), 96); // 贴左右、未播放。
-    // 内容盒 = 档位 − 固定件（内边距 8×2＋媒体图 28＋间距 8）；固定档位，换句不变。
-    assert.equal(islandCapsuleLineLimit(false, true), 188);
-    assert.equal(islandCapsuleLineLimit(false, false), 116);
-    assert.equal(islandCapsuleLineLimit(true, true), 124);
-    assert.equal(islandCapsuleLineLimit(true, false), 44);
-    // 竖向最小胶囊 52 由卡片 min-block-size 兜底，扣完固定件的无词内容盒仍为正。
-    assert.ok(islandCapsuleLineLimit(true, false) > 0);
+test("音乐胶囊内容盒只按播放与方向选档，关闭动效时截断", () => {
+    assert.equal(islandCapsuleLineLimit(false, true), 240 - 52);
+    assert.equal(islandCapsuleLineLimit(false, false), 168 - 52);
+    assert.equal(islandCapsuleLineLimit(true, true), 176 - 52);
+    assert.equal(islandCapsuleLineLimit(true, false), 96 - 52);
+    const css = readFileSync(new URL("./island.css", import.meta.url), "utf8");
+    assert.match(css, /\.island-music__line \{[^}]*inline-size: var\(--island-capsule-line-max\);[^}]*overflow: clip;/);
+    assert.match(css, /\.island-music__line\[data-motion="off"\] \.island-music__current \{[^}]*text-overflow: ellipsis;/);
 });
 
 test("超长判定取整且非有限尺寸不滚动", () => {
@@ -281,22 +271,6 @@ test("零时间轴末句没有结束时间时回退慢速循环，不静默裁�
     assert.equal(islandScrollPlan({ ...base, animationsEnabled: false }).kind, "none");
     // 有下一句或真实时长时仍按进度推进。
     assert.equal(islandScrollPlan({ ...base, lineEndMs: 8000 }).kind, "progress");
-});
-
-test("整首尺寸不随句子变化：同一贴边方向下只由播放状态与换边决定", () => {
-    // 逐点扫描整首歌：档位只看播放状态与贴边方向，换句（index 变化）与歌词晚到都不改变它。
-    for (let position = 0; position <= 10000; position += 250) {
-        view(position); // 扫描仍覆盖各句，确认档位与当前句无关。
-        assert.equal(islandCapsuleLimit(false, true), 240);
-        assert.equal(islandCapsuleLimit(true, true), 176);
-    }
-    const first = view(1000);
-    const second = view(3000);
-    assert.notEqual(first.index, second.index); // 确实是不同句。
-    assert.equal(islandCapsuleLineLimit(false, true), islandCapsuleLineLimit(false, true));
-    // 唯一会改变尺寸的状态变化：换边（false↔true）与是否播放。
-    assert.notEqual(islandCapsuleLineLimit(false, true), islandCapsuleLineLimit(true, true));
-    assert.notEqual(islandCapsuleLineLimit(false, false), islandCapsuleLineLimit(false, true));
 });
 
 test("滚动方向与暂停映射：竖向 *-y、横向 *-x，暂停冻结", () => {

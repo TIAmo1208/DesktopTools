@@ -37,6 +37,7 @@ export const 创建夹具 = ({ 偏好补丁 = {}, 消息初读 = "ok" } = {}) =>
     const 提交 = []; // set_island_state 的原生几何提交。
     const 关闭记录 = []; // dismiss_island_message 的消息身份。
     const 保存记录 = []; // save_preferences 的完整偏好载荷。
+    let 暂停刷新 = false;
     let 消息集合 = []; // 后端消息队列的页面投影。
 
     const 偏好 = {
@@ -176,7 +177,7 @@ export const 创建夹具 = ({ 偏好补丁 = {}, 消息初读 = "ok" } = {}) =>
             });
         },
         isRefreshPaused() {
-            return false;
+            return 暂停刷新;
         },
     };
 
@@ -188,6 +189,11 @@ export const 创建夹具 = ({ 偏好补丁 = {}, 消息初读 = "ok" } = {}) =>
         get 消息集合() {
             return 消息集合;
         },
+        setRefreshPaused: (暂停) => {
+            暂停刷新 = 暂停;
+            window.dispatchEvent(new Event("desktop-refresh-changed"));
+        },
+        pushDrop: (活动) => 推送("island-drop-active", 活动),
         pushMusic: (载值) => 推送("music-session-changed", 载值),
         pushDetails: (细节) => 推送("music-timeline-changed", 细节),
         pushMessages: (列表) => {

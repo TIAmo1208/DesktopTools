@@ -390,9 +390,9 @@ impl crate::drop_bridge::IslandDropPort for AppDesktopDrop
 {
     fn collect_accepting(&self) -> bool { island_collect_accepting(&self.app).unwrap_or(false) }
 
-    fn drop_active(&self, active: bool)
+    fn island_drop_fact(&self, fact: crate::drop_bridge::IslandDropFact)
     {
-        if let Err(error) = self.app.emit("island-drop-active", active)
+        if let Err(error) = self.app.emit("island-drop-active", fact)
         {
             crate::log_warn!("浮岛投放：状态事件发布失败，错误={error}"); // 提示失败不影响投放本身。
         }

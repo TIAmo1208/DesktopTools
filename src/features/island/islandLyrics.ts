@@ -34,7 +34,7 @@ export const islandMusicFallback = (media: MusicMediaSnapshot | undefined): stri
 export interface IslandLyricView {
     index: number; // 当前句下标；首句前、无词或取词中为 -1。
     line: string; // 常态胶囊的一行歌词，歌词不可用时为回落文本。
-    hasLine: boolean; // 当前是否已有开始的歌词句；决定胶囊档位与滚动语义（无词走回落循环）。
+    hasLine: boolean; // 当前是否已有开始的歌词句；决定是否进入歌词滚动盒。
     slots: readonly [string, string, string]; // 展开固定三行：前一句、当前句、后一句，空槽为占位符。
 }
 
@@ -65,27 +65,12 @@ export const islandMusicTickDelay = (
     return mode === "expanded" ? ISLAND_EXPANDED_TICK_MS : lyricTickDelay(lines, position, timeline.durationMs);
 };
 
-/** 常态胶囊尺寸档位（胶囊外框 DIP）：按贴边方向与当前是否有同步词分两档。 */
-export const ISLAND_CAPSULE_LIMITS = { horizontal: { lyric: 240, fallback: 168 }, vertical: { lyric: 176, fallback: 96 } } as const;
-
-/** 胶囊固定件：内边距 8×2 ＋ 媒体图 28 ＋ 间距 8；内容滚动盒上限 = 档位 − 固定件。 */
-export const ISLAND_CAPSULE_CHROME = 52;
+/** 音乐前台胶囊的固定内容长度；播放状态与贴边方向选档，歌词到达或换句不选档。 */
+export const islandCapsuleLineLimit = (vertical: boolean, playing: boolean): number =>
+    (vertical ? (playing ? 176 : 96) : (playing ? 240 : 168)) - 52; // 28 圆 + 8 图文距 + 16 胶囊内距。
 
 /** 无词回落文本的循环周期：每像素约 100ms（往返各 20px/s），并设最短周期保证可读。 */
 export const ISLAND_LOOP_MIN_MS = 4000;
-
-/** 档位选择：只看贴边方向与是否正在播放，不看歌词是否已到、滚动偏移与句子长度。 */
-export const islandCapsuleLimit = (vertical: boolean, playing: boolean): number =>
-    vertical
-        ? playing
-            ? ISLAND_CAPSULE_LIMITS.vertical.lyric
-            : ISLAND_CAPSULE_LIMITS.vertical.fallback
-        : playing
-          ? ISLAND_CAPSULE_LIMITS.horizontal.lyric
-          : ISLAND_CAPSULE_LIMITS.horizontal.fallback;
-
-/** 内容滚动盒上限：胶囊档位减固定件；档位按播放状态固定，歌词晚到时不再改宽度。 */
-export const islandCapsuleLineLimit = (vertical: boolean, playing: boolean): number => islandCapsuleLimit(vertical, playing) - ISLAND_CAPSULE_CHROME;
 
 /** 超长判定：内容尺寸超过滚动盒才滚动，取整避免亚像素反复触发。 */
 export const islandScrollDistance = (contentSize: number, boxSize: number): number => {
