@@ -122,6 +122,8 @@ pub struct ApplicationPreferences
     pub island_edge: String,                   // 岛贴边方向，空字符串按顶部处理，偏移为 0 时居中。
     pub island_offset: f64,                    // 沿贴边方向的偏移，单位 DIP。
     pub island_hide_on_fullscreen: bool,       // 前台全屏时隐藏岛。
+    #[serde(default, deserialize_with = "deserialize_island_anchor_visible")]
+    pub island_anchor_visible: std::collections::BTreeMap<String, bool>, // 逐功能「上浮岛显示」开关：键只允许 music、message、plugin，缺字段按空映射，前端逐项默认显示。
     #[serde(default, deserialize_with = "deserialize_island_card_order")]
     pub island_card_order: Vec<String>, // 已启用岛卡及其展开态排列顺序。
     #[serde(default)]
@@ -199,6 +201,7 @@ impl Default for ApplicationPreferences
             island_edge: String::new(),
             island_offset: 0.0,
             island_hide_on_fullscreen: true,
+            island_anchor_visible: std::collections::BTreeMap::new(),
             island_card_order: Vec::new(),
             island_weather_source: String::new(),
             island_weather_city_id: String::new(),
@@ -303,6 +306,22 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(normalize_island_card_flags(std::collections::BTreeMap::<String, bool>::deserialize(deserializer)?.into_iter()))
+}
+
+/// 浮岛锚点显隐严格校验：键只接受 music、message、plugin，值必须为布尔；未知键与非布尔值直接报错，不静默丢弃。
+fn deserialize_island_anchor_visible<'de, D>(deserializer: D) -> Result<std::collections::BTreeMap<String, bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let visible = std::collections::BTreeMap::<String, bool>::deserialize(deserializer)?; // 非布尔值由 serde 原生按布尔边界报错。
+    for key in visible.keys()
+    {
+        if !matches!(key.as_str(), "music" | "message" | "plugin")
+        {
+            return Err(serde::de::Error::custom(format!("浮岛锚点显隐键无效：{key}")));
+        }
+    }
+    Ok(visible)
 }
 
 /// 字体族名只做字形名边界校验：内置系统字体和插件自带字体共用这条规则。
@@ -445,6 +464,7 @@ mod island_tests
         assert_eq!(defaults.island_edge, "");
         assert_eq!(defaults.island_offset, 0.0);
         assert!(defaults.island_hide_on_fullscreen);
+        assert!(defaults.island_anchor_visible.is_empty()); // 旧配置缺字段时锚点显隐按空映射读取。
         assert!(defaults.island_card_order.is_empty());
         assert!(defaults.island_weather_source.is_empty());
         assert!(defaults.island_weather_city_id.is_empty());
@@ -461,6 +481,33 @@ mod island_tests
         assert_eq!(value["islandWeatherSource"], "qweather");
         assert_eq!(value["islandWeatherCityId"], "101010100");
         assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap(), selected);
+    }
+
+    /// 锚点显隐严格校验：缺字段与空对象按空映射读取，键只接受约定三值，非布尔值与未知键直接报错。
+    #[test]
+    fn island_anchor_visible_is_strict_map()
+    {
+        let legacy: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 缺字段的旧配置仍可解析。
+        assert!(legacy.island_anchor_visible.is_empty());
+        let selected: ApplicationPreferences = serde_json::from_value(serde_json::json!({ "islandAnchorVisible": {"music": true, "message": false, "plugin": true} })).unwrap();
+        assert_eq!(selected.island_anchor_visible, std::collections::BTreeMap::from([("music".into(), true), ("message".into(), false), ("plugin".into(), true)]));
+        let value = serde_json::to_value(&selected).unwrap(); // 序列化字段名与内容按 camelCase 保留。
+        assert_eq!(value["islandAnchorVisible"], serde_json::json!({"music": true, "message": false, "plugin": true}));
+        assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap(), selected);
+        let empty: ApplicationPreferences = serde_json::from_value(serde_json::json!({ "islandAnchorVisible": {} })).unwrap(); // 空对象与缺字段等价。
+        assert!(empty.island_anchor_visible.is_empty());
+        for bad_value in [serde_json::json!(null), serde_json::json!(0), serde_json::json!(1), serde_json::json!("true"), serde_json::json!([])]
+        {
+            let mut broken = serde_json::json!({ "islandAnchorVisible": {"music": true, "message": true, "plugin": true} }); // 每种非布尔值单独验证。
+            broken["islandAnchorVisible"]["music"] = bad_value;
+            assert!(serde_json::from_value::<ApplicationPreferences>(broken).is_err());
+        }
+        for unknown_key in ["capsule", "weather", "Music", "music ", ""]
+        {
+            assert!(serde_json::from_value::<ApplicationPreferences>(serde_json::json!({ "islandAnchorVisible": { unknown_key: true } })).is_err());
+        }
+        let single: ApplicationPreferences = serde_json::from_value(serde_json::json!({ "islandAnchorVisible": {"message": false} })).unwrap(); // 只校验出现过的键，单键保存同样合法。
+        assert_eq!(single.island_anchor_visible, std::collections::BTreeMap::from([("message".into(), false)]));
     }
 
     /// 方向严格限制为约定值，偏移不能是 NaN 或无穷。

@@ -1,6 +1,6 @@
 import { parseComponentRuntimeSnapshot } from "../contracts/component";
 import type { LoopbackResponse } from "../contracts/loopback";
-import { parsePluginInstallBatch, parsePluginInstallProgress, type PluginInstallPlan, type PluginInstallProgress } from "../contracts/plugin";
+import { adoptPluginHover, adoptPluginShellOnce, mountPluginHover, parsePluginInstallBatch, parsePluginInstallProgress, type PluginHoverRenderer, type PluginInstallPlan, type PluginInstallProgress } from "../contracts/plugin";
 import type { PluginMenuEntry } from "./pluginMenu";
 
 /** Tauri 的 Err 是字符串，不是 Error。字符串原样用，Error 取 message。 */
@@ -37,12 +37,14 @@ export interface PluginSettingsEntry {
 /** 插件脚本注册的外壳对象。 */
 export interface PluginShellApi {
     renderTile?: (container: HTMLElement, context: PluginShellContext) => void | (() => void); // 格子内容，可返回清理函数。
+    renderIslandHover?: PluginHoverRenderer<PluginShellContext>; // 浮岛锚点的 hover 内容，可返回清理函数；未提供时用模型给的主信息行。
     settingsEntries?: PluginSettingsEntry[]; // 没有该字段表示没有设置条目。
     activateTheme?: (context: PluginShellContext) => void | (() => void); // 主题被选中时执行一次，返回停用或切换主题时的清理函数。
 }
 
 const accepted = new Map<string, PluginShellApi>(); // 每个清单标识保留的首份外壳。
 const entryShapeErrors = new Map<string, string>(); // 外壳在，但 settingsEntries 不是数组。
+const hoverShapeErrors = new Map<string, string>(); // 外壳在，但 renderIslandHover 不是函数。
 const shellListeners = new Set<(pluginId: string) => void>(); // 注册成功后的订阅。
 const loadedScripts = new Set<string>(); // 设置窗口已成功执行的脚本。
 const failedScripts = new Map<string, string>(); // 设置窗口脚本失败，不自动重试。
@@ -55,7 +57,7 @@ export const adoptPluginManifests = (_manifests: readonly { id: string }[]) => u
 /** 读取已按清单标识绑定的首份外壳。 */
 export const readPluginApi = (pluginId: string) => accepted.get(pluginId);
 
-/** 用清单标识绑定一份外壳。同一标识只保留首份。 */
+/** 用清单标识绑定一份外壳。同一标识只保留首份，hover 入口按严格校验采纳或丢弃。 */
 export const bindPluginApi = (pluginId: string, value: unknown) => {
     if (accepted.has(pluginId)) {
         console.warn(`插件重复注册，保留首份：${pluginId}`);
@@ -65,7 +67,12 @@ export const bindPluginApi = (pluginId: string, value: unknown) => {
         console.warn(`插件导出不是对象：${pluginId}`);
         return false;
     }
-    accepted.set(pluginId, normalizeSettingsEntries(pluginId, value as PluginShellApi));
+    const shell = normalizeHoverEntry(pluginId, normalizeSettingsEntries(pluginId, value as PluginShellApi)); // 校验后的外壳。
+    // 两次校验之间可能有并发绑定：adoptPluginShellOnce 保证仍然只留首份。
+    if (!adoptPluginShellOnce(accepted, pluginId, shell)) {
+        console.warn(`插件重复注册，保留首份：${pluginId}`);
+        return false;
+    }
     emitPluginShell(pluginId);
     return true;
 };
@@ -88,6 +95,9 @@ export const shellFromModule = (loaded: unknown) => {
 
 /** 已绑定，但 settingsEntries 的形状不合法。没有这条记录表示没导出或已经是数组。 */
 export const pluginSettingsShape = (pluginId: string) => entryShapeErrors.get(pluginId);
+
+/** 已绑定，但 hover 入口的形状不合法。没有这条记录表示没导出或已经采纳。 */
+export const pluginHoverShape = (pluginId: string) => hoverShapeErrors.get(pluginId);
 
 /** 这个窗口里脚本已经执行过。再次进入不必重新 import。 */
 export const pluginScriptLoaded = (pluginId: string) => loadedScripts.has(pluginId);
@@ -134,6 +144,25 @@ const normalizeSettingsEntries = (pluginId: string, value: PluginShellApi): Plug
         settingsEntries.push(entry);
     }
     return { ...value, settingsEntries };
+};
+
+/** 丢掉不合格的 hover 入口，不影响格子与设置条目；采纳的入口原样保留给渲染层。 */
+const normalizeHoverEntry = (pluginId: string, value: PluginShellApi): PluginShellApi => {
+    hoverShapeErrors.delete(pluginId);
+    const adoption = adoptPluginHover<PluginShellContext>(value.renderIslandHover); // 只有函数会被采纳。
+    if (!adoption.reason) return adoption.render ? { ...value, renderIslandHover: adoption.render } : value;
+    hoverShapeErrors.set(pluginId, adoption.reason);
+    console.warn(`${adoption.reason}：${pluginId}`);
+    const rest = { ...value }; // 保留其余外壳字段。
+    delete rest.renderIslandHover;
+    return rest;
+};
+
+/** 渲染已采纳的插件 hover 内容；入口不存在或抛错时返回空清理，调用方总能安全调用。 */
+export const mountIslandHover = (pluginId: string, container: HTMLElement, context: PluginShellContext): (() => void) => {
+    const render = accepted.get(pluginId)?.renderIslandHover; // 只读已绑定的首份外壳。
+    if (typeof render !== "function") return () => undefined;
+    return mountPluginHover(render, container, context, (error) => console.warn(`插件 hover 渲染失败：${pluginId}`, error));
 };
 
 export const pluginShell: Record<string, PluginShellApi> = new Proxy({} as Record<string, PluginShellApi>, {

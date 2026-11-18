@@ -80,6 +80,32 @@ export const parseThemeBaseline = (value: unknown): ThemeBaseline => {
     };
 };
 
+/** 可单独上浮岛的功能锚点。胶囊与 hover 共用同一枚开关。 */
+export const ISLAND_ANCHOR_KEYS = ["music", "message", "plugin"] as const;
+
+/** 上浮岛锚点键。 */
+export type IslandAnchorKey = (typeof ISLAND_ANCHOR_KEYS)[number];
+
+/** 音乐锚点默认显示。可单独调整，不连动其它功能。 */
+export const ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT = true;
+
+/** 消息通知锚点默认显示。可单独调整，不连动其它功能。 */
+export const ISLAND_ANCHOR_MESSAGE_VISIBLE_DEFAULT = true;
+
+/** 插件卡锚点默认显示。可单独调整，不连动其它功能。 */
+export const ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT = true;
+
+/** 逐项默认值。缺失键按这里读取，不把默认写回已保存映射。 */
+export const ISLAND_ANCHOR_VISIBLE_DEFAULTS: Record<IslandAnchorKey, boolean> = {
+    music: ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT,
+    message: ISLAND_ANCHOR_MESSAGE_VISIBLE_DEFAULT,
+    plugin: ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT,
+};
+
+/** 读取某一功能锚点是否在胶囊与 hover 显示；缺偏好、缺映射或缺少该键时用该项默认值。 */
+export const islandAnchorVisible = (preferences: { islandAnchorVisible?: Record<string, boolean> } | undefined, key: IslandAnchorKey): boolean =>
+    preferences?.islandAnchorVisible?.[key] ?? ISLAND_ANCHOR_VISIBLE_DEFAULTS[key];
+
 /** 已由 Rust 保存的应用偏好。 */
 export interface ApplicationPreferences {
     configDirectory: string; // 下次启动使用的配置目录。
@@ -123,6 +149,7 @@ export interface ApplicationPreferences {
     islandEdge: "" | "top" | "bottom" | "left" | "right"; // 空串按顶部处理，偏移为 0 时居中。
     islandOffset: number; // 沿贴边方向的有限 DIP 偏移。
     islandHideOnFullscreen: boolean; // 前台全屏时隐藏岛。
+    islandAnchorVisible: Record<string, boolean>; // 逐功能「上浮岛显示」：键只允许 music、message、plugin，缺键按各项默认值。
     islandCardOrder: string[]; // 已启用岛卡及展开顺序，最多 32 条。
     islandWeatherSource: "" | "qweather" | "foreca"; // 浮岛天气卡选择的来源，空串表示尚未选择。
     islandWeatherCityId: string; // 浮岛天气卡选择的城市标识，空串表示尚未选择。
@@ -242,6 +269,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     if (typeof islandWeatherCityId !== "string" || islandWeatherCityId.length > 1024 || /[\u0000-\u001f\u007f-\u009f]/.test(islandWeatherCityId))
         throw new Error("浮岛天气城市标识无效");
     if (islandWeatherCityId && !islandWeatherSource) throw new Error("浮岛天气城市必须同时选择来源");
+    const anchorVisible = parseIslandAnchorVisible(candidate.islandAnchorVisible); // 缺字段为空映射；未知键与非布尔值拒绝整份配置。
     const islandCardCollapsed = parseIslandCardFlags(candidate.islandCardCollapsed); // 缺失或非法项按未收起的空表处理。
     const islandCardCollapseMemory = parseIslandCardFlags(candidate.islandCardCollapseMemory); // 缺失视为逐卡记忆开启。
     const islandCollectCollapsedCount = candidate.islandCollectCollapsedCount === undefined ? 3 : candidate.islandCollectCollapsedCount; // 收起时默认显示三条。
@@ -283,6 +311,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         islandRadius,
         islandForm,
         islandCardOrder,
+        islandAnchorVisible: anchorVisible,
         islandWeatherSource,
         islandWeatherCityId,
         islandCardCollapsed,
@@ -291,6 +320,19 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         islandCollectCollapsedDefault,
         disabledPlugins,
     };
+};
+
+/** 锚点显隐只接受 music、message、plugin 的布尔值；未知键与非布尔值拒绝整份配置。缺字段按空映射。 */
+const parseIslandAnchorVisible = (value: unknown): Record<string, boolean> => {
+    if (value === undefined) return {};
+    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("浮岛锚点显隐数据无效");
+    const visible: Record<string, boolean> = {}; // 已通过键与布尔校验的显隐。
+    for (const [key, flag] of Object.entries(value)) {
+        if (!(ISLAND_ANCHOR_KEYS as readonly string[]).includes(key)) throw new Error("浮岛锚点显隐键无效");
+        if (typeof flag !== "boolean") throw new Error("浮岛锚点显隐数据无效");
+        visible[key] = flag;
+    }
+    return visible;
 };
 
 /** 岛卡布尔表只保留 official. 或 plugin. 前缀的标识，最多 32 项。 */

@@ -381,3 +381,50 @@ test("插件页在缺省偏好下渲染不抛错", async () => {
     assert.match(html, /plugin-settings/);
     assert.match(html, /添加插件/);
 });
+
+test("插件页一级页去掉「安装」分组，添加与任务进度仍是页头拆分段", async () => {
+    const source = readFileSync(new URL("./PluginSettingsPage.tsx", import.meta.url), "utf8");
+    assert.doesNotMatch(source, /plugin-install-title/); // 不再为添加按钮单独造「安装」分组。
+    assert.match(source, /<div className="plugin-settings__add">/); // 添加按钮与任务进度直接挂在页面外壳下。
+    const { createElement } = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const html = renderToStaticMarkup(createElement(page.PluginSettingsPage, { preferences: undefined, disabled: false, onPreferences: () => undefined }));
+    assert.doesNotMatch(html, />安装</); // 页面上不再出现「安装」分组标题。
+    assert.match(html, /添加插件</); // 页头主段保留。
+    assert.match(html, /aria-label="任务进度"/); // 任务进度拆分段保留可访问名。
+    assert.match(html, /aria-expanded="false"/); // 任务进度开合状态仍在。
+    assert.match(html, /插件目录<\/h2>/); // 目录语义分组保留。
+    assert.match(html, /已安装插件<\/h2>/); // 已安装列表语义分组保留。
+});
+
+test("插件页分组标题与行距走共享规则，不再被页内规则覆盖", () => {
+    const 清单 = (css: string) =>
+        [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector.trim(), body })); // 仅匹配声明块。
+    const rules = 清单(readFileSync(new URL("./PluginSettingsPage.css", import.meta.url), "utf8"));
+    assert.equal(rules.find(({ selector }) => selector === ".plugin-settings h2"), undefined); // 页级 h2 总则删除，分组标题不再被覆盖成 18px。
+    assert.equal(rules.find(({ selector }) => selector?.includes("plugin-settings__label")), undefined); // 旧节标签样式一并移除。
+    const staleTitle = rules.find(({ selector }) => selector === ".plugin-settings__stale h2");
+    assert.doesNotMatch(staleTitle?.body ?? "", /font-size|font-weight/); // 失效节标题只保留错误色，间距与字号跟共享规则。
+    assert.equal(rules.find(({ selector }) => selector === ".plugin-settings__stale"), undefined); // 失效节不再自带组顶间距。
+    assert.doesNotMatch(rules.find(({ selector }) => selector === ".plugin-settings__row")?.body ?? "", /margin-bottom/); // 行距由设置列表容器 gap 提供，不再和 gap 叠加。
+    const sharedRules = 清单(readFileSync(new URL("../SettingsPage.css", import.meta.url), "utf8"));
+    const 组标题 = sharedRules.find(({ selector }) => selector === ".settings__group-title")?.body ?? "";
+    assert.match(组标题, /margin:\s*18px 2px 8px/); // 插件页分组标题与其它页同一节奏。
+    assert.match(组标题, /font:\s*inherit/); // 字号继承正文（默认 13px），S01 实测口径。
+    assert.match(组标题, /font-weight:\s*600/);
+    assert.match(readFileSync(new URL("./PluginSettingsPage.tsx", import.meta.url), "utf8"), /returnFocusSelector/); // 二级页返回后焦点回插件行入口。
+});
+
+test("描述小字不留自身外边距，功能格子二级页行距由容器 gap 供给", () => {
+    const 清单 = (css: string) =>
+        [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector.trim(), body })); // 仅匹配声明块。
+    const 外壳状态 = 清单(readFileSync(new URL("../SettingsPage.css", import.meta.url), "utf8")).find(({ selector }) => selector === ".settings__status");
+    assert.match(外壳状态?.body ?? "", /margin:\s*0;/); // 状态与说明小字自身不留边距，不再撑出大段空白。
+    const 岛说明 = 清单(readFileSync(new URL("../island/IslandSettingsPage.css", import.meta.url), "utf8")).find(({ selector }) => selector === ".island-settings__hint");
+    assert.match(岛说明?.body ?? "", /margin:\s*0;/);
+    assert.doesNotMatch(岛说明?.body ?? "", /margin:\s*-\d+px/); // 不用负 margin 硬压间距。
+    const 功能提示 = 清单(readFileSync(new URL("../features/FeatureSettings.css", import.meta.url), "utf8")).find(({ selector }) => selector === ".feature-settings__hint");
+    assert.match(功能提示?.body ?? "", /margin:\s*0;/);
+    const 功能页 = readFileSync(new URL("../features/FeatureSettings.tsx", import.meta.url), "utf8");
+    assert.ok((功能页.match(/<div className="settings__rows">/g) ?? []).length >= 4); // 时钟/音乐/收集/文件夹四个二级分支的行放进 gap 容器。
+});

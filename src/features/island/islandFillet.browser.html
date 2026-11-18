@@ -205,7 +205,8 @@
                         case "get_windows_accent_color":
                             return Promise.resolve("#2563eb");
                         case "get_current_music_session":
-                            return Promise.resolve(null);
+                            // 测补面和拖动留存需要非零音乐档位：以暂停会话替代原先虚构的常驻锚点。
+                            return Promise.resolve({ media: { sessionId: "harness", title: "短", artist: "艺人", source: "测试", playback: "paused", canPrevious: true, canPlayPause: true, canNext: true } });
                         case "get_music_details":
                             return Promise.resolve({ timeline: undefined, lyrics: [] });
                         case "get_island_messages":
@@ -227,7 +228,9 @@
                     const handlers = bridgeListeners.get(event) ?? [];
                     handlers.push(handler);
                     bridgeListeners.set(event, handlers);
-                    return Promise.resolve(() => {
+                    // 生产原生桥在订阅握手中回放当前媒体快照。
+                    const initial = event === "music-session-changed" ? this.invoke("get_current_music_session").then(handler) : Promise.resolve();
+                    return initial.then(() => () => {
                         const index = handlers.indexOf(handler);
                         if (index >= 0) handlers.splice(index, 1);
                     });
@@ -379,8 +382,8 @@
                 check(transparent(getComputedStyle(root.querySelector(".island-card")).backgroundColor), "拖动时卡片仍应透明");
                 delete root.dataset.dragging;
             };
-            // 浏览器只核对并集尺寸和目标内容位置，不声称验证原生透明边距命中。
-            const checkExpanded = (from) => {
+            // 浏览器核对全高目标、列宽和卡片位置，不以这些证据替代真机透明点击验收。
+            const checkExpanded = () => {
                 const root = document.querySelector("main.island");
                 const value = snapshot();
                 const final = commits.at(-1);
@@ -389,20 +392,16 @@
                 check(boxes.length === (query.get("multi") === "1" ? 2 : 1), "单双卡场景必须渲染预期卡片数");
                 // 展开窗口包括卡片外 16 DIP 槽；它不参与卡宽但参与窗口几何和根起点。
                 const cardWidth = Math.max(...boxes.map((box) => box.width));
-                const box = { width: cardWidth + 16, height: boxes.reduce((sum, box) => sum + box.height, 0) + 8 * (boxes.length - 1) };
+                const box = { width: Math.ceil(cardWidth) + 16, height: 1040 };
                 const edge = preferences.islandEdge;
                 const inset = preferences.islandForm === "capsule" ? 6 : 0;
                 const targetLeft = edge === "left" ? inset : edge === "right" ? 1920 - box.width - inset : (1920 - box.width) / 2;
-                const targetTop = edge === "bottom" ? 1040 - box.height - inset : edge === "left" || edge === "right" ? (1040 - box.height) / 2 : inset;
-                const expected = !preferences.interfaceAnimations ? { left: targetLeft, top: targetTop, ...box } : {
-                    left: Math.min(from.windowBox.left, targetLeft), top: Math.min(from.windowBox.top, targetTop),
-                    width: Math.max(from.windowBox.left + from.windowBox.width, targetLeft + box.width) - Math.min(from.windowBox.left, targetLeft),
-                    height: Math.max(from.windowBox.top + from.windowBox.height, targetTop + box.height) - Math.min(from.windowBox.top, targetTop),
-                };
-                for (const key of ["left", "top", "width", "height"]) check(Math.abs(final.windowBox[key] - expected[key]) < 1, `展开 ${edge} 并集 ${key} 应为 ${expected[key]}，实际 ${final.windowBox[key]}；提交 ${commits.map((item) => `${item.state}:${item.windowBox.width}x${item.windowBox.height}`).join(" → ")}`);
-                check(Math.abs(root.clientWidth - box.width) < 1 && Math.abs(root.clientHeight - expected.height) < 1, "展开 root 宽度取目标宽，高度保留并集");
-                check(Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-inline")) - box.width) < 1 && Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-block")) - expected.height) < 1, "展开 CSS 宽度变量取目标宽，高度保留并集");
-                check(Math.abs(parseFloat(root.style.marginInlineStart) - (targetLeft - final.viewport.left)) < 1 && Math.abs(parseFloat(root.style.marginBlockStart) - (targetTop - final.viewport.top)) < 1, "展开内容仍按目标 margin 而非并集原点排布");
+                const targetTop = 0;
+                const expected = { left: targetLeft, top: targetTop, ...box };
+                for (const key of ["left", "top", "width", "height"]) check(Math.abs(final.windowBox[key] - expected[key]) < 1, `展开 ${edge} 工作区全高目标 ${key} 应为 ${expected[key]}，实际 ${final.windowBox[key]}；提交 ${commits.map((item) => `${item.state}:${item.windowBox.width}x${item.windowBox.height}`).join(" → ")}`);
+                check(Math.abs(root.clientWidth - box.width) < 1 && Math.abs(root.clientHeight - expected.height) < 1, "展开 root 宽度取目标宽，高度取工作区全高");
+                check(Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-inline")) - box.width) < 1 && Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-block")) - expected.height) < 1, "展开 CSS 宽度变量取目标宽，高度取工作区全高");
+                check(Math.abs(parseFloat(root.style.marginInlineStart) - (targetLeft - final.viewport.left)) < 1 && Math.abs(parseFloat(root.style.marginBlockStart) - (targetTop - final.viewport.top)) < 1, "展开内容从工作区顶部按目标位置排布");
                 boxes.forEach((box, index) => {
                     const target = final.cards[index].rect;
                     check(Math.abs(box.width - target.width) < 1 && Math.abs(box.height - target.height) < 1, "展开卡片不得被并集 grid 拉伸，实际内容尺寸应等于目标");
@@ -419,7 +418,7 @@
                     await until(() => {
                         const value = snapshot();
                         const latest = commits.at(-1);
-                        const anchor = root.querySelector('[data-anchor^="resident:"]');
+                        const anchor = root.querySelector('[data-anchor="event:音乐控制"]');
                         return latest?.state === "collapsed" && anchor && !value.painted && Math.abs(latest.windowBox.width - root.clientWidth) < 1;
                     });
                     if (interactionMode) {
@@ -481,8 +480,10 @@
                             key('Enter');await flush('expanded');await wait(30);
                             check(root.dataset.state==='expanded','切态完成不能拿旧指针位置立即评估透明带');
                             const expanded=windowRect();
-                            const point=['left','right'].includes(preferences.islandEdge)?{x:expanded.left+expanded.width/2,y:expanded.top+expanded.height-1}:{x:expanded.left+1,y:expanded.top+expanded.height/2};
-                            const contentPoint={x:expanded.left+expanded.width/2,y:expanded.top+expanded.height/2};
+                            const firstCard=root.querySelector('.island-card').getBoundingClientRect();
+                            const contentPoint={x:firstCard.left+firstCard.width/2,y:firstCard.top+firstCard.height/2};
+                            const point={x:contentPoint.x,y:expanded.top+expanded.height-1};
+                            check(point.y>firstCard.bottom,'测试测点必须落在全高窗口的卡片下方透明列');
                             // 展开额外带与 hover 共用 120ms 去抖：计时内回内容盒取消。
                             move(point);await wait(60);move(contentPoint);await wait(120);
                             check(root.dataset.state==='expanded','额外带计时内回到内容盒必须取消退回');
@@ -499,7 +500,7 @@
                             document.head.append(testStyle);
                             key('Enter');await flush('expanded');
                             check(Boolean(bar)&&Boolean(thumb),'动态场景必须有滚动条覆盖层');
-                            check(root.scrollHeight===root.clientHeight,'卡片高度等于窗口时不应有溢出');
+                            check(root.scrollHeight===root.clientHeight && root.clientHeight===320,'展开根固定等于 320 DIP 工作区，卡片同高时不溢出');
                             check(bar.dataset.visible!=='true','无溢出时不得显示条');
                             // 无可见条：收起不得引入渐出等待。
                             key('Escape');
@@ -516,6 +517,8 @@
                             const range500=Number(bar.getAttribute('aria-valuemax'));
                             check(range500>0,'出条后必须写入滚动范围');
                             const thumb500=Number.parseFloat(thumb.style.blockSize);
+                            const expectedThumb=Math.max(24,(root.clientHeight-8)*root.clientHeight/root.scrollHeight);
+                            check(Math.abs(thumb500-expectedThumb)<0.1,'滑块按工作区 clientHeight 与滚动内容高度之比计算');
                             // 继续加高：同一key下thumb高度与范围更新。
                             testStyle.textContent='.island[data-state="expanded"] .island-card{block-size:600px}';
                             await until(()=>root.scrollHeight>root.clientHeight+1,2000);
@@ -739,7 +742,7 @@
                             const origin = root.getBoundingClientRect();
                             const style = getComputedStyle(root);
                             const contentWidth = Math.max(...[...root.querySelectorAll(".island-card")].map((card) => card.getBoundingClientRect().width));
-                            check(Math.abs(root.clientWidth - contentWidth - 16) < 1 && Math.abs(root.clientHeight - last.windowBox.height) < 1, `${label} 展开根宽取目标内容宽，高度保留并集`);
+                            check(Math.abs(root.clientWidth - contentWidth - 16) < 1 && root.clientHeight === 1040 && last.windowBox.height === 1040, `${label} 展开列宽随内容，窗口及根高固定 1040`);
                             [...root.querySelectorAll(".island-card")].forEach((card, i) => {
                                 const box = card.getBoundingClientRect();
                                 const native = last.cards[i]?.rect;
@@ -812,9 +815,9 @@
                         await wait(250);
                         check(shortWidth === 264 && longWidth === shortWidth && width() === shortWidth, "顶部刘海横向播放档 240＋24，不因标题长度变化");
                         check(JSON.stringify(commits.at(-1).windowBox) === playingWindow && commits.length === playingCommits, "同档长短内容不改变窗口盒或提交次数");
-                        window.__pushMusicSnapshot(null);
+                        window.__pushMusicSnapshot({ media: { ...media("短").media, playback: "paused" } });
                         await until(() => width() === 192 && commits.at(-1)?.windowBox.width === 192);
-                        check(commits.length > playingCommits, "结束播放必须切换并提交未播放档 168＋24");
+                        check(commits.length > playingCommits, "暂停必须切换并提交 168＋24 档");
                         checkSurface(snapshot());
                         report(failures.length ? `FAIL\n- ${failures.join("\n- ")}` : "PASS 切换显示位置补面");
                         document.body.dataset.phase = failures.length ? "fail" : "pass";
@@ -958,7 +961,9 @@
                         await wait(320);
                         const finalState = await settledState("hover");
                         check(finalState.filleted === "true" && finalState.start.display === "block", "回到 hover 后补面应恢复");
-                        check(JSON.stringify(commits[nextCommitIndex]?.windowBox) === JSON.stringify(expandedFinal.windowBox), "展开后的下一切态必须从保留的并集窗口衔接");
+                        const exit = commits[nextCommitIndex]?.windowBox;
+                        const full = expandedFinal.windowBox;
+                        check(exit?.top === full.top && exit?.height === full.height && exit.left <= full.left && exit.left + exit.width >= full.left + full.width, "退出形变从全高目标盒衔接，必要时只横向补并集");
                         // 默认入口同时执行静态四边矩阵，避免只有手工 query 才覆盖 surface 翻转与关闭动画展开。
                         for (const edge of ["top", "bottom", "left", "right"]) {
                             await Promise.all(["notch", "capsule"].flatMap((form) => ["0", "1"].flatMap((multi) => ["hover", "expanded"].map((mode) => ({ form, multi, mode })))).map(async ({ form, multi, mode }) => {

@@ -272,6 +272,33 @@
     padding: 1px;
 }
 
+/* 页内语义分组：标题与其下条目成一组，不把不同含义的行平铺在同一无标题区。 */
+.settings__group {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+/* 分组标题用字重区分层级，首组贴着页标题，其后留出组间距。 */
+.settings__group-title {
+    margin: 18px 2px 8px;
+    font: inherit;
+    font-weight: 600;
+}
+
+.settings__group:first-child > .settings__group-title {
+    margin-top: 0;
+}
+
+/* 可变只读行使用列表，去掉浏览器默认标记，间距与设置行一致。 */
+.settings__list {
+    display: grid;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
 /* 单个设置条目的图标、名称与控制区域。 */
 .settings__row {
     display: flex;
@@ -481,8 +508,9 @@
     overflow-wrap: anywhere;
 }
 
-/* 初次加载提示使用弱化文字。 */
+/* 状态与说明小字：弱化文字、自身不留边距，节奏由所在容器的间隔供给。 */
 .settings__status {
+    margin: 0;
     color: var(--color-muted);
 }
 
@@ -497,8 +525,8 @@
     padding: 12px 0;
 }
 
-/* 关于页产品名称。 */
-.settings__about h2 {
+/* 关于页的分组标题沿用页内 h2，产品名单独成一行，不再用产品名充当标题。 */
+.settings__about-name {
     margin: 12px 0 24px;
     font-size: 20px;
     font-weight: 600;

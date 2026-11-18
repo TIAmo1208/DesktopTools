@@ -49,6 +49,7 @@ export const 创建夹具 = ({ 偏好补丁 = {}, 消息初读 = "ok" } = {}) =>
         islandEdge: "top",
         islandOffset: 0,
         islandRadius: 12,
+        islandAnchorVisible: {}, // 空映射由应用契约解析为各功能的独立默认值。
         interfaceAnimations: true,
         followSystemReducedMotion: false,
         ...偏好补丁,
@@ -194,6 +195,8 @@ export const 创建夹具 = ({ 偏好补丁 = {}, 消息初读 = "ok" } = {}) =>
             window.dispatchEvent(new Event("desktop-refresh-changed"));
         },
         pushDrop: (活动) => 推送("island-drop-active", 活动),
+        pushCollectChanged: () => 推送("collect-items-changed", null),
+        pushWeatherForecast: (预报) => 推送("weather-forecast-changed", 预报),
         pushMusic: (载值) => 推送("music-session-changed", 载值),
         pushDetails: (细节) => 推送("music-timeline-changed", 细节),
         pushMessages: (列表) => {

@@ -5,6 +5,7 @@ export const 断言页 = [
     "src/shared/scrollingText.browser.html", // 单行文本溢出滚动：判定、动画名与时长、重新测量与关闭动效。
     "src/features/desktop-items/desktopItemImage.browser.html", // 桌面项图片缩略与等待状态。
     "src/features/settings/weather/weatherSettings.browser.html", // 天气设置完整交互链路。
+    "src/features/settings/island/islandSettings.browser.html", // 浮岛设置：胶囊消息通知开关与插件卡卸载入口。
     "src/features/tile-content/collect-box/collectBox.browser.html", // 收集箱加载、选择、删除与投放。
     "src/features/tiles/contentDrop.browser.html", // 格子内容拖放。
     "src/features/tiles/tileDragPreview.browser.html", // 跨屏格子拖动预览与围栏尺寸。

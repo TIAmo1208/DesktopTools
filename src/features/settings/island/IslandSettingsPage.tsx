@@ -1,15 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../../bridge/components";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../../bridge/pluginSettings";
 import { loadPluginScript, pluginScriptLoaded, readPluginApi, subscribePluginShell, type PluginSettingsEntry } from "../../../bridge/pluginScripts";
 import type { ComponentManifest } from "../../../contracts/component";
-import type { ApplicationPreferences } from "../../../contracts/settings";
+import { islandAnchorVisible, type ApplicationPreferences, type IslandAnchorKey } from "../../../contracts/settings";
 import backIcon from "../../../../resources/weather-back.svg?raw";
 import chevronIcon from "../../../../resources/weather-chevron-right.svg?raw";
 import trashIcon from "../../../../resources/weather-trash.svg?raw";
 import { DesktopTileMenu, type DesktopTileMenuItem } from "../../tiles/DesktopTileMenu";
-import { MusicLyricsRow, MusicSpectrumBarsRow, MusicSpectrumFpsRow, MusicSpectrumRow } from "../ui";
 import { SettingsAbout } from "../ui";
 import { SettingsSwitch } from "../ui";
 import { islandCardAvailability, moveIslandCard, sortIslandCardManifests, updateIslandCardOrder } from "./islandSettings";
@@ -19,7 +18,14 @@ import "./IslandSettingsPage.css";
 /** 现成的垃圾桶图标缩到页头命令尺寸，与插件卸载按钮同一视觉。 */
 const removeIcon = trashIcon.replace("<svg ", '<svg width="18" height="18" ');
 
-/** 设置里的岛一级页与卡片二级页。 */
+/** 锚点显示二级页的三枚开关。胶囊与 hover 共用，标签即无障碍名。 */
+const ANCHOR_ROWS = [
+    ["music", "音乐上浮岛显示"],
+    ["message", "消息通知上浮岛显示"],
+    ["plugin", "插件卡上浮岛显示"],
+] as const satisfies readonly (readonly [IslandAnchorKey, string])[];
+
+/** 设置里的岛一级页、锚点显示二级页与卡片二级页。 */
 export const IslandSettings = ({
     preferences,
     disabled,
@@ -31,12 +37,24 @@ export const IslandSettings = ({
 }) => {
     const [manifests, setManifests] = useState<ComponentManifest[]>(); // 当前可用清单。
     const [detailId, setDetailId] = useState<string>(); // 当前卡片二级页。
+    const [anchorPage, setAnchorPage] = useState(false); // 锚点显示二级页。与卡片详情互不叠放。
     const [menu, setMenu] = useState<{ cardId: string; left: number; top: number }>(); // 公共自绘右键菜单锚点。
     const [shellEpoch, setShellEpoch] = useState(0); // 插件外壳到达后刷新设置条目。
     const unavailable = disabled || !preferences;
     const order = preferences?.islandCardOrder ?? [];
     const cards = sortIslandCardManifests(manifests ?? [], order);
     const detail = cards.find((card) => card.id === detailId);
+    // 返回一级页后把焦点放回进入二级页的入口；停留在二级页时不动，入口行已删除时不强制。
+    const returnFocusSelector = useRef<string | undefined>(undefined);
+    const recordReturnFocus = (selector: string) => {
+        returnFocusSelector.current = selector;
+    };
+    useEffect(() => {
+        if (!returnFocusSelector.current || anchorPage || detailId) return;
+        const target = document.querySelector<HTMLButtonElement>(returnFocusSelector.current);
+        returnFocusSelector.current = undefined;
+        target?.focus();
+    }, [anchorPage, detailId]);
 
     useEffect(() => {
         let alive = true;
@@ -57,6 +75,9 @@ export const IslandSettings = ({
     }, [detail]);
 
     const saveOrder = (next: string[]) => onPreferences({ islandCardOrder: next });
+    // 只改被拨动的键，其余已保存键原样保留；缺键仍由读取函数给默认值。
+    const saveAnchor = (key: IslandAnchorKey, checked: boolean) =>
+        onPreferences({ islandAnchorVisible: { ...(preferences?.islandAnchorVisible ?? {}), [key]: checked } });
     const toggle = (cardId: string, enabled: boolean) => saveOrder(updateIslandCardOrder(order, cardId, enabled));
     const move = (cardId: string, direction: -1 | 1) => saveOrder(moveIslandCard(order, cardId, direction));
     const availability = detail ? islandCardAvailability(order, detail.id) : undefined;
@@ -64,12 +85,42 @@ export const IslandSettings = ({
     const menuState = menuCard ? islandCardAvailability(order, menuCard.id) : undefined;
     const menuItems: DesktopTileMenuItem[] = menuCard
         ? [
-              { label: "打开卡片设置", onSelect: () => setDetailId(menuCard.id) },
+              { label: "打开卡片设置", onSelect: () => { recordReturnFocus(`[aria-label="打开${menuCard.name}卡片设置"]`); setDetailId(menuCard.id); } },
               { label: "上移", disabled: !menuState?.canMoveUp, onSelect: () => move(menuCard.id, -1) },
               { label: "下移", disabled: !menuState?.canMoveDown, onSelect: () => move(menuCard.id, 1) },
               { label: "停用此卡片", separatorBefore: true, danger: true, disabled: !menuState?.enabled, onSelect: () => toggle(menuCard.id, false) },
           ]
         : [];
+
+    if (anchorPage) {
+        return (
+            <section className="island-settings island-settings--detail">
+                <div className="island-settings__heading">
+                    <button className="island-settings__back" type="button" aria-label="返回浮岛" title="返回浮岛" onClick={() => setAnchorPage(false)} data-button="icon">
+                        <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: backIcon }} />
+                    </button>
+                    <div className="island-settings__identity">
+                        <h2>锚点显示</h2>
+                    </div>
+                </div>
+                <div className="settings__rows">
+                    {ANCHOR_ROWS.map(([key, label]) => (
+                        <div className="settings__row" key={key}>
+                            <label className="settings__row-title" htmlFor={`island-anchor-${key}`}>{label}</label>
+                            <SettingsSwitch
+                                id={`island-anchor-${key}`}
+                                label={label}
+                                checked={islandAnchorVisible(preferences, key)}
+                                disabled={unavailable}
+                                onChange={(checked) => saveAnchor(key, checked)}
+                            />
+                        </div>
+                    ))}
+                </div>
+                <p className="island-settings__hint">控制该功能锚点在胶囊与 hover 同时出现或撤下；与下方「卡片」列表的上浮岛开关不是同一件事，展开卡仍按卡片开关。</p>
+            </section>
+        );
+    }
 
     if (detail) {
         void shellEpoch; // 外壳注册时触发本次读取。
@@ -85,17 +136,19 @@ export const IslandSettings = ({
                         <p className="island-settings__meta">{availability?.enabled ? "已启用" : "已停用"}</p>
                     </div>
                     <div className="island-settings__commands">
-                        <button
-                            className="settings__button settings__icon-button island-settings__trash"
-                            type="button"
-                            title="卸载卡片"
-                            aria-label="卸载卡片"
-                            disabled={unavailable || !availability?.enabled}
-                            onClick={() => toggle(detail.id, false)}
-                            data-button="icon"
-                        >
-                            <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: removeIcon }} />
-                        </button>
+                        {detail.id.startsWith("plugin.") ? (
+                            <button
+                                className="settings__button settings__icon-button island-settings__trash"
+                                type="button"
+                                title="卸载卡片"
+                                aria-label="卸载卡片"
+                                disabled={unavailable || !availability?.enabled}
+                                onClick={() => toggle(detail.id, false)}
+                                data-button="icon"
+                            >
+                                <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: removeIcon }} />
+                            </button>
+                        ) : null}
                         <SettingsSwitch label={`${detail.name}上浮岛`} checked={availability?.enabled ?? false} disabled={unavailable} onChange={(checked) => toggle(detail.id, checked)} />
                     </div>
                 </div>
@@ -152,12 +205,7 @@ export const IslandSettings = ({
                     ) : null}
                 </div>
                 {detail.id === "official.music-control" ? (
-                    <div className="settings__rows">
-                        <MusicLyricsRow className="settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
-                        <MusicSpectrumRow className="settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
-                        <MusicSpectrumBarsRow className="settings__row" selectClassName="settings__select" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
-                        <MusicSpectrumFpsRow className="settings__row" selectClassName="settings__select" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
-                    </div>
+                    <p className="island-settings__empty">歌词与频谱在「功能格子 → 音乐控制」中设置。</p>
                 ) : null}
                 {detail.id === "official.weather" ? <IslandWeatherSettings preferences={preferences} disabled={unavailable} onPreferences={onPreferences} /> : null}
                 {entries.length ? (
@@ -176,6 +224,8 @@ export const IslandSettings = ({
     return (
         <section className="island-settings">
             <div className="settings__rows">
+                <section className="settings__group" aria-labelledby="island-look-title">
+                <h2 className="settings__group-title" id="island-look-title">浮岛外观</h2>
                 <div className="settings__row">
                     <label className="settings__row-title" htmlFor="island-enabled">显示浮岛</label>
                     <SettingsSwitch id="island-enabled" label="显示浮岛" checked={preferences?.islandEnabled ?? false} disabled={unavailable} onChange={(checked) => onPreferences({ islandEnabled: checked })} />
@@ -230,10 +280,6 @@ export const IslandSettings = ({
                         ))}
                     </div>
                 </div>
-                <div className="settings__row">
-                    <label className="settings__row-title" htmlFor="island-hide-fullscreen">全屏时隐藏</label>
-                    <SettingsSwitch id="island-hide-fullscreen" label="全屏时隐藏" checked={preferences?.islandHideOnFullscreen ?? true} disabled={unavailable} onChange={(checked) => onPreferences({ islandHideOnFullscreen: checked })} />
-                </div>
                 <label className="settings__row island-settings__radius">
                     <span className="settings__row-title">浮岛圆角（展开卡）</span>
                     <input
@@ -249,18 +295,33 @@ export const IslandSettings = ({
                         }}
                     />
                 </label>
+                </section>
+                <section className="settings__group" aria-labelledby="island-behavior-title">
+                    <h2 className="settings__group-title" id="island-behavior-title">行为</h2>
+                    <div className="settings__row">
+                        <label className="settings__row-title" htmlFor="island-hide-fullscreen">全屏时隐藏</label>
+                        <SettingsSwitch id="island-hide-fullscreen" label="全屏时隐藏" checked={preferences?.islandHideOnFullscreen ?? true} disabled={unavailable} onChange={(checked) => onPreferences({ islandHideOnFullscreen: checked })} />
+                    </div>
+                </section>
+                <section className="settings__group" aria-labelledby="island-anchor-entry-title">
+                    <h2 className="settings__group-title" id="island-anchor-entry-title">锚点显示</h2>
+                    <button className="settings__row settings__row--link" type="button" onClick={() => { recordReturnFocus('section[aria-labelledby="island-anchor-entry-title"] button[data-button="row-hit"]'); setAnchorPage(true); }} data-button="row-hit">
+                        <span className="settings__row-title">锚点显示</span>
+                        <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: chevronIcon }} />
+                    </button>
+                </section>
             </div>
-            <h2 className="island-settings__label">卡片</h2>
+            <h2 className="island-settings__label" id="island-card-title">卡片</h2>
             {!manifests ? (
                 <p className="island-settings__empty" role="status">正在读取浮岛卡…</p>
             ) : cards.length === 0 ? (
                 <p className="island-settings__empty">暂无可用浮岛卡</p>
             ) : (
-                <div className="island-settings__list">
+                <ul className="island-settings__list settings__list" aria-labelledby="island-card-title">
                     {cards.map((card) => {
                         const state = islandCardAvailability(order, card.id);
                         return (
-                            <div
+                            <li
                                 className="island-settings__row"
                                 key={card.id}
                                 onContextMenu={(event) => {
@@ -278,11 +339,20 @@ export const IslandSettings = ({
                                     <button type="button" aria-label={`${card.name}下移`} title="下移" disabled={unavailable || !state.canMoveDown} onClick={() => move(card.id, 1)} data-button="icon">↓</button>
                                 </div>
                                 <span className="island-settings__chevron" aria-hidden="true" dangerouslySetInnerHTML={{ __html: chevronIcon }} />
-                                <button className="island-settings__hit" type="button" aria-label={`打开${card.name}卡片设置`} onClick={() => setDetailId(card.id)} data-button="row-hit" />
-                            </div>
+                                <button
+                                    className="island-settings__hit"
+                                    type="button"
+                                    aria-label={`打开${card.name}卡片设置`}
+                                    onClick={() => {
+                                        recordReturnFocus(`[aria-label="打开${card.name}卡片设置"]`);
+                                        setDetailId(card.id);
+                                    }}
+                                    data-button="row-hit"
+                                />
+                            </li>
                         );
                     })}
-                </div>
+                </ul>
             )}
             {menu && menuItems.length > 0 && <DesktopTileMenu items={menuItems} left={menu.left} top={menu.top} onClose={() => setMenu(undefined)} />}
         </section>

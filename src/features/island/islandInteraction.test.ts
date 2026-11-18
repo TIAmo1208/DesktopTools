@@ -19,6 +19,7 @@ import {
     islandExtraBands,
     islandScrollGeometry,
     islandHitRegion,
+    islandExpandedDwellStep,
     islandMarginStep,
     islandDebugCardCount,
     islandCollapseSettle,
@@ -266,6 +267,41 @@ test("展开态透明带命中：只有并集减目标内容盒的额外带退�
     const layout = islandScrollGeometry(islandFrame("expanded", window), islandFrame("expanded", card), "top", { mode: "expanded", settled: true, scrollHeight: 300, clientHeight: 120, scrollTop: 0 });
     const contour = islandHitContour([{ rect: card, radii: [12, 12, 12, 12] }], window, "top", "capsule", 0);
     assert.equal(islandHitRegion("expanded", { x: card.left + 0.25, y: card.top + 0.25 }, layout, contour), "transparent");
+});
+
+test("展开回退计时只响应跨边界，空白列移动不会重新开始", () => {
+    assert.deepEqual(islandExpandedDwellStep("idle", "blank"), { state: "idle", timer: undefined });
+    assert.deepEqual(islandExpandedDwellStep("idle", "content"), { state: "content", timer: undefined });
+    assert.deepEqual(islandExpandedDwellStep("content", "blank"), { state: "blank", timer: "start" });
+    for (let i = 0; i < 10; i += 1) assert.deepEqual(islandExpandedDwellStep("blank", "blank"), { state: "blank", timer: undefined });
+    assert.deepEqual(islandExpandedDwellStep("blank", "content"), { state: "content", timer: "cancel" });
+    assert.deepEqual(islandExpandedDwellStep("blank", "protected"), { state: "idle", timer: "cancel" });
+    assert.deepEqual(islandExpandedDwellStep("content", "protected"), { state: "content", timer: undefined });
+    assert.equal(ISLAND_MARGIN_DELAY_MS, 120);
+});
+
+test("全高展开窗口下方透明列在四边都走 120ms 额外带，槽与卡间隙仍不退回", () => {
+    for (const edge of islandEdges) {
+        const window = { left: 100, top: 40, width: 216, height: 900 };
+        const cardLeft = edge === "right" ? 16 : 0;
+        const frame = { ...islandFrame("expanded", window), cards: [
+            { rect: { left: cardLeft, top: 0, width: 200, height: 110 }, radius: 12 },
+            { rect: { left: cardLeft, top: 118, width: 200, height: 80 }, radius: 12 },
+            { rect: { left: 0, top: 110, width: 200, height: 8 }, radius: 0 },
+        ] };
+        const layout = islandScrollGeometry(frame, frame, edge, { mode: "expanded", settled: true, scrollHeight: 900, clientHeight: 900, scrollTop: 0 });
+        assert.deepEqual(layout.bands, [{ ...window, top: 238, height: 702 }]);
+        const contour = islandHitContour(frame.cards.slice(0, 2).map(({ rect }) => ({ rect: { ...rect, left: rect.left + window.left, top: rect.top + window.top }, radii: [12, 12, 12, 12] })), window, edge, "capsule", 0);
+        const classify = (x: number, y: number) => islandHitRegion("expanded", { x, y }, layout, contour);
+        assert.equal(classify(180, 154), "transparent");
+        assert.equal(classify(layout.gutter!.left + 2, 800), "scrollbar");
+        const region = classify(180, 800);
+        assert.equal(region, "extra-band");
+        const input = { mode: "expanded" as const, region, now: 0, busy: false, outlineDistance: 1, coreDistance: 1 };
+        const entered = islandMarginStep({ latch: "open" }, input);
+        assert.equal(islandMarginStep(entered.state, { ...input, now: 119 }).collapse, false);
+        assert.equal(islandMarginStep(entered.state, { ...input, now: 120 }).collapse, true);
+    }
 });
 
 test("展开滚动条只在溢出且已提交时出现，track/thumb 几何与滚动位置一致", () => {

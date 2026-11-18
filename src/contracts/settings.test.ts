@@ -55,6 +55,27 @@ test("岛偏好默认值、整份保存往返与 Rust 一致的边界", () => {
         islandRadius: 16,
     });
     assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify({ ...selected, fontSize: 14 }))), { ...selected, fontSize: 14 });
+    // 上浮岛显示：缺字段为空映射，缺键按各自默认值读取；显式布尔往返，未知键与非布尔值拒绝。旧字段不迁移。
+    assert.deepEqual(defaults.islandAnchorVisible, {});
+    assert.equal(ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT, true);
+    assert.equal(ISLAND_ANCHOR_MESSAGE_VISIBLE_DEFAULT, true);
+    assert.equal(ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT, true);
+    for (const key of ["music", "message", "plugin"] as const) assert.equal(islandAnchorVisible(defaults, key), true);
+    assert.equal(islandAnchorVisible(undefined, "music"), ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT); // 偏好尚未加载时也不抛。
+    assert.equal(islandAnchorVisible({}, "plugin"), ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT); // 旧对象缺映射时按该项默认。
+    const anchors = parsePreferences({ ...defaults, islandAnchorVisible: { music: false, message: true } });
+    assert.deepEqual(anchors.islandAnchorVisible, { music: false, message: true });
+    assert.equal(islandAnchorVisible(anchors, "music"), false);
+    assert.equal(islandAnchorVisible(anchors, "message"), true);
+    assert.equal(islandAnchorVisible(anchors, "plugin"), ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT); // 缺键不连动已写键。
+    assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify(anchors))).islandAnchorVisible, anchors.islandAnchorVisible);
+    assert.deepEqual(parsePreferences({ ...defaults, islandAnchorVisible: {} }).islandAnchorVisible, {});
+    const legacyAnchor = parsePreferences({ ...defaults, islandCapsuleMessages: false }); // 旧开关不迁移，也不再作为字段存在。
+    assert.equal("islandCapsuleMessages" in legacyAnchor, false);
+    assert.deepEqual(legacyAnchor.islandAnchorVisible, {});
+    assert.equal(islandAnchorVisible(legacyAnchor, "message"), true);
+    for (const islandAnchorVisible of [null, 0, 1, "true", [], { music: "true" }, { music: 1 }, { weather: true }, { music: true, extra: false }])
+        assert.throws(() => parsePreferences({ ...defaults, islandAnchorVisible }));
     for (const islandEdge of ["", "top", "bottom", "left", "right"]) assert.equal(parsePreferences({ ...defaults, islandEdge }).islandEdge, islandEdge);
     for (const islandForm of ["capsule", "notch"]) assert.equal(parsePreferences({ ...defaults, islandForm }).islandForm, islandForm);
     for (const islandRadius of [0, 12, 16]) assert.equal(parsePreferences({ ...defaults, islandRadius }).islandRadius, islandRadius);
@@ -95,7 +116,15 @@ test("图片预览宽度使用默认值并验证整数边界", () => {
     for (const width of [47, 157, 78.5, null, "78", NaN]) assert.throws(() => parsePreferences({ ...base, collectImagePreviewWidth: width }));
 });
 
-import { parsePreferences, parseSettingsSnapshot, resolveAnimationsEnabled } from "./settings.ts";
+import {
+    ISLAND_ANCHOR_MESSAGE_VISIBLE_DEFAULT,
+    ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT,
+    ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT,
+    islandAnchorVisible,
+    parsePreferences,
+    parseSettingsSnapshot,
+    resolveAnimationsEnabled,
+} from "./settings.ts";
 
 test("天气显示偏好默认关闭，往返保留并拒绝非布尔值", () => {
     const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true }); // 缺失字段采用当前默认值。

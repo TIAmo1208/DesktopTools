@@ -25,8 +25,10 @@ export const SettingsCityList = ({
     busy?: boolean; // 调用方的串行动作期间禁止城市项操作。
 }) => (
     <div className="settings-city">
+        {cities.length > 0 && (
+        <ul className="settings-city__list settings__list">
         {cities.map((city) => (
-            <div
+            <li
                 key={city.id}
                 className="settings-city__item"
                 role={onSelect ? "button" : undefined}
@@ -62,8 +64,10 @@ export const SettingsCityList = ({
                         <Glyph source={trashIcon} />
                     </button>
                 )}
-            </div>
+            </li>
         ))}
+        </ul>
+        )}
         {cities.length === 0 && <p className="settings-city__empty">尚未添加城市或地区</p>}
         {onAdd && (
             <button type="button" className="settings-city__add" disabled={busy} onClick={onAdd} data-button="ghost">

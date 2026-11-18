@@ -385,7 +385,56 @@ export const SettingsPage = () => {
                 )}
                 {page === "general" && (
                     <div className="settings__rows">
-                        <form
+                        <section className="settings__group" aria-labelledby="general-startup-title">
+                            <h2 className="settings__group-title" id="general-startup-title">
+                                启动与窗口
+                            </h2>
+                            <div className="settings__row">
+                            <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsPowerIcon }} />
+                            <label className="settings__row-title" htmlFor="autostart">
+                                开机自动启动
+                            </label>
+                            <SettingsSwitch
+                                id="autostart"
+                                label="开机自动启动"
+                                checked={snapshot?.autostart ?? false}
+                                disabled={busy || !snapshot}
+                                onChange={(enabled) => {
+                                    void handleCommand(async () => {
+                                        const actual = await setAutostart(enabled); // Windows 回读的真实开机启动状态。
+                                        setSnapshot((current) => (current ? { ...current, autostart: actual } : current));
+                                    });
+                                }}
+                            />
+                        </div>
+                        </section>
+                        <section className="settings__group" aria-labelledby="general-interaction-title">
+                            <h2 className="settings__group-title" id="general-interaction-title">
+                                交互
+                            </h2>
+                            <div className="settings__row">
+                            <span
+                                className="settings__icon settings__icon--svg"
+                                aria-hidden="true"
+                                dangerouslySetInnerHTML={{ __html: settingsDoubleClickIcon }}
+                            />
+                            <label className="settings__row-title" htmlFor="double-click">
+                                双击打开项目
+                            </label>
+                            <SettingsSwitch
+                                id="double-click"
+                                label="双击打开项目"
+                                checked={preferences?.doubleClickToOpen ?? true}
+                                disabled={busy || !preferences}
+                                onChange={(checked) => handlePreferences({ doubleClickToOpen: checked })}
+                            />
+                        </div>
+                        </section>
+                        <section className="settings__group" aria-labelledby="general-data-title">
+                            <h2 className="settings__group-title" id="general-data-title">
+                                数据位置
+                            </h2>
+                            <form
                             className="settings__row settings__directory"
                             onSubmit={(event) => {
                                 event.preventDefault();
@@ -451,41 +500,7 @@ export const SettingsPage = () => {
                                 保存
                             </button>
                         </form>
-                        <div className="settings__row">
-                            <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsPowerIcon }} />
-                            <label className="settings__row-title" htmlFor="autostart">
-                                开机自动启动
-                            </label>
-                            <SettingsSwitch
-                                id="autostart"
-                                label="开机自动启动"
-                                checked={snapshot?.autostart ?? false}
-                                disabled={busy || !snapshot}
-                                onChange={(enabled) => {
-                                    void handleCommand(async () => {
-                                        const actual = await setAutostart(enabled); // Windows 回读的真实开机启动状态。
-                                        setSnapshot((current) => (current ? { ...current, autostart: actual } : current));
-                                    });
-                                }}
-                            />
-                        </div>
-                        <div className="settings__row">
-                            <span
-                                className="settings__icon settings__icon--svg"
-                                aria-hidden="true"
-                                dangerouslySetInnerHTML={{ __html: settingsDoubleClickIcon }}
-                            />
-                            <label className="settings__row-title" htmlFor="double-click">
-                                双击打开项目
-                            </label>
-                            <SettingsSwitch
-                                id="double-click"
-                                label="双击打开项目"
-                                checked={preferences?.doubleClickToOpen ?? true}
-                                disabled={busy || !preferences}
-                                onChange={(checked) => handlePreferences({ doubleClickToOpen: checked })}
-                            />
-                        </div>
+                        </section>
                     </div>
                 )}
                 {page === "appearance" && !gridDetail && (
@@ -496,27 +511,32 @@ export const SettingsPage = () => {
                             onPreferences={handlePreferences}
                             onThemeSelection={handleThemeSelection}
                         />
-                        {(
-                            [
-                                ["desktopGrid", "桌面网格"],
-                                ["fenceGrid", "围栏内网格"],
-                            ] as const
-                        ).map(([kind, label]) => (
-                            <button
-                                key={kind}
-                                className="settings__row settings__row--link"
-                                type="button"
-                                onClick={() => setGridDetail(kind)}
-                                data-button="row-hit"
-                            >
-                                <span className="settings__row-title">{label}</span>
-                                <span
-                                    className="settings__icon settings__icon--svg"
-                                    aria-hidden="true"
-                                    dangerouslySetInnerHTML={{ __html: settingsChevronIcon }}
-                                />
-                            </button>
-                        ))}
+                        <section className="settings__group" aria-labelledby="appearance-workspace-title">
+                            <h2 className="settings__group-title" id="appearance-workspace-title">
+                                桌面工作区
+                            </h2>
+                            {(
+                                [
+                                    ["desktopGrid", "桌面网格"],
+                                    ["fenceGrid", "围栏内网格"],
+                                ] as const
+                            ).map(([kind, label]) => (
+                                <button
+                                    key={kind}
+                                    className="settings__row settings__row--link"
+                                    type="button"
+                                    onClick={() => setGridDetail(kind)}
+                                    data-button="row-hit"
+                                >
+                                    <span className="settings__row-title">{label}</span>
+                                    <span
+                                        className="settings__icon settings__icon--svg"
+                                        aria-hidden="true"
+                                        dangerouslySetInnerHTML={{ __html: settingsChevronIcon }}
+                                    />
+                                </button>
+                            ))}
+                        </section>
                     </div>
                 )}
                 {page === "appearance" && gridDetail && (
@@ -542,129 +562,159 @@ export const SettingsPage = () => {
                 {page === "plugins" && <PluginSettingsPage preferences={preferences} disabled={busy || !preferences} onPreferences={handlePreferences} />}
                 {page === "performance" && (
                     <div className="settings__rows">
-                        {(
-                            [
-                                ["pauseOnFullscreen", "有应用全屏、最大化时暂停刷新", "仅暂停被前台窗口完全覆盖的显示器"],
-                                ["pauseOnFocus", "有应用获取焦点时暂停刷新", "其他应用在前台时暂停全部桌面；可见桌面内容也会停止更新"],
-                            ] as const
-                        ).map(([key, label, description]) => (
-                            <div className="settings__row" key={key}>
+                        <section className="settings__group" aria-labelledby="performance-refresh-title">
+                            <h2 className="settings__group-title" id="performance-refresh-title">
+                                刷新策略
+                            </h2>
+                            {(
+                                [
+                                    ["pauseOnFullscreen", "有应用全屏、最大化时暂停刷新", "仅暂停被前台窗口完全覆盖的显示器"],
+                                    ["pauseOnFocus", "有应用获取焦点时暂停刷新", "其他应用在前台时暂停全部桌面；可见桌面内容也会停止更新"],
+                                ] as const
+                            ).map(([key, label, description]) => (
+                                <div className="settings__row" key={key}>
+                                    <span className="settings__row-title settings__row-title--inline">
+                                        <label htmlFor={key}>{label}</label>
+                                        <SettingsInfo label={label} description={description} />
+                                    </span>
+                                    <SettingsSwitch
+                                        id={key}
+                                        label={label}
+                                        checked={preferences?.[key] ?? false}
+                                        disabled={busy || !preferences}
+                                        onChange={(checked) => handlePreferences({ [key]: checked })}
+                                    />
+                                </div>
+                            ))}
+                        </section>
+                        <section className="settings__group" aria-labelledby="performance-motion-title">
+                            <h2 className="settings__group-title" id="performance-motion-title">
+                                动效
+                            </h2>
+                            <p className="settings__status">
+                                只决定布局切换与状态过渡是否播放；圆角、字体、字号和强调色在「外观」里改。
+                            </p>
+                            <div className="settings__row">
                                 <span className="settings__row-title settings__row-title--inline">
-                                    <label htmlFor={key}>{label}</label>
-                                    <SettingsInfo label={label} description={description} />
+                                    <label htmlFor="follow-system-reduced-motion">跟随系统减少动态效果控制</label>
+                                    <SettingsInfo label="跟随系统减少动态效果控制" description="开启时由 Windows 减少动态效果设置控制实际动画。" />
                                 </span>
                                 <SettingsSwitch
-                                    id={key}
-                                    label={label}
-                                    checked={preferences?.[key] ?? false}
+                                    id="follow-system-reduced-motion"
+                                    label="跟随系统减少动态效果控制"
+                                    checked={preferences?.followSystemReducedMotion ?? true}
                                     disabled={busy || !preferences}
-                                    onChange={(checked) => handlePreferences({ [key]: checked })}
+                                    onChange={(checked) => handlePreferences({ followSystemReducedMotion: checked })}
                                 />
                             </div>
-                        ))}
-                        <div className="settings__row">
-                            <span className="settings__row-title settings__row-title--inline">
-                                <label htmlFor="follow-system-reduced-motion">跟随系统减少动态效果控制</label>
-                                <SettingsInfo label="跟随系统减少动态效果控制" description="开启时由 Windows 动态效果设置控制实际动画，并保留界面动画开关值" />
-                            </span>
-                            <SettingsSwitch
-                                id="follow-system-reduced-motion"
-                                label="跟随系统减少动态效果控制"
-                                checked={preferences?.followSystemReducedMotion ?? true}
-                                disabled={busy || !preferences}
-                                onChange={(checked) => handlePreferences({ followSystemReducedMotion: checked })}
-                            />
-                        </div>
-                        <div className="settings__row">
-                            <span className="settings__row-title settings__row-title--inline">
-                                <label htmlFor="interface-animations">界面动画</label>
-                                <SettingsInfo label="界面动画" description="未跟随系统减少动态效果时，启用布局切换与状态过渡动画" />
-                            </span>
-                            <SettingsSwitch
-                                id="interface-animations"
-                                label="界面动画"
-                                checked={preferences?.interfaceAnimations ?? true}
-                                disabled={busy || !preferences || (preferences?.followSystemReducedMotion ?? true)}
-                                onChange={(checked) => handlePreferences({ interfaceAnimations: checked })}
-                            />
-                        </div>
-                        {(preferences?.followSystemReducedMotion ?? true) && reducedMotion && (
-                            <p className="settings__status" role="status">
-                                系统已启用减少动态效果，当前动画已关闭
-                            </p>
-                        )}
+                            <div className="settings__row">
+                                <span className="settings__row-title settings__row-title--inline">
+                                    <label htmlFor="interface-animations">界面动画</label>
+                                    <SettingsInfo label="界面动画" description="未跟随系统减少动态效果时，启用布局切换与状态过渡动画" />
+                                </span>
+                                <SettingsSwitch
+                                    id="interface-animations"
+                                    label="界面动画"
+                                    checked={preferences?.interfaceAnimations ?? true}
+                                    disabled={busy || !preferences || (preferences?.followSystemReducedMotion ?? true)}
+                                    onChange={(checked) => handlePreferences({ interfaceAnimations: checked })}
+                                />
+                            </div>
+                            {(preferences?.followSystemReducedMotion ?? true) && reducedMotion && (
+                                <p className="settings__status" role="status">
+                                    系统已启用减少动态效果，当前动画已关闭
+                                </p>
+                            )}
+                        </section>
                     </div>
                 )}
                 {page === "diagnostics" && (
                     <div className="settings__rows">
-                        <div className="settings__row">
-                            <span
-                                className="settings__icon settings__icon--svg"
-                                aria-hidden="true"
-                                dangerouslySetInnerHTML={{ __html: settingsWorkspaceIcon }}
-                            />
-                            <span className="settings__row-title">桌面工作区</span>
-                            <span className="settings__value">{host ? PHASE_LABELS[host.phase] : "未获取"}</span>
-                        </div>
-                        <div className="settings__row">
-                            <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsMonitorIcon }} />
-                            <span className="settings__row-title">显示器</span>
-                            <span className="settings__value">{host ? `${host.hosts.length} 台` : "未获取"}</span>
-                        </div>
-                        {host?.hosts.map((entry) => (
-                            <div className="settings__row" key={entry.monitor.id}>
+                        <section className="settings__group" aria-labelledby="diagnostics-runtime-title">
+                            <h2 className="settings__group-title" id="diagnostics-runtime-title">
+                                运行状态
+                            </h2>
+                            <div className="settings__row">
                                 <span
                                     className="settings__icon settings__icon--svg"
                                     aria-hidden="true"
-                                    dangerouslySetInnerHTML={{ __html: settingsMonitorIcon }}
+                                    dangerouslySetInnerHTML={{ __html: settingsWorkspaceIcon }}
                                 />
-                                <span className="settings__row-title">{entry.monitor.name}</span>
-                                <span className="settings__value">
-                                    {entry.monitor.width} × {entry.monitor.height} · {Math.round(entry.monitor.scaleFactor * 100)}%
-                                </span>
+                                <span className="settings__row-title">桌面工作区</span>
+                                <span className="settings__value">{host ? PHASE_LABELS[host.phase] : "未获取"}</span>
                             </div>
-                        ))}
-                        <div className="settings__row">
-                            <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsLogIcon }} />
-                            <span className="settings__row-title">应用日志</span>
+                            <div className="settings__row">
+                                <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsMonitorIcon }} />
+                                <span className="settings__row-title">显示器</span>
+                                <span className="settings__value">{host ? `${host.hosts.length} 台` : "未获取"}</span>
+                            </div>
+                            {host && host.hosts.length > 0 && (
+                                <ul className="settings__list">
+                                    {host.hosts.map((entry) => (
+                                        <li className="settings__row" key={entry.monitor.id}>
+                                            <span
+                                                className="settings__icon settings__icon--svg"
+                                                aria-hidden="true"
+                                                dangerouslySetInnerHTML={{ __html: settingsMonitorIcon }}
+                                            />
+                                            <span className="settings__row-title">{entry.monitor.name}</span>
+                                            <span className="settings__value">
+                                                {entry.monitor.width} × {entry.monitor.height} · {Math.round(entry.monitor.scaleFactor * 100)}%
+                                            </span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </section>
+                        <section className="settings__group" aria-labelledby="diagnostics-maintenance-title">
+                            <h2 className="settings__group-title" id="diagnostics-maintenance-title">
+                                维护
+                            </h2>
+                            <div className="settings__row">
+                                <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsLogIcon }} />
+                                <span className="settings__row-title">应用日志</span>
+                                <button
+                                    type="button"
+                                    className="settings__button"
+                                    disabled={busy}
+                                    onClick={() => void handleCommand(openLogs)}
+                                    data-button="secondary"
+                                >
+                                    <span
+                                        className="settings__icon settings__icon--svg"
+                                        aria-hidden="true"
+                                        dangerouslySetInnerHTML={{ __html: settingsFolderOpenIcon }}
+                                    />
+                                    打开目录
+                                </button>
+                            </div>
                             <button
                                 type="button"
-                                className="settings__button"
+                                className="settings__button settings__refresh"
                                 disabled={busy}
-                                onClick={() => void handleCommand(openLogs)}
+                                onClick={() => void handleRefresh()}
                                 data-button="secondary"
                             >
-                                <span
-                                    className="settings__icon settings__icon--svg"
-                                    aria-hidden="true"
-                                    dangerouslySetInnerHTML={{ __html: settingsFolderOpenIcon }}
-                                />
-                                打开目录
+                                <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsRefreshIcon }} />
+                                刷新状态
                             </button>
-                        </div>
-                        <button
-                            type="button"
-                            className="settings__button settings__refresh"
-                            disabled={busy}
-                            onClick={() => void handleRefresh()}
-                            data-button="secondary"
-                        >
-                            <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsRefreshIcon }} />
-                            刷新状态
-                        </button>
+                        </section>
                     </div>
                 )}
                 {page === "about" && (
-                    <div className="settings__about">
+                    <section className="settings__about" aria-labelledby="about-product-title">
+                        <h2 className="settings__group-title" id="about-product-title">
+                            产品信息
+                        </h2>
                         <img src={applicationIcon} alt="" width="64" height="64" />
-                        <h2>Desktop Tools</h2>
+                        <p className="settings__about-name">Desktop Tools</p>
                         <dl>
                             <dt>版本</dt>
                             <dd>{snapshot?.version ?? "未获取"}</dd>
                             <dt>平台</dt>
                             <dd>Windows</dd>
                         </dl>
-                    </div>
+                    </section>
                 )}
             </main>
             <MessageNotificationHost />

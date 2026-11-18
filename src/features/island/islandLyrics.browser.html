@@ -99,11 +99,9 @@
             const 运行 = async () => {
                 await 直到(() => 根(), "岛根节点挂载");
                 // 共享音乐源在音乐卡挂载后才建立订阅，先等握手完成再推送事实，避免事件丢失。
-                await 直到(() => 文本() === "未在播放", "音乐锚点挂载");
+                await 直到(() => 圆()?.dataset.anchor === "clock", "无媒体时以时钟空态挂载");
                 await 等待(200);
-                const 音乐锚点 = 圆();
-                断言(卡盒().width === 168 && 盒().width === 192 && 窗口()?.width === 192, "未播放卡片宽 168，顶部刘海加 24");
-                断言(播报().endsWith("新增 1 条"), "首批音乐锚点必须随首次播报计入新增");
+                断言(卡盒().height === 44 && !根().querySelector('[data-anchor="event:音乐控制"]'), "无会话不产生音乐锚点");
 
                 // F1：同一播放档位固定内容盒；超长歌词只在盒内按播放位置移动。
                 夹具.pushMusic(媒体(标题, "测试艺人"));
@@ -111,6 +109,8 @@
                 await 直到(() => 行()?.textContent === 逐句歌词[1].text, "常态显示当前句");
                 await 直到(() => Number.parseFloat(行().style.getPropertyValue("--island-lyric-distance")) > 0, "长句测得滚动距离");
                 await 直到(() => !根().style.inlineSize && Math.abs(窗口()?.width - 盒().width) < 1, "播放窗口稳定");
+                let 音乐锚点 = 圆();
+                断言(播报().endsWith("新增 1 条"), "首批音乐锚点必须随首次播报计入新增");
                 const 长句宽 = 盒().width;
                 const 长句窗 = JSON.stringify(窗口());
                 const 长句提交数 = 夹具.提交.length;
@@ -135,13 +135,14 @@
                 断言([...文本()].length === 18 && !行(), "普通中文回落最多18字、无歌词滚动层");
                 断言(盒().width === 长句宽 && 卡盒().width === 240, "歌词晚到/消失不应切播放档位");
                 夹具.pushMusic(null);
-                await 直到(() => 文本() === "未在播放", "无媒体回落播放状态");
-                断言(盒().height === 常态高度 && 圆() === 音乐锚点, "媒体状态变化复用原锚点，横向胶囊高不变");
+                await 直到(() => 圆()?.dataset.anchor === "clock", "无媒体回落到时钟空态");
+                断言(盒().height === 常态高度 && 圆() !== 音乐锚点, "只在有媒体时保留音乐锚点，横向胶囊高不变");
 
                 夹具.pushPreferences({ interfaceAnimations: true });
                 夹具.pushMusic(媒体(标题, "测试艺人"));
                 夹具.pushDetails({ timeline: 时间轴(12000, 标题, "测试艺人"), lyrics: 逐句歌词 });
                 await 直到(() => 行()?.textContent === 逐句歌词[1].text, "四边切换前恢复当前句");
+                音乐锚点 = 圆();
                 const 四边 = {};
                 for (const 边 of ["left", "right", "top", "bottom"]) {
                     夹具.pushPreferences({ islandEdge: 边 });
@@ -159,9 +160,9 @@
                     await 直到(() => 行()?.textContent === 第三句, `${边} 同档位换句`);
                     await 等待(90);
                     断言(盒().width === 值.width && 盒().height === 值.height && JSON.stringify(窗口()) === 播放窗 && 夹具.提交.length === 提交数, `${边} 换句不改根尺寸及原生窗口，不提交`);
-                    夹具.pushMusic(null);
-                    await 直到(() => 文本() === "未在播放" && !根().style.inlineSize && (竖排 ? 窗口()?.height : 窗口()?.width) === (竖排 ? 120 : 192), `${边} 未播放档位稳定`);
-                    断言((竖排 ? 卡盒().height : 卡盒().width) === (竖排 ? 96 : 168), `${边} 未播放档位卡片尺寸`);
+                    夹具.pushMusic({ media: { ...媒体(标题, "测试艺人").media, playback: "paused" } });
+                    await 直到(() => 圆()?.querySelector('[data-status="paused"]') && !根().style.inlineSize && (竖排 ? 窗口()?.height : 窗口()?.width) === (竖排 ? 120 : 192), `${边} 暂停档位稳定`);
+                    断言((竖排 ? 卡盒().height : 卡盒().width) === (竖排 ? 96 : 168), `${边} 暂停档位卡片尺寸`);
                     夹具.pushMusic(媒体(标题, "测试艺人"));
                     夹具.pushDetails({ timeline: 时间轴(12000, 标题, "测试艺人"), lyrics: 逐句歌词 });
                     await 直到(() => 行()?.textContent === 逐句歌词[1].text, `${边} 恢复长句`);
@@ -227,10 +228,14 @@
                 断言(盒().width === 长句宽 && 卡盒().width === 240, "跳转短句保持同一播放档位");
                 断言(近似(盒().height, 常态高度), `跳转不得改变胶囊高度，实际 ${盒().height}`);
 
-                // 同一次提交新前台与两枚新锚点，当前批次不得漏计。
-                夹具.pushMessages([消息(101, "info", "首条新消息", "新来源甲"), 消息(102, "info", "下一条消息", "新来源乙")]);
-                await 直到(() => 播报().includes("首条新消息"), "新消息抢占前台并播报");
-                断言(播报().endsWith("新增 2 条"), `同批两个新锚点必须计入本次播报，实际 ${播报()}`);
+                // 多来源通知同时到来，只新增一枚铃铛锚点；按最新一条播报，条目数独立显示。
+                const 同批 = Date.now();
+                夹具.pushMessages([消息(101, "info", "首条新消息", "新来源甲", 同批), 消息(102, "info", "下一条消息", "新来源乙", 同批 + 1)]);
+                await 直到(() => 播报().includes("下一条消息"), "最新通知抢占前台并播报");
+                const 通知锚点 = [...根().querySelectorAll('[data-anchor^="message:"]')];
+                断言(通知锚点.length === 1 && 通知锚点[0].dataset.anchor === "message:notifications", "多来源消息合并到同一身份");
+                断言(通知锚点[0]?.getAttribute("aria-label") === "消息通知 2 条", "合并锚点计数保留两条消息");
+                断言(播报().endsWith("新增 1 条") && !播报().includes("首条新消息"), `只播报最新一条与新增锚点数，实际 ${播报()}`);
                 report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : "PASS 浮岛歌词跨句零提交/四边档位/展开回归与新增播报");
             };
 

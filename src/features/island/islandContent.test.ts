@@ -1,19 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import { adoptPluginHover, adoptPluginShellOnce, mountPluginHover } from "../../contracts/plugin.ts";
 import {
     ISLAND_ANCHOR_GAP,
     ISLAND_ANCHOR_GROW_MS,
     ISLAND_ANCHOR_SHRINK_MS,
     ISLAND_ANCHOR_SIZE,
     ISLAND_ANCHOR_SLOTS,
-    ISLAND_HIDDEN_ANCHOR_SOURCE,
     ISLAND_HOVER_CONTROL_LIMIT,
     ISLAND_HOVER_LINE_LIMIT,
     ISLAND_LAYER_ORDER,
     ISLAND_MESSAGE_ANCHOR_TTL_MS,
+    ISLAND_NOTICE_LAYER,
     ISLAND_STATUS_SPECS,
-    islandAnchorDeadline,
     islandAnchorGlyph,
     islandAnchorId,
     islandAnchorRow,
@@ -21,17 +21,23 @@ import {
     islandArrive,
     islandCapsuleFace,
     islandClockLabel,
+    islandCollectArrival,
+    islandDisplayAnchors,
     islandDropFace,
-    islandExpireAnchors,
+    islandHoverBody,
     islandHoverContent,
     islandHoverEnter,
+    islandHoverInitialSelection,
+    islandHoverProvider,
     islandHoverSelect,
+    islandHoverSessionWidth,
     islandHoverStep,
+    islandHoverInlineSize,
     islandLayerRank,
-    islandMergeHiddenAnchors,
-    islandOverlayAction,
+    islandMusicAnchorVisible,
     islandStatusProgress,
     islandStatusSpec,
+    islandWeatherNotice,
     type IslandAnchor,
     type IslandContentLayer,
     type IslandContentUnit,
@@ -143,20 +149,12 @@ test("锚点身份与顺序：同来源原地换内容，不同来源追加到�
     );
 });
 
-test("叠加分层：同来源滚动、不同来源等当前结束、更高层级立即切换", () => {
+test("叠加分层：拖放、确认、合并通知、活动音乐、常驻按优先级排列", () => {
     assert.deepEqual([...ISLAND_LAYER_ORDER], ["drop", "confirm", "message", "event", "resident"]);
     assert.ok(islandLayerRank("drop") < islandLayerRank("confirm"));
     assert.ok(islandLayerRank("confirm") < islandLayerRank("message"));
     assert.ok(islandLayerRank("message") < islandLayerRank("event"));
     assert.ok(islandLayerRank("event") < islandLayerRank("resident"));
-    const resident = anchor("resident", "music", 0, unit("running", "正在播放"));
-    assert.equal(islandOverlayAction(resident, { source: "music", layer: "resident", nowMs: 1, unit: unit("running", "下一首") }), "scroll");
-    assert.equal(islandOverlayAction(resident, { source: "toast", layer: "message", nowMs: 1, unit: unit("pending", "新消息") }), "switch");
-    const message = anchor("message", "toast", 0, unit("pending", "新消息"));
-    assert.equal(islandOverlayAction(message, { source: "collect", layer: "event", nowMs: 1, unit: unit("running", "复制中") }), "append");
-    assert.equal(islandOverlayAction(message, { source: "confirm", layer: "confirm", nowMs: 1, unit: unit("awaiting", "允许？") }), "switch");
-    assert.equal(islandOverlayAction(message, { source: "drop", layer: "drop", nowMs: 1 }), "switch");
-    assert.equal(islandOverlayAction(undefined, { source: "drop", layer: "drop", nowMs: 1 }), "switch");
 });
 
 test("＋N 折叠：最多并排三枚，第 4 枚起折成计数圆，顺序不换位", () => {
@@ -201,6 +199,42 @@ test("附加项白名单：只接受整数百分比、99+ 与 mm:ss，裸整数�
         assert.equal(islandAnchorValue(rejected), undefined, rejected);
 });
 
+test("hover 宽度取所有锚点内容最大值，至少保留胶囊宽度", () => {
+    assert.equal(islandHoverInlineSize([]), 0);
+    assert.equal(islandHoverInlineSize([], 92), 92);
+    assert.equal(islandHoverInlineSize([132.5]), 132.5);
+    assert.equal(islandHoverInlineSize([80, 250, 120], 100), 250);
+    assert.equal(islandHoverInlineSize([80, 120], 250), 250);
+    assert.equal(islandHoverInlineSize([Number.NaN, Infinity, -Infinity, -90]), 0);
+    assert.equal(islandHoverInlineSize([-20, Number.NaN, 72], -15), 72);
+});
+
+test("hover 会话宽度只增不减，退出后下一次从新内容测起", () => {
+    let width = islandHoverSessionWidth(true, 0, 160);
+    assert.equal(width, 160);
+    width = islandHoverSessionWidth(true, width, 260);
+    assert.equal(width, 260);
+    assert.equal(islandHoverSessionWidth(true, width, 180), 260);
+    assert.equal(islandHoverSessionWidth(true, width, 260), 260);
+    assert.equal(islandHoverSessionWidth(true, width, Number.NaN), 260);
+    width = islandHoverSessionWidth(false, width, 180);
+    assert.equal(width, 0);
+    assert.equal(islandHoverSessionWidth(true, width, 180), 180);
+});
+
+test("从胶囊进入 hover 优先选中当前正文，有效性仍由可见锚点决定", () => {
+    const music = anchor("event", "music");
+    const bell = anchor("message", "notifications");
+    const plugin = anchor("resident", "plugin");
+    const visible = [music, bell, plugin];
+    assert.equal(islandHoverInitialSelection(visible, bell.id, music.id), bell.id); // 故意让消息既不是首项也不是上次选择。
+    assert.equal(islandHoverInitialSelection(visible, bell.id, undefined), bell.id);
+    assert.equal(islandHoverInitialSelection([music, plugin], bell.id, plugin.id), plugin.id); // 切态同时撤下通知时不选不可见项。
+    assert.equal(islandHoverInitialSelection(visible, undefined, plugin.id), islandHoverSelect(visible, plugin.id));
+    assert.equal(islandHoverInitialSelection(visible, undefined, "gone"), music.id);
+    assert.equal(islandHoverInitialSelection([], undefined, music.id), undefined); // 时钟不产生可交互身份。
+});
+
 test("hover 选中项、左右键与 Enter：列表与内容一一对应，行与控件有上限", () => {
     const anchors = Array.from({ length: 4 }, (_, index) => anchor("event", `s${index}`, index, unit("running", `任务 ${index}`, "42%")));
     const ids = anchors.map((item) => item.id);
@@ -228,54 +262,124 @@ test("hover 选中项、左右键与 Enter：列表与内容一一对应，行�
     );
 });
 
-test("未读超时：普通消息保留 30s，确认与失败不超时，hover 与展开期间不消失", () => {
-    const message = anchor("message", "toast", 1_000, unit("pending", "已同步 3 个文件"));
-    assert.equal(islandAnchorDeadline(message), 31_000);
-    assert.equal(islandExpireAnchors([message], 30_999, "collapsed").length, 1);
-    assert.deepEqual(islandExpireAnchors([message], 31_000, "collapsed"), []);
-    assert.equal(islandExpireAnchors([message], 90_000, "hover").length, 1);
-    assert.equal(islandExpireAnchors([message], 90_000, "expanded").length, 1);
-    const awaiting = anchor("confirm", "pair", 0, unit("awaiting", "允许配对吧？"));
-    const failed = anchor("event", "upload", 0, unit("failed", "上传失败"));
-    assert.equal(islandAnchorDeadline(awaiting), undefined);
-    assert.equal(islandAnchorDeadline(failed), undefined);
-    assert.equal(islandAnchorDeadline(anchor("message", "toast", 0, unit("failed", "发送失败"))), undefined);
-    assert.equal(islandExpireAnchors([awaiting, failed], 10 * 60_000, "collapsed").length, 2);
-    assert.equal(islandAnchorDeadline(anchor("resident", "music", 0, unit("running", "正在播放"))), undefined);
-});
-
-test("系统隐藏恢复：隐藏期间的消息合并成一个计数锚点，已过期的丢弃", () => {
-    const now = 100_000;
-    const hidden = [
-        { source: "a", nowMs: now - 1_000, unit: unit("pending", "第一条") },
-        { source: "b", nowMs: now - 2_000, unit: unit("pending", "第二条") },
-        { source: "c", nowMs: now - ISLAND_MESSAGE_ANCHOR_TTL_MS, unit: unit("pending", "已过期") },
-    ];
-    const merged = islandMergeHiddenAnchors([], hidden, now);
-    assert.equal(merged.length, 1);
-    assert.equal(merged[0]!.count, 2);
-    assert.equal(merged[0]!.unit, undefined); // 不逐个补播内容。
-    assert.equal(merged[0]!.layer, "message");
-    assert.equal(merged[0]!.source, ISLAND_HIDDEN_ANCHOR_SOURCE);
-    assert.equal(islandMergeHiddenAnchors([], [hidden[2]!], now).length, 0); // 全部过期时不留锚点。
-    const many = islandMergeHiddenAnchors(
-        [],
-        Array.from({ length: 120 }, (_, index) => ({ source: `s${index}`, nowMs: now, unit: unit("pending", "x") })),
-        now,
-    );
-    assert.equal(many[0]!.count, 99); // 计数封顶 99，渲染层显示「99+」。
-    assert.equal(islandExpireAnchors(merged, now + ISLAND_MESSAGE_ANCHOR_TTL_MS, "collapsed").length, 0);
-});
-
 test("拖放接收态：松手图标与固定文案，没有匹配插件时显示无法接收", () => {
     assert.deepEqual(islandDropFace("collect-box"), { accept: true, icon: "release", primary: "松开加入收集箱" });
     assert.deepEqual(islandDropFace("music"), { accept: true, icon: "release", primary: "交给音乐播放" });
     assert.deepEqual(islandDropFace(undefined), { accept: false, icon: "release", primary: "无法接收" });
 });
 
+test("胶囊与 hover 共用显示投影：三种开关独立，选择与方向键跳过已撤下锚点", () => {
+    const music = { ...anchor("event", "music"), kind: "music" } satisfies IslandAnchor;
+    const message = anchor("message", "notifications");
+    const plugin = { ...anchor("resident", "plugin"), kind: "plugin" } satisfies IslandAnchor;
+    const confirm = anchor("confirm", "confirm");
+    const anchors = [music, message, plugin, confirm];
+    assert.deepEqual(islandDisplayAnchors(anchors, undefined), anchors);
+    for (const [key, removed] of [["music", music], ["message", message], ["plugin", plugin]] as const) {
+        const visible = islandDisplayAnchors(anchors, { islandAnchorVisible: { [key]: false } });
+        assert.deepEqual(visible, anchors.filter((item) => item !== removed));
+        assert.equal(islandHoverSelect(visible, removed.id), visible[0].id);
+        assert.equal(islandHoverStep(visible, visible[0].id, 1), visible[1].id);
+    }
+    assert.deepEqual(islandDisplayAnchors(anchors, { islandAnchorVisible: { music: false, message: false, plugin: false } }), [confirm]);
+    assert.equal(anchors.length, 4, "过滤只生成显示投影，不删除输入事实");
+});
+
+test("音乐锚点只在有媒体会话时出现：播放与暂停算会话，停止、无会话或未启用都不产生", () => {
+    assert.equal(islandMusicAnchorVisible({ enabled: true, playback: "playing" }), true);
+    assert.equal(islandMusicAnchorVisible({ enabled: true, playback: "paused" }), true);
+    for (const playback of ["stopped", "unknown", undefined] as const) {
+        for (const enabled of [true, false]) assert.equal(islandMusicAnchorVisible({ enabled, playback }), false);
+    }
+    assert.equal(islandMusicAnchorVisible({ enabled: false, playback: "playing" }), false);
+    assert.equal(ISLAND_NOTICE_LAYER, "event"); // 音乐是活动型事件锚点。
+});
+
+test("天气变化通知：摘要变化投递一次，首次、缺失和未变化都不通知", () => {
+    assert.equal(islandWeatherNotice(undefined, "晴 22°"), false);
+    assert.equal(islandWeatherNotice("晴 22°", "晴 22°"), false);
+    assert.equal(islandWeatherNotice("晴 22°", "多云 19°"), true);
+    assert.equal(islandWeatherNotice("晴 22°", undefined), false);
+});
+
+test("通知保留时长只有一处，旧天气与收录提醒的独立定时已移除", () => {
+    const model = readFileSync(new URL("./islandContent.ts", import.meta.url), "utf8");
+    const messages = readFileSync(new URL("./islandMessages.ts", import.meta.url), "utf8");
+    const renderer = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const css = readFileSync(new URL("./island.css", import.meta.url), "utf8");
+    const constants = new Set([...model.matchAll(/\b(ISLAND_[A-Z_]*_MS)\b/g)].map((match) => match[1]));
+    assert.deepEqual([...constants].sort(), ["ISLAND_ANCHOR_GROW_MS", "ISLAND_ANCHOR_SHRINK_MS", "ISLAND_MESSAGE_ANCHOR_TTL_MS"]);
+    assert.equal([...`${model}\n${messages}\n${renderer}\n${css}`.matchAll(/\b30_000\b|\b30000\b/g)].length, 1);
+    assert.match(renderer, /islandNotificationDeadline\(/);
+    const cssDurations = new Set([...css.matchAll(/\b[0-9]+(?:\.[0-9]+)?ms\b/g)].map((match) => match[0]));
+    assert.deepEqual([...cssDurations].sort(), ["0ms", "140ms", "150ms", "200ms", "80ms"]);
+});
+
+test("收集快照比较：只有新条目才给完成态，重命名/置顶/删除/无变化都不通知", () => {
+    const entry = (name: string, createdUnixMs: number) => ({ name, createdUnixMs });
+    const title = (item: { name: string }) => item.name; // 渲染层会把既有标题格式化函数传进来。
+    const base = [entry("a.md", 1), entry("b.md", 2)];
+    // 新增：数量增加且出现新身份（名称与创建时刻都不在旧快照），取创建时刻最新的一条。
+    assert.deepEqual(islandCollectArrival(base, [...base, entry("c.md", 3)], title), { activity: "completed", title: "c.md" });
+    assert.deepEqual(islandCollectArrival(base, [entry("c.md", 3), ...base], title), { activity: "completed", title: "c.md" }); // 置顶新条目也一样。
+    // 重命名：名称变、创建时刻未变，不算新收录。
+    assert.deepEqual(islandCollectArrival(base, [entry("a-改名.md", 1), entry("b.md", 2)], title), { activity: "idle" });
+    // 置顶：只改顺序。
+    assert.deepEqual(islandCollectArrival(base, [entry("b.md", 2), entry("a.md", 1)], title), { activity: "idle" });
+    // 删除：数量减少。
+    assert.deepEqual(islandCollectArrival(base, [entry("a.md", 1)], title), { activity: "idle" });
+    // 无变化与首次读取都不通知。
+    assert.deepEqual(islandCollectArrival(base, [...base], title), { activity: "idle" });
+    assert.deepEqual(islandCollectArrival(undefined, base, title), { activity: "idle" });
+    // 数量增加但没有新身份（旧条目重复出现）也不通知。
+    assert.deepEqual(islandCollectArrival(base, [...base, entry("a.md", 1)], title), { activity: "idle" });
+});
+
+test("hover 提供者：音乐、消息、插件与默认身份分发，通用详情控件最多三个", () => {
+    const kindAnchor = (kind: IslandAnchor["kind"]): IslandAnchor => ({ id: `a-${kind}`, source: "s", layer: "event", updatedAtMs: 1_000, kind, unit: unit("pending", "主信息", "补充") });
+    const provider = (kind: IslandAnchor["kind"]) => islandHoverProvider(kindAnchor(kind));
+    assert.equal(islandHoverProvider(undefined), "default");
+    assert.equal(provider("music"), "music");
+    assert.equal(provider("message"), "message");
+    assert.equal(provider("plugin"), "plugin");
+    assert.equal(provider("event"), "default");
+    assert.deepEqual(islandHoverBody(kindAnchor("music"), ["上一首", "播放", "下一首", "删除"]), {
+        provider: "music", lines: ["主信息", "补充"], controls: ["上一首", "播放", "下一首"], expandable: true,
+    });
+});
+
+test("插件 hover 入口：采纳函数、拒绝非函数、清理安全、重复绑定保留首份", () => {
+    assert.deepEqual(adoptPluginHover(undefined), {}); // 未提供入口不算错误。
+    assert.deepEqual(adoptPluginHover("nope"), { reason: "插件 hover 入口不是函数" });
+    const render = () => () => undefined;
+    assert.equal(adoptPluginHover(render).render, render); // 只有函数被采纳。
+    const container = {} as HTMLElement;
+    // 返回清理函数：调用时执行。
+    let cleaned = 0;
+    const cleanup = mountPluginHover(() => () => { cleaned += 1; }, container, { pluginId: "p" });
+    cleanup();
+    cleanup();
+    assert.equal(cleaned, 2);
+    // 入口抛错：只回报，调用方拿到的仍是可安全调用的清理函数。
+    const failures: unknown[] = [];
+    const safe = mountPluginHover(() => { throw new Error("boom"); }, container, { pluginId: "p" }, (error) => failures.push(error));
+    assert.equal(typeof safe, "function");
+    assert.doesNotThrow(() => safe());
+    assert.equal(failures.length, 1);
+    // 返回值不是函数：忽略脏值，不把数字当清理函数。
+    const dirty = mountPluginHover((() => 42) as unknown as () => void, container, { pluginId: "p" });
+    assert.equal(typeof dirty, "function");
+    assert.doesNotThrow(() => dirty());
+    // 同一标识只保留首份外壳。
+    const registry = new Map<string, { name: string }>();
+    assert.equal(adoptPluginShellOnce(registry, "p", { name: "首份" }), true);
+    assert.equal(adoptPluginShellOnce(registry, "p", { name: "第二次" }), false);
+    assert.equal(registry.get("p")?.name, "首份");
+});
+
 test("内容模型不依赖 React、不持有定时器，渲染层可直接消费", () => {
-    const source = readFileSync(new URL("./islandContent.ts", import.meta.url), "utf8");
-    assert.doesNotMatch(source, /from "react"/);
-    assert.doesNotMatch(source, /setTimeout|setInterval|requestAnimationFrame/);
-    assert.match(source, /from "\.\.\/\.\.\/contracts\/island\.ts"/); // 只做类型引用。
+    for (const file of ["./islandContent.ts", "./islandMessages.ts"]) {
+        const source = readFileSync(new URL(file, import.meta.url), "utf8");
+        assert.doesNotMatch(source, /from "react"|setTimeout|setInterval|requestAnimationFrame/);
+    }
 });

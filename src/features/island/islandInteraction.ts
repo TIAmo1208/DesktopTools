@@ -35,6 +35,15 @@ export type IslandContour = { cards: IslandRoundedCard[]; arcs: { rect: IslandRe
 export type IslandHitRegion = "outside" | "content" | "transparent" | "extra-band" | "scrollbar";
 export type IslandMarginState = { latch: "open" | "blocked" | "outside"; since?: number };
 
+/** 展开透明列只在边界改变状态；首次见到空白不等于离开过内容。 */
+export type IslandExpandedDwell = "idle" | "content" | "blank";
+export const islandExpandedDwellStep = (state: IslandExpandedDwell, sample: "content" | "blank" | "protected") => {
+    if (sample === "protected") return state === "blank" ? { state: "idle" as const, timer: "cancel" as const } : { state, timer: undefined };
+    if (sample === "content") return { state: "content" as const, timer: state === "blank" ? "cancel" as const : undefined };
+    if (state === "content") return { state: "blank" as const, timer: "start" as const };
+    return { state, timer: undefined };
+};
+
 /** 左上含、右下不含；所有参数均为固定viewport内的CSS DIP。 */
 export const islandPointInRect = (point: IslandPoint, rect: IslandRect) => point.x >= rect.left && point.y >= rect.top && point.x < rect.left + rect.width && point.y < rect.top + rect.height;
 /** 圆角矩形有符号距离，负数在内容内；各角半径取实际DOM计算值。 */
@@ -92,6 +101,12 @@ export const islandScrollGeometry = (frame: IslandStateRequest, target: IslandSt
     const client = (rect: IslandRect) => ({ ...rect, left: rect.left - frame.viewport.left, top: rect.top - frame.viewport.top });
     const window = client(frame.windowBox), content = client(target?.windowBox ?? frame.windowBox);
     const bands = islandExtraBands(window, content, edge);
+    if (metrics.mode === "expanded" && target?.cards.length) {
+        // 全高窗口中最后一张可见卡片下方也属于延时退回带；间隙、圆角与整条滚动槽不变。
+        const bottom = Math.max(window.top, content.top + Math.max(...target.cards.map(({ rect }) => rect.top + rect.height)));
+        const height = window.top + window.height - bottom;
+        if (height > 0) bands.push({ ...window, top: bottom, height });
+    }
     const maxScroll = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
     const visible = metrics.mode === "expanded" && metrics.settled && Number.isFinite(maxScroll) && maxScroll > 0 && window.height > 8;
     // 滚动条在卡片外：贴右边时槽在卡片左侧，其余贴边方向槽在右侧；整条槽都不参与退回判定。

@@ -16,8 +16,11 @@ export const islandGeometry = (
     const gutterEnd = gutter - gutterStart;
     const contentWidth = Math.ceil(Math.max(...measured.map((rect) => rect.left + rect.width))); // 卡片右边界即内容宽，含贴右边时的起始槽。
     const width = contentWidth + gutterEnd; // 窗口在内容之外补上滚动条槽。
-    const height = Math.ceil(Math.max(...measured.map((rect) => rect.top + rect.height)));
+    const height = state === "expanded" ? work.height : Math.ceil(Math.max(...measured.map((rect) => rect.top + rect.height)));
     if (width > work.width || height > work.height) throw new Error("岛内容超过主屏工作区");
+    // 展开内容在页面中滚动；只向原生提交工作区视口内的卡片区域。
+    const visible = state === "expanded" ? measured.flatMap((rect) => visibleIslandRect(rect, height)) : measured;
+    if (!visible.length) throw new Error("岛缺少实测卡片");
     const horizontalEdge = edge === "left" || edge === "right"; // 左右贴边时沿竖直方向居中，上下贴边时沿水平方向居中。
     const margin = form === "notch" ? 0 : 6; // 胶囊离工作区边 6px，刘海贴边。
     const notch = form === "notch" && state !== "expanded" ? 12 : 0; // 外凸负圆角只在常态与 hover 生效；展开态不额外扩大窗口。
@@ -27,18 +30,18 @@ export const islandGeometry = (
     const alongOffset = Math.min(Math.max(offset, -maxOffset), maxOffset); // 空边按顶部同样应用持久偏移，不再强制居中。
     const alongStart = Math.max(0, alongSpan - alongSize) / 2 + alongOffset; // 居中后再应用持久偏移；尺寸变化时两侧对称扩展。
     const left = edge === "right" ? work.left + work.width - width - margin : work.left + (horizontalEdge ? margin : alongStart);
-    const top = edge === "bottom" ? work.top + work.height - height - margin : work.top + (horizontalEdge ? alongStart : margin);
+    const top = state === "expanded" ? work.top : edge === "bottom" ? work.top + work.height - height - margin : work.top + (horizontalEdge ? alongStart : margin);
     // 刘海的窗口在沿边方向各向外扩 12px，本体向内让出同样的距离；被让出的角部是新增透明像素。
     const growLeft = horizontalEdge ? 0 : notch; // 上下贴边时在水平方向让出圆弧区。
     const growTop = horizontalEdge ? notch : 0; // 左右贴边时在竖直方向让出圆弧区。
-    const cards = measured.map((rect) => ({
+    const cards = visible.map((rect) => ({
         rect: { ...rect, left: rect.left + growLeft, top: rect.top + growTop },
         radius: Math.min(radius, rect.width / 2, rect.height / 2),
     }));
     if (state === "expanded") {
-        for (let index = 1; index < measured.length; index++) {
-            const previous = measured[index - 1]!;
-            const current = measured[index]!;
+        for (let index = 1; index < visible.length; index++) {
+            const previous = visible[index - 1]!;
+            const current = visible[index]!;
             const gap = current.top - previous.top - previous.height;
             if (gap > 0) cards.push({ rect: { left: growLeft, top: previous.top + previous.height + growTop, width: contentWidth, height: gap }, radius: 0 });
         }
@@ -56,6 +59,9 @@ export const islandGeometry = (
         cards,
     };
 };
+
+/** 展开态只在窗口盒或固定视口变化时提交，不把列表内部卡片变化当成新窗口。 */
+export const islandWindowKey = ({ state, windowBox, viewport }: IslandStateRequest): string => JSON.stringify([state, windowBox, viewport]);
 
 /** 展开态卡片外侧的滚动条槽：4 DIP 间距加 12 DIP 轨道。 */
 export const ISLAND_SCROLLBAR_GUTTER = 16;

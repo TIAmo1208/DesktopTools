@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+    islandHoverTravel,
     islandMotionFrame,
     islandMotionProgress,
     islandUnionBox,
@@ -9,6 +10,8 @@ import {
     ISLAND_MOTION_MS,
     ISLAND_EXPAND_STAGGER_MS,
     ISLAND_FRAME_MS,
+    ISLAND_HOVER_DETAIL_EXIT_MS,
+    ISLAND_HOVER_DETAIL_ENTER_MS,
 } from "./islandMotion.ts";
 import { islandFilletPatches, islandGeometry } from "./islandGeometry.ts";
 import { parseIslandStateRequest, type IslandStateRequest } from "../../contracts/island.ts";
@@ -19,6 +22,19 @@ const expanded = [
     { left: 0, top: 0, width: 360, height: 233 },
     { left: 0, top: 241, width: 360, height: 120 },
 ];
+test("hover 详情按锚点顺序左右接力，不为失效或同一身份编排动画", () => {
+    assert.equal(ISLAND_HOVER_DETAIL_EXIT_MS, 140);
+    assert.equal(ISLAND_HOVER_DETAIL_ENTER_MS, 180);
+    const ids = ["music", "notifications", "plugin"];
+    assert.deepEqual(islandHoverTravel(ids, "music", "plugin"), { exitX: -4, enterX: 4 });
+    assert.deepEqual(islandHoverTravel(ids, "plugin", "notifications"), { exitX: 4, enterX: -4 });
+    assert.equal(islandHoverTravel(ids, "music", "music"), undefined);
+    assert.equal(islandHoverTravel(ids, undefined, "plugin"), undefined);
+    assert.equal(islandHoverTravel(ids, "gone", "music"), undefined);
+    assert.equal(islandHoverTravel(ids, "music", "gone"), undefined);
+    assert.equal(islandHoverTravel([], undefined, undefined), undefined);
+});
+
 test("形变时长与帧预算有界，曲线只在终点前轻微超出", () => {
     assert.equal(ISLAND_MOTION_MS, 240);
     assert.ok(ISLAND_FRAME_MS >= 1000 / 60);
@@ -45,11 +61,17 @@ test("所有贴边方向与默认中心采样均为合法完整原生请求，�
                 assert.ok(frame.windowBox.width <= Math.max(a.windowBox.width, b.windowBox.width) * 1.06);
                 assert.ok(frame.windowBox.height <= Math.max(a.windowBox.height, b.windowBox.height) * 1.06);
                 const epsilon = 1e-8;
+                if (elapsed === ISLAND_MOTION_MS && b.state === "expanded") {
+                    assert.equal(frame.windowBox.top, work.top);
+                    assert.equal(frame.windowBox.height, work.height);
+                    continue;
+                }
                 const horizontalEdge = edge === "left" || edge === "right";
                 if (horizontalEdge) {
+                    const desiredTop = b.windowBox.top + (b.windowBox.height - frame.windowBox.height) / 2;
                     assert.ok(
-                        Math.abs(frame.windowBox.top + frame.windowBox.height / 2 - (b.windowBox.top + b.windowBox.height / 2)) < epsilon,
-                        `${edge} 沿竖直方向居中`,
+                        Math.abs(frame.windowBox.top - Math.max(work.top, Math.min(desiredTop, work.top + work.height - frame.windowBox.height))) < epsilon,
+                        `${edge} 沿竖直方向居中并保持在工作区内`,
                     );
                     if (edge === "right") assert.ok(Math.abs(frame.windowBox.left + frame.windowBox.width - (b.windowBox.left + b.windowBox.width)) < epsilon);
                     else assert.equal(frame.windowBox.left, b.windowBox.left);
@@ -58,8 +80,8 @@ test("所有贴边方向与默认中心采样均为合法完整原生请求，�
                         Math.abs(frame.windowBox.left + frame.windowBox.width / 2 - (b.windowBox.left + b.windowBox.width / 2)) < epsilon,
                         `${edge || "top"} 沿水平方向居中`,
                     );
-                    if (edge === "bottom") assert.ok(Math.abs(frame.windowBox.top + frame.windowBox.height - (b.windowBox.top + b.windowBox.height)) < epsilon);
-                    else assert.equal(frame.windowBox.top, b.windowBox.top);
+                    if (edge === "bottom") assert.ok(Math.abs(frame.windowBox.top + frame.windowBox.height - Math.max(work.top + frame.windowBox.height, b.windowBox.top + b.windowBox.height)) < epsilon);
+                    else assert.equal(frame.windowBox.top, Math.min(work.top + work.height - frame.windowBox.height, b.windowBox.top));
                 }
             }
             assert.deepEqual(islandMotionFrame(a, b, ISLAND_MOTION_MS, edge, work), b);
@@ -86,26 +108,21 @@ test("并集动画期间原生窗口固定，内容只在并集内移动", () =>
                 assert.deepEqual(parseIslandStateRequest(frame), frame);
             }
             const final = islandUnionFrame(a, b, ISLAND_MOTION_MS, edge, work);
-            // ADR-0036「三态模型」：只有展开终态保留入态并集，其余终态提交目标盒。
-            if (b.state === "expanded") {
-                assert.deepEqual(final.windowBox, union);
-                final.cards.forEach((card, index) => {
-                    assert.equal(final.windowBox.left + card.rect.left, b.windowBox.left + b.cards[index]!.rect.left);
-                    assert.equal(final.windowBox.top + card.rect.top, b.windowBox.top + b.cards[index]!.rect.top);
-                });
-            } else assert.deepEqual(final, b);
+            assert.deepEqual(final, b); // 展开终态也精确收口，不能保留起点的较宽盒。
+            if (b.state === "expanded") assert.equal(final.windowBox.height, work.height);
         }
     }
 });
 
-test("四边两形态宽起点到窄展开保持并集，下一切态从同一并集衔接", () => {
+test("四边两形态宽起点到窄展开先走并集，终态只保留全高目标列宽", () => {
     for (const edge of ["top", "bottom", "left", "right"] as const) {
         for (const form of ["capsule", "notch"] as const) {
             for (const state of ["collapsed", "hover"] as const) {
                 const from = islandGeometry(state, [{ left: 0, top: 0, width: 300, height: 300 }], 16, work, edge, 0, form);
                 const to = islandGeometry("expanded", [{ left: 0, top: 0, width: 180, height: 180 }], 12, work, edge, 0, form);
                 const final = islandUnionFrame(from, to, ISLAND_MOTION_MS, edge, work);
-                assert.deepEqual(final.windowBox, islandUnionBox(from, to, work), `${edge}/${form}/${state} 展开终态保留并集`);
+                assert.deepEqual(islandUnionFrame(from, to, 0, edge, work).windowBox, islandUnionBox(from, to, work));
+                assert.deepEqual(final.windowBox, to.windowBox, `${edge}/${form}/${state} 展开终态取目标列宽和工作区高度`);
                 assert.deepEqual(parseIslandStateRequest(final), final);
                 const card = final.cards[0]!;
                 assert.equal(final.windowBox.left + card.rect.left, to.windowBox.left + to.cards[0]!.rect.left);
@@ -113,8 +130,11 @@ test("四边两形态宽起点到窄展开保持并集，下一切态从同一�
                 assert.equal(card.rect.width, to.cards[0]!.rect.width);
                 assert.equal(card.rect.height, to.cards[0]!.rect.height);
                 const next = islandUnionFrame(final, from, 0, edge, work);
-                assert.deepEqual(next.windowBox, final.windowBox, "下一切态起点不能收缩或位移");
-                assert.deepEqual(next.cards, final.cards, "下一切态起点内容保持原位置");
+                assert.deepEqual(next.windowBox, islandUnionBox(final, from, work), "退出形变只取一次并集，工作区高度不变");
+                assert.equal(next.windowBox.left + next.cards[0]!.rect.left, final.windowBox.left + final.cards[0]!.rect.left);
+                assert.equal(next.windowBox.top + next.cards[0]!.rect.top, final.windowBox.top + final.cards[0]!.rect.top);
+                const firstMotion = islandUnionFrame(final, from, 1, edge, work);
+                assert.ok(firstMotion.cards[0]!.rect.height < work.height / 2, "退出的首个形变帧不能误用全高宿主作为内容");
                 assert.deepEqual(islandUnionFrame(final, from, ISLAND_MOTION_MS, edge, work), from);
             }
         }

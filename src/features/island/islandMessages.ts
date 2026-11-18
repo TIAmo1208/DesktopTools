@@ -1,4 +1,75 @@
 import type { IslandMessage, IslandStateRequest } from "../../contracts/island.ts";
+import { ISLAND_MESSAGE_ANCHOR_TTL_MS, islandAnchorId, type IslandAnchor, type IslandStatus } from "./islandContent.ts";
+
+/** 合并通知锚点固定身份；单条通知保留自己的来源。 */
+export const ISLAND_NOTIFICATION_SOURCE = "notifications";
+export const ISLAND_NOTIFICATION_ANCHOR_ID = islandAnchorId("message", ISLAND_NOTIFICATION_SOURCE);
+
+/** 通知锚点的只读条目；只有原生条目持有可回传的 Toast 身份。 */
+export interface IslandNotification {
+    key: string;
+    nativeId?: number;
+    source: string;
+    content: string;
+    receivedAtMs: number;
+    status: IslandStatus;
+}
+
+/** 浮岛由实际天气变化与新增收录产生的本地事实。 */
+export interface IslandLocalNotification {
+    source: "weather" | "collect";
+    content: string;
+}
+
+/** 天气与收录共用消息锚点的到达和期限，不创建原生 Toast 身份。 */
+export const islandLocalNotificationArrival = (id: number, notice: IslandLocalNotification, receivedAtMs: number): IslandNotification => ({
+    key: `local:${id}`, source: notice.source, content: notice.content, receivedAtMs, status: "pending",
+});
+
+/** 原生通知的语义投影；原生队列仍独立负责 Toast。 */
+export const islandMessageArrival = (message: IslandMessage): IslandNotification => ({
+    key: `native:${message.id}`,
+    nativeId: message.id,
+    source: message.source,
+    content: message.content,
+    receivedAtMs: message.receivedAtMs,
+    status: message.type === "error" ? "failed" : message.loading ? "indeterminate" : message.type === "success" ? "completed" : "pending",
+});
+
+/** 合并各来源条目，同身份用最新投递内容，按到达时间由新到旧。 */
+export const islandMergeNotifications = (current: readonly IslandNotification[], incoming: readonly IslandNotification[]): IslandNotification[] => {
+    const byKey = new Map<string, IslandNotification>();
+    for (const item of [...incoming].reverse()) if (!byKey.has(item.key)) byKey.set(item.key, item); // 后到覆盖旧内容。
+    for (const item of current) if (!byKey.has(item.key)) byKey.set(item.key, item);
+    return [...byKey.values()].sort((left, right) => right.receivedAtMs - left.receivedAtMs);
+};
+
+/** 失败、待确认不超时；其他条目的期限从各自到达时起算。 */
+export const islandNotificationDeadline = (notice: IslandNotification): number | undefined =>
+    notice.status === "failed" || notice.status === "awaiting" ? undefined : notice.receivedAtMs + ISLAND_MESSAGE_ANCHOR_TTL_MS;
+
+/** 阅读期不抽走已显示的条目；恢复可见时用常态条件丢弃隐藏期间已过期的通知。 */
+export const islandKeepNotifications = (notices: readonly IslandNotification[], now: number, mode: IslandStateRequest["state"]): readonly IslandNotification[] => {
+    if (mode !== "collapsed") return notices;
+    const alive = notices.filter((notice) => now < (islandNotificationDeadline(notice) ?? Infinity));
+    return alive.length === notices.length ? notices : alive;
+};
+
+/** 单条关闭、计数及胶囊摘要共用同一组通知。 */
+export const islandDismissNotification = (notices: readonly IslandNotification[], key: string): readonly IslandNotification[] => notices.filter((notice) => notice.key !== key);
+
+/** 保留一个溢出值以区分恰好 99 条与 99+。 */
+export const islandNotificationCountLabel = (count: number): string => count > 99 ? "99+" : String(count);
+
+/** 投影已有排序的条目；胶囊取最新一条，hover 列表由调用方取同一视图前五条。 */
+export const islandNotificationAnchor = (notices: readonly IslandNotification[]): IslandAnchor | undefined => {
+    const latest = notices[0];
+    return latest ? {
+        id: ISLAND_NOTIFICATION_ANCHOR_ID, source: ISLAND_NOTIFICATION_SOURCE, layer: "message", kind: "message",
+        count: Math.min(100, notices.length), updatedAtMs: latest.receivedAtMs,
+        unit: { primary: latest.content, status: latest.status },
+    } : undefined;
+};
 
 /** 浮岛消息最多同时保留的条数，与原生队列上限一致。 */
 export const ISLAND_MESSAGE_LIMIT = 5;
@@ -14,15 +85,14 @@ export const islandMergeMessages = (held: IslandMessage[], incoming: IslandMessa
 export const islandHoldMessages = (held: IslandMessage[], incoming: IslandMessage[], mode: IslandStateRequest["state"]): IslandMessage[] =>
     mode === "collapsed" ? [] : islandMergeMessages(held, incoming).slice(-ISLAND_MESSAGE_LIMIT);
 
-/**
- * 三态投影，最新一条在前：常态与 hover 只留一条，展开保留最近若干条。
- * 消息集合本身已由后端去重与过期，这里只决定呈现，不重复判定生命周期。
- */
-export const islandMessageView = (incoming: IslandMessage[], held: IslandMessage[], mode: IslandStateRequest["state"], limit = ISLAND_MESSAGE_LIMIT): IslandMessage[] => {
-    const newestFirst = (messages: IslandMessage[]) => [...messages].sort((left, right) => right.id - left.id);
-    if (mode === "collapsed") return newestFirst(incoming).slice(0, 1);
-    const merged = newestFirst(islandMergeMessages(held, incoming)).slice(0, limit);
-    return mode === "hover" ? merged.slice(0, 1) : merged;
+/** 展开消息卡只消费原生活动与阅读暂存，仍按原生到达顺序取最近五条。 */
+export const islandMessagePanelView = (incoming: IslandMessage[], held: IslandMessage[]): IslandMessage[] =>
+    islandMergeMessages(held, incoming).slice(-ISLAND_MESSAGE_LIMIT).reverse();
+
+/** 键盘关闭时按原列表顺序找仍在的下一条，再反向找上一条。 */
+export const islandMessageFocusOrder = (ids: readonly number[], dismissed: number): number[] => {
+    const index = ids.indexOf(dismissed);
+    return index < 0 ? [] : [...ids.slice(index + 1), ...ids.slice(0, index).reverse()];
 };
 
 /** 当天只显示时分，跨天补月日；时间由到达时刻固定，刷新不改变。 */

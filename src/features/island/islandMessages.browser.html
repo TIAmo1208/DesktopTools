@@ -44,7 +44,7 @@
         <main id="fixture"></main>
         <pre id="result">RUNNING</pre>
         <script type="module">
-            import { 创建夹具, 消息, 等待, 直到 } from "./islandFixture.js";
+            import { 创建夹具, 消息, 媒体, 等待, 直到 } from "./islandFixture.js";
 
             // 初读通道挂起，用来覆盖「消息通道超时不得阻塞岛卡」；消息仍应由事件路径送达。
             const 夹具 = 创建夹具({ 消息初读: "hang" });
@@ -81,9 +81,10 @@
             const 卡 = () => [...document.querySelectorAll(".island-card[data-island-message]")];
             const 消息体 = () => document.querySelector(".island-message");
             const 单行 = () => [...document.querySelectorAll(".island-anchor-label > :first-child")].find((节点) => 节点.textContent);
-            const 锚点 = (来源) => 根().querySelector(`.island-anchor[data-anchor="message:${来源}"]`);
-            const 摘要 = () => document.querySelector(".island-anchor-detail__lines > :first-child");
-            const 选中 = (来源) => 锚点(来源).dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", relatedTarget: null }));
+            const 锚点 = () => 根().querySelector('.island-anchor[data-anchor="message:notifications"]');
+            const 计数 = () => 锚点()?.getAttribute("aria-label");
+            const 通知行 = () => [...根().querySelectorAll(".island-anchor-detail .island-notification-row")];
+            const 关闭通知 = (index) => 通知行()[index]?.querySelector("button").click();
             const 全文 = () => document.querySelector(".island-message__body");
             const 元信息 = () => document.querySelector(".island-message__meta");
             const 关闭按钮 = () => document.querySelector(".island-message__close");
@@ -91,7 +92,6 @@
             const 消息行 = () => [...document.querySelectorAll(".island-message-panel__list .island-message")];
             const 按键 = (键) => 根().dispatchEvent(new KeyboardEvent("keydown", { key: 键, bubbles: true }));
             const 悬停 = () => 根().dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", relatedTarget: null }));
-            const 近似 = (实际, 期望, 容差 = 1) => Math.abs(实际 - 期望) <= 容差;
 
             const 运行 = async () => {
                 await 直到(() => 根(), "岛根节点挂载");
@@ -102,35 +102,35 @@
                 断言(卡().length === 0, `通道挂起时不应凭空出现消息卡，实际 ${卡().length}`);
                 断言(盒().height > 0, "通道挂起时岛卡必须仍然渲染并具备高度");
 
-                // 一行消息显示在自己的圆锚点后，不替换音乐锚点，也不出现控件。
+                // 音乐不再常驻，用真实活动会话验证消息抢占仍保留媒体锚点。
+                断言(Boolean(根().querySelector('[data-anchor="clock"]')), "无活动时使用时钟空态");
+                夹具.pushMusic(媒体("消息下的音乐", "测试艺人"));
+                await 直到(() => 根().querySelector('[data-anchor="event:音乐控制"]'), "音乐活动后出现锚点");
+                // 胶囊只显示一枚 bell 与最新正文，原生几何仍提交实测的 28×28 圆。
                 夹具.pushMessages([消息(1, "info", "通知正文", "测试来源")]);
-                await 直到(() => 单行()?.textContent === "通知正文", "常态显示消息简略");
-                await 直到(() => 夹具.提交.at(-1)?.anchors?.length === 2, "实测两个圆进入严格几何契约");
+                await 直到(() => 单行()?.textContent.includes("通知正文"), "常态显示消息简略");
+                await 直到(() => 夹具.提交.at(-1)?.anchors?.length === 2, "音乐与通知两个圆进入几何契约");
                 断言(夹具.提交.at(-1).anchors.every(({ rect, radius }) => rect.width === 28 && rect.height === 28 && radius === 14), "提交圆来自实测 28×28 DOM");
-                const 同源锚点 = 锚点("测试来源");
-                断言(同源锚点.offsetWidth === 28 && 同源锚点.offsetHeight === 28, "消息锚点应为28×28");
+                const 同一锚点 = 锚点();
+                断言(同一锚点.offsetWidth === 28 && 同一锚点.offsetHeight === 28, "通知锚点应为28×28");
+                断言(Boolean(同一锚点.querySelector('[data-function="message"] svg path[d^="M10.268"]')), "通知显示 Lucide bell 路径");
                 断言(卡().length === 0 && !消息体() && !关闭按钮(), "常态不渲染完整消息卡与控件");
-                断言(盒().height === 44 && 根().querySelector('[data-anchor^="resident:"]'), "常态尺寸与音乐锚点保留");
+                断言(盒().height === 44 && 根().querySelector('[data-anchor="event:音乐控制"]'), "常态尺寸与音乐锚点保留");
 
-                // 不同来源追加在右侧，同来源就地换文；只有现有消息离场才让下一个来源伸展。
                 夹具.pushMessages([
                     消息(1, "info", "通知已更新", "测试来源"),
                     消息(2, "info", "第二条通知正文", "构建"),
                     消息(3, "warning", "第三条通知正文", "监控"),
                 ]);
-                await 直到(() => 锚点("构建") && 根().querySelector('[data-anchor="overflow"]') && 单行()?.textContent === "通知已更新", "同来源更新、跨来源折叠和等待");
-                断言(锚点("测试来源") === 同源锚点 && !锚点("监控"), "同源不重建，第四枚在胶囊中折成＋N");
-                const 圆与圆 = [...根().querySelectorAll(".island-anchor-row .island-anchor")];
-                断言(圆与圆.length === 4 && 根().querySelector('[data-anchor="overflow"]').textContent === "＋1", "最多三个实体锚点加一个折叠圆");
-                断言(Number.parseInt(getComputedStyle(圆与圆[0].closest(".island-anchor-row")).gap, 10) === 12, "胶囊各内容单元之间 gap 为 12");
+                await 直到(() => 计数() === "消息通知 3 条" && 单行()?.textContent.includes("第三条通知正文"), "多来源消息更新同一钤铛计数与最新正文");
+                断言(锚点() === 同一锚点 && 根().querySelectorAll('[data-anchor^="message:"]').length === 1, "不同来源不得新建胶囊锚点");
                 悬停();
-                await 直到(() => 根().dataset.state === "hover" && 锚点("监控"), "hover 顶部显示全部锚点");
-                await 直到(() => 摘要()?.textContent === "通知已更新", "hover 保持原前台来源");
-                选中("监控");
-                await 直到(() => 摘要()?.textContent === "第三条通知正文", "移入监控锚点切换下方内容");
-                断言(/^监控 · \d{2}:\d{2}$/.test(摘要().nextElementSibling?.textContent ?? ""), "hover 第二行显示来源与时分");
-                断言(关闭按钮()?.getAttribute("aria-label") === "关闭监控消息" && !全文() && !单行(), "hover 只渲染选中内容和低风险关闭");
-                断言(getComputedStyle(锚点("监控")).outlineWidth === "2px", "选中锚点有2px描边");
+                await 直到(() => 根().dataset.state === "hover" && 通知行().length === 3, "hover 读取三个来源的内容");
+                const 首行 = 通知行()[0];
+                断言(首行.querySelector(".island-anchor__text").textContent === "监控 · 第三条通知正文" && /^ · \d{2}:\d{2}$/.test(首行.querySelector("time").textContent), "hover 最新一行显示来源、正文、时分");
+                断言(通知行()[1].textContent.includes("构建 · 第二条") && 通知行()[2].textContent.includes("测试来源 · 通知已更新"), "同身份更新不重复，列表按最新到旧排序");
+                断言(getComputedStyle(通知行()[0].querySelector("span")).textOverflow === "ellipsis", "hover 详情一行省略");
+                断言(getComputedStyle(锚点()).outlineWidth === "2px", "选中锚点有2px描边");
 
                 // 场景五：展开消息收进一张卡，默认折叠最新一条，按键切换完整列表。
                 按键("Enter");
@@ -140,7 +140,7 @@
                 断言(消息行().length === 1, `默认折叠只显示最新一条，实际 ${消息行().length}`);
                 断言(全文()?.textContent === "第三条通知正文", `展开应显示完整正文，实际 ${全文()?.textContent}`);
                 断言(getComputedStyle(全文()).whiteSpace === "pre-wrap", "展开正文必须保留换行");
-                断言(/^监控 · \d{1,2}:\d{2}$/.test(元信息()?.textContent ?? ""), `展开元信息应为来源与时分，实际 ${元信息()?.textContent}`);
+                断言(元信息()?.querySelector(".island-message__source").textContent === "监控" && /^\d{2}:\d{2}$/.test(元信息()?.querySelector("time").textContent ?? ""), `展开元信息应分为来源与时分，实际 ${元信息()?.textContent}`);
                 断言(Boolean(关闭按钮()), "展开态必须可关闭");
                 切换按钮().click();
                 await 直到(() => 消息行().length === 3, "按键展开完整消息列表");
@@ -157,27 +157,189 @@
                 按键("Escape");
                 await 直到(() => 根().dataset.state === "collapsed", "关闭后回到常态");
 
-                // 原生离场与内容层锚点期限不同：阅读期间不清除，即使已满30秒，回常态才清除。
-                夹具.pushMessages([消息(4, "info", "第四条通知正文", "测试来源"), 消息(5, "error", "第五条通知正文", "监控")]);
+                // 保留并独立验证读取期限、错误离场与逐条关闭。
+                夹具.pushMessages([消息(4, "info", "第四条通知正文", "测试来源", Date.now() - 29_200), 消息(5, "error", "第五条通知正文", "监控", Date.now() - 31_000)]);
                 悬停();
-                await 直到(() => 根().dataset.state === "hover" && 锚点("监控"), "进入 hover 阅读");
-                选中("监控");
-                await 直到(() => 摘要()?.textContent === "第五条通知正文", "选择失败锚点");
+                await 直到(() => 根().dataset.state === "hover" && 通知行().some((行) => 行.textContent.includes("第四条通知正文")), "进入 hover 阅读即将过期的通知");
                 夹具.pushMessages([]);
-                await 等待(200);
-                断言(摘要()?.textContent === "第五条通知正文" && 锚点("监控"), "原生离场不移除正在阅读的失败消息");
+                await 等待(900);
+                断言(通知行().some((行) => 行.textContent.includes("第四条通知正文")) && 通知行().some((行) => 行.textContent.includes("第五条通知正文")), "原生离场和 30s 到期不抽走正在读的通知");
                 按键("Escape");
-                await 直到(() => 根().dataset.state === "collapsed" && 夹具.提交.at(-1)?.state === "collapsed", "退出后完成常态提交");
-                断言(根().textContent.includes("第五条通知正文") && !卡().length, "失败不超时；常态仍只显示锚点内容，不构建消息卡");
+                await 直到(() => 根().dataset.state === "collapsed" && 计数() === "消息通知 1 条", "回常态后过期普通通知撤下，超时的失败通知仍在");
 
-                // 坏载荷只报告，不覆盖已渲染内容，也不使浮岛失去几何。
+                夹具.pushMessages([消息(7, "success", "关闭后不留残影", "构建")]);
+                悬停();
+                await 直到(() => 根().dataset.state === "hover" && 通知行().length === 2, "等待读取两条通知");
+                关闭通知(0);
+                await 直到(() => 通知行().length === 1 && 计数() === "消息通知 1 条", "关闭首条后计数递减");
+                断言(夹具.关闭记录.at(-1) === 7, "hover 关闭原生通知沿用原来的 Toast 身份");
+                关闭通知(0);
+                await 直到(() => !锚点() && !通知行().length, "最后一条关闭后 bell 撤下");
+
+                按键("Escape");
+                await 直到(() => 根().dataset.state === "collapsed", "回到常态测量静默过期");
+                夹具.pushMessages([消息(8, "info", "静默到期", "超时", Date.now() - 29_300)]);
+                await 直到(() => Boolean(锚点()), "30s 前可见");
+                await 直到(() => !锚点(), "无需下一次快照也在 30s 到点撤下");
+
+                // 模拟原生桥因暂停而没有外发：命令快照能看到，页面事件完全不到达。
+                const 恢复桥 = window.__DESKTOP_TOOLS_NATIVE__;
+                const 真实调用 = 恢复桥.invoke;
+                let 恢复读取数 = 0;
+                let 队列快照 = [消息(90, "info", "暂停时进入原生队列的通知", "恢复测试")];
+                let 迟到补读;
+                let 暂缓快照 = false;
+                恢复桥.invoke = (命令, 参数) => {
+                    if (命令 !== "get_island_messages") return 真实调用.call(恢复桥, 命令, 参数);
+                    恢复读取数++;
+                    return 暂缓快照 ? new Promise((交付) => { 迟到补读 = 交付; }) : Promise.resolve(队列快照);
+                };
+                try {
+                    夹具.setRefreshPaused(true);
+                    document.dispatchEvent(new Event("visibilitychange"));
+                    断言(恢复读取数 === 0 && !锚点(), "暂停时即使队列已更新也不读取或凭空出现锚点");
+                    const 恢复开始 = performance.now();
+                    夹具.setRefreshPaused(false);
+                    document.dispatchEvent(new Event("visibilitychange"));
+                    window.dispatchEvent(new Event("desktop-refresh-changed"));
+                    await 直到(() => 计数() === "消息通知 1 条" && 单行()?.textContent.includes(队列快照[0].content), "恢复边沿补读并恢复铃铛", 1000);
+                    断言(恢复读取数 === 1 && performance.now() - 恢复开始 < 1000, "一次恢复只读一次，重复可见性信号不轮询");
+
+                    暂缓快照 = true;
+                    夹具.setRefreshPaused(true);
+                    夹具.setRefreshPaused(false);
+                    await 直到(() => Boolean(迟到补读), "再次独立恢复开始一笔补读");
+                    const 更新 = 消息(91, "info", "恢复之后的新广播", "恢复测试");
+                    夹具.pushMessages([...队列快照, 更新]);
+                    await 直到(() => 计数() === "消息通知 2 条" && 单行()?.textContent.includes(更新.content), "正常广播继续驱动铃铛");
+                    迟到补读([...队列快照, 消息(92, "info", "不能展示的旧补读", "恢复测试")]);
+                    await 等待(80);
+                    断言(恢复读取数 === 2 && 计数() === "消息通知 2 条" && 单行()?.textContent.includes(更新.content), "晚到的恢复补读不能覆盖更新广播");
+                    悬停();
+                    await 直到(() => 通知行().length === 2, "恢复条目可按原路径逐条关闭");
+                    关闭通知(0);
+                    await 直到(() => 通知行().length === 1, "关闭业已广播的恢复条目");
+                    关闭通知(0);
+                    await 直到(() => !锚点(), "补读条目清空后仍撤下铃铛");
+                    断言(夹具.关闭记录.slice(-2).join() === "91,90", "补读得到的真实身份仍由原生命令关闭");
+                    按键("Escape");
+                    await 直到(() => 根().dataset.state === "collapsed", "恢复测试结束后回常态");
+                } finally { 恢复桥.invoke = 真实调用; }
+
+                // 坏载荷不覆盖已有通知。基线不是空态，避免空界面误判通过。
+                夹具.pushMessages([消息(9, "info", "接收坏载荷前的基线", "设置测试")]);
+                await 直到(() => Boolean(锚点()), "合法消息先建立基线");
                 const 基线内容 = 根().textContent;
                 const 基线高度 = 盒().height;
                 夹具.pushRawMessages([{ id: 9 }]);
                 await 等待(200);
                 断言(根().textContent === 基线内容 && 盒().height === 基线高度, "坏载荷不改变已渲染锚点及其尺寸");
 
-                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : "PASS 浮岛消息三态/关闭/阅读期暂存/通道降级");
+                // 关闭消息偏好只撤下紧凑三处（文本、锚点、播报），展开仍保留完整消息。
+                夹具.pushMessages([消息(6, "info", "仅展开读取", "设置测试")]);
+                夹具.pushPreferences({ islandAnchorVisible: { message: false } });
+                await 直到(() => !根().querySelector('[data-anchor^="message:"]'), "关闭后胶囊不保留消息或计数");
+                断言(!根().querySelector('.island__announcer').textContent.includes("仅展开读取"), "关闭后胶囊不播报消息");
+                悬停();
+                await 直到(() => 根().dataset.state === "hover", "关闭消息后可正常进入 hover");
+                断言(!根().querySelector('[data-anchor^="message:"]'), "关闭后 hover 不含消息锚点");
+                按键("Enter");
+                await 直到(() => 根().dataset.state === "expanded" && 全文()?.textContent === "仅展开读取", "关闭后仍可从展开读取完整消息");
+                await 直到(() => !根().style.inlineSize && !卡()[0]?.style.blockSize, "等待三态形变结束，再测消息卡自然高度");
+                const 消息卡头 = () => 卡()[0].querySelector(".island-message-panel__head");
+                const 消息面板 = () => 卡()[0].querySelector(".island-message-panel");
+                const 近似 = (实际, 期望, 容差 = 0.1) => Math.abs(实际 - 期望) <= 容差;
+                const 单条 = 消息行()[0];
+                const 正文样式 = getComputedStyle(全文());
+                const 副行样式 = getComputedStyle(元信息());
+                断言(消息卡头().offsetHeight === 28 && !切换按钮(), "单条卡头仍占 28px，没有按钮或幽灵焦点");
+                断言(单条.offsetHeight === 34 && 消息面板().offsetHeight === 68 && 卡()[0].offsetHeight === 100, `单条正文区块实测 ${单条.offsetHeight}px，面板 ${消息面板().offsetHeight}px，外壳 ${卡()[0].offsetHeight}px，目标分别 34/68/100`);
+                断言(正文样式.margin === "0px" && 副行样式.margin === "0px" && 正文样式.fontSize === "12px" && 正文样式.lineHeight === "18px" && 副行样式.fontSize === "11px" && 副行样式.lineHeight === "14px", "短正文与副行无 UA 外边距，字级保持 12/18 与 11/14");
+                断言(近似(全文().getBoundingClientRect().top - 消息卡头().getBoundingClientRect().bottom, 6) && 近似(元信息().getBoundingClientRect().top - 全文().getBoundingClientRect().bottom, 2), "卡头距正文 6px，正文距副行 2px");
+
+                const 昨天 = new Date();
+                昨天.setDate(昨天.getDate() - 1);
+                昨天.setHours(9, 5, 0, 0);
+                const 跨天时刻 = `${昨天.getMonth() + 1}/${昨天.getDate()} 09:05`;
+                const 长来源 = "很长的通知来源".repeat(36);
+                const 五条 = [
+                    消息(110, "info", "第一条", "发布"), 消息(111, "success", "第二条", "安装"), 消息(112, "warning", "第三条", "状态"),
+                    消息(113, "error", "第四条", "文件夹"), 消息(114, "info", "第五条", 长来源, 昨天.getTime(), true),
+                ];
+                const 折叠焦点 = 关闭按钮();
+                折叠焦点.focus();
+                夹具.pushMessages([消息(109, "info", "超过五条时不显示", "旧消息"), ...五条]);
+                await 直到(() => 全文()?.textContent === "第五条" && 切换按钮(), "后台新消息更新折叠内容");
+                断言(document.activeElement === 折叠焦点 && 折叠焦点 === 关闭按钮(), "折叠最新项后台更新不搬焦点");
+                切换按钮().click();
+                await 直到(() => 消息行().length === 5, "展开五条验证三轨与间距");
+                const 五行 = 消息行();
+                const 行矩形 = (行) => 行.getBoundingClientRect();
+                const 正文矩形 = (行) => 行.querySelector(".island-message__body").getBoundingClientRect();
+                const 列表框 = 五行[0].parentElement.getBoundingClientRect();
+                断言(五行.map((行) => 行.querySelector(".island-message__body").textContent).join() === "第五条,第四条,第三条,第二条,第一条", "只显示最近五条原生消息，最新在前");
+                断言(近似(行矩形(五行[0]).top, 列表框.top) && 近似(行矩形(五行.at(-1)).bottom, 列表框.bottom), "首尾与列表缘对齐，无额外分隔留白");
+                断言(new Set(五行.map((行) => 行.querySelector(".island-message__icon svg").innerHTML)).size === 4 && getComputedStyle(五行[0].querySelector(".island-message__icon")).opacity === "0.6", "四种状态分别保留图形，加载图标仍为 60%");
+                for (const [序号, 行] of 五行.entries()) {
+                    const 图标盒 = 行.querySelector(".island-message__icon").getBoundingClientRect();
+                    const 字形 = 行.querySelector(".island-message__icon svg").getBoundingClientRect();
+                    const 中轨 = 行.querySelector(".island-message__info").getBoundingClientRect();
+                    const 关闭 = 行.querySelector("button");
+                    const 关闭框 = 关闭.getBoundingClientRect();
+                    const 样式 = getComputedStyle(行);
+                    断言(样式.display === "grid" && 样式.columnGap === "8px" && 近似(中轨.left - 图标盒.right, 8) && 近似(关闭框.left - 中轨.right, 8) && 图标盒.width === 20 && 关闭框.width === 28, "每行 20 / 文字 / 28 三轨及 8px 间隙");
+                    断言(图标盒.height === 20 && 字形.width === 16 && 字形.height === 16 && 近似(图标盒.top + 10, 正文矩形(行).top + 9), "20px 光学盒与正文首行垂直居中，图形 16px");
+                    断言(近似(关闭框.top, 正文矩形(行).top) && 近似(关闭框.right, 切换按钮().getBoundingClientRect().right) && 关闭框.height === 28 && getComputedStyle(关闭).margin === "0px", "关闭按钮行起点对齐、与卡头同一右缘、无负外边距");
+                    if (!序号) continue;
+                    断言(样式.borderBlockStartWidth === "1px" && 近似(行矩形(行).top - 行矩形(五行[序号 - 1]).bottom, 4) && 近似(正文矩形(行).top - 行矩形(行).top, 5) && 近似(正文矩形(行).top - 正文矩形(五行[序号 - 1]).top, 43), "相邻行按 4+1+4 分隔，正文首行步距 43px");
+                }
+                const 来源 = 元信息().querySelector(".island-message__source");
+                const 时刻 = 元信息().querySelector("time");
+                断言(来源.textContent === 长来源 && 来源.scrollWidth > 来源.clientWidth && getComputedStyle(来源).textOverflow === "ellipsis", "长来源独立省略，原文仍在 DOM");
+                断言(时刻.textContent === 跨天时刻 && 时刻.scrollWidth === 时刻.clientWidth && 时刻.getBoundingClientRect().right <= 元信息().getBoundingClientRect().right + 0.1 && getComputedStyle(时刻).fontVariantNumeric === "tabular-nums" && getComputedStyle(元信息()).gap === "4px", "跨天时刻完整可见且用等宽数字，分隔两侧 4px");
+                const 不缩正文 = "一\n二\n三\n四\n五\n六";
+                夹具.pushMessages(五条.map((条) => 条.id === 114 ? { ...条, content: 不缩正文 } : 条));
+                await 直到(() => 全文()?.textContent === 不缩正文, "多行正文保留 DOM 全文");
+                断言(全文().offsetHeight === 72 && 消息行()[0].offsetHeight === 88, "正文显示最多四行，四行区块实测 88px");
+
+                const 按身份 = (id) => 卡()[0]?.querySelector(`[data-island-message-id="${id}"]`);
+                // 原生键盘激活会发 detail=0 的 click；这里只模拟该事件，不绕过真实关闭回调。
+                const 键盘关闭 = (id) => { const 按钮 = 按身份(id); 按钮.focus(); 按钮.click(); };
+                按身份(112).focus();
+                夹具.pushMessages([...夹具.消息集合, 消息(115, "info", "后台新增", "发布")]);
+                await 直到(() => 按身份(115), "展开列表收到后台新消息");
+                断言(document.activeElement === 按身份(112) && 切换按钮().getAttribute("aria-expanded") === "true", "后台更新在列表内留存的身份不移动焦点、不折叠");
+                键盘关闭(112);
+                await 直到(() => !按身份(112) && document.activeElement === 按身份(111), "键盘关中间项后优先续焦下一条");
+                // 只改变一个按键：鼠标点击当前行即使已聚焦，也不能启动键盘续焦。
+                按身份(115).focus();
+                按身份(115).dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+                await 直到(() => !按身份(115), "指针关闭仍调用原生");
+                断言(document.activeElement === document.body, "鼠标关闭不自动聚焦下一条");
+                键盘关闭(110);
+                await 直到(() => !按身份(110) && document.activeElement === 按身份(111), "键盘关末项时续焦上一条");
+                键盘关闭(111);
+                await 直到(() => !按身份(111) && document.activeElement === 按身份(113), "继续关末项向上一条接续");
+                键盘关闭(113);
+                await 直到(() => !按身份(113) && document.activeElement === 按身份(114), "关闭展开列表倒数第二项后焦点留在最后一条");
+                // 最后一条关闭与另一批新消息同帧到达：原候选都不存在，回落到列表开关。
+                const 原生 = window.__DESKTOP_TOOLS_NATIVE__;
+                const 原invoke = 原生.invoke;
+                原生.invoke = (命令, 载荷) => {
+                    const 结果 = 原invoke.call(原生, 命令, 载荷);
+                    if (命令 === "dismiss_island_message" && 载荷.id === 114) 夹具.pushMessages([消息(120, "info", "稍后到达1", "新来源"), 消息(121, "info", "稍后到达2", "新来源")]);
+                    return 结果;
+                };
+                try {
+                    键盘关闭(114);
+                    await 直到(() => 按身份(121) && document.activeElement === 切换按钮(), "原候选全失效但列表仍在时续焦开关");
+                } finally { 原生.invoke = 原invoke; }
+                键盘关闭(121);
+                await 直到(() => !按身份(121) && document.activeElement === 按身份(120), "最后两条时仍优先下一条");
+                键盘关闭(120);
+                await 直到(() => !卡().length && document.activeElement?.closest(".island-card")?.getAttribute("aria-label") === "音乐控制", "末条关闭卸载消息卡，续焦岛内下一控件");
+                断言([112, 115, 110, 111, 113, 114, 121, 120].every((id) => 夹具.关闭记录.includes(id)), "键盘与鼠标关闭同走原生命令");
+                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : "PASS 浮岛通知与展开消息卡：单锚点、三轨对齐、时刻保护、键盘续焦");
             };
 
             运行().catch((错误) => {

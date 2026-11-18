@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from "react";
-import { getCollectItems, listenCollectChanges, type CollectItem } from "../../bridge/collect";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from "react";
+import { getCollectItems, listenCollectChanges } from "../../bridge/collect";
 import { getDesktopHostSnapshot } from "../../bridge/desktopHost";
 import { beginIslandDrag, dismissIslandMessage, getIslandMessages, islandCursorInside, listenIslandDropActive, listenIslandMessages, listenIslandSnapshots, saveIslandCardCollapsed, saveIslandCardOrder, setIslandState } from "../../bridge/island";
 import { executeMusicAction } from "../../bridge/music";
 import { listenSpectrum } from "../../bridge/audio";
 import type { IslandDropFact as IslandNativeDropFact, IslandMessage, IslandRect, IslandSnapshot, IslandStateRequest } from "../../contracts/island";
+import type { ApplicationPreferences } from "../../contracts/settings";
 import pauseIcon from "../../../resources/music-pause.svg?raw";
 import closeIcon from "../../../resources/editor-x.svg?raw";
 import successIcon from "../../../resources/editor-check.svg?raw";
@@ -12,14 +13,12 @@ import infoIcon from "../../../resources/info.svg?raw";
 import errorIcon from "../../../resources/message-error.svg?raw";
 import warningIcon from "../../../resources/message-warning.svg?raw";
 import chevronIcon from "../../../resources/weather-chevron-right.svg?raw";
-import musicFunctionIcon from "../../../resources/music-play.svg?raw";
-import collectFunctionIcon from "../../../resources/menu-collect.svg?raw";
-import weatherFunctionIcon from "../../../resources/menu-weather.svg?raw";
+import musicNoteIcon from "../../../resources/island-music-note.svg?raw";
+import bellIcon from "../../../resources/bell.svg?raw";
 import pluginFunctionIcon from "../../../resources/settings-plugin.svg?raw";
 import { PluginSlot, pluginTileType } from "../components/PluginSlot";
 import { useMusicState, musicProgressRange, positionAt } from "../music/musicSource";
 import { usePreferences } from "../../app/preferences/PreferencesProvider";
-import { WeatherGlyph } from "../../shared/WeatherGlyph";
 import { ScrollingText } from "../../shared/ScrollingText";
 import { IslandCollectBox } from "./IslandCollectBox";
 import { IslandWeather, useIslandWeather } from "./IslandWeather";
@@ -32,6 +31,7 @@ import {
     islandGeometry,
     moveIslandCard,
     visibleIslandRect,
+    islandWindowKey,
 } from "./islandGeometry";
 import {
     ISLAND_HOVER_DELAY_MS,
@@ -44,12 +44,12 @@ import {
     cancelIslandHover,
     islandHoverTarget,
     islandHitContour, islandCardDistance, islandContourDistance, islandHitRegion, islandMarginStep, islandScrollGeometry, islandPointInRect, islandDebugCardCount, islandCollapseSettle,
-    ISLAND_MARGIN_DELAY_MS, ISLAND_SCROLLBAR_FADE_MS,
-    type IslandMarginState,
+    ISLAND_MARGIN_DELAY_MS, ISLAND_SCROLLBAR_FADE_MS, islandExpandedDwellStep,
+    type IslandExpandedDwell, type IslandMarginState,
 } from "./islandInteraction";
-import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, ISLAND_EXPAND_STAGGER_MS, ISLAND_EXPAND_MOTION_MS, islandAttachedCornerAt, islandUnionFrame } from "./islandMotion";
-import { islandHoldMessages, islandMessageTime, islandMessageView } from "./islandMessages";
-import { ISLAND_MESSAGE_ANCHOR_TTL_MS, ISLAND_ANCHOR_GAP, ISLAND_ANCHOR_GROW_MS, ISLAND_ANCHOR_SHRINK_MS, ISLAND_ANCHOR_SIZE, ISLAND_ANCHOR_SLOTS, ISLAND_STATUS_SPECS, islandAnchorDeadline, islandAnchorGlyph, islandAnchorId, islandAnchorValue, islandArrive, islandCapsuleFace, islandClockLabel, islandDropFace, islandExpireAnchors, islandHoverContent, islandHoverEnter, islandHoverSelect, islandHoverStep, islandLayerRank, islandMergeHiddenAnchors, islandOverlayAction, islandStatusProgress, islandStatusSpec, islandAnchorKind, type IslandAnchor, type IslandAnchorArrival, type IslandDropTarget, type IslandFunctionKind, type IslandHiddenArrival, type IslandStatus, type IslandStatusSpec } from "./islandContent";
+import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, ISLAND_EXPAND_STAGGER_MS, ISLAND_EXPAND_MOTION_MS, ISLAND_HOVER_DETAIL_EXIT_MS, ISLAND_HOVER_DETAIL_ENTER_MS, islandAttachedCornerAt, islandHoverTravel, islandUnionFrame } from "./islandMotion";
+import { ISLAND_MESSAGE_LIMIT, ISLAND_NOTIFICATION_ANCHOR_ID, islandDismissNotification, islandHoldMessages, islandKeepNotifications, islandLocalNotificationArrival, islandMergeNotifications, islandMessageArrival, islandMessageFocusOrder, islandMessagePanelView, islandMessageTime, islandNotificationAnchor, islandNotificationCountLabel, islandNotificationDeadline, type IslandLocalNotification, type IslandNotification } from "./islandMessages";
+import { islandHoverBody, islandHoverInlineSize, ISLAND_NOTICE_LAYER, islandCollectArrival, islandDisplayAnchors, islandMusicAnchorVisible, islandWeatherNotice, ISLAND_ANCHOR_GAP, ISLAND_ANCHOR_GROW_MS, ISLAND_ANCHOR_SHRINK_MS, ISLAND_ANCHOR_SIZE, ISLAND_ANCHOR_SLOTS, ISLAND_STATUS_SPECS, islandAnchorGlyph, islandAnchorId, islandAnchorValue, islandArrive, islandCapsuleFace, islandClockLabel, islandDropFace, islandHoverEnter, islandHoverInitialSelection, islandHoverSelect, islandHoverSessionWidth, islandHoverStep, islandLayerRank, islandStatusProgress, islandStatusSpec, islandAnchorKind, type IslandAnchor, type IslandAnchorArrival, type IslandDropTarget, type IslandFunctionKind, type IslandStatus, type IslandStatusSpec } from "./islandContent";
 import { ISLAND_LYRIC_OFFSETS, islandCapsuleLineLimit, islandLyricView, islandMusicTickDelay, islandPlaybackStatus, islandScrollAnimationName, islandScrollDistance, islandScrollKey, islandScrollPlan, islandScrollPlayState } from "./islandLyrics";
 import { islandCollectTitle, readIslandCollectCache, writeIslandCollectCache } from "./islandCollect";
 import { ISLAND_FENCE_TOKENS } from "./islandTokens";
@@ -57,6 +57,7 @@ import islandToggleCollapseIcon from "../../../resources/fence-toggle-collapse.s
 import islandToggleExpandIcon from "../../../resources/fence-toggle-expand.svg?raw";
 import "../../styles/fenceTokens.css"; // 探针读取的围栏内置值，来自桌面工作区与浮岛共用的那一份。
 import "./island.css";
+const ISLAND_ANCHOR_EASING = "ease-out"; // 胶囊与 hover 接力共用的退缓。
 const PAINTED_STYLE_PROPERTIES = [
     "position",
     "left",
@@ -64,6 +65,7 @@ const PAINTED_STYLE_PROPERTIES = [
     "inline-size",
     "block-size",
     "max-inline-size",
+    "min-inline-size",
     "min-block-size",
     "overflow",
     "border-radius",
@@ -181,21 +183,31 @@ const formatTime = (milliseconds: number) => `${Math.floor(milliseconds / 60000)
 const ISLAND_MESSAGE_ICONS: Record<IslandMessage["type"], string> = { info: infoIcon, success: successIcon, warning: warningIcon, error: errorIcon };
 
 /** 展开消息承载完整正文、来源、时刻与原生关闭操作。 */
-const IslandMessageCard = ({ message, onDismiss }: { message: IslandMessage; onDismiss: (id: number) => void }) => (
+type IslandMessageDismiss = (id: number, keyboardOrigin?: HTMLButtonElement) => void;
+
+const IslandMessageCard = ({ message, onDismiss }: { message: IslandMessage; onDismiss: IslandMessageDismiss }) => (
     <div className="island-message" data-kind={message.type} data-loading={message.loading ? "true" : undefined}>
         <span className="island-message__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: ISLAND_MESSAGE_ICONS[message.type] }} />
         <div className="island-message__info">
             <p className="island-message__body">{message.content}</p>
-            <p className="island-message__meta">{message.source} · {islandMessageTime(message.receivedAtMs, Date.now())}</p>
+            <p className="island-message__meta">
+                <span className="island-message__source">{message.source}</span><span aria-hidden="true">·</span>
+                <time>{islandMessageTime(message.receivedAtMs, Date.now())}</time>
+            </p>
         </div>
-        <button type="button" data-button="icon" className="island-message__close" aria-label={`关闭${message.source}消息`} onClick={() => onDismiss(message.id)}>
+        <button type="button" data-button="icon" className="island-message__close" data-island-message-id={message.id} aria-label={`关闭${message.source}消息`}
+            onClick={(event) => {
+                // 原生键盘激活的 click 没有点击次数；只有当前聚焦的按钮才请求续焦。
+                const node = event.currentTarget;
+                onDismiss(message.id, event.detail === 0 && document.activeElement === node ? node : undefined);
+            }}>
             <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: closeIcon }} />
         </button>
     </div>
 );
 
 /** 展开态消息面板：默认只显示最新一条，按键切换为最近消息列表。 */
-const IslandMessagePanel = ({ messages, onDismiss }: { messages: IslandMessage[]; onDismiss: (id: number) => void }) => {
+const IslandMessagePanel = ({ messages, onDismiss }: { messages: IslandMessage[]; onDismiss: IslandMessageDismiss }) => {
     const [open, setOpen] = useState(false); // 每次进入展开态默认折叠。
     const visible = open ? messages : messages.slice(0, 1); // 折叠时只保留最新一条。
     return (
@@ -218,7 +230,8 @@ const IslandMessagePanel = ({ messages, onDismiss }: { messages: IslandMessage[]
             </div>
             <div className="island-message-panel__list">
                 {visible.map((message) => (
-                    <IslandMessageCard key={message.id} message={message} onDismiss={onDismiss} />
+                    // 折叠只有一个槽位：后台换入更新消息时保留原按钮与焦点。
+                    <IslandMessageCard key={open ? message.id : "latest"} message={message} onDismiss={onDismiss} />
                 ))}
             </div>
         </div>
@@ -327,8 +340,8 @@ const islandMusicCommands = (media: ReturnType<typeof useMusicState>["snapshot"]
     ] as const;
 };
 
-/** 展开保留禁用反馈；hover 只绘制模型准入后的动作。 */
-const IslandMusicControls = ({ media, onFailure, allowed }: { media: ReturnType<typeof useMusicState>["snapshot"]; onFailure?: () => void; allowed?: readonly string[] }) => {
+/** 三个控制位置固定；媒体不支持的操作沿用原生禁用反馈。 */
+const IslandMusicControls = ({ media, onFailure }: { media: ReturnType<typeof useMusicState>["snapshot"]; onFailure?: () => void }) => {
     const [busy, setBusy] = useState(false);
     const handleAction = async (action: "previous" | "play" | "pause" | "next") => {
         if (!media || busy) return;
@@ -343,7 +356,7 @@ const IslandMusicControls = ({ media, onFailure, allowed }: { media: ReturnType<
         }
     };
     return <div className="island-music__controls">
-        {islandMusicCommands(media).filter(([action]) => !allowed || allowed.includes(action)).map(([action, label, enabled, path]) => (
+        {islandMusicCommands(media).map(([action, label, enabled, path]) => (
             <button type="button" data-button="icon" key={label === "暂停" || label === "播放" ? "play-pause" : action} aria-label={label} disabled={!enabled || busy} onClick={() => void handleAction(action)}>
                 <svg viewBox="0 0 16 16" aria-hidden="true"><path d={path} /></svg>
             </button>
@@ -377,26 +390,41 @@ const ISLAND_ANCHOR_PATHS = {
 
 /** hover 顶部锚点的功能图标：先认出锚点属于哪个功能，状态符号改到内容行左侧。 */
 const ISLAND_FUNCTION_ICONS: Record<IslandFunctionKind, string> = {
-    music: musicFunctionIcon,
-    collect: collectFunctionIcon,
-    weather: weatherFunctionIcon,
-    message: infoIcon,
+    music: musicNoteIcon,
+    message: bellIcon,
     plugin: pluginFunctionIcon,
     event: infoIcon,
 };
 
 /** 功能图标只作身份标识，不表达状态；状态仍由内容行左侧的状态符号表达。 */
-const IslandFunctionIcon = ({ kind }: { kind: IslandFunctionKind }) => <span className="island-anchor__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: ISLAND_FUNCTION_ICONS[kind] }} />;
+const IslandFunctionIcon = ({ kind }: { kind: IslandFunctionKind }) => <span className="island-anchor__icon" data-function={kind} aria-hidden="true" dangerouslySetInnerHTML={{ __html: ISLAND_FUNCTION_ICONS[kind] }} />;
 
-/** 在 20×20 安全盒内绘制一个状态、计数或空态符号。 */
-const IslandAnchorVisual = ({ anchor, special, motion, children, entering = false, specs }: { anchor?: IslandAnchor; special?: string; motion: boolean; children?: ReactNode; entering?: boolean; specs?: readonly IslandStatusSpec[] }) => {
+/** 媒体图只用于胶囊与详情。加载失败时回到同一功能音符。 */
+const IslandMediaInk = ({ artwork, hover = false }: { artwork?: string; hover?: boolean }) => {
+    const [failed, setFailed] = useState<string>();
+    return <span className={hover ? "island-anchor__media island-music-hover__artwork" : "island-anchor__media"} aria-hidden="true">
+        {artwork && artwork !== failed ? <img src={artwork} alt="" draggable={false} onError={() => setFailed(artwork)} /> : <IslandFunctionIcon kind="music" />}
+    </span>;
+};
+
+/** 仅有实际进度时画环；集成的中央图标不遮挡路径。 */
+const IslandProgressInk = ({ sweep, progress = 0, motion }: { sweep?: boolean; progress?: number; motion: boolean }) => (
+    <svg className="island-anchor__progress" viewBox="0 0 20 20">
+        <circle className="island-anchor__track" cx="10" cy="10" r="8.5" strokeWidth="3" />
+        {sweep ? <path className="island-anchor__sweep" data-motion={motion} d={islandArcPath(0.25)} strokeWidth="3" /> :
+            progress >= 1 ? <circle cx="10" cy="10" r="8.5" strokeWidth="3" /> : progress > 0 ? <path d={islandArcPath(progress)} strokeWidth="3" /> : null}
+    </svg>
+);
+
+/** 在 20×20 安全盒内绘制状态或功能墨层，媒体裁切例外占满整枚圆。 */
+const IslandAnchorVisual = ({ anchor, special, motion, artwork, entering = false, specs }: { anchor?: IslandAnchor; special?: string; motion: boolean; artwork?: string; entering?: boolean; specs?: readonly IslandStatusSpec[] }) => {
     const ink = useRef<HTMLSpanElement>(null);
     const insertOnMount = useRef(entering);
     useLayoutEffect(() => {
         const animate = insertOnMount.current && motion;
         insertOnMount.current = false;
         if (!animate) return;
-        const insertion = ink.current?.animate([{ transform: "translateY(6px)", opacity: 0 }, { transform: "none", opacity: 1 }], { duration: ISLAND_ANCHOR_GROW_MS, easing: "ease-out" });
+        const insertion = ink.current?.animate([{ transform: "translateY(6px)", opacity: 0 }, { transform: "none", opacity: 1 }], { duration: ISLAND_ANCHOR_GROW_MS, easing: ISLAND_ANCHOR_EASING });
         return () => insertion?.cancel();
     }, [motion, anchor?.unit?.status]);
     const status = anchor?.unit?.status;
@@ -410,52 +438,30 @@ const IslandAnchorVisual = ({ anchor, special, motion, children, entering = fals
     const symbol = glyph?.kind === "glyph" ? glyph.symbol : specialSymbol;
     const asset = symbol && symbol in ISLAND_ANCHOR_ICONS ? ISLAND_ANCHOR_ICONS[symbol as keyof typeof ISLAND_ANCHOR_ICONS] : undefined;
     const path = symbol && symbol in ISLAND_ANCHOR_PATHS ? ISLAND_ANCHOR_PATHS[symbol as keyof typeof ISLAND_ANCHOR_PATHS] : undefined;
-    return <span ref={ink} className="island-anchor__ink" aria-hidden="true" data-status={status} data-symbol={symbol} data-glyph={glyph?.kind}>
-        {children ?? (asset ? <span className="island-anchor__icon" dangerouslySetInnerHTML={{ __html: asset }} /> : path ? (
+    const kind = anchor && islandAnchorKind(anchor);
+    const custom = kind === "music" || kind === "message";
+    return <span ref={ink} className="island-anchor__ink" aria-hidden="true" data-status={status} data-symbol={custom ? undefined : symbol} data-glyph={custom ? undefined : glyph?.kind} data-kind={custom ? kind : undefined}>
+        {kind === "music" ? <IslandMediaInk artwork={artwork} /> : kind === "message" ? <IslandFunctionIcon kind="message" /> : asset ? <span className="island-anchor__icon" dangerouslySetInnerHTML={{ __html: asset }} /> : path ? (
             <svg viewBox="0 0 20 20"><path d={path} strokeWidth="1.75" /></svg>
         ) : glyph?.kind === "ring" || glyph?.kind === "sweep" ? (
-            <svg viewBox="0 0 20 20">
-                <circle className="island-anchor__track" cx="10" cy="10" r="8.5" strokeWidth="3" />
-                {glyph.kind === "sweep" ? <path className="island-anchor__sweep" data-motion={motion} d={islandArcPath(0.25)} strokeWidth="3" /> :
-                    glyph.arc >= 1 ? <circle cx="10" cy="10" r="8.5" strokeWidth="3" /> : glyph.arc > 0 ? <path d={islandArcPath(glyph.arc)} strokeWidth="3" /> : null}
-            </svg>
-        ) : special || anchor?.count !== undefined ? <span className="island-anchor__number">{special ?? (anchor!.count! >= 99 ? "99+" : anchor!.count)}</span> : <span className="island-anchor__dot" />)}
+            <IslandProgressInk sweep={glyph.kind === "sweep"} progress={glyph.kind === "ring" ? glyph.arc : undefined} motion={motion} />
+        ) : special ? <span className="island-anchor__number">{special}</span> : <span className="island-anchor__dot" />}
     </span>;
 };
 
-/** 各来源共享锚点身份；原生消息集合仍决定原生 Toast 何时离场。 */
-const islandMessageArrival = (message: IslandMessage): IslandAnchorArrival => ({
-    source: message.source,
-    layer: "message",
-    nowMs: message.receivedAtMs,
-    kind: "message",
-    unit: { primary: message.content, status: message.loading ? "indeterminate" : message.type === "error" ? "failed" : message.type === "success" ? "completed" : "pending" },
-});
+/** 隐藏或桥暂停其一仍成立，就不能把补读当作恢复。 */
+const islandNotificationsPaused = () => document.hidden || window.__DESKTOP_TOOLS_NATIVE__?.isRefreshPaused?.() === true;
 
-/** 前台消息互斥；原生队列离场与锚点 30 秒保留是两条不同的呈现期限。 */
-const useIslandContent = (residents: readonly IslandAnchorArrival[], messages: IslandMessage[], mode: IslandMode, specs: readonly IslandStatusSpec[]) => {
-    const [anchors, setAnchors] = useState<IslandAnchor[]>([]);
-    const [foregroundId, setForegroundId] = useState<string>();
-    const [selected, setSelected] = useState<string>();
-    const [clockNow, setClockNow] = useState(Date.now);
+/** 收集原生与浮岛本地通知，只为合并锚点维护条目；不向原生发送新的 Toast。 */
+const useIslandNotifications = (messages: IslandMessage[], mode: IslandMode, clockNow: number) => {
+    const [rows, setRows] = useState<readonly IslandNotification[]>([]);
     const observed = useRef(new Map<number, IslandMessage>());
-    const read = useRef(new Set<string>());
     const previousMode = useRef(mode);
-    const hidden = useRef<IslandHiddenArrival[]>([]);
-    const hiddenStarted = useRef<number | undefined>(undefined);
-    const lastHiddenRange = useRef<{ from: number; until: number } | undefined>(undefined);
+    const pending = useRef<readonly IslandNotification[]>([]); // 隐藏期间只收集，恢复时一次并入，不逐条补播。
+    const sequence = useRef(0);
     const [visibility, setVisibility] = useState(0);
     useEffect(() => {
-        const refresh = () => {
-            const now = Date.now();
-            if (document.hidden || window.__DESKTOP_TOOLS_NATIVE__?.isRefreshPaused?.()) hiddenStarted.current ??= now;
-            else if (hiddenStarted.current !== undefined) {
-                lastHiddenRange.current = { from: hiddenStarted.current, until: now };
-                hiddenStarted.current = undefined;
-            }
-            setVisibility((value) => value + 1);
-        };
-        refresh();
+        const refresh = () => setVisibility((value) => value + 1);
         document.addEventListener("visibilitychange", refresh);
         window.addEventListener("desktop-refresh-changed", refresh);
         return () => {
@@ -465,76 +471,110 @@ const useIslandContent = (residents: readonly IslandAnchorArrival[], messages: I
     }, []);
     useLayoutEffect(() => {
         const now = Date.now();
-        const paused = document.hidden || window.__DESKTOP_TOOLS_NATIVE__?.isRefreshPaused?.();
-        const keep = new Set(residents.map((item) => islandAnchorId(item.layer, item.source)));
-        let next = anchors.filter((anchor) => anchor.layer === "message" || keep.has(anchor.id));
-        for (const resident of residents) {
-            const prior = next.find((anchor) => anchor.id === islandAnchorId(resident.layer, resident.source));
-            if (prior?.unit?.primary !== resident.unit?.primary || prior?.unit?.status !== resident.unit?.status || prior?.unit?.secondary !== resident.unit?.secondary || !prior) next = islandArrive(next, resident);
-        }
-        let active = next.find((anchor) => anchor.id === foregroundId);
-        for (const message of [...messages].sort((a, b) => a.id - b.id)) {
+        const incoming = [...messages].sort((left, right) => left.id - right.id).filter((message) => {
             const prior = observed.current.get(message.id);
-            if (prior?.content === message.content && prior.loading === message.loading && prior.type === message.type) continue;
-            observed.current.set(message.id, message);
-            const arrival = islandMessageArrival(message);
-            const window = lastHiddenRange.current;
-            if (paused || window && arrival.nowMs >= window.from && arrival.nowMs <= window.until) {
-                if (!prior && now - arrival.nowMs < ISLAND_MESSAGE_ANCHOR_TTL_MS) hidden.current.push(arrival);
-                continue;
-            }
-            const action = islandOverlayAction(active, arrival);
-            next = islandArrive(next, arrival);
-            if (!active || action !== "append") active = next.find((anchor) => anchor.id === islandAnchorId(arrival.layer, arrival.source));
-        }
-        if (!paused && hidden.current.length) {
-            next = islandMergeHiddenAnchors(next, hidden.current, now);
-            hidden.current = [];
-        }
-        // 不保存已超时且不存在于当前载荷中的投影身份。
-        const currentIds = new Set(messages.map((message) => message.id));
-        for (const [id, message] of observed.current) {
-            const isRetainedFailure = message.type === "error" && next.some((anchor) => anchor.layer === "message" && anchor.source === message.source && anchor.updatedAtMs === message.receivedAtMs);
-            if (!currentIds.has(id) && !isRetainedFailure && now - message.receivedAtMs >= ISLAND_MESSAGE_ANCHOR_TTL_MS) observed.current.delete(id);
-        }
-        if (mode === "expanded") {
-            for (const anchor of next) if (islandAnchorDeadline(anchor) !== undefined) read.current.add(anchor.id);
-        }
-        if (mode === "collapsed" && previousMode.current === "expanded") {
-            next = next.filter((anchor) => !read.current.has(anchor.id));
-            read.current.clear();
-        }
+            return !prior || prior.content !== message.content || prior.loading !== message.loading || prior.type !== message.type || prior.source !== message.source;
+        }).map(islandMessageArrival);
+        observed.current = new Map(messages.map((message) => [message.id, message]));
+        const hidden = islandNotificationsPaused();
+        if (hidden) pending.current = islandMergeNotifications(pending.current, incoming);
+        const recovered = hidden ? [] : islandKeepNotifications(pending.current, now, "collapsed");
+        if (!hidden) pending.current = [];
+        const read = mode === "collapsed" && previousMode.current === "expanded";
         previousMode.current = mode;
-        next = islandExpireAnchors(next, now, mode);
-        const eligible = next.filter((anchor) => anchor.unit && islandStatusSpec(anchor.unit.status, specs)?.disposition !== "vanish" && (
-            anchor.layer !== "message" || keep.has(anchor.id) || anchor.unit.status === "failed" || messages.some((message) => message.source === anchor.source && message.receivedAtMs === anchor.updatedAtMs)
-        ));
-        const front = eligible.find((anchor) => anchor.id === active?.id);
-        let winner = front;
-        for (const anchor of eligible) if (!winner || islandLayerRank(anchor.layer) < islandLayerRank(winner.layer)) winner = anchor;
-        if (anchors.length !== next.length || next.some((anchor, index) => anchor !== anchors[index])) setAnchors(next);
+        setRows((current) => {
+            // 离开展开态清除已读的原生普通通知；本地通知不进入展开消息卡。
+            const unread = read ? current.filter((notice) => notice.nativeId === undefined || islandNotificationDeadline(notice) === undefined) : current;
+            const merged = !hidden && (recovered.length || incoming.length)
+                ? islandMergeNotifications(unread, [...recovered].reverse().concat(incoming))
+                : unread;
+            return islandKeepNotifications(merged, now, mode);
+        });
+    }, [messages, mode, clockNow, visibility]);
+    const push = useCallback((fact: IslandLocalNotification) => {
+        const notice = islandLocalNotificationArrival(++sequence.current, fact, Date.now());
+        if (islandNotificationsPaused()) pending.current = islandMergeNotifications(pending.current, [notice]);
+        else setRows((current) => islandMergeNotifications(current, [notice]));
+    }, []);
+    const dismiss = (key: string) => {
+        pending.current = islandDismissNotification(pending.current, key);
+        setRows((current) => islandDismissNotification(current, key));
+    };
+    const allowRetry = (id: number) => observed.current.delete(id);
+    const anchor = useMemo(() => islandNotificationAnchor(rows), [rows]);
+    return { rows, anchor, push, dismiss, allowRetry };
+};
+
+/** 维持锚点插入顺序；胶囊、hover、选择与播报都消费同一份显示投影。 */
+const useIslandContent = (residents: readonly IslandAnchorArrival[], notification: IslandAnchor | undefined, mode: IslandMode, specs: readonly IslandStatusSpec[], preferences: ApplicationPreferences | undefined, capsuleFront: string | undefined) => {
+    const [anchors, setAnchors] = useState<IslandAnchor[]>([]);
+    const [foregroundId, setForegroundId] = useState<string>();
+    const [selected, setSelected] = useState<string>();
+    const previousMode = useRef(mode); // 只在从已呈现的胶囊切入 hover 时重设初选。
+    useLayoutEffect(() => {
+        const keep = new Set(residents.map((item) => islandAnchorId(item.layer, item.source)));
+        setAnchors((current) => {
+            let next = current.flatMap((anchor) => anchor.id === ISLAND_NOTIFICATION_ANCHOR_ID ? notification ? [notification] : [] : keep.has(anchor.id) ? [anchor] : []);
+            for (const resident of residents) {
+                const prior = next.find((anchor) => anchor.id === islandAnchorId(resident.layer, resident.source));
+                if (!prior || prior.unit?.primary !== resident.unit?.primary || prior.unit?.status !== resident.unit?.status || prior.unit?.secondary !== resident.unit?.secondary || prior.kind !== resident.kind) next = islandArrive(next, resident);
+            }
+            if (notification && !next.some((anchor) => anchor.id === notification.id)) next.push(notification);
+            return current.length === next.length && next.every((anchor, index) => anchor === current[index]) ? current : next;
+        });
+    }, [residents, notification]);
+    const live = anchors.filter((anchor) => islandStatusSpec(anchor.unit?.status ?? "", specs)?.disposition !== "vanish");
+    const visible = islandDisplayAnchors(live, preferences);
+    const eligible = visible.filter((anchor) => anchor.unit);
+    let winner = eligible.find((anchor) => anchor.id === foregroundId);
+    for (const anchor of eligible) if (!winner || islandLayerRank(anchor.layer) < islandLayerRank(winner.layer)) winner = anchor;
+    const preferred = selected ?? winner?.id;
+    const selectedId = mode === "hover" && previousMode.current === "collapsed"
+        ? islandHoverInitialSelection(visible, capsuleFront, preferred)
+        : islandHoverSelect(visible, preferred);
+    useLayoutEffect(() => {
+        previousMode.current = mode;
         setForegroundId(winner?.id);
-        if (mode === "hover") setSelected((key) => islandHoverSelect(next, key ?? winner?.id));
-    }, [residents, messages, mode, clockNow, visibility, specs]);
-    useEffect(() => {
-        const now = Date.now();
-        const empty = !anchors.some((anchor) => islandStatusSpec(anchor.unit?.status ?? "", specs)?.disposition !== "vanish");
-        if (empty && islandClockLabel(now) !== islandClockLabel(clockNow)) setClockNow(now);
-        const deadlines = mode === "collapsed" ? anchors.flatMap((anchor) => { const deadline = islandAnchorDeadline(anchor); return deadline === undefined ? [] : [deadline]; }) : [];
-        const next = Math.min(...deadlines, ...(empty ? [now + 60_000 - now % 60_000] : []));
-        if (!Number.isFinite(next)) return;
-        const timer = setTimeout(() => setClockNow(Date.now()), Math.max(1, next - now));
-        return () => clearTimeout(timer);
-    }, [anchors, clockNow, mode, specs]);
-    const active = anchors.find((anchor) => anchor.id === foregroundId);
-    const getMessage = (anchor: IslandAnchor) => [...observed.current.values()].find((item) => item.source === anchor.source && item.receivedAtMs === anchor.updatedAtMs);
-    return { anchors, active, selected, setSelected, clockNow, getMessage, forgetMessage: (id: number) => {
-        const message = observed.current.get(id);
-        if (message) {
-            setAnchors((items) => items.filter((anchor) => anchor.id !== islandAnchorId("message", message.source) || anchor.updatedAtMs !== message.receivedAtMs));
-            observed.current.delete(id);
+        if (mode === "hover") setSelected(selectedId);
+    }, [mode, winner?.id, selectedId]);
+    return { live, visible, active: winner, selected: selectedId, setSelected };
+};
+
+/** hover 一次只挂一份详情。离场仍占原位，结束后只换一次自然布局，再播放入场。 */
+const IslandHoverRelay = ({ anchors, selected, motion, renderDetail }: { anchors: readonly IslandAnchor[]; selected?: IslandAnchor; motion: boolean; renderDetail: (anchor: IslandAnchor | undefined) => ReactNode }) => {
+    const layer = useRef<HTMLDivElement>(null);
+    const [shownId, setShownId] = useState(selected?.id);
+    const targetId = selected?.id;
+    const travel = motion && shownId !== targetId ? islandHoverTravel(anchors.map((anchor) => anchor.id), shownId, targetId) : undefined;
+    const displayed = travel ? anchors.find((anchor) => anchor.id === shownId) : selected;
+    const enter = useRef<{ id: string | undefined; x: number } | undefined>(undefined); // 只有已完成的离场可排入下一段。
+    const exitX = travel?.exitX;
+    const enterX = travel?.enterX;
+    useLayoutEffect(() => {
+        const node = layer.current;
+        if (exitX !== undefined && enterX !== undefined && node?.firstElementChild) {
+            const exit = node.animate([{ transform: "none", opacity: 1 }, { transform: `translateX(${exitX}px)`, opacity: 0 }],
+                { duration: ISLAND_HOVER_DETAIL_EXIT_MS, easing: ISLAND_ANCHOR_EASING, fill: "forwards" });
+            let active = true;
+            void exit.finished.then(() => {
+                if (!active) return;
+                enter.current = { id: targetId, x: enterX };
+                setShownId(targetId);
+            }).catch(() => undefined);
+            return () => { active = false; exit.cancel(); };
         }
-    } };
+        if (shownId !== targetId) setShownId(targetId);
+        const arrival = enter.current;
+        enter.current = undefined;
+        if (motion && arrival && arrival.id === targetId && node?.firstElementChild) {
+            const entry = node.animate([{ transform: `translateX(${arrival.x}px)`, opacity: 0 }, { transform: "none", opacity: 1 }],
+                { duration: ISLAND_HOVER_DETAIL_ENTER_MS, easing: ISLAND_ANCHOR_EASING, fill: "backwards" });
+            return () => entry.cancel();
+        }
+    }, [motion, shownId, targetId, exitX, enterX]);
+    return <div ref={layer} className="island-hover-relay" inert={Boolean(travel) || undefined} aria-hidden={travel ? true : undefined}>
+        {renderDetail(displayed)}
+    </div>;
 };
 
 /** 同来源换文在一行内滚动；换源只伸缩该锚点文字，原生盒随实测收放。 */
@@ -556,7 +596,7 @@ const IslandRelayContent = ({ anchor, motion, vertical, className, growDelay, mu
         let active = true;
         const animate = (element: Element | null, frames: Keyframe[], duration: number, delay = 0) => {
             if (!element) return undefined;
-            const value = element.animate(frames, { easing: "ease-out", fill: "both", duration, delay });
+            const value = element.animate(frames, { easing: ISLAND_ANCHOR_EASING, fill: "both", duration, delay });
             animations.push(value);
             return value;
         };
@@ -600,6 +640,7 @@ const IslandRelayContent = ({ anchor, motion, vertical, className, growDelay, mu
 type IslandDropFact = IslandDropTarget | "reject";
 /** 原生投放事实映射到同一内容模型：collect 进收集箱，reject 走「无法接收」，离开即回落。 */
 const islandNativeDropFact = (fact: IslandNativeDropFact): IslandDropFact | undefined => fact.active ? (fact.kind === "collect" ? "collect-box" : "reject") : undefined;
+/** 断言页可注入内容与投放事实；生产入口由原生投影和实际功能事件驱动。 */
 type IslandPageProps = { contentFacts?: readonly IslandAnchorArrival[]; dropFact?: IslandDropFact; statusSpecs?: readonly IslandStatusSpec[] };
 const EMPTY_CONTENT_FACTS: readonly IslandAnchorArrival[] = [];
 
@@ -613,15 +654,20 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         query.addEventListener("change", change);
         return () => query.removeEventListener("change", change);
     }, []);
-    const contentMotion = animationsEnabled && !prefersReducedMotion;
+    const contentMotion = animationsEnabled && !prefersReducedMotion; // 既有胶囊滚动与通用状态图形口径；hover 接力和顶部过渡统一使用解析后的开关。
     const [snapshot, setSnapshot] = useState<IslandSnapshot>();
     const [failure, setFailure] = useState<string>();
     const [messages, setMessages] = useState<IslandMessage[]>([]); // 与原生 Toast 同一队列的只读投影。
     const [messageFailure, setMessageFailure] = useState<string>(); // 消息通道失败只降级，不阻塞岛卡。
     const heldMessages = useRef<IslandMessage[]>([]); // 阅读期暂存，回到常态清空。
-    const messagesRevision = useRef(0); // 广播代次：关闭失败的补偿读取只在本轮无新事件时应用。
+    const messagesRevision = useRef(0); // 新快照或本地关闭都使尚未返回的旧补读失效。
     const [mode, setMode] = useState<IslandMode>("collapsed");
     const [collapsedCards, setCollapsedCards] = useState<Record<string, boolean>>({}); // 卡内收起态；默认值来自偏好与收集箱默认收起。
+    const collapsedCardsRef = useRef(collapsedCards); // 连续点击读取最新本地状态，不等偏好回执。
+    const transientFolds = useRef<Record<string, boolean>>({}); // 不记忆的卡片只在本会话保留选择。
+    const foldSave = useRef({ queue: Promise.resolve(), revision: 0, pending: false });
+    const foldOrigins = useRef(new Map<HTMLElement, number>()); // 点击前的可见高度，反向点击也可从途中接续。
+    const foldAnimations = useRef(new Map<HTMLElement, Animation>());
     const [nativeDrop, setNativeDrop] = useState<IslandDropFact>(); // 原生投放进入后显示「松开加入收集箱」。
     const dropActiveRef = useRef(false); // 退回判定与离开路径读取最新值，不依赖渲染。
     const modeRef = useRef(mode); // 延时回调读取最新状态，不能覆盖键盘或点击后的展开。
@@ -629,6 +675,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     const [work, setWork] = useState<IslandRect>();
     const [monitorId, setMonitorId] = useState<string>(); // 主屏身份供浮岛天气登记活动订阅。
     const root = useRef<HTMLElement>(null); // 只测量岛自身。
+    const messageFocus = useRef<{ origin: HTMLButtonElement; candidates: number[] } | undefined>(undefined); // 最后一条关闭也可能卸载消息卡，续焦由岛根完成。
     const palette = useRef<HTMLDivElement>(null); // 只读取现有主题的围栏令牌，不呈现工作区。
     // 用布局副作用在首次绘制前完成复制：island.css 不再自带令牌回落，浮岛的令牌只有样式表与偏好两处来源。
     useLayoutEffect(() => {
@@ -687,7 +734,12 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     const layoutSettled = useRef(false);
     const inputGeometryKey = useRef(""); // expanded只在最新目标提交后评估，滚动重测不闪断条。
     const marginState = useRef<IslandMarginState>({ latch: "open" });
-    const lastMarginInput = useRef<Parameters<typeof islandMarginStep>[1] | undefined>(undefined);
+    const lastMarginInput = useRef<Parameters<typeof islandMarginStep>[1] | undefined>(undefined); // hover 只保留最后一次完整轮廓判定。
+    const expandedDwell = useRef<IslandExpandedDwell>("idle"); // 展开只记录是否离开过内容，列内移动不重新计时。
+    const expandedDwellTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const expandedDwellPoint = useRef<{ x: number; y: number } | undefined>(undefined);
+    const expandedDwellClosing = useRef(false); // 区分空白触发的滚动条渐出与 Escape 等主动收起。
+    const expandedReentryGate = useRef(false); // 自动收起后须先离开胶囊，再允许旧指针重新进入。
     const hoverKind = useRef<"enter" | "leave" | "margin" | undefined>(undefined);
     const hoverVersion = useRef(0);
     const scrollbar = useRef<HTMLDivElement>(null), scrollbarThumb = useRef<HTMLDivElement>(null);
@@ -720,11 +772,22 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         clearTimeout(wait.timer);
         wait.node.removeEventListener("transitionend", wait.handler);
     };
+    /** 清理展开回退计时；可保留内容侧状态作为下一次边界的起点。 */
+    const resetExpandedDwell = (content = false) => {
+        clearTimeout(expandedDwellTimer.current);
+        expandedDwellTimer.current = undefined;
+        expandedDwellPoint.current = undefined;
+        expandedDwell.current = content ? "content" : "idle";
+    };
     /** 只提交状态本身；滚动条独立渐出的等待由 changeMode 负责，避免形变与渐出重叠。 */
     const commitMode = (next: IslandMode, retainLatch: boolean) => {
         stopHoverTimer();
         marginState.current = { latch: retainLatch ? "blocked" : "open" };
         lastMarginInput.current = undefined;
+        if (next !== "collapsed") expandedReentryGate.current = false;
+        else if (expandedDwellClosing.current) expandedReentryGate.current = true;
+        resetExpandedDwell();
+        expandedDwellClosing.current = false;
         if (next !== modeRef.current) {
             targetGeometry.current = undefined; layoutSettled.current = false; inputReady.current = false;
             setScrollbarVisible(false, !animationFlag.current); // 关闭动效时立即隐藏；开启动效时渐出已在前置等待里完成。
@@ -816,21 +879,36 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             }
         }, handleFailure);
         void subscription.catch(handleFailure);
-        const messageSubscription = listenIslandMessages(
-            (next) => {
-                if (active) {
-                    messagesRevision.current++;
-                    setMessages(next);
-                    setMessageFailure(undefined);
-                }
-            },
-            (error) => {
-                if (active) setMessageFailure(error instanceof Error ? error.message : String(error)); // 消息通道失败只降级到岛卡。
-            },
-        );
-        void messageSubscription.catch((error: unknown) => {
-            if (active) setMessageFailure(error instanceof Error ? error.message : String(error));
-        });
+        const acceptMessages = (next: IslandMessage[]) => {
+            if (!active) return;
+            messagesRevision.current++;
+            setMessages(next);
+            setMessageFailure(undefined);
+        };
+        const handleMessageFailure = (error: unknown) => {
+            if (active) setMessageFailure(error instanceof Error ? error.message : String(error)); // 消息通道失败只降级到岛卡。
+        };
+        const messageSubscription = listenIslandMessages(acceptMessages, handleMessageFailure);
+        void messageSubscription.catch(handleMessageFailure);
+        let wasPaused = islandNotificationsPaused();
+        let visibilityRevision = 0;
+        const handleNotificationResume = () => {
+            const paused = islandNotificationsPaused();
+            if (paused === wasPaused) return; // 两种信号可以连续报告同一次恢复，只补读一次。
+            wasPaused = paused;
+            const visibilityTicket = ++visibilityRevision;
+            if (paused) return;
+            const messageTicket = messagesRevision.current;
+            const current = () => active && visibilityTicket === visibilityRevision && messageTicket === messagesRevision.current;
+            void getIslandMessages().then((next) => {
+                if (current()) acceptMessages(next);
+            }).catch((error: unknown) => {
+                if (current()) handleMessageFailure(error);
+            });
+        };
+        // 恢复桥可能吞掉暂停期间的消息广播；只在真实恢复边沿补读，不轮询。
+        document.addEventListener("visibilitychange", handleNotificationResume);
+        window.addEventListener("desktop-refresh-changed", handleNotificationResume);
         void getDesktopHostSnapshot()
             .then((desktop) => {
                 const monitor = desktop.hosts.find((host) => host.monitor.primary)?.monitor;
@@ -848,6 +926,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             active = false;
             mounted.current = false;
             stopHoverTimer();
+            document.removeEventListener("visibilitychange", handleNotificationResume);
+            window.removeEventListener("desktop-refresh-changed", handleNotificationResume);
             void subscription.then((stop) => stop()).catch(() => undefined);
             void messageSubscription.then((stop) => stop()).catch(() => undefined);
         };
@@ -892,7 +972,26 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     const vertical = mode === "collapsed" && (edge === "left" || edge === "right"); // 仅胶囊态在左右贴边时竖排；hover 与展开保持水平卡片。
     const instances = snapshot?.instances ?? [];
     const sortable = instances; // 卡片身份同一份，不另生成排序列表。
-    const visibleMessages = islandMessageView(messages, heldMessages.current, "expanded");
+    const visibleMessages = islandMessagePanelView(messages, heldMessages.current);
+    useLayoutEffect(() => {
+        const request = messageFocus.current;
+        messageFocus.current = undefined; // 后续消息广播或失败补读都不再改焦点。
+        if (!request || mode !== "expanded" || !root.current) return;
+        const focused = document.activeElement;
+        if (focused !== request.origin && focused !== document.body) return;
+        const panel = root.current.querySelector("[data-island-message='true']");
+        for (const id of request.candidates) {
+            const next = panel?.querySelector<HTMLButtonElement>(`button[data-island-message-id="${id}"]`);
+            if (next) { next.focus(); return; }
+        }
+        const toggle = panel?.querySelector<HTMLButtonElement>(".island-message-panel__toggle");
+        if (toggle) { toggle.focus(); return; }
+        // 消息卡前的投放卡无控件；其余卡保持现有 DOM / Tab 次序，不额外滚动通知列表。
+        const next = Array.from(root.current.querySelectorAll<HTMLElement>(".island-card:not([data-island-message]) :is(button, a[href], input, select, textarea, [tabindex])")).find(
+            (node) => node.tabIndex >= 0 && !node.matches(":disabled") && !node.closest("[hidden], [inert]") && node.getClientRects().length > 0 && getComputedStyle(node).visibility === "visible",
+        );
+        (next ?? root.current).focus();
+    });
     const drop = dropFact ?? nativeDrop;
     dropActiveRef.current = Boolean(drop);
     const dropFace = drop ? islandDropFace(drop === "reject" ? undefined : drop) : undefined;
@@ -900,75 +999,88 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     const { music, position } = useIslandMusic(mode, instances.some((instance) => instance.componentId === "official.music-control"));
     const media = music.snapshot;
     const musicView = islandLyricView(music.lyrics, position, media);
+    const musicCapsuleText = musicView.hasLine ? musicView.line : media?.title || islandPlaybackStatus(media); // 胶囊无同步词时不拼接艺人。
     const musicProgress = musicProgressRange(music.timeline, music.lyrics, position);
     const musicPercent = Math.min(100, Math.max(0, Math.floor(musicProgress.value / musicProgress.max * 100)));
     const musicStatus: IslandStatus = !media ? "disconnected" : media.playback === "playing" ? (music.timeline?.durationMs ?? 0) > 0 ? "running" : "indeterminate" : media.playback === "paused" ? "paused" : "pending";
     const weatherInstance = instances.find((instance) => instance.componentId === "official.weather");
     const weather = useIslandWeather(weatherInstance?.instanceId, monitorId);
-    const hasCompactCollect = mode !== "expanded" && instances.some((instance) => instance.componentId === "official.collect-box");
-    const [collectPreview, setCollectPreview] = useState<CollectItem | undefined>(() => readIslandCollectCache()?.[0]);
+    const collectEnabled = instances.some((instance) => instance.componentId === "official.collect-box");
+    const [clockNow, setClockNow] = useState(Date.now);
+    const notifications = useIslandNotifications(messages, mode, clockNow);
+    const pushLocalNotification = notifications.push;
     useEffect(() => {
-        if (!hasCompactCollect) return;
+        if (!collectEnabled) return;
         let active = true;
         let generation = 0;
-        const refresh = () => {
+        let previous = readIslandCollectCache();
+        const refresh = (fromChange: boolean) => {
             if (window.__DESKTOP_TOOLS_NATIVE__?.isRefreshPaused?.()) return;
             const id = ++generation;
             void getCollectItems().then((items) => {
                 if (!active || generation !== id) return;
+                // 重命名、置顶、删除和首次读取不产生收录通知。
+                const arrival = fromChange ? islandCollectArrival(previous, items, islandCollectTitle) : undefined;
+                previous = items;
                 writeIslandCollectCache(items);
-                setCollectPreview(items[0]);
+                if (arrival?.activity === "completed") pushLocalNotification({ source: "collect", content: arrival.title });
             }).catch(() => undefined);
         };
-        refresh();
-        const listener = listenCollectChanges(refresh, () => undefined).catch(() => undefined);
-        window.addEventListener("desktop-refresh-changed", refresh);
-        return () => { active = false; window.removeEventListener("desktop-refresh-changed", refresh); void listener.then((stop) => stop?.()); };
-    }, [hasCompactCollect]);
-    const collectTitle = collectPreview ? islandCollectTitle(collectPreview) : "收集箱";
+        const sync = () => refresh(false);
+        sync();
+        const listener = listenCollectChanges((deletedName) => refresh(!deletedName), () => undefined).catch(() => undefined);
+        window.addEventListener("desktop-refresh-changed", sync);
+        return () => { active = false; window.removeEventListener("desktop-refresh-changed", sync); void listener.then((stop) => stop?.()); };
+    }, [collectEnabled, pushLocalNotification]);
+    const weatherSummary = weather.summary && weather.unit.status === "pending" ? `${weather.unit.primary}\n${weather.summary.code ?? ""}` : undefined;
+    const weatherPrevious = useRef<string | undefined>(undefined);
+    useLayoutEffect(() => {
+        if (islandWeatherNotice(weatherPrevious.current, weatherSummary)) pushLocalNotification({ source: "weather", content: weather.unit.primary });
+        weatherPrevious.current = weatherSummary;
+    }, [weatherSummary, weather.unit.primary, pushLocalNotification]);
     const arrivals = useMemo(() => {
-        const resident = (snapshot?.instances ?? []).map((instance): IslandAnchorArrival => {
+        const enabled = (snapshot?.instances ?? []).flatMap((instance): IslandAnchorArrival[] => {
             const manifest = snapshot?.runtime.manifests.find((item) => item.id === instance.componentId);
             const registration = snapshot?.runtime.instances.find((item) => item.instanceId === instance.instanceId);
             const source = manifest?.name ?? instance.componentId;
+            if (instance.componentId === "official.music-control") return islandMusicAnchorVisible({ enabled: true, playback: media?.playback })
+                ? [{ source, layer: ISLAND_NOTICE_LAYER, nowMs: 0, kind: "music", unit: { status: musicStatus, primary: musicCapsuleText, secondary: musicStatus === "running" ? `${musicPercent}%` : undefined } }] : [];
+            if (instance.componentId === "official.weather" || instance.componentId === "official.collect-box") return [];
             const status = registration?.status === "failed" ? "failed" : registration?.status === "ready" ? "pending" : "disconnected";
-            const kind: IslandFunctionKind = instance.componentId === "official.music-control" ? "music" : instance.componentId === "official.collect-box" ? "collect" : instance.componentId === "official.weather" ? "weather" : "plugin";
-            return { source, layer: "resident", nowMs: 0, kind, unit: instance.componentId === "official.music-control"
-                ? { status: musicStatus, primary: musicView.line, secondary: musicStatus === "running" ? `${musicPercent}%` : undefined }
-                : instance.componentId === "official.weather" ? { status: weather.unit.status, primary: weather.unit.primary }
-                    : { status, primary: instance.componentId === "official.collect-box" ? collectTitle : source } };
+            return [{ source, layer: "resident", nowMs: 0, kind: "plugin", unit: { status, primary: source } }];
         });
-        return [...resident, ...contentFacts];
-    }, [snapshot, musicStatus, musicView.line, musicPercent, contentFacts, weather.unit.status, weather.unit.primary, collectTitle]);
-    const content = useIslandContent(arrivals, messages, mode, statusSpecs);
-    const baseAnchors = content.anchors.filter((anchor) => islandStatusSpec(anchor.unit?.status ?? "", statusSpecs)?.disposition !== "vanish");
-    const anchors = dropAnchor ? [dropAnchor, ...baseAnchors] : baseAnchors;
-    const face = islandCapsuleFace(anchors, content.clockNow);
-    const capsuleIds = face.kind === "anchors" && mode === "collapsed" ? face.visible.map((anchor) => anchor.id) : [];
+        return [...enabled, ...contentFacts];
+    }, [snapshot, media?.playback, musicStatus, musicCapsuleText, musicPercent, contentFacts]);
     const previousCapsule = useRef<{ ids: string[]; front?: string }>({ ids: [] });
+    const content = useIslandContent(arrivals, notifications.anchor, mode, statusSpecs, preferences, previousCapsule.current.front);
+    const baseAnchors = content.visible;
+    const anchors = dropAnchor ? [dropAnchor, ...baseAnchors] : baseAnchors;
+    const expandedContent = content.live.filter((anchor) => anchor.layer !== "resident" && anchor.id !== ISLAND_NOTIFICATION_ANCHOR_ID && anchor.kind !== "music");
+    const empty = !baseAnchors.length;
+    useEffect(() => {
+        const now = Date.now();
+        if (empty && islandClockLabel(now) !== islandClockLabel(clockNow)) setClockNow(now);
+        const deadlines = mode === "collapsed" ? notifications.rows.map((notice) => islandNotificationDeadline(notice) ?? Infinity) : [];
+        const next = Math.min(...deadlines, ...(empty ? [now + 60_000 - now % 60_000] : []));
+        if (!Number.isFinite(next)) return;
+        const timer = setTimeout(() => setClockNow(Date.now()), Math.max(1, next - now));
+        return () => clearTimeout(timer);
+    }, [empty, notifications.rows, clockNow, mode]);
+    const face = islandCapsuleFace(anchors, clockNow);
+    const capsuleIds = face.kind === "anchors" && mode === "collapsed" ? face.visible.map((anchor) => anchor.id) : [];
     const selected = dropAnchor ?? anchors.find((anchor) => anchor.id === islandHoverSelect(anchors, content.selected));
     const foreground = dropAnchor ?? content.active;
-    const capsuleActive = islandStatusSpec(foreground?.unit?.status ?? "", statusSpecs)?.disposition === "dot" ? undefined : foreground;
+    const capsuleActive = foreground?.id !== ISLAND_NOTIFICATION_ANCHOR_ID && islandStatusSpec(foreground?.unit?.status ?? "", statusSpecs)?.disposition === "dot" ? undefined : foreground;
     const relayFrom = previousCapsule.current.front;
     const previousIds = previousCapsule.current.ids;
     useLayoutEffect(() => { previousCapsule.current = { ids: capsuleIds, front: mode === "collapsed" ? capsuleActive?.id : undefined }; });
-    const musicSource = snapshot?.runtime.manifests.find((item) => item.id === "official.music-control")?.name;
-    const weatherSource = snapshot?.runtime.manifests.find((item) => item.id === "official.weather")?.name;
-    const isWeather = (anchor: IslandAnchor | undefined) => anchor?.layer === "resident" && anchor.source === weatherSource;
-    const weatherIcon = (anchor: IslandAnchor) => isWeather(anchor) && weather.summary?.code && weather.unit.status === "pending" ? <WeatherGlyph code={weather.summary.code} /> : undefined;
-    const isMusic = (anchor: IslandAnchor | undefined) => anchor?.layer === "resident" && anchor.source === musicSource;
-    const selectedMessage = selected?.layer === "message" ? visibleMessages.find((message) => message.source === selected.source && message.receivedAtMs === selected.updatedAtMs) : undefined;
-    const dismissAllowed = selectedMessage && selected?.unit?.status !== "awaiting" && selected?.unit?.status !== "failed";
-    const availableControls = isMusic(selected)
-        ? islandMusicCommands(media).filter(([, , enabled]) => enabled).map(([action]) => action)
-        : dismissAllowed ? ["dismiss"] : [];
-    const hoverText = islandHoverContent(selected, availableControls);
-    const hoverValue = hoverText.lines[1];
-    const hoverSecondary = isMusic(selected) ? media?.artist : isWeather(selected) ? weather.detail : islandAnchorValue(hoverValue ?? "") ? hoverValue : undefined;
+    const isMusic = (anchor: IslandAnchor | undefined) => anchor?.kind === "music";
     const status = foreground?.unit?.status;
     const announcementValue = islandAnchorValue(foreground?.unit?.secondary ?? "");
     const milestone = status === "running" && announcementValue?.kind === "percent" ? Math.floor(announcementValue.value / 25) * 25 : undefined;
-    const announcement = !foreground ? "" : foreground.layer === "drop" ? foreground.unit?.primary :
+    const notice = foreground?.id === ISLAND_NOTIFICATION_ANCHOR_ID ? notifications.rows[0] : undefined;
+    const announcement = notice ? [notice.source, islandStatusSpec(notice.status)?.word, notice.content].filter(Boolean).join(" · ") :
+        !foreground || foreground.id === ISLAND_NOTIFICATION_ANCHOR_ID ? "" : foreground.layer === "drop" ? foreground.unit?.primary :
         [foreground.source, islandStatusSpec(status ?? "", statusSpecs)?.word, status === "running" ? milestone && milestone < 100 ? `${milestone}%` : undefined : foreground.unit?.primary].filter(Boolean).join(" · ");
     const announcementState = useRef({ text: "", added: 0, ids: new Set<string>() });
     const [liveText, setLiveText] = useState("");
@@ -987,6 +1099,18 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     }, [announcement, baseAnchors.map((anchor) => anchor.id).join("\n")]);
     const hoverContentRef = useRef<HTMLDivElement>(null);
     const hoverList = useRef<HTMLDivElement>(null);
+    const focusedAnchor = useRef<HTMLButtonElement>(null); // 只在已聚焦锚点被撤下时接续方向键焦点。
+    useLayoutEffect(() => {
+        const previous = focusedAnchor.current;
+        if (mode !== "hover") focusedAnchor.current = null;
+        else if (previous && !previous.isConnected && document.activeElement === document.body) {
+            focusedAnchor.current = null;
+            hoverList.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus();
+        }
+    }, [mode, selected?.id]);
+    /** hover 的非交互测宽组与本次停留期间的最大宽度，退出后重新测。 */
+    const hoverWidthSamples = useRef<HTMLDivElement>(null);
+    const hoverSessionInline = useRef(0);
     /** 胶囊卡片宽度：hover 卡片不得窄于它，否则指针停在原胶囊范围会被判成透明边距而回退。 */
     const capsuleInline = useRef(0);
     const handleHoverKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -1007,17 +1131,64 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     // 记忆开关只决定是否写偏好，运行期收起态始终可切换。
     const cardCollapsed = (componentId: string) => collapsedCards[componentId] ?? collapseDefault(componentId);
     useLayoutEffect(() => {
-        // 只回填记忆开启的卡片；关闭记忆的卡片按默认值显示，不受旧保存值影响。
+        if (foldSave.current.pending) return; // 乱序回来的旧偏好不能把下一次点击的乐观状态覆盖掉。
         const memory = preferences?.islandCardCollapseMemory ?? {};
         const stored = preferences?.islandCardCollapsed ?? {};
-        setCollapsedCards(Object.fromEntries(Object.entries(stored).filter(([cardId]) => memory[cardId] !== false)));
-    }, [preferences?.islandCardCollapsed, preferences?.islandCardCollapseMemory]);
-    /** 收起/展开一张卡；先更新页面，再把整份收起表写回偏好。 */
-    const handleToggleCard = (componentId: string) => {
-        const next = { ...collapsedCards, [componentId]: !cardCollapsed(componentId) };
+        const next = Object.fromEntries(Object.entries(stored).filter(([id]) => memory[id] !== false));
+        for (const [id, value] of Object.entries(transientFolds.current)) {
+            if (memory[id] === false) next[id] = value;
+            else delete transientFolds.current[id];
+        }
+        collapsedCardsRef.current = next;
         setCollapsedCards(next);
-        if (collapseMemory[componentId] === false) return; // 关闭记忆时只改当前会话，不写偏好。
-        void saveIslandCardCollapsed(next).catch((error: unknown) => console.warn("浮岛卡收起状态保存失败", error));
+    }, [preferences?.islandCardCollapsed, preferences?.islandCardCollapseMemory]);
+    // 只为实际卡内点击做高度过渡；三态外框布局和原生命中不参与此动画。
+    useLayoutEffect(() => {
+        if (mode !== "expanded" || !animationsEnabled) return;
+        for (const [card, from] of foldOrigins.current) {
+            foldAnimations.current.get(card)?.cancel();
+            foldAnimations.current.delete(card);
+            if (!card.isConnected) continue;
+            const to = card.getBoundingClientRect().height;
+            if (Math.abs(to - from) < 0.5) continue;
+            const animation = card.animate([{ blockSize: `${from}px` }, { blockSize: `${to}px` }], { duration: ISLAND_ANCHOR_SHRINK_MS, easing: ISLAND_ANCHOR_EASING });
+            foldAnimations.current.set(card, animation);
+            animation.onfinish = () => {
+                if (foldAnimations.current.get(card) !== animation) return;
+                foldAnimations.current.delete(card);
+                remeasure.current(true);
+            };
+        }
+        foldOrigins.current.clear();
+    }, [collapsedCards, mode, animationsEnabled]);
+    useLayoutEffect(() => () => {
+        foldOrigins.current.clear();
+        for (const animation of foldAnimations.current.values()) animation.cancel();
+        foldAnimations.current.clear();
+    }, [mode, animationsEnabled]);
+    /** 点击先切本地状态，再串行持久化；同一时刻只让最后一份偏好回执更新页面。 */
+    const handleToggleCard = (componentId: string, card: HTMLElement | null) => {
+        const collapsed = !(collapsedCardsRef.current[componentId] ?? collapseDefault(componentId));
+        const next = { ...collapsedCardsRef.current, [componentId]: collapsed };
+        if (animationsEnabled && card && layoutSettled.current) foldOrigins.current.set(card, card.getBoundingClientRect().height);
+        collapsedCardsRef.current = next;
+        setCollapsedCards(next);
+        if (collapseMemory[componentId] === false) { transientFolds.current[componentId] = collapsed; return; }
+        const save = foldSave.current;
+        const revision = ++save.revision;
+        save.pending = true;
+        const stored = Object.fromEntries(Object.entries(next).filter(([id]) => collapseMemory[id] !== false));
+        save.queue = save.queue.then(async () => {
+            if (revision !== save.revision) return;
+            try {
+                const preferences = await saveIslandCardCollapsed(stored);
+                if (revision === save.revision && mounted.current) onPreferences(preferences);
+            } catch (error) {
+                console.warn("浮岛卡收起状态保存失败", error);
+            } finally {
+                if (revision === save.revision) save.pending = false;
+            }
+        });
     };
     /** 拖出结束后按原生光标判态：OLE 拖动期间页面收不到 pointerout，不能只等悬停事件。 */
     const handleCollectDragEnd = () => {
@@ -1032,7 +1203,15 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     const edgeKey = useRef(""); // 上次测量的贴边方向，变化时丢弃旧几何缓存。
     const formKey = useRef(""); // 上次测量的岛形态，变化时丢弃旧胶囊高度与并集缓存。
     useLayoutEffect(() => {
+        if (mode !== "hover") hoverSessionInline.current = islandHoverSessionWidth(false, hoverSessionInline.current, 0);
         if (!preferences || !work || !root.current) return;
+        const samples = hoverWidthSamples.current;
+        const hoverCard = samples?.parentElement;
+        // 先更新宽度下限，再进入原有卡片实测与几何去重；镜像不属于卡片区域列表。
+        const setHoverInline = (width: number) => {
+            const value = `${width}px`;
+            if (hoverCard?.style.getPropertyValue("--island-hover-inline") !== value) hoverCard?.style.setProperty("--island-hover-inline", value);
+        };
         let active = true;
         let frame = 0;
         let motionFrame = 0;
@@ -1078,7 +1257,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                 return;
             }
             const painted = paintedGeometry.current;
-            // 展开根是保留union，根尺寸不变不能证明卡片内容未变化；展开RO必须重测自然目标。
+            // 展开根固定到工作区，根尺寸相同也要重测内部卡片与滚动范围。
             if (!force && mode !== "expanded" && root.current && painted) {
                 const box = root.current.getBoundingClientRect();
                 // paint 写入的根尺寸会触发 ResizeObserver；它不改变内容，不能借机 restore 成自然布局。
@@ -1088,15 +1267,14 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             restoreStyles(); // 动画被打断或切态竞争时清掉上一轮内联尺寸，测量必须基于真实文档流。
             {
                 if (!active || !root.current || dragging.current) return;
-                // 暂时移除保留窗口的尺寸约束，只测自然内容目标，避免用旧union高度截掉新增内容。
-                // 同一次同步测量内恢复变量和scrollTop，paint自触发的RO重放会由geometryKey去重，不重复提交。
+                // 展开只解除旧宽度测自然内容；固定高度保持不变，避免测量时滚动位置回退。
                 const element = root.current;
                 const expandedInline = element.style.getPropertyValue("--island-expanded-inline");
-                const expandedBlock = element.style.getPropertyValue("--island-expanded-block");
-                const scrollTop = element.scrollTop;
-                if (mode === "expanded") {
-                    element.style.removeProperty("--island-expanded-inline");
-                    element.style.removeProperty("--island-expanded-block");
+                if (mode === "expanded") element.style.removeProperty("--island-expanded-inline");
+                if (samples) {
+                    const naturalInline = islandHoverInlineSize(Array.from(samples.children, (sample) => sample.getBoundingClientRect().width), capsuleInline.current);
+                    hoverSessionInline.current = islandHoverSessionWidth(true, hoverSessionInline.current, naturalInline);
+                    setHoverInline(hoverSessionInline.current);
                 }
                 const origin = element.getBoundingClientRect();
                 // 刘海非展开态由根 padding 让出圆弧区；测量时换回内容坐标，几何函数再统一加回 12 DIP。
@@ -1104,22 +1282,22 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                 const horizontalEdge = edge === "left" || edge === "right";
                 const measured = Array.from(root.current.querySelectorAll<HTMLElement>(".island-card")).flatMap((card) => {
                     const rect = card.getBoundingClientRect();
-                    return visibleIslandRect(
-                        {
-                            left: rect.left - origin.left - (horizontalEdge ? 0 : notchPad),
-                            top: rect.top - origin.top - (horizontalEdge ? notchPad : 0),
-                            width: rect.width,
-                            height: rect.height,
-                        },
-                        origin.height,
-                    );
+                    const local = {
+                        left: rect.left - origin.left - (horizontalEdge ? 0 : notchPad),
+                        top: rect.top - origin.top - (horizontalEdge ? notchPad : 0),
+                        width: rect.width,
+                        height: rect.height,
+                    };
+                    // 展开先量全列宽度，再由岛几何裁剪原生卡片区域，滚出视口不会改变列宽。
+                    return mode === "expanded" ? [local] : visibleIslandRect(local, origin.height);
                 });
-                if (mode === "expanded") {
-                    if (expandedInline) element.style.setProperty("--island-expanded-inline", expandedInline);
-                    if (expandedBlock) element.style.setProperty("--island-expanded-block", expandedBlock);
-                    element.scrollTop = scrollTop;
-                }
+                if (mode === "expanded" && expandedInline) element.style.setProperty("--island-expanded-inline", expandedInline);
                 if (!measured.length) return;
+                // 顶栏也可能撑宽卡片；插件自绘只在选中时挂载，只有真实卡片能测到它的宽度。
+                if (hoverCard) {
+                    hoverSessionInline.current = islandHoverSessionWidth(true, hoverSessionInline.current, measured[0].width);
+                    setHoverInline(hoverSessionInline.current);
+                }
                 try {
                     const radius = mode === "collapsed" ? 22 : mode === "hover" ? 16 : preferences.islandRadius;
                     const pending = pendingOffset.current;
@@ -1142,10 +1320,13 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                     if (mode === "collapsed") {
                         collapsedBox.current = request;
                     }
-                    const key = JSON.stringify(request);
+                    const expanded = request.state === "expanded";
+                    const key = expanded ? islandWindowKey(request) : JSON.stringify(request);
                     const element = root.current;
                     const cards = Array.from(element.querySelectorAll<HTMLElement>(".island-card"));
                     const from = currentGeometry.current;
+                    // 卡内动画期间不更改原生窗口；若内容列确实变宽，待动画完成后再按正常规则测一次。
+                    if (expanded && foldAnimations.current.size && from && islandWindowKey(from) !== key) return;
                     const animate = animationsEnabled && from && from.state !== request.state && !dragging.current && !skipMotionOnce.current;
                     const form = preferences.islandForm ?? "capsule";
                     const filletMask = (slot: "start" | "end"): [string, string] => {
@@ -1267,6 +1448,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                 borderRadius: islandCornerRadius(shape.radius, form, edge, attached),
                                 zIndex: String(cards.length - index), // 当前卡压在其他卡之上，其他卡从它背后弹出。
                             });
+                            // hover 的自然宽度下限不能限制动画中插值的外框；restoreStyles 后自动恢复。
+                            if (mode === "hover") card.style.minInlineSize = "0";
                             if (staggerMs > 0 && index > 0) card.style.opacity = `${reveal}`; // 相位 1 内其他卡完全隐藏。
                             const content = card.querySelector<HTMLElement>(".island-card__content");
                             if (!content) return;
@@ -1287,20 +1470,20 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                         attachedCorner.current = undefined; // 展开态没有贴边负圆角，下一次从目标态重新推导。
                         if (surface.current) surface.current.style.display = "none";
                     };
-                    if (key === geometryKey.current) {
-                        // 同一几何被重新测量时仍要把窗口布局与补面写回；否则并集窗口/刘海内缩、
-                        // 换边后上次提交被取消等情况会退回自然布局或残留上一贴边的补面。
-                        if (request.state === "expanded") {
+                    if (key === geometryKey.current && (!expanded || (from && islandWindowKey(from) === key))) {
+                        // 展开同盒只更新页面本地可见卡片、透明列与滚动条；不把内部布局变更送回原生。
+                        if (expanded) {
                             clearFillets();
                             applyViewportMargin(request);
+                            currentGeometry.current = request;
+                            inputGeometryKey.current = key;
+                            layoutSettled.current = true;
                         } else {
                             // 稳态无需固定尺寸：hover 的原生命中可保留并集，绘制与实测仍以自然内容盒为原点。
                             applyViewportMargin(natural);
                             paintAttached(islandAttachedCorner(natural.state, form, natural.cards[0]?.radius ?? 0), natural);
                         }
-                        // 去重只针对原生几何提交：内容变高但裁剪后 request 不变时，滚动指标仍可能变化，
-                        // 同一 key 早退也必须刷新条的可见性、thumb/range 与命中排除矩形，且不产生重复 IPC。
-                        targetGeometry.current = request; // 同尺寸下内容盒可能变化，滚动与命中判定必须用最新实测。
+                        targetGeometry.current = request; // 同一窗口盒下滚动、透明列和卡片尺寸仍可变化。
                         refreshScrollbar();
                         return;
                     }
@@ -1380,22 +1563,18 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                     const grows =
                                         !from || request.windowBox.width > from.windowBox.width + 0.5 || request.windowBox.height > from.windowBox.height + 0.5;
                                     if (request.state === "expanded") {
-                                        // 展开终态保留入态并集窗口，不收缩到目标盒；内容仍按目标 margin 落位。
-                                        // 有切态动画时保留入态并集；同态重测（内容增减、卡内收起）直接提交自然目标，窗口随内容收缩。
-                                        const expandedFrame = animate ? islandUnionFrame(startGeometry ?? from ?? request, request, motionTotal, edge, work, staggerMs) : request;
-                                        await commit(expandedFrame);
+                                        // 入态并集已占满工作区高度；终帧只恢复自然列宽与滚动布局，不再收缩窗口高度。
+                                        await commit(request);
                                         if (active) {
                                             clearFillets();
                                             applyViewportMargin(request);
                                             targetGeometry.current = request;
-                                            // 宽度取展开目标本身而不是入态并集：目标宽度在动画前已实测，动画结束后不再被并集撑宽后重排。
                                             element.style.setProperty("--island-expanded-inline", `${request.windowBox.width}px`);
-                                            element.style.setProperty("--island-expanded-block", `${expandedFrame.windowBox.height}px`);
-                                            currentGeometry.current = expandedFrame;
+                                            element.style.setProperty("--island-expanded-block", `${request.windowBox.height}px`);
                                             paintedGeometry.current = {
                                                 state: "expanded",
-                                                width: expandedFrame.windowBox.width,
-                                                height: expandedFrame.windowBox.height,
+                                                width: request.windowBox.width,
+                                                height: request.windowBox.height,
                                             };
                                         }
                                     } else if (!animate && grows) {
@@ -1468,6 +1647,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         const contentObserver = new ResizeObserver(() => measure(true));
         const compactContent = root.current.querySelector(".island-card--anchors .island-card__content");
         if (compactContent) contentObserver.observe(compactContent);
+        if (samples) contentObserver.observe(samples); // 未选中的宽内容变化也可触发重测。
         measureNow(true); // 首帧绘制前完成目标实测与内容冻结，不先闪出最终布局。
         const element = root.current;
         return () => {
@@ -1483,9 +1663,9 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         };
     }, [mode, snapshot, preferences, work, edge, animationsEnabled, dragRevision]);
     useEffect(() => {
-        // 只有展开态的根尺寸被并集固定；消息卡增减不会触发 RO，必须主动重测。
+        // 展开根高度固定，消息卡增减可能不会触发根 RO，必须主动重测。
         remeasure.current(true);
-    }, [messages, messageFailure, mode, anchors.length, drop, mode === "hover" ? selected?.id : undefined, mode === "hover" ? hoverText.lines.join("\n") : undefined]);
+    }, [messages, messageFailure, mode, anchors.length, drop]);
     useEffect(() => {
         const pending = pendingOffset.current;
         if (pending === undefined || !preferences) return;
@@ -1495,6 +1675,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     // 常态关闭透明像素检测：门闩只在 hover 与展开态参与判定，常态进入仍是原 180ms 消抖。
     const hoverLatched = () => modeRef.current !== "collapsed" && marginState.current.latch !== "open";
     const scheduleHover = (inside: boolean) => {
+        if (inside && modeRef.current === "collapsed" && expandedReentryGate.current) return;
         const target = islandHoverTarget(modeRef.current, inside, interactionBusy(), hoverLatched());
         const kind = inside ? "enter" : "leave";
         if (target && hoverKind.current === kind && hoverTimer.current !== undefined) return;
@@ -1510,6 +1691,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     };
     const leaveWindow = () => {
         pointerInside.current = false;
+        resetExpandedDwell();
+        if (modeRef.current === "collapsed" && inputReady.current && inputGeometryKey.current === geometryKey.current) expandedReentryGate.current = false;
         if (hoverKind.current !== "leave") stopHoverTimer();
         cancelDragHold(); marginState.current.since = undefined;
         if (interactionBusy()) return;
@@ -1526,7 +1709,44 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         pointerInside.current = true;
         scheduleHover(true);
     };
-    // 文档级事件覆盖union余量（它可能在main根之外），但只在pointermove上评估透明区域。
+    /** 按下或重新入卡都抢先取消空白回退，包括正在等待滚动条渐出的自动收起。 */
+    const cancelExpandedReturn = (content: boolean) => {
+        resetExpandedDwell(content);
+        if (!expandedDwellClosing.current) return;
+        expandedDwellClosing.current = false;
+        cancelCollapseWait();
+        refreshScrollbar();
+    };
+    /** 展开使用缓存的列/槽几何，只有内容→空白的边沿能启动计时。 */
+    const moveExpandedPointer = (event: globalThis.PointerEvent) => {
+        const layout = scrollbarFrame.current;
+        if (!layoutSettled.current || !layout || inputGeometryKey.current !== geometryKey.current) return;
+        const point = { x: event.clientX, y: event.clientY };
+        if (!islandPointInRect(point, layout.window)) { leaveWindow(); return; }
+        pointerInside.current = true;
+        const inGutter = layout.gutter && islandPointInRect(point, layout.gutter);
+        const target = event.target instanceof Element ? event.target : undefined;
+        const onCard = Boolean(target?.closest(".island-card"));
+        const blank = !inGutter && !onCard && layout.bands.some((band) => islandPointInRect(point, band));
+        // 卡间隙和滚动槽只保护，不算入卡；没有元素目标时以缓存的列边界兜底。
+        const sample = blank ? "blank" : !inGutter && (onCard || !target) ? "content" : "protected";
+        const step = islandExpandedDwellStep(expandedDwell.current, sample);
+        expandedDwell.current = step.state;
+        if (blank) expandedDwellPoint.current = point; // 只更新位置，保留原截止时刻。
+        if (step.timer === "cancel" || (!blank && expandedDwellClosing.current)) cancelExpandedReturn(sample === "content");
+        if (step.timer !== "start") return;
+        expandedDwellTimer.current = setTimeout(() => {
+            expandedDwellTimer.current = undefined;
+            const latest = scrollbarFrame.current, cursor = expandedDwellPoint.current;
+            if (!mounted.current || modeRef.current !== "expanded" || expandedDwell.current !== "blank" || interactionBusy() || !inputReady.current || dropActiveRef.current || !latest || !cursor) return;
+            // 空白列可能在计时期间被变高的卡片覆盖；到点只确认一次当前列。
+            const stillBlank = latest.bands.some((band) => islandPointInRect(cursor, band)) && (!latest.gutter || !islandPointInRect(cursor, latest.gutter));
+            if (!stillBlank) { resetExpandedDwell(true); return; }
+            expandedDwellClosing.current = true;
+            changeMode("collapsed");
+        }, ISLAND_MARGIN_DELAY_MS);
+    };
+    // 展开只跟踪边界，紧凑两态沿用现有轮廓和门闩。
     inputHandlers.current = {
         move: (event) => {
             const drag = scrollbarDrag.current;
@@ -1535,6 +1755,10 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                 return;
             }
             if (event.pointerType === "touch") return;
+            if (modeRef.current === "expanded") {
+                if (!interactionBusy() && inputReady.current && !dropActiveRef.current) moveExpandedPointer(event);
+                return;
+            }
             if (interactionBusy() || !inputReady.current) {
                 marginState.current.since = undefined;
                 if (hoverKind.current === "margin") stopHoverTimer();
@@ -1554,7 +1778,6 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                 scheduleHover(true);
                 return;
             }
-            if (modeRef.current === "expanded" && (!layoutSettled.current || inputGeometryKey.current !== geometryKey.current)) return;
             const cards = Array.from(element.querySelectorAll<HTMLElement>(".island-card")).map((card) => {
                 const box = card.getBoundingClientRect(), style = getComputedStyle(card);
                 return { rect: { left: box.left, top: box.top, width: box.width, height: box.height }, radii: [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius].map(Number.parseFloat) };
@@ -1566,19 +1789,18 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             lastMarginInput.current = input;
             const next = islandMarginStep(marginState.current, input);
             marginState.current = next.state;
-            if (next.collapse) { if (!dropActiveRef.current) changeMode("collapsed", modeRef.current === "hover"); return; }
-            // hover 的透明边距与展开的额外带共用同一条 120ms 连续停留计时：进带开始计时，回内容盒取消。
-            const delayRegion: "transparent" | "extra-band" = modeRef.current === "hover" ? "transparent" : "extra-band";
-            if (region === delayRegion && marginState.current.since !== undefined) {
+            if (next.collapse) { if (!dropActiveRef.current) changeMode("collapsed", true); return; }
+            if (region === "transparent" && marginState.current.since !== undefined) {
                 if (hoverKind.current === "margin" && hoverTimer.current !== undefined) return;
                 stopHoverTimer(); hoverKind.current = "margin";
                 const version = hoverVersion.current;
                 const deadline = marginState.current.since + ISLAND_MARGIN_DELAY_MS;
                 hoverTimer.current = setTimeout(() => {
                     hoverTimer.current = undefined; hoverKind.current = undefined;
-                    if (version !== hoverVersion.current || !mounted.current || !lastMarginInput.current || marginState.current.since === undefined) return;
+                    const last = lastMarginInput.current;
+                    if (version !== hoverVersion.current || !mounted.current || !last || marginState.current.since === undefined) return;
                     // setTimeout已达到deadline；受控断言时performance.now可暂停，仍不依赖rAF推进。
-                    const result = islandMarginStep(marginState.current, { ...lastMarginInput.current, mode: modeRef.current, now: Math.max(performance.now(), deadline), busy: interactionBusy() || !inputReady.current });
+                    const result = islandMarginStep(marginState.current, { ...last, mode: modeRef.current, now: Math.max(performance.now(), deadline), busy: interactionBusy() || !inputReady.current });
                     marginState.current = result.state;
                     if (result.collapse && !dropActiveRef.current) changeMode("collapsed", modeRef.current === "hover");
                 }, Math.max(0, Math.ceil(deadline - performance.now())));
@@ -1599,7 +1821,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         return () => {
             document.removeEventListener("pointermove", move, true); document.removeEventListener("pointerout", leave, true);
             document.removeEventListener("pointerup", up, true); document.removeEventListener("pointercancel", up, true);
-            stopHoverTimer(); endScrollbarDrag(); cancelCollapseWait();
+            stopHoverTimer(); resetExpandedDwell(); endScrollbarDrag(); cancelCollapseWait();
         };
     }, []);
     const handleScrollbarDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -1660,6 +1882,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     };
     const handlePointerDown = (event: PointerEvent<HTMLElement>) => {
         const target = event.target as Element;
+        if (modeRef.current === "expanded" && target.closest(".island-card")) cancelExpandedReturn(true);
         const intent = islandDragIntent(mode, event.button, Boolean(target.closest(ISLAND_NO_DRAG)), Boolean(target.closest(".island-card")));
         if (intent !== "window" || dragging.current) return;
         marginState.current.since = undefined;
@@ -1714,7 +1937,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     };
     /** 关闭一条消息：先本地移除避免闪烁，后端走与原生关闭按钮相同的离场路径。 */
     const handleDismissMessage = (id: number) => {
-        content.forgetMessage(id);
+        messagesRevision.current++;
+        notifications.dismiss(`native:${id}`);
         heldMessages.current = heldMessages.current.filter((message) => message.id !== id);
         setMessages((current) => current.filter((message) => message.id !== id));
         void dismissIslandMessage(id).catch((error: unknown) => {
@@ -1722,17 +1946,71 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             const revision = messagesRevision.current; // 补偿读取前记录代次。
             void getIslandMessages()
                 .then((next) => {
-                    if (messagesRevision.current === revision) setMessages(next); // 期间有新广播时以广播为准。
+                    if (messagesRevision.current === revision) {
+                        notifications.allowRetry(id);
+                        setMessages(next); // 期间有新广播时以广播为准。
+                    }
                 })
                 .catch(() => undefined); // 消息仍在队列时恢复展示，避免本地与后端分叉。
         });
     };
+    /** 展开卡的键盘关闭在 DOM 更新后才续焦，鼠标与 hover 关闭仍走普通路径。 */
+    const handleDismissPanelMessage: IslandMessageDismiss = (id, keyboardOrigin) => {
+        if (keyboardOrigin) messageFocus.current = { origin: keyboardOrigin, candidates: islandMessageFocusOrder(visibleMessages.map((message) => message.id), id) };
+        handleDismissMessage(id);
+    };
+    const hoverNow = Date.now(); // 同一帧的可见内容和所有测宽样本使用同一时刻。
+    /** 通知逐条关闭：本地通知不调用原生离场命令。 */
+    const handleDismissNotification = (notice: IslandNotification) => {
+        if (notice.nativeId === undefined) notifications.dismiss(notice.key);
+        else handleDismissMessage(notice.nativeId);
+    };
+    /** 可见详情与镜像共用布局；镜像不加载媒体图、挂载插件或执行动作。 */
+    const renderHoverDetail = (anchor: IslandAnchor | undefined, measuring = false) => {
+        const body = islandHoverBody(anchor);
+        if (!body.expandable) return null;
+        const plugin = !measuring && body.provider === "plugin" ? instances.find((instance) => snapshot?.runtime.manifests.find((manifest) => manifest.id === instance.componentId)?.name === anchor?.source) : undefined;
+        const manifest = plugin && snapshot?.runtime.manifests.find((item) => item.id === plugin.componentId);
+        const secondary = islandAnchorValue(body.lines[1] ?? "") ? body.lines[1] : undefined;
+        const bell = anchor?.id === ISLAND_NOTIFICATION_ANCHOR_ID;
+        return <div key={measuring ? anchor?.id : undefined} className={measuring ? "island-hover-width__sample" : "island-anchor-detail"}
+            ref={measuring ? undefined : hoverContentRef} tabIndex={measuring ? undefined : -1} role={measuring ? undefined : "group"} aria-label={measuring ? undefined : bell ? "消息通知内容" : `${anchor?.source}内容`}>
+            {body.provider === "music" ? <div className="island-music__header island-music-hover">
+                <IslandMediaInk artwork={measuring ? undefined : media?.artworkUrl} hover />
+                <div className="island-music__metadata">
+                    <span className="island-music__title island-anchor__text">{media?.title || body.lines[0]}</span>
+                    <span className="island-music__artist island-anchor__text">{media?.artist}</span>
+                    <span className="island-music__source island-anchor__text">{media?.source}</span>
+                </div>
+                <IslandMusicControls media={media} />
+            </div> : bell ? <div className="island-notification-list">
+                {notifications.rows.slice(0, ISLAND_MESSAGE_LIMIT).map((notice) => {
+                    const text = `${notice.source} · ${notice.content}`;
+                    return <div className="island-notification-row" key={notice.key}>
+                        <span className="island-anchor__text" title={text}>{text}</span>
+                        <time> · {islandMessageTime(notice.receivedAtMs, hoverNow)}</time>
+                        <button type="button" className="island-message__close" data-button="icon" aria-label={`关闭消息：${islandShortText(text)}`} onClick={measuring ? undefined : () => handleDismissNotification(notice)}><span aria-hidden="true" dangerouslySetInnerHTML={{ __html: closeIcon }} /></button>
+                    </div>;
+                })}
+            </div> : <>
+                <span className="island-anchor island-anchor--detail" aria-hidden="true">{measuring ? null : <IslandAnchorVisual anchor={anchor} specs={statusSpecs} special={anchor === dropAnchor ? "release" : undefined} motion={animationsEnabled} artwork={media?.artworkUrl} />}</span>
+                {manifest && plugin ? <div className="island-plugin-hover" data-island-no-drag="true">
+                    <PluginSlot manifest={manifest} instanceId={plugin.instanceId} tileType={pluginTileType(plugin.state)} collapsed={false} hover fallback={<span className="island-anchor__text">{islandShortText(body.lines[0] ?? "")}</span>} />
+                </div> : <div className="island-anchor-detail__lines">
+                    <span className="island-anchor__text">{islandShortText(body.lines[0] ?? "")}</span>
+                    {secondary ? <span className="island-anchor__text">{islandShortText(secondary)}</span> : null}
+                </div>}
+            </>}
+        </div>;
+    };
+    /** 通知计数独立于通用附加项白名单，不挤占 bell 的绘制区。 */
+    const notificationCount = (anchor: IslandAnchor | undefined) => anchor?.id === ISLAND_NOTIFICATION_ANCHOR_ID ? islandNotificationCountLabel(anchor.count ?? 0) : undefined;
     return (
         <main
             ref={root}
             id="island-scroll-content"
             className="island"
-            style={{ maxBlockSize: work?.height, "--island-anchor-size": `${ISLAND_ANCHOR_SIZE}px`, "--island-capsule-line-max": `${islandCapsuleLineLimit(vertical, media?.playback === "playing")}px`, "--island-anchor-gap": `${ISLAND_ANCHOR_GAP}px`, "--island-anchor-grow": `${ISLAND_ANCHOR_GROW_MS}ms`, "--island-anchor-shrink": `${ISLAND_ANCHOR_SHRINK_MS}ms` } as CSSProperties}
+            style={{ maxBlockSize: work?.height, "--island-anchor-size": `${ISLAND_ANCHOR_SIZE}px`, "--island-capsule-line-max": `${islandCapsuleLineLimit(vertical, media?.playback === "playing")}px`, "--island-anchor-gap": `${ISLAND_ANCHOR_GAP}px`, "--island-anchor-grow": `${ISLAND_ANCHOR_GROW_MS}ms`, "--island-anchor-shrink": `${ISLAND_ANCHOR_SHRINK_MS}ms`, "--island-anchor-easing": ISLAND_ANCHOR_EASING } as CSSProperties}
             data-island-page="true"
             data-dragging={dragActive ? "true" : undefined}
             data-form={preferences?.islandForm ?? "capsule"}
@@ -1776,7 +2054,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                 </section>
             ) : null}
             {mode !== "expanded" ? (
-                <section className="island-card island-card--anchors" aria-label={mode === "collapsed" ? "浮岛概览" : "浮岛摘要"} style={mode === "hover" && capsuleInline.current > 0 ? { minInlineSize: `${capsuleInline.current}px` } : undefined}>
+                <section className="island-card island-card--anchors" aria-label={mode === "collapsed" ? "浮岛概览" : "浮岛摘要"}>
                     <div className="island-card__content">
                         {mode === "collapsed" ? (
                             <div className="island-anchor-row" data-layout="capsule">
@@ -1787,45 +2065,48 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                         const lyric = musicAnchor && musicView.hasLine && anchor.unit?.primary === musicView.line;
                                         const inserting = contentMotion && previousIds.length > 0 && !previousIds.includes(anchor.id) && !drop;
                                         return <div className="island-anchor-item" key={anchor.id}>
-                                            <span className="island-anchor" data-anchor={anchor.id} data-inserting={inserting || undefined}><IslandAnchorVisual anchor={anchor} specs={statusSpecs} special={anchor === dropAnchor ? "release" : undefined} motion={contentMotion} entering={inserting}>{weatherIcon(anchor)}</IslandAnchorVisual></span>
+                                            <span className="island-anchor" data-anchor={anchor.id} data-inserting={inserting || undefined} aria-label={notificationCount(anchor) ? `消息通知 ${notificationCount(anchor)} 条` : undefined}><IslandAnchorVisual anchor={anchor} specs={statusSpecs} special={anchor === dropAnchor ? "release" : undefined} motion={contentMotion} entering={inserting} artwork={media?.artworkUrl} /></span>
                                             <IslandRelayContent className="island-anchor-label" anchor={active} motion={contentMotion && !drop} vertical={vertical} music={musicAnchor} growDelay={Math.max(relayFrom && relayFrom !== active?.id ? ISLAND_ANCHOR_SHRINK_MS : 0, inserting ? ISLAND_ANCHOR_GROW_MS : 0)}>
-                                                {active?.unit ? lyric ? <IslandCapsuleLyric music={music} position={position} motion={contentMotion} vertical={vertical} /> : <span className="island-anchor__text">{islandShortText(active.unit.primary)}{islandAnchorValue(active.unit.secondary ?? "") ? <span className="island-anchor__value">{active.unit.secondary}</span> : null}</span> : null}
+                                                {/* 音乐进度仍供播报使用，胶囊只显示歌词或回落标题。 */}
+                                                {active?.unit ? lyric ? <IslandCapsuleLyric music={music} position={position} motion={contentMotion} vertical={vertical} /> : <span className="island-anchor__text">{islandShortText(active.unit.primary)}{notificationCount(active) ? <span className="island-anchor__value island-notification-count">{notificationCount(active)}</span> : !musicAnchor && islandAnchorValue(active.unit.secondary ?? "") ? <span className="island-anchor__value">{active.unit.secondary}</span> : null}</span> : null}
                                             </IslandRelayContent>
                                         </div>;
                                     })}
                                     {face.overflow ? <div className="island-anchor-item" key="overflow">
                                         <span className="island-anchor" data-anchor="overflow"><IslandAnchorVisual special={`＋${face.overflow > 99 ? "99+" : face.overflow}`} motion={false} /></span>
-                                        {capsuleActive?.unit && !face.visible.some((anchor) => anchor.id === capsuleActive.id) ? <span className="island-anchor__text">{islandShortText(capsuleActive.unit.primary)}</span> : null}
+                                        {capsuleActive?.unit && !face.visible.some((anchor) => anchor.id === capsuleActive.id) ? <span className="island-anchor__text">{islandShortText(capsuleActive.unit.primary)}{notificationCount(capsuleActive) ? <span className="island-anchor__value island-notification-count">{notificationCount(capsuleActive)}</span> : null}</span> : null}
                                     </div> : null}
                                 </>}
                             </div>
                         ) : <>
-                            <div ref={hoverList} className="island-anchor-row" data-layout="hover" role="group" aria-label="浮岛锚点" onKeyDown={handleHoverKey}>
+                            <div ref={hoverList} className="island-anchor-row" data-layout="hover" role="group" aria-label="浮岛锚点" onKeyDown={handleHoverKey}
+                                onFocus={(event) => { if (event.target instanceof HTMLButtonElement) focusedAnchor.current = event.target; }}
+                                onBlur={(event) => {
+                                    const target = focusedAnchor.current;
+                                    if (!target) return;
+                                    if (event.relatedTarget) focusedAnchor.current = null;
+                                    else queueMicrotask(() => {
+                                        // 浏览器会在真正摘除焦点节点前发 blur，暂留引用供本轮布局接续键盘焦点。
+                                        if (focusedAnchor.current === target && target.isConnected && document.activeElement !== target) focusedAnchor.current = null;
+                                    });
+                                }}>
                                 {anchors.length ? anchors.map((anchor) => <button
                                     type="button" className="island-anchor" data-anchor={anchor.id} key={anchor.id} tabIndex={anchor.id === selected?.id ? 0 : -1}
-                                    aria-label={`${anchor.source} ${islandStatusSpec(anchor.unit?.status ?? "", statusSpecs)?.word ?? ""}`.trim()} aria-pressed={anchor.id === selected?.id}
+                                    aria-label={notificationCount(anchor) ? `消息通知 ${notificationCount(anchor)} 条` : `${anchor.source} ${islandStatusSpec(anchor.unit?.status ?? "", statusSpecs)?.word ?? ""}`.trim()} aria-pressed={anchor.id === selected?.id}
                                     onPointerEnter={(event) => { if (event.pointerType !== "touch" && !drop) content.setSelected(anchor.id); }}
                                     onClick={() => { if (!drop) content.setSelected(anchor.id); }}
-                                >{anchor === dropAnchor ? <IslandAnchorVisual anchor={anchor} special="release" motion={contentMotion} /> : <IslandFunctionIcon kind={islandAnchorKind(anchor)} />}</button>) : <div className="island-anchor-item"><span className="island-anchor" data-anchor="clock"><IslandAnchorVisual special="clock" motion={false} /></span><span className="island-anchor__text island-anchor__clock">{islandClockLabel(content.clockNow)}</span></div>}
+                                >{anchor === dropAnchor ? <IslandAnchorVisual anchor={anchor} special="release" motion={contentMotion} /> : <IslandFunctionIcon kind={islandAnchorKind(anchor)} />}</button>) : <div className="island-anchor-item"><span className="island-anchor" data-anchor="clock"><IslandAnchorVisual special="clock" motion={false} /></span><span className="island-anchor__text island-anchor__clock">{islandClockLabel(clockNow)}</span></div>}
                             </div>
-                            {hoverText.expandable ? <div className="island-anchor-detail" ref={hoverContentRef} tabIndex={-1} role="group" aria-label={`${selected?.source}内容`}>
-                                <span className="island-anchor island-anchor--detail" aria-hidden="true"><IslandAnchorVisual anchor={selected} specs={statusSpecs} motion={false} /></span>
-                                <div className="island-anchor-detail__lines">
-                                    <span className="island-anchor__text">{islandShortText(hoverText.lines[0] ?? "")}</span>
-                                    {selectedMessage ? <span className="island-anchor__text">{selectedMessage.source} · {islandMessageTime(selectedMessage.receivedAtMs, content.clockNow)}</span> :
-                                        hoverSecondary ? <span className="island-anchor__text">{islandShortText(hoverSecondary)}</span> : null}
-                                </div>
-                                {isMusic(selected) && hoverText.controls.length ? <IslandMusicControls media={media} allowed={hoverText.controls} /> : null}
-                                {selectedMessage && hoverText.controls.includes("dismiss") ? <button type="button" className="island-message__close" data-button="icon" aria-label={`关闭${selectedMessage.source}消息`} onClick={() => handleDismissMessage(selectedMessage.id)}><span aria-hidden="true" dangerouslySetInnerHTML={{ __html: closeIcon }} /></button> : null}
-                            </div> : null}
+                            <IslandHoverRelay anchors={anchors} selected={selected} motion={animationsEnabled && !drop} renderDetail={renderHoverDetail} />
                         </>}
                     </div>
+                    {mode === "hover" ? <div ref={hoverWidthSamples} className="island-hover-width" inert aria-hidden="true">{anchors.map((anchor) => renderHoverDetail(anchor, true))}</div> : null}
                 </section>
-            ) : visibleMessages.length || instances.length || baseAnchors.length ? (
+            ) : visibleMessages.length || instances.length || expandedContent.length ? (
                 <>
                     {visibleMessages.length ? (
                         <section className="island-card" aria-label="消息" data-island-message="true">
-                            <div className="island-card__content"><IslandMessagePanel messages={visibleMessages} onDismiss={handleDismissMessage} /></div>
+                            <div className="island-card__content"><IslandMessagePanel messages={visibleMessages} onDismiss={handleDismissPanelMessage} /></div>
                         </section>
                     ) : null}
                     {instances.map((instance) => {
@@ -1868,7 +2149,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                     onPointerDown={(event) => event.stopPropagation()}
                                     onClick={(event) => {
                                         event.stopPropagation();
-                                        handleToggleCard(instance.componentId);
+                                        cancelExpandedReturn(true); // 键盘激活也取消仍在途的自动收起。
+                                        handleToggleCard(instance.componentId, event.currentTarget.closest<HTMLElement>(".island-card"));
                                     }}
                                 >
                                     <span
@@ -1907,17 +2189,12 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                         </section>
                     );
                     })}
-                    {baseAnchors.filter((anchor) => anchor.layer !== "resident" && (anchor.layer !== "message" || !visibleMessages.some((message) => message.source === anchor.source && message.receivedAtMs === anchor.updatedAtMs))).map((anchor) => {
-                        const message = anchor.layer === "message" ? content.getMessage(anchor) : undefined;
-                        return <section className="island-card" key={anchor.id} aria-label={anchor.source}>
-                            <div className="island-card__content island-anchor-expanded">
-                                {message ? <IslandMessageCard message={message} onDismiss={handleDismissMessage} /> : <>
-                                    <span className="island-anchor" data-anchor={anchor.id}><IslandAnchorVisual anchor={anchor} specs={statusSpecs} motion={contentMotion} /></span>
-                                    {anchor.unit?.primary ?? islandHoverContent(anchor).lines[0]}
-                                </>}
-                            </div>
-                        </section>;
-                    })}
+                    {expandedContent.map((anchor) => <section className="island-card" key={anchor.id} aria-label={anchor.source}>
+                        <div className="island-card__content island-anchor-expanded">
+                            <span className="island-anchor" data-anchor={anchor.id}><IslandAnchorVisual anchor={anchor} specs={statusSpecs} motion={contentMotion} /></span>
+                            {anchor.unit?.primary}
+                        </div>
+                    </section>)}
                 </>
             ) : (
                 <section className="island-card">

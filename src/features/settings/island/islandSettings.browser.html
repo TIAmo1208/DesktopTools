@@ -1,33 +1,79 @@
 <!doctype html>
 <html lang="zh-CN">
     <meta charset="utf-8" />
-    <title>浮岛设置样式核对</title>
+    <title>浮岛设置：锚点显示与卸载入口</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            background: #24262a;
+        }
+        #root {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+        /* 结论常驻页脚：断言与样张同页，便于人眼核对时同时看到 PASS/FAIL。 */
+        #result {
+            position: fixed;
+            left: 8px;
+            bottom: 8px;
+            margin: 0;
+            padding: 8px;
+            background: #000c;
+            color: #7dff9b;
+            font: 12px/1.5 monospace;
+            white-space: pre-wrap;
+        }
+    </style>
     <body>
-        <div id="root" style="max-width: 880px; margin: 0 auto; padding: 24px"></div>
+        <div id="root"></div>
+        <div id="features"></div>
+        <pre id="result">RUNNING</pre>
+        <script>
+            // 断言页失败兜底：加载异常、未处理拒绝与总时限都必须有界写出结论。
+            const 失败 = (原因) => {
+                const 结论 = document.getElementById("result");
+                if (结论 && !/^(PASS|FAIL)/.test(结论.textContent)) 结论.textContent = `FAIL\n- ${原因}`;
+            };
+            window.addEventListener("error", (事件) => 失败(事件.message || "断言脚本加载失败"), true);
+            window.addEventListener("unhandledrejection", (事件) => 失败(String(事件.reason)));
+            setTimeout(() => 失败("断言总时限 20000ms：页面状态未收敛"), 20000);
+        </script>
         <script type="module">
-            // 全部动态导入，把模块加载失败显式写到页面上，便于在浏览器里定位。
             try {
                 const React = await import("react");
                 const { createRoot } = await import("react-dom/client");
                 const { mockIPC, mockWindows } = await import("@tauri-apps/api/mocks");
                 const { IslandSettings } = await import("./IslandSettingsPage.tsx");
+                const { FeatureSettings } = await import("../features/FeatureSettings.tsx");
                 await import("../../../styles/global.css");
+                await import("../SettingsPage.css"); // 共享分组标题与设置行规则在生产由设置壳加载，夹具里补齐同一份环境。
 
-                // 替代宿主偏好：只保留浮岛页读取的字段。
-                const preferences = {
-                    islandEnabled: true,
-                    islandForm: "capsule",
-                    islandEdge: "top",
-                    islandHideOnFullscreen: true,
-                    islandRadius: 12,
-                    islandOffset: 0,
-                    islandCardOrder: ["official.music-control", "official.local-clock"],
+                const 通过 = []; // 已通过的说明。
+                const 断言 = (条件, 说明, 实际) => {
+                    if (!条件) throw new Error(`${说明}（实际：${实际}）`);
+                    通过.push(说明);
                 };
+                const 等待 = (毫秒) => new Promise((完成) => setTimeout(完成, 毫秒));
+                // 有界轮询：条件成立即返回，超时抛出等待说明。
+                const 直到 = async (查询, 说明, 时限 = 4000) => {
+                    const 截止 = Date.now() + 时限;
+                    while (Date.now() < 截止) {
+                        const 值 = 查询();
+                        if (值) return 值;
+                        await 等待(50);
+                    }
+                    throw new Error(`等待超时：${说明}`);
+                };
+
+                // 与真实音乐卡同文的长描述，用来核对一级页省略与二级页折叠。
+                const 长描述 = "歌词：网易云按其公开 web 接口取词，其余播放器用 LRCLIB；都取不到时回落歌名与艺人。进度：播放器向系统发布播放位置时直接跟随（如 QQ 音乐）；网易云不发布位置，客户端以 --remote-debugging-port=9222 启动时按调试端口读取，否则按本地计时外推，拖动或跳转不会立即对齐。总时长：优先系统上报，其次歌词源返回的时长，都没有时显示 --:--。";
                 const manifest = (id, name, description) => ({
                     id,
                     name,
                     description,
-                    entry: `official:${id.split(".")[1]}`,
+                    entry: id.startsWith("plugin.") ? "plugin:slot" : `official:${id.split(".")[1]}`,
                     script: "",
                     requiredCapabilities: [],
                     creatable: true,
@@ -37,45 +83,231 @@
                     tileTypes: [],
                     persistenceVersion: 1,
                 });
-                // 与真实音乐卡同文的长描述，用来核对一级页省略与二级页折叠。
                 const snapshot = {
                     revision: 1,
-                    manifests: [
-                        manifest(
-                            "official.music-control",
-                            "音乐控制",
-                            "歌词：网易云按其公开 web 接口取词，其余播放器用 LRCLIB；都取不到时回落歌名与艺人。进度：播放器向系统发布播放位置时直接跟随（如 QQ 音乐）；网易云不发布位置，客户端以 --remote-debugging-port=9222 启动时按调试端口读取，否则按本地计时外推，拖动或跳转不会立即对齐。总时长：优先系统上报，其次歌词源返回的时长，都没有时显示 --:--。",
-                        ),
-                        manifest("official.local-clock", "本地时间", "显示时间与日期"),
-                    ],
+                    manifests: [manifest("official.music-control", "音乐控制", 长描述), manifest("official.local-clock", "本地时间", "显示时间与日期"), manifest("plugin.sample", "示例插件", "插件浮岛卡")],
                     instances: [],
                     failures: [],
                 };
+                // 浮岛夹具的公共字段。锚点显隐另给两份：缺字段的旧配置，以及三项都写明的显式配置。
+                const 岛字段 = {
+                    islandEnabled: true,
+                    islandForm: "capsule",
+                    islandEdge: "top",
+                    islandHideOnFullscreen: true,
+                    islandRadius: 12,
+                    islandOffset: 0,
+                    islandCardOrder: ["official.music-control", "plugin.sample"],
+                };
+                const 旧偏好 = { ...岛字段 }; // 不带 islandAnchorVisible，三枚开关应按逐项默认 true 渲染。
+                const 显式全开 = { music: true, message: true, plugin: true }; // 三项都给出布尔值，读取 .music 不会落到缺失。
+                const 全开偏好 = { ...岛字段, islandAnchorVisible: { ...显式全开 } };
+                // 频谱采集设备夹具：两个输出设备，一个标注系统默认，核对设备下拉的选项、后缀与禁用。
+                const 音频设备 = [
+                    { id: "speaker-1", name: "扬声器", isDefault: true },
+                    { id: "headset-2", name: "耳机", isDefault: false },
+                ];
 
                 mockWindows("main");
-                mockIPC((command) => {
-                    switch (command) {
+                mockIPC((命令) => {
+                    switch (命令) {
                         case "get_preferences":
-                            return preferences;
+                            return 旧偏好;
                         case "get_component_runtime_snapshot":
                             return snapshot;
+                        case "list_audio_output_devices":
+                            return 音频设备;
+                        case "set_audio_device_watch":
+                            return null;
                         default:
                             return null;
                     }
                 });
 
-                const root = createRoot(document.getElementById("root"));
-                root.render(React.createElement(IslandSettings, { preferences, disabled: false, onPreferences: () => {} }));
-                // 查询参数 detail=1 直接进入第一张卡的二级页，便于截图核对。
-                const params = new URLSearchParams(location.search);
-                if (params.get("detail")) {
-                    setTimeout(() => {
-                        document.querySelector(".island-settings__hit")?.click();
-                        if (params.get("open")) setTimeout(() => document.querySelector(".settings-about__toggle")?.click(), 300);
-                    }, 400);
-                }
-            } catch (error) {
-                document.body.textContent = String(error);
+                const 补丁 = []; // onPreferences 收到的偏好补丁。
+                const 根 = createRoot(document.getElementById("root"));
+                const 渲染 = (偏好) => 根.render(React.createElement(IslandSettings, { preferences: { ...偏好 }, disabled: false, onPreferences: (值) => 补丁.push(值) }));
+                渲染(旧偏好);
+
+                // 一、一级页分组标题的共享式样：三个组标题 13px/600，首组上距归零；「卡片」小节标题保留 12px/600 无外边距的文档例外。
+                await 直到(() => document.querySelectorAll("#root h2.settings__group-title").length === 3, "浮岛一级页渲染出三个共享分组标题");
+                const 岛组标题 = [...document.querySelectorAll("#root h2.settings__group-title")];
+                断言(岛组标题.length === 3, "浮岛一级页三个共享分组标题", String(岛组标题.length));
+                断言(岛组标题.every((标题) => getComputedStyle(标题).fontSize === "13px" && getComputedStyle(标题).fontWeight === "600"), "浮岛组标题统一 13px/600", 岛组标题.map((标题) => getComputedStyle(标题).fontSize).join(","));
+                断言(getComputedStyle(岛组标题[0]).marginTop === "0px" && getComputedStyle(岛组标题[1]).marginTop === "18px", "首组标题贴上、其后组距 18px", `${getComputedStyle(岛组标题[0]).marginTop}/${getComputedStyle(岛组标题[1]).marginTop}`);
+                const 卡片标题 = document.querySelector("#root .island-settings__label");
+                断言(卡片标题 !== null && ["0px", "0px", "12px", "600"].every((值, 序) => ["marginTop", "marginBottom", "fontSize", "fontWeight"].map((属性) => getComputedStyle(卡片标题)[属性])[序] === 值), "卡片小节标题保持 12px/600、无外边距例外", ["marginTop", "marginBottom", "fontSize", "fontWeight"].map((属性) => getComputedStyle(卡片标题)[属性]).join("/"));
+
+                // 一、一级页进入锚点显示：三枚开关默认开启，说明区分锚点开关与卡片开关。
+                const 入口 = await 直到(() => [...document.querySelectorAll("#root button")].find((元素) => 元素.textContent.includes("锚点显示")), "主页出现锚点显示入口");
+                入口.focus();
+                断言(document.activeElement === 入口, "锚点显示入口可获得焦点", `${document.activeElement?.tagName}`);
+                入口.click();
+                const 二级 = await 直到(() => {
+                    const 标题 = document.querySelector("#root .island-settings--detail h2");
+                    return 标题?.textContent === "锚点显示" ? 标题.closest(".island-settings--detail") : null;
+                }, "进入锚点显示二级页");
+                断言(二级.querySelector(".island-settings__back")?.getAttribute("aria-label") === "返回浮岛", "二级页有返回浮岛入口", 二级.querySelector(".island-settings__back")?.getAttribute("aria-label") ?? "缺少返回");
+                const 说明 = 二级.querySelector(".island-settings__hint")?.textContent ?? "";
+                断言(说明.includes("胶囊") && 说明.includes("hover") && 说明.includes("卡片") && 说明.includes("展开卡"), "说明区分锚点开关与卡片上浮岛", 说明 || "缺少说明");
+                const 音乐开关 = document.getElementById("island-anchor-music");
+                const 消息开关 = document.getElementById("island-anchor-message");
+                const 插件开关 = document.getElementById("island-anchor-plugin");
+                断言(音乐开关?.checked === true && 消息开关?.checked === true && 插件开关?.checked === true, "旧配置下三枚上浮岛显示默认开启", [音乐开关?.checked, 消息开关?.checked, 插件开关?.checked].join(","));
+                断言(消息开关.disabled === false, "偏好就绪时消息开关可操作", String(消息开关.disabled));
+                断言(消息开关.closest(".settings__row")?.textContent.includes("消息通知上浮岛显示"), "消息开关标签为消息通知上浮岛显示", 消息开关.closest(".settings__row")?.textContent ?? "缺少行");
+                断言(音乐开关.getAttribute("aria-label") === "音乐上浮岛显示" && 插件开关.getAttribute("aria-label") === "插件卡上浮岛显示", "音乐与插件卡标签带上浮岛显示", `${音乐开关.getAttribute("aria-label")}/${插件开关.getAttribute("aria-label")}`);
+                // 描述小字自身不留外边距：说明贴着开关行，节奏由二级页网格间隔供给；设置行行距为容器 gap 4px。
+                const 岛说明 = await 直到(() => 二级.querySelector(".island-settings__hint"), "锚点页出现范围说明");
+                const 说明样式 = getComputedStyle(岛说明);
+                断言(说明样式.marginTop === "0px" && 说明样式.marginBottom === "0px", "范围说明上下外边距为 0（不用负 margin）", `${说明样式.marginTop}/${说明样式.marginBottom}`);
+                const 岛行 = [...二级.querySelectorAll(".settings__row")];
+                断言(岛行.length >= 2, "锚点页至少两个设置行", String(岛行.length));
+                const 岛行距 = Math.round((岛行[1].getBoundingClientRect().top - 岛行[0].getBoundingClientRect().bottom) * 10) / 10;
+                断言(Math.abs(岛行距 - 4) <= 1, "锚点页设置行距等于容器 gap 4px", String(岛行距));
+
+                // 显式三项：先给出 message=false，确认夹具已换上，再回到全开后拨动，写入仍带齐三项。
+                const 关闭消息 = { ...岛字段, islandAnchorVisible: { music: true, message: false, plugin: true } };
+                渲染(关闭消息);
+                const 消息回显 = await 直到(() => document.getElementById("island-anchor-message")?.checked === false, "显式 message=false 回显为关");
+                断言(消息回显 && document.getElementById("island-anchor-music")?.checked === true && document.getElementById("island-anchor-plugin")?.checked === true, "显式 true 的音乐与插件卡保持开启", [document.getElementById("island-anchor-music")?.checked, document.getElementById("island-anchor-message")?.checked, document.getElementById("island-anchor-plugin")?.checked].join(","));
+                渲染(全开偏好);
+                await 直到(() => document.getElementById("island-anchor-message")?.checked === true, "显式全开后消息开关回到开");
+                document.getElementById("island-anchor-message").click();
+                await 直到(() => {
+                    const 写入 = 补丁.at(-1)?.islandAnchorVisible;
+                    return 写入?.music === true && 写入?.message === false && 写入?.plugin === true;
+                }, "点击消息开关写入三项布尔值且只关闭 message");
+                断言(true, "点击消息开关写入 islandAnchorVisible.message=false", JSON.stringify(补丁.at(-1) ?? null));
+                渲染(关闭消息);
+
+                // 二点五、功能格子音乐面板与浮岛二级页同源：同一份映射，缺键默认也相同。
+                const 功能补丁 = [];
+                const 功能根 = createRoot(document.getElementById("features"));
+                const 渲染功能 = (偏好) =>
+                    功能根.render(
+                        React.createElement(FeatureSettings, {
+                            preferences: { ...偏好 },
+                            disabled: false,
+                            debugBuild: false,
+                            onPreferences: (值) => 功能补丁.push(值),
+                            onWorkspaceCommand: async () => {},
+                            onChooseFolder: async () => null,
+                            onCreateCollectBox: async () => {},
+                            onCreateTile: async () => {},
+                            onEnableFeature: async () => false,
+                            onCreateFolderPortal: async () => {},
+                            leaveGuard: { current: undefined },
+                        }),
+                    );
+                渲染功能(关闭消息);
+                // 功能格子一级页与其它页同轨：格子标题走共享式样（首组上距归零），行距只由容器 gap 提供。
+                const 格子标题 = await 直到(() => document.querySelector("#features h2.settings__group-title"), "功能格子出现格子分组标题");
+                断言(getComputedStyle(格子标题).fontSize === "13px" && getComputedStyle(格子标题).fontWeight === "600", "格子分组标题统一 13px/600", `${getComputedStyle(格子标题).fontSize}/${getComputedStyle(格子标题).fontWeight}`);
+                断言(getComputedStyle(格子标题).marginTop === "0px" && getComputedStyle(格子标题).marginBottom === "8px", "首组标题贴上、下距 8px", `${getComputedStyle(格子标题).marginTop}/${getComputedStyle(格子标题).marginBottom}`);
+                const 功能行 = [...document.querySelectorAll("#features .feature-settings__items > li")];
+                断言(功能行.length >= 2, "功能格子列表至少两行", String(功能行.length));
+                const 首行盒 = 功能行[0].getBoundingClientRect();
+                const 次行盒 = 功能行[1].getBoundingClientRect();
+                const 实测行距 = Math.round((次行盒.top - 首行盒.bottom) * 10) / 10;
+                断言(Math.abs(实测行距 - 4) <= 1, "功能格子行距等于容器 gap 4px（不叠加行 margin）", String(实测行距));
+                const 音乐入口 = await 直到(() => document.querySelector('#features [aria-label="音乐控制设置"]'), "功能格子出现音乐控制入口");
+                音乐入口.click();
+                const 面板开关 = await 直到(() => document.getElementById("feature-music-island-anchor"), "音乐面板出现上浮岛显示开关");
+                断言(面板开关.checked === true && 面板开关.getAttribute("aria-label") === "音乐上浮岛显示", "音乐面板与浮岛二级页对显式 music=true 同为开启", String(面板开关.checked));
+                // 二级面板行距同样由设置行容器 gap 供给（t27 去行 margin 后的间距恢复）。
+                const 面板行 = [...document.querySelectorAll("#features .settings__rows > .feature-settings__row")];
+                断言(面板行.length >= 2, "音乐面板至少两行", String(面板行.length));
+                const 面板行距 = Math.round((面板行[1].getBoundingClientRect().top - 面板行[0].getBoundingClientRect().bottom) * 10) / 10;
+                断言(Math.abs(面板行距 - 4) <= 1, "音乐面板二级行距等于容器 gap 4px", String(面板行距));
+                面板开关.click();
+                await 直到(() => {
+                    const 写入 = 功能补丁.at(-1)?.islandAnchorVisible;
+                    return 写入?.music === false && 写入?.message === false && 写入?.plugin === true;
+                }, "音乐面板写入时保留 message=false 与 plugin=true");
+                断言(true, "音乐面板写入同一 islandAnchorVisible 字段", JSON.stringify(功能补丁.at(-1) ?? null));
+                const 共享 = { ...岛字段, islandAnchorVisible: { music: false, message: false, plugin: true } };
+                渲染(共享);
+                渲染功能(共享);
+                const 两侧音乐 = await 直到(
+                    () => document.getElementById("island-anchor-music")?.checked === false && document.getElementById("feature-music-island-anchor")?.checked === false,
+                    "浮岛二级页与音乐面板同时回显 music=false",
+                );
+                断言(两侧音乐, "两个入口回显同一已保存值", `${document.getElementById("island-anchor-music")?.checked}/${document.getElementById("feature-music-island-anchor")?.checked}`);
+
+                // 二点五之二、频谱采集设备恢复为行右侧下拉：控件形态、选项、无障碍关联、设备回落与禁用。
+                const 功能设备行 = () =>
+                    [...document.querySelectorAll("#features label.feature-settings__row")].find((行) => 行.querySelector("#music-spectrum-device-label"));
+                const 功能设备选 = () => 功能设备行()?.querySelector("select");
+                渲染功能({ ...关闭消息, musicSpectrumEnabled: true });
+                await 直到(() => 功能设备选()?.disabled === false, "频谱开启后设备下拉可用");
+                断言(功能设备选()?.tagName === "SELECT", "频谱采集设备是原生下拉", 功能设备选()?.tagName ?? "缺少下拉");
+                断言(功能设备选()?.getAttribute("aria-labelledby") === "music-spectrum-device-label", "下拉经 aria-labelledby 关联频谱采集设备标签", 功能设备选()?.getAttribute("aria-labelledby") ?? "缺少关联");
+                const 设备选项 = [...(功能设备选()?.options ?? [])];
+                断言(设备选项[0]?.value === "" && 设备选项[0]?.textContent === "跟随系统默认设备", "默认项是跟随系统默认设备", `${设备选项[0]?.value}/${设备选项[0]?.textContent ?? "缺少选项"}`);
+                断言(设备选项.some((选项项) => 选项项.value === "speaker-1" && 选项项.textContent === "扬声器（系统默认）"), "设备列表带系统默认后缀", JSON.stringify(设备选项.map((选项项) => [选项项.value, 选项项.textContent])));
+                断言(设备选项.some((选项项) => 选项项.value === "headset-2" && 选项项.textContent === "耳机"), "非默认设备不带系统默认后缀", JSON.stringify(设备选项.map((选项项) => [选项项.value, 选项项.textContent])));
+                // 与相邻的段数/帧率下拉同轨：同高 38px、右缘同列；停用换次要色，不只靠浏览器默认灰。
+                const 页内下拉 = (标签) => [...document.querySelectorAll("#features label.feature-settings__row")].find((行) => 行.textContent.includes(标签))?.querySelector("select");
+                const 段数选 = await 直到(() => 页内下拉("频谱段数"), "出现频谱段数下拉");
+                const 帧率选 = await 直到(() => 页内下拉("频谱帧率"), "出现频谱帧率下拉");
+                断言([功能设备选(), 段数选, 帧率选].every((选) => getComputedStyle(选).height === "38px"), "三个频谱下拉同高 38px", [功能设备选(), 段数选, 帧率选].map((选) => getComputedStyle(选).height).join("/"));
+                const 右缘差 = [段数选, 帧率选].map((选) => Math.abs(选.getBoundingClientRect().right - 功能设备选().getBoundingClientRect().right));
+                断言(右缘差.every((差) => 差 <= 1), "设备下拉与段数/帧率下拉右缘同列", JSON.stringify(右缘差.map((差) => Math.round(差))));
+                const 下拉色 = (选) => getComputedStyle(选).color;
+                const 可用色 = 下拉色(功能设备选());
+                const 行盒 = 功能设备行().getBoundingClientRect();
+                const 标签盒 = 功能设备行().querySelector("#music-spectrum-device-label").getBoundingClientRect();
+                const 选盒 = 功能设备选().getBoundingClientRect();
+                断言(选盒.left > 标签盒.right && 行盒.right - 选盒.right < 26, "设备下拉右对齐在行右侧", JSON.stringify({ 标签右缘: 标签盒.right, 下拉: [选盒.left, 选盒.right], 行右缘: 行盒.right }));
+                渲染功能({ ...关闭消息, musicSpectrumEnabled: true, musicSpectrumDevice: "backup-1" });
+                await 直到(() => [...(功能设备选()?.options ?? [])].some((选项项) => 选项项.value === "backup-1"), "已保存设备不在列表时出现回落项");
+                断言([...功能设备选().options].find((选项项) => 选项项.value === "backup-1")?.textContent === "已保存的设备（当前不可用，将回退系统默认）", "回落项文案完整", [...功能设备选().options].find((选项项) => 选项项.value === "backup-1")?.textContent ?? "缺少回落项");
+                渲染功能({ ...关闭消息, musicSpectrumEnabled: true, musicSpectrumDevice: "speaker-1" });
+                await 直到(() => ![...(功能设备选()?.options ?? [])].some((选项项) => 选项项.value === "backup-1") && 功能设备选()?.value === "speaker-1", "设备回到列表后回落项消失并直接选中");
+                渲染功能(关闭消息); // 频谱未开启：设备下拉必须禁用。
+                await 直到(() => 功能设备选()?.disabled === true, "频谱关闭后设备下拉禁用");
+                断言(下拉色(功能设备选()) !== 可用色, "设备下拉停用后文字换次要色可辨", `${可用色}→${下拉色(功能设备选())}`);
+                // 返回一级页后焦点回到音乐控制入口（与浮岛二级页同口径）。
+                const 功能返回 = await 直到(() => document.querySelector('#features [aria-label="返回功能格子"]'), "音乐面板出现返回功能格子按钮");
+                功能返回.click();
+                const 音乐入口回到 = await 直到(() => document.querySelector('#features [aria-label="音乐控制设置"]'), "返回后音乐控制入口重新挂载");
+                断言(document.activeElement === 音乐入口回到, "返回功能格子后焦点回到音乐控制入口", `${document.activeElement?.tagName ?? "body"}:${document.activeElement?.textContent?.slice(0, 6) ?? ""}`);
+                const 返回 = await 直到(() => document.querySelector("#root .island-settings--detail .island-settings__back"), "锚点页返回按钮仍在");
+                返回.click();
+                await 直到(() => document.querySelector("#root .island-settings__list"), "从锚点显示返回卡片列表");
+                // 返回一级页后焦点应回到进入前的锚点显示入口，不再落到 body。
+                const 锚点回到 = await 直到(() => document.querySelector('#root section[aria-labelledby="island-anchor-entry-title"] button[data-button="row-hit"]'), "返回后锚点显示入口重新挂载");
+                断言(document.activeElement === 锚点回到, "返回浮岛后焦点回到锚点显示入口", `${document.activeElement?.tagName ?? "body"}:${document.activeElement?.textContent?.slice(0, 8) ?? ""}`);
+
+                // 三、官方卡详情没有卸载入口，保留上浮岛开关；列表菜单仍提供停用项。
+                const 打开卡片 = async (名称) => {
+                    const 命中 = await 直到(() => [...document.querySelectorAll(".island-settings__hit")].find((元素) => 元素.getAttribute("aria-label") === `打开${名称}卡片设置`), `出现${名称}卡片入口`);
+                    命中.click();
+                    return await 直到(() => document.querySelector(".island-settings--detail"), `进入${名称}详情页`);
+                };
+                const 官方详情 = await 打开卡片("音乐控制");
+                断言(!官方详情.querySelector(".island-settings__trash"), "官方卡详情不渲染卸载入口", 官方详情.querySelector(".island-settings__trash")?.outerHTML ?? "无");
+                断言(Boolean(官方详情.querySelector('.island-settings__commands input[role="switch"]')), "官方卡详情保留上浮岛开关", 官方详情.querySelector(".island-settings__commands")?.textContent ?? "缺少命令区");
+                断言(官方详情.textContent.includes("歌词与频谱在「功能格子 → 音乐控制」中设置") && !官方详情.querySelector("#music-show-lyrics"), "音乐卡不再复制歌词与频谱控件", 官方详情.textContent);
+                官方详情.querySelector(".island-settings__back").click();
+                const 官方行 = await 直到(() => [...document.querySelectorAll(".island-settings__row")].find((元素) => 元素.textContent.includes("音乐控制")), "返回列表后出现音乐控制行");
+                官方行.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 120, clientY: 160 }));
+                const 菜单 = await 直到(() => document.querySelector(".desktop-tile-menu"), "右键菜单出现");
+                断言(菜单.textContent.includes("停用此卡片"), "官方卡的列表菜单保留停用项", 菜单.textContent);
+                document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })); // 点空白关闭菜单，避免挡住后续点击。
+                await 直到(() => !document.querySelector(".desktop-tile-menu"), "右键菜单关闭");
+
+                // 四、插件卡详情有卸载入口。
+                const 插件详情 = await 打开卡片("示例插件");
+                断言(Boolean(插件详情.querySelector(".island-settings__trash")), "插件卡详情渲染卸载入口", 插件详情.querySelector(".island-settings__commands")?.textContent ?? "缺少命令区");
+
+                // 断言结束回到主页：页面同时作为人眼核对样张。
+                插件详情.querySelector(".island-settings__back").click();
+                await 直到(() => document.querySelector(".island-settings__list"), "回到主页列表");
+                document.getElementById("result").textContent = `PASS\n- ${通过.join("\n- ")}`;
+            } catch (错误) {
+                document.getElementById("result").textContent = `FAIL\n- ${错误?.message ?? 错误}`;
             }
         </script>
     </body>

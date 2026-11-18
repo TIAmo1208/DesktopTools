@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { WeatherSettings } from "../weather/WeatherSettings";
 import { listAudioOutputDevices, listenAudioDeviceChanges, setAudioDeviceWatch } from "../../../bridge/audio";
 import type { AudioOutputDevice } from "../../../contracts/audio";
-import type { ApplicationPreferences } from "../../../contracts/settings";
+import { islandAnchorVisible, type ApplicationPreferences } from "../../../contracts/settings";
 import type { FolderPortalInstance, WorkspaceCommand, WorkspaceSnapshot } from "../../../contracts/workspace";
 import { SettingsSwitch } from "../ui";
 import { MusicLyricsRow, MusicSpectrumBarsRow, MusicSpectrumFpsRow, MusicSpectrumRow } from "../ui";
@@ -93,6 +93,14 @@ export const FeatureSettings = ({
             unlisten?.();
             void setAudioDeviceWatch(false).catch(() => {}); // 面板关闭即释放后端监听线程。
         };
+    }, [detail]);
+    // 返回一级页后把焦点放回进入二级页的行入口；停留在二级页时不动，入口行已删除时不强制。
+    const returnFocusSelector = useRef<string | undefined>(undefined);
+    useEffect(() => {
+        if (!returnFocusSelector.current || detail) return;
+        const target = document.querySelector<HTMLButtonElement>(returnFocusSelector.current);
+        returnFocusSelector.current = undefined;
+        target?.focus();
     }, [detail]);
     const [selectedPortalId, setSelectedPortalId] = useState<string>(); // 当前单击选中的映射。
     const [portalMenu, setPortalMenu] = useState<{ portalId: string; left: number; top: number; confirm?: boolean }>(); // 当前跟随鼠标的映射菜单；confirm 为移除前的二次确认态。
@@ -202,9 +210,13 @@ export const FeatureSettings = ({
             {detail ? heading : null}
             {!detail ? (
                 <>
-                    <div className="feature-settings__list">
+                    <div className="feature-settings__list settings__group">
+                        <h2 className="settings__group-title" id="feature-grid-title">
+                            格子
+                        </h2>
+                        <ul className="feature-settings__items settings__list" aria-labelledby="feature-grid-title">
                         {features.map((entry) => (
-                            <div className="feature-settings__row feature-settings__row--link" key={entry.id}>
+                            <li className="feature-settings__row feature-settings__row--link" key={entry.id}>
                                 <span className="feature-settings__copy">{entry.label}</span>
                                 <SettingsSwitch
                                     label={entry.label}
@@ -224,14 +236,18 @@ export const FeatureSettings = ({
                                     data-button="row-hit"
                                     title={`${entry.label}设置`}
                                     aria-label={`${entry.label}设置`}
-                                    onClick={() => setDetail(entry.id as "clock" | "music" | "collect" | "folder" | "weather" | "debug")}
+                                    onClick={() => {
+                                        returnFocusSelector.current = `[aria-label="${entry.label}设置"]`;
+                                        setDetail(entry.id as "clock" | "music" | "collect" | "folder" | "weather" | "debug");
+                                    }}
                                 />
-                            </div>
+                            </li>
                         ))}
+                        </ul>
                     </div>
                 </>
             ) : detail === "clock" ? (
-                <>
+                <div className="settings__rows">
                     <label className="feature-settings__row">
                         时间格式
                         <select
@@ -252,9 +268,9 @@ export const FeatureSettings = ({
                             onChange={(checked) => onPreferences({ clockShowSeconds: checked })}
                         />
                     </div>
-                </>
+                </div>
             ) : detail === "music" ? (
-                <>
+                <div className="settings__rows">
                     <div className="feature-settings__row">
                         <span>显示媒体来源</span>
                         <SettingsSwitch
@@ -264,11 +280,22 @@ export const FeatureSettings = ({
                             onChange={(checked) => onPreferences({ musicShowSource: checked })}
                         />
                     </div>
+                    <div className="feature-settings__row">
+                        <span>音乐上浮岛显示</span>
+                        <SettingsSwitch
+                            id="feature-music-island-anchor"
+                            label="音乐上浮岛显示"
+                            disabled={unavailable}
+                            checked={islandAnchorVisible(preferences, "music")}
+                            onChange={(checked) => onPreferences({ islandAnchorVisible: { ...(preferences?.islandAnchorVisible ?? {}), music: checked } })}
+                        />
+                    </div>
                     <MusicLyricsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
                     <MusicSpectrumRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
                     <label className="feature-settings__row">
-                        <span>频谱采集设备</span>
+                        <span id="music-spectrum-device-label">频谱采集设备</span>
                         <select
+                            aria-labelledby="music-spectrum-device-label"
                             disabled={unavailable || !preferences?.musicSpectrumEnabled}
                             value={preferences?.musicSpectrumDevice ?? ""}
                             onChange={(event) => onPreferences({ musicSpectrumDevice: event.currentTarget.value })}
@@ -287,10 +314,10 @@ export const FeatureSettings = ({
                     </label>
                     <MusicSpectrumBarsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
                     <MusicSpectrumFpsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
-                </>
+                </div>
             ) : detail === "collect" ? (
-                <>
-                    <p className="feature-settings__hint">收集项保存在配置目录的 collect 文件夹中，多个收集箱格子共享同一批条目。</p>
+                <div className="settings__rows">
+                    <p className="feature-settings__hint">多个收集箱格子共享同一批条目。</p>
                     <label className="feature-settings__row">
                         <span>图片文件收入方式</span>
                         <select
@@ -348,9 +375,9 @@ export const FeatureSettings = ({
                             添加
                         </button>
                     </div>
-                </>
+                </div>
             ) : detail === "folder" ? (
-                <>
+                <div className="settings__rows">
                     <div className="feature-settings__row feature-settings__folder-action">
                         <span className="feature-settings__row-title">
                             新建文件夹映射
@@ -450,7 +477,7 @@ export const FeatureSettings = ({
                             )}
                         </menu>
                     )}
-                </>
+                </div>
             ) : (
                 debugBuild && (
                     <div className="feature-settings__row">

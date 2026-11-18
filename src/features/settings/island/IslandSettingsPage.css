@@ -12,6 +12,15 @@
     width: 100%;
 }
 
+/* 锚点显示二级页的范围说明：次要色短句，只解释开关与卡片上浮岛的差别；上边距交给二级页网格间隔。 */
+.island-settings__hint {
+    margin: 0;
+    padding: 0 6px;
+    color: var(--color-muted);
+    font-size: 11px;
+    line-height: 1.6;
+}
+
 /* 岛圆角使用原生数值输入，值域由偏好契约限定。 */
 .island-settings__radius input {
     width: 88px;
@@ -36,7 +45,9 @@
 .island-settings__list {
     display: grid;
     gap: 4px;
+    margin: 0;
     padding: 1px;
+    list-style: none;
 }
 
 /* 单张岛卡行保留整行命中层与行内控件。 */

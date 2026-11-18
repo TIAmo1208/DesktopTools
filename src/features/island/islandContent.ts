@@ -1,8 +1,8 @@
-import type { IslandStateRequest } from "../../contracts/island.ts";
+import { ISLAND_ANCHOR_KEYS, islandAnchorVisible, type ApplicationPreferences } from "../../contracts/settings.ts";
 
 /**
  * 浮岛内容层纯模型：锚点身份与顺序、十种基础状态、叠加分层与接力节奏、hover 选中、
- * 折叠与空态、超时与系统隐藏合并、拖放接收。渲染层只消费这里的结果，不自己判定语义；
+ * 折叠与空态、拖放接收。渲染层只消费这里的结果，不自己判定语义；
  * 模块不依赖 React、不读 DOM、不持有定时器，时间一律由调用方传入。
  */
 
@@ -12,7 +12,7 @@ export const ISLAND_ANCHOR_SIZE = 28;
 export const ISLAND_ANCHOR_GAP = 12;
 /** 胶囊最多并排的锚点数（沿贴边方向）；第 4 枚起折成一枚「＋N」圆。 */
 export const ISLAND_ANCHOR_SLOTS = 3;
-/** 普通消息锚点保留时长；确认与失败锚点不超时。 */
+/** 通知条目的保留时长，由 islandMessages 的合并投影消费；确认和失败不超时。 */
 export const ISLAND_MESSAGE_ANCHOR_TTL_MS = 30_000;
 /** 锚点插入与内容展开的时长，与渲染层 WAAPI、island.css 的 `--island-anchor-grow` 共用；取生长节奏 `280`–`320ms` 的定点值。 */
 export const ISLAND_ANCHOR_GROW_MS = 300;
@@ -133,7 +133,7 @@ export const islandAnchorValue = (text: string): IslandAnchorValue | undefined =
 };
 
 /** 锚点承载的功能身份：hover 顶部用功能图标区分锚点，状态符号移到内容行左侧。 */
-export type IslandFunctionKind = "music" | "collect" | "weather" | "message" | "plugin" | "event";
+export type IslandFunctionKind = "music" | "message" | "plugin" | "event";
 
 /** 一个锚点：身份由层级与来源决定，顺序按插入先后，收起与重开都不换位。 */
 export interface IslandAnchor
@@ -141,10 +141,10 @@ export interface IslandAnchor
     id: string;
     source: string;
     layer: IslandContentLayer;
-    updatedAtMs: number; // 最近一次换内容时刻；普通消息的 30s 从这里起算。
+    updatedAtMs: number; // 最近一次换内容时刻；合并通知锚点取最新条目时刻。
     kind?: IslandFunctionKind; // 功能身份；缺省按普通事件处理。
-    unit?: IslandContentUnit; // 只剩锚点或合并计数锚点没有内容单元。
-    count?: number; // 圆内数字：系统隐藏期间合并的计数，封顶 99 由渲染层显示「99+」。
+    unit?: IslandContentUnit; // 纯锚点没有内容单元。
+    count?: number; // 合并通知条数，超过 99 表示「99+」。
 }
 
 /** 功能身份缺省为普通事件；插件卡没有单独身份时也走事件图标。 */
@@ -171,17 +171,6 @@ export const islandArrive = (anchors: readonly IslandAnchor[], arrival: IslandAn
     if (index < 0)
         return [...anchors, { id, source: arrival.source, layer: arrival.layer, updatedAtMs: arrival.nowMs, kind: arrival.kind, unit: arrival.unit }];
     return anchors.map((anchor, position) => (position === index ? { ...anchor, updatedAtMs: arrival.nowMs, kind: arrival.kind ?? anchor.kind, unit: arrival.unit, count: undefined } : anchor));
-};
-
-/** 叠加时的三种处理：同来源在内容内滚动、不同来源等当前结束、更高层级立即切换。 */
-export type IslandOverlayAction = "scroll" | "append" | "switch";
-
-/** 叠加判定：先看来源，再看层级；同级不同来源只插入，不立即展开。 */
-export const islandOverlayAction = (current: IslandAnchor | undefined, arrival: IslandAnchorArrival): IslandOverlayAction =>
-{
-    if (!current) return "switch";
-    if (current.source === arrival.source) return "scroll";
-    return islandLayerRank(arrival.layer) < islandLayerRank(current.layer) ? "switch" : "append";
 };
 
 /** 锚点行：最多并排三枚，其余折进「＋N」；被折叠的锚点在展开里仍按原顺序排列。 */
@@ -238,9 +227,35 @@ export const islandHoverContent = (anchor: IslandAnchor | undefined, controls: r
     return { lines, controls: controls.slice(0, ISLAND_HOVER_CONTROL_LIMIT), expandable: lines.length > 0 };
 };
 
+/** hover 身份：消息通知列表由 islandMessages 投影，插件可自绘，其余使用行与控件。 */
+export type IslandHoverProvider = Exclude<IslandFunctionKind, "event"> | "default";
+
+/** 渲染层使用功能身份分发当前详情；普通事件与空锚点走默认。 */
+export const islandHoverProvider = (anchor: IslandAnchor | undefined): IslandHoverProvider =>
+{
+    const kind = anchor && islandAnchorKind(anchor);
+    return !kind || kind === "event" ? "default" : kind;
+};
+
+/** 提供详情基本行与动作限制；合并通知的多个条目不受单锚点两行限制。 */
+export const islandHoverBody = (anchor: IslandAnchor | undefined, controls: readonly string[] = []): IslandHoverContent & { provider: IslandHoverProvider } =>
+    ({ provider: islandHoverProvider(anchor), ...islandHoverContent(anchor, controls) });
+
+/** hover 宽度取所有锚点实测内容宽度的最大值，至少保留胶囊宽度；忽略无效测量。 */
+export const islandHoverInlineSize = (anchorWidths: readonly number[], capsuleWidth = 0): number =>
+    anchorWidths.reduce((width, sample) => Number.isFinite(sample) ? Math.max(width, sample) : width, Number.isFinite(capsuleWidth) ? Math.max(0, capsuleWidth) : 0);
+
+/** hover 打开期间保留测过的最大宽度；退出即归零，下一次从新内容测起。 */
+export const islandHoverSessionWidth = (hover: boolean, previousWidth: number, measuredWidth: number): number =>
+    hover ? islandHoverInlineSize([previousWidth, measuredWidth]) : 0;
+
 /** hover 选中项：身份失效时回落到第一枚，列表与下方内容始终对应。 */
 export const islandHoverSelect = (anchors: readonly IslandAnchor[], selected: string | undefined): string | undefined =>
     anchors.some((anchor) => anchor.id === selected) ? selected : anchors[0]?.id;
+
+/** 从胶囊进入 hover，先用上一帧实际显示正文的锚点；没有对应项时沿用原有选中与回落规则。 */
+export const islandHoverInitialSelection = (anchors: readonly IslandAnchor[], capsuleFront: string | undefined, selected: string | undefined): string | undefined =>
+    islandHoverSelect(anchors, anchors.some((anchor) => anchor.id === capsuleFront) ? capsuleFront : selected);
 
 /** 左右方向键在锚点列表内切换；到端点停住，不循环，避免越界后跳到另一端。 */
 export const islandHoverStep = (anchors: readonly IslandAnchor[], selected: string | undefined, delta: number): string | undefined =>
@@ -254,40 +269,6 @@ export const islandHoverStep = (anchors: readonly IslandAnchor[], selected: stri
 
 /** Enter 进入选中锚点的内容：只有带可显示内容的锚点能进入，纯圆锚点不接管。 */
 export const islandHoverEnter = (anchor: IslandAnchor | undefined): string | undefined => (anchor && islandHoverContent(anchor).expandable ? anchor.id : undefined);
-
-/** 锚点期限：普通消息 30s；确认与失败不超时；其余没有期限。 */
-export const islandAnchorDeadline = (anchor: IslandAnchor): number | undefined =>
-{
-    const status = anchor.unit?.status;
-    if (status === "awaiting" || status === "failed") return undefined;
-    return anchor.layer === "message" ? anchor.updatedAtMs + ISLAND_MESSAGE_ANCHOR_TTL_MS : undefined;
-};
-
-/** 过期清理：只清普通消息；hover 与展开期间过期消息不消失，回到常态再清。 */
-export const islandExpireAnchors = (anchors: readonly IslandAnchor[], nowMs: number, mode: IslandStateRequest["state"]): IslandAnchor[] =>
-    mode === "collapsed" ? anchors.filter((anchor) => { const deadline = islandAnchorDeadline(anchor); return deadline === undefined || nowMs < deadline; }) : [...anchors];
-
-/** 系统隐藏期间到达的消息；已过期的在合并前丢弃。 */
-export interface IslandHiddenArrival
-{
-    source: string;
-    nowMs: number;
-    unit?: IslandContentUnit;
-}
-
-/** 合并计数锚点的固定来源标识；它不逐个补播隐藏期间的消息。 */
-export const ISLAND_HIDDEN_ANCHOR_SOURCE = "system-hidden";
-
-/** 系统隐藏恢复：隐藏期间的消息合并成一个计数锚点，已过期的丢弃，不逐个补播。 */
-export const islandMergeHiddenAnchors = (anchors: readonly IslandAnchor[], hidden: readonly IslandHiddenArrival[], nowMs: number): IslandAnchor[] =>
-{
-    const alive = hidden.filter((item) => nowMs < item.nowMs + ISLAND_MESSAGE_ANCHOR_TTL_MS);
-    if (!alive.length) return [...anchors];
-    const id = islandAnchorId("message", ISLAND_HIDDEN_ANCHOR_SOURCE);
-    const existing = anchors.find((anchor) => anchor.id === id);
-    const merged: IslandAnchor = { id, source: ISLAND_HIDDEN_ANCHOR_SOURCE, layer: "message", updatedAtMs: nowMs, count: Math.min(99, (existing?.count ?? 0) + alive.length) };
-    return existing ? anchors.map((anchor) => (anchor.id === id ? merged : anchor)) : [...anchors, merged];
-};
 
 /** 拖放目标：收集箱或音乐；没有匹配插件时没有目标。 */
 export type IslandDropTarget = "collect-box" | "music";
@@ -305,4 +286,54 @@ export const islandDropFace = (target: IslandDropTarget | undefined): IslandDrop
     if (target === "collect-box") return { accept: true, icon: "release", primary: "松开加入收集箱" };
     if (target === "music") return { accept: true, icon: "release", primary: "交给音乐播放" };
     return { accept: false, icon: "release", primary: "无法接收" };
+};
+
+/** 胶囊与 hover 共用可见锚点；仅过滤显示，不变更已到达的事实、展开卡片或默认值。 */
+export const islandDisplayAnchors = (anchors: readonly IslandAnchor[], preferences: Pick<ApplicationPreferences, "islandAnchorVisible"> | undefined): IslandAnchor[] =>
+    anchors.filter((anchor) => {
+        const kind = anchor.layer === "message" ? "message" : anchor.kind;
+        const key = ISLAND_ANCHOR_KEYS.find((item) => item === kind);
+        return key === undefined || islandAnchorVisible(preferences, key);
+    });
+
+/** 媒体会话事实：音乐卡是否启用，以及当前会话的播放事实（缺失表示没有会话）。 */
+export interface IslandMediaFacts
+{
+    enabled: boolean; // 音乐卡在岛卡顺序中启用。
+    playback: "playing" | "paused" | "stopped" | "unknown" | undefined;
+}
+
+/** 音乐锚点只在有媒体会话且播放或暂停时出现；停止、无会话或未启用该卡都不产生，因此不再常驻。 */
+export const islandMusicAnchorVisible = (facts: IslandMediaFacts): boolean => facts.enabled && (facts.playback === "playing" || facts.playback === "paused");
+
+/** 天气通知：摘要变化时由浮岛投递一次本地通知；首次或未变化不投递。 */
+export const islandWeatherNotice = (previous: string | undefined, next: string | undefined): boolean => previous !== undefined && next !== undefined && previous !== next;
+
+/** 活动型音乐锚点由渲染层放入事件层，优先级低于合并通知。 */
+export const ISLAND_NOTICE_LAYER: IslandContentLayer = "event";
+
+/** 收集快照条目的最小形状：身份与创建时刻；标题格式仍由调用方既有函数负责。 */
+export interface IslandCollectEntry
+{
+    name: string;
+    createdUnixMs: number;
+}
+
+/** 收集快照比较结果：新条目出现时给出完成态与标题，否则不产生通知。 */
+export type IslandCollectArrival = { activity: "completed"; title: string } | { activity: "idle" };
+
+/**
+ * 比较两次收集快照：只有「数量增加且出现新身份（名称与创建时刻都不在旧快照）」才算新收录。
+ * 重命名（名称变、创建时刻未变）、置顶（只改顺序）、删除（数量减少）与无变化都不产生通知；
+ * 首次读取没有旧快照，同样不通知。
+ */
+export const islandCollectArrival = <T extends IslandCollectEntry>(previous: readonly T[] | undefined, next: readonly T[], title: (entry: T) => string): IslandCollectArrival =>
+{
+    if (!previous || next.length <= previous.length) return { activity: "idle" };
+    const names = new Set(previous.map((entry) => entry.name));
+    const created = new Set(previous.map((entry) => entry.createdUnixMs));
+    const added = next
+        .filter((entry) => !names.has(entry.name) && !created.has(entry.createdUnixMs))
+        .sort((left, right) => right.createdUnixMs - left.createdUnixMs)[0];
+    return added ? { activity: "completed", title: title(added) } : { activity: "idle" };
 };
