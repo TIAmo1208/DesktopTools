@@ -1,4 +1,5 @@
 import type { IslandMessage, IslandStateRequest } from "../../contracts/island.ts";
+import type { WeatherOutlookFacts } from "./islandWeatherOutlook.ts";
 import { ISLAND_MESSAGE_ANCHOR_TTL_MS, islandAnchorId, type IslandAnchor, type IslandStatus } from "./islandContent.ts";
 
 /** 合并通知锚点固定身份；单条通知保留自己的来源。 */
@@ -13,17 +14,19 @@ export interface IslandNotification {
     content: string;
     receivedAtMs: number;
     status: IslandStatus;
+    type?: IslandMessage["type"]; // 原生类型不等同于状态；警告与普通信息都可能是 pending。
+    loading?: boolean;
+    progress?: number; // 内部事实的归一化进度；原生 Toast 投影不提供此字段。
+    weatherCode?: string;
+    weatherOutlookFacts?: WeatherOutlookFacts; // 只在本地天气条目保存到达时的同城预报。
 }
 
 /** 浮岛由实际天气变化与新增收录产生的本地事实。 */
-export interface IslandLocalNotification {
-    source: "weather" | "collect";
-    content: string;
-}
+export type IslandLocalNotification = { content: string } & ({ source: "weather"; weatherCode?: string; weatherOutlookFacts?: WeatherOutlookFacts } | { source: "collect" });
 
 /** 天气与收录共用消息锚点的到达和期限，不创建原生 Toast 身份。 */
 export const islandLocalNotificationArrival = (id: number, notice: IslandLocalNotification, receivedAtMs: number): IslandNotification => ({
-    key: `local:${id}`, source: notice.source, content: notice.content, receivedAtMs, status: "pending",
+    key: `local:${id}`, ...notice, receivedAtMs, status: "pending",
 });
 
 /** 原生通知的语义投影；原生队列仍独立负责 Toast。 */
@@ -33,8 +36,25 @@ export const islandMessageArrival = (message: IslandMessage): IslandNotification
     source: message.source,
     content: message.content,
     receivedAtMs: message.receivedAtMs,
+    type: message.type,
+    loading: message.loading,
     status: message.type === "error" ? "failed" : message.loading ? "indeterminate" : message.type === "success" ? "completed" : "pending",
 });
+
+/** 胶囊只按顶部条目的真实类型着色，加载优先于类型。 */
+export const islandNotificationTone = (notice: IslandNotification | undefined): IslandMessage["type"] | "loading" =>
+    notice?.loading ? "loading" : notice?.type ?? "info";
+
+/** 详情只消费投影携带的事实，不从正文或来源字符串猜测进度、天气。 */
+export const islandNotificationVisual = (notice: IslandNotification) => {
+    if (notice.loading) {
+        const progress = notice.progress;
+        return typeof progress === "number" && Number.isFinite(progress) && progress >= 0 && progress <= 1
+            ? { kind: "progress" as const, progress } : { kind: "loading" as const };
+    }
+    if (notice.weatherCode !== undefined) return { kind: "weather" as const, code: notice.weatherCode };
+    return notice.type ? { kind: "type" as const, type: notice.type } : undefined;
+};
 
 /** 合并各来源条目，同身份用最新投递内容，按到达时间由新到旧。 */
 export const islandMergeNotifications = (current: readonly IslandNotification[], incoming: readonly IslandNotification[]): IslandNotification[] => {

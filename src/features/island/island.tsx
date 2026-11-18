@@ -22,6 +22,8 @@ import { usePreferences } from "../../app/preferences/PreferencesProvider";
 import { ScrollingText } from "../../shared/ScrollingText";
 import { IslandCollectBox } from "./IslandCollectBox";
 import { IslandWeather, useIslandWeather } from "./IslandWeather";
+import { islandWeatherOutlook } from "./islandWeatherOutlook";
+import { WeatherGlyph } from "../../shared/WeatherGlyph";
 import {
     islandAttachedCorner,
     islandCardMaskPath,
@@ -48,7 +50,7 @@ import {
     type IslandExpandedDwell, type IslandMarginState,
 } from "./islandInteraction";
 import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, ISLAND_EXPAND_STAGGER_MS, ISLAND_EXPAND_MOTION_MS, ISLAND_HOVER_DETAIL_EXIT_MS, ISLAND_HOVER_DETAIL_ENTER_MS, islandAttachedCornerAt, islandHoverTravel, islandUnionFrame } from "./islandMotion";
-import { ISLAND_MESSAGE_LIMIT, ISLAND_NOTIFICATION_ANCHOR_ID, islandDismissNotification, islandHoldMessages, islandKeepNotifications, islandLocalNotificationArrival, islandMergeNotifications, islandMessageArrival, islandMessageFocusOrder, islandMessagePanelView, islandMessageTime, islandNotificationAnchor, islandNotificationCountLabel, islandNotificationDeadline, type IslandLocalNotification, type IslandNotification } from "./islandMessages";
+import { ISLAND_MESSAGE_LIMIT, ISLAND_NOTIFICATION_ANCHOR_ID, islandDismissNotification, islandHoldMessages, islandKeepNotifications, islandLocalNotificationArrival, islandMergeNotifications, islandMessageArrival, islandMessageFocusOrder, islandMessagePanelView, islandMessageTime, islandNotificationAnchor, islandNotificationCountLabel, islandNotificationDeadline, islandNotificationTone, islandNotificationVisual, type IslandLocalNotification, type IslandNotification } from "./islandMessages";
 import { islandHoverBody, islandHoverInlineSize, ISLAND_NOTICE_LAYER, islandCollectArrival, islandDisplayAnchors, islandMusicAnchorVisible, islandWeatherNotice, ISLAND_ANCHOR_GAP, ISLAND_ANCHOR_GROW_MS, ISLAND_ANCHOR_SHRINK_MS, ISLAND_ANCHOR_SIZE, ISLAND_ANCHOR_SLOTS, ISLAND_STATUS_SPECS, islandAnchorGlyph, islandAnchorId, islandAnchorValue, islandArrive, islandCapsuleFace, islandClockLabel, islandDropFace, islandHoverEnter, islandHoverInitialSelection, islandHoverSelect, islandHoverSessionWidth, islandHoverStep, islandLayerRank, islandStatusProgress, islandStatusSpec, islandAnchorKind, type IslandAnchor, type IslandAnchorArrival, type IslandDropTarget, type IslandFunctionKind, type IslandStatus, type IslandStatusSpec } from "./islandContent";
 import { ISLAND_LYRIC_OFFSETS, islandCapsuleLineLimit, islandLyricView, islandMusicTickDelay, islandPlaybackStatus, islandScrollAnimationName, islandScrollDistance, islandScrollKey, islandScrollPlan, islandScrollPlayState } from "./islandLyrics";
 import { islandCollectTitle, readIslandCollectCache, writeIslandCollectCache } from "./islandCollect";
@@ -416,8 +418,19 @@ const IslandProgressInk = ({ sweep, progress = 0, motion }: { sweep?: boolean; p
     </svg>
 );
 
+/** hover 通知左侧只画条目真实图形；测宽样本仅保留有效图标的尺寸。 */
+export const IslandNotificationRowIcon = ({ notice, measuring = false, outlookCode }: { notice: IslandNotification; measuring?: boolean; outlookCode?: number }) => {
+    const visual = outlookCode === undefined ? islandNotificationVisual(notice) : { kind: "weather" as const, code: String(outlookCode) };
+    if (!visual) return null;
+    return <span className="island-notification-row__icon" data-visual={visual.kind} aria-hidden="true">
+        {measuring ? null : visual.kind === "progress" ? <IslandProgressInk progress={visual.progress} motion={false} />
+            : visual.kind === "weather" ? <WeatherGlyph code={visual.code} />
+            : visual.kind === "type" ? <span dangerouslySetInnerHTML={{ __html: ISLAND_MESSAGE_ICONS[visual.type] }} /> : null}
+    </span>;
+};
+
 /** 在 20×20 安全盒内绘制状态或功能墨层，媒体裁切例外占满整枚圆。 */
-const IslandAnchorVisual = ({ anchor, special, motion, artwork, entering = false, specs }: { anchor?: IslandAnchor; special?: string; motion: boolean; artwork?: string; entering?: boolean; specs?: readonly IslandStatusSpec[] }) => {
+const IslandAnchorVisual = ({ anchor, special, motion, artwork, entering = false, specs, messageTone }: { anchor?: IslandAnchor; special?: string; motion: boolean; artwork?: string; entering?: boolean; specs?: readonly IslandStatusSpec[]; messageTone?: ReturnType<typeof islandNotificationTone> }) => {
     const ink = useRef<HTMLSpanElement>(null);
     const insertOnMount = useRef(entering);
     useLayoutEffect(() => {
@@ -440,7 +453,7 @@ const IslandAnchorVisual = ({ anchor, special, motion, artwork, entering = false
     const path = symbol && symbol in ISLAND_ANCHOR_PATHS ? ISLAND_ANCHOR_PATHS[symbol as keyof typeof ISLAND_ANCHOR_PATHS] : undefined;
     const kind = anchor && islandAnchorKind(anchor);
     const custom = kind === "music" || kind === "message";
-    return <span ref={ink} className="island-anchor__ink" aria-hidden="true" data-status={status} data-symbol={custom ? undefined : symbol} data-glyph={custom ? undefined : glyph?.kind} data-kind={custom ? kind : undefined}>
+    return <span ref={ink} className="island-anchor__ink" aria-hidden="true" data-status={status} data-symbol={custom ? undefined : symbol} data-glyph={custom ? undefined : glyph?.kind} data-kind={custom ? kind : undefined} data-message-tone={messageTone}>
         {kind === "music" ? <IslandMediaInk artwork={artwork} /> : kind === "message" ? <IslandFunctionIcon kind="message" /> : asset ? <span className="island-anchor__icon" dangerouslySetInnerHTML={{ __html: asset }} /> : path ? (
             <svg viewBox="0 0 20 20"><path d={path} strokeWidth="1.75" /></svg>
         ) : glyph?.kind === "ring" || glyph?.kind === "sweep" ? (
@@ -1035,9 +1048,9 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     const weatherSummary = weather.summary && weather.unit.status === "pending" ? `${weather.unit.primary}\n${weather.summary.code ?? ""}` : undefined;
     const weatherPrevious = useRef<string | undefined>(undefined);
     useLayoutEffect(() => {
-        if (islandWeatherNotice(weatherPrevious.current, weatherSummary)) pushLocalNotification({ source: "weather", content: weather.unit.primary });
+        if (islandWeatherNotice(weatherPrevious.current, weatherSummary)) pushLocalNotification({ source: "weather", content: weather.unit.primary, weatherCode: weather.summary?.code, weatherOutlookFacts: weather.outlookFacts });
         weatherPrevious.current = weatherSummary;
-    }, [weatherSummary, weather.unit.primary, pushLocalNotification]);
+    }, [weatherSummary, weather.unit.primary, weather.summary?.code, weather.outlookFacts, pushLocalNotification]);
     const arrivals = useMemo(() => {
         const enabled = (snapshot?.instances ?? []).flatMap((instance): IslandAnchorArrival[] => {
             const manifest = snapshot?.runtime.manifests.find((item) => item.id === instance.componentId);
@@ -1057,15 +1070,18 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     const anchors = dropAnchor ? [dropAnchor, ...baseAnchors] : baseAnchors;
     const expandedContent = content.live.filter((anchor) => anchor.layer !== "resident" && anchor.id !== ISLAND_NOTIFICATION_ANCHOR_ID && anchor.kind !== "music");
     const empty = !baseAnchors.length;
+    // 与时钟共用分钟对齐的唤醒；只在现有 hover 天气列表可能显示展望时保持节奏。
+    const minuteClock = empty || mode === "hover" && baseAnchors.some((anchor) => anchor.id === ISLAND_NOTIFICATION_ANCHOR_ID)
+        && notifications.rows.slice(0, ISLAND_MESSAGE_LIMIT).some((notice) => notice.weatherOutlookFacts?.hourly?.hours?.length);
     useEffect(() => {
         const now = Date.now();
         if (empty && islandClockLabel(now) !== islandClockLabel(clockNow)) setClockNow(now);
         const deadlines = mode === "collapsed" ? notifications.rows.map((notice) => islandNotificationDeadline(notice) ?? Infinity) : [];
-        const next = Math.min(...deadlines, ...(empty ? [now + 60_000 - now % 60_000] : []));
+        const next = Math.min(...deadlines, ...(minuteClock ? [now + 60_000 - now % 60_000] : []));
         if (!Number.isFinite(next)) return;
         const timer = setTimeout(() => setClockNow(Date.now()), Math.max(1, next - now));
         return () => clearTimeout(timer);
-    }, [empty, notifications.rows, clockNow, mode]);
+    }, [empty, minuteClock, notifications.rows, clockNow, mode]);
     const face = islandCapsuleFace(anchors, clockNow);
     const capsuleIds = face.kind === "anchors" && mode === "collapsed" ? face.visible.map((anchor) => anchor.id) : [];
     const selected = dropAnchor ?? anchors.find((anchor) => anchor.id === islandHoverSelect(anchors, content.selected));
@@ -1986,8 +2002,13 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             </div> : bell ? <div className="island-notification-list">
                 {notifications.rows.slice(0, ISLAND_MESSAGE_LIMIT).map((notice) => {
                     const text = `${notice.source} · ${notice.content}`;
+                    const outlook = notice.weatherOutlookFacts && islandWeatherOutlook(hoverNow, notice.weatherOutlookFacts);
                     return <div className="island-notification-row" key={notice.key}>
-                        <span className="island-anchor__text" title={text}>{text}</span>
+                        <IslandNotificationRowIcon notice={notice} measuring={measuring} outlookCode={outlook?.code} />
+                        <div className="island-notification-row__copy">
+                            <span className="island-anchor__text" title={text}>{text}</span>
+                            {outlook ? <span className="island-notification-row__outlook island-anchor__text" title={outlook.text}>{outlook.text}</span> : null}
+                        </div>
                         <time> · {islandMessageTime(notice.receivedAtMs, hoverNow)}</time>
                         <button type="button" className="island-message__close" data-button="icon" aria-label={`关闭消息：${islandShortText(text)}`} onClick={measuring ? undefined : () => handleDismissNotification(notice)}><span aria-hidden="true" dangerouslySetInnerHTML={{ __html: closeIcon }} /></button>
                     </div>;
@@ -2010,7 +2031,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             ref={root}
             id="island-scroll-content"
             className="island"
-            style={{ maxBlockSize: work?.height, "--island-anchor-size": `${ISLAND_ANCHOR_SIZE}px`, "--island-capsule-line-max": `${islandCapsuleLineLimit(vertical, media?.playback === "playing")}px`, "--island-anchor-gap": `${ISLAND_ANCHOR_GAP}px`, "--island-anchor-grow": `${ISLAND_ANCHOR_GROW_MS}ms`, "--island-anchor-shrink": `${ISLAND_ANCHOR_SHRINK_MS}ms`, "--island-anchor-easing": ISLAND_ANCHOR_EASING } as CSSProperties}
+            style={{ maxBlockSize: work?.height, "--island-work-block": work ? `${work.height}px` : undefined, "--island-anchor-size": `${ISLAND_ANCHOR_SIZE}px`, "--island-capsule-line-max": `${islandCapsuleLineLimit(vertical, media?.playback === "playing")}px`, "--island-anchor-gap": `${ISLAND_ANCHOR_GAP}px`, "--island-anchor-grow": `${ISLAND_ANCHOR_GROW_MS}ms`, "--island-anchor-shrink": `${ISLAND_ANCHOR_SHRINK_MS}ms`, "--island-anchor-easing": ISLAND_ANCHOR_EASING } as CSSProperties}
             data-island-page="true"
             data-dragging={dragActive ? "true" : undefined}
             data-form={preferences?.islandForm ?? "capsule"}
@@ -2065,7 +2086,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                         const lyric = musicAnchor && musicView.hasLine && anchor.unit?.primary === musicView.line;
                                         const inserting = contentMotion && previousIds.length > 0 && !previousIds.includes(anchor.id) && !drop;
                                         return <div className="island-anchor-item" key={anchor.id}>
-                                            <span className="island-anchor" data-anchor={anchor.id} data-inserting={inserting || undefined} aria-label={notificationCount(anchor) ? `消息通知 ${notificationCount(anchor)} 条` : undefined}><IslandAnchorVisual anchor={anchor} specs={statusSpecs} special={anchor === dropAnchor ? "release" : undefined} motion={contentMotion} entering={inserting} artwork={media?.artworkUrl} /></span>
+                                            <span className="island-anchor" data-anchor={anchor.id} data-inserting={inserting || undefined} aria-label={notificationCount(anchor) ? `消息通知 ${notificationCount(anchor)} 条` : undefined}><IslandAnchorVisual anchor={anchor} specs={statusSpecs} special={anchor === dropAnchor ? "release" : undefined} motion={contentMotion} entering={inserting} artwork={media?.artworkUrl} messageTone={anchor.id === ISLAND_NOTIFICATION_ANCHOR_ID ? islandNotificationTone(notifications.rows[0]) : undefined} /></span>
                                             <IslandRelayContent className="island-anchor-label" anchor={active} motion={contentMotion && !drop} vertical={vertical} music={musicAnchor} growDelay={Math.max(relayFrom && relayFrom !== active?.id ? ISLAND_ANCHOR_SHRINK_MS : 0, inserting ? ISLAND_ANCHOR_GROW_MS : 0)}>
                                                 {/* 音乐进度仍供播报使用，胶囊只显示歌词或回落标题。 */}
                                                 {active?.unit ? lyric ? <IslandCapsuleLyric music={music} position={position} motion={contentMotion} vertical={vertical} /> : <span className="island-anchor__text">{islandShortText(active.unit.primary)}{notificationCount(active) ? <span className="island-anchor__value island-notification-count">{notificationCount(active)}</span> : !musicAnchor && islandAnchorValue(active.unit.secondary ?? "") ? <span className="island-anchor__value">{active.unit.secondary}</span> : null}</span> : null}

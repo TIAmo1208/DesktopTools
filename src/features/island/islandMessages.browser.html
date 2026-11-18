@@ -56,7 +56,7 @@
                 import("../../styles/global.css"),
             ]);
             void 样式模块; // 只要求样式表加载完成，不读导出。
-            const { IslandPage } = 岛模块;
+            const { IslandPage, IslandNotificationRowIcon } = 岛模块;
             const React = React模块.default;
             const { createRoot } = 根模块;
             const { PreferencesProvider } = 偏好模块;
@@ -112,6 +112,20 @@
                 await 直到(() => 夹具.提交.at(-1)?.anchors?.length === 2, "音乐与通知两个圆进入几何契约");
                 断言(夹具.提交.at(-1).anchors.every(({ rect, radius }) => rect.width === 28 && rect.height === 28 && radius === 14), "提交圆来自实测 28×28 DOM");
                 const 同一锚点 = 锚点();
+                const 按主题计算颜色 = (令牌) => {
+                    const 节点 = document.createElement("span");
+                    节点.style.color = `var(${令牌})`;
+                    根().append(节点);
+                    const 色 = getComputedStyle(节点).color;
+                    节点.remove();
+                    return 色;
+                };
+                for (const [类型, 加载, 色, 色名] of [["info", false, "--fence-text", "info"], ["success", false, "--fence-active", "success"], ["warning", false, "--fence-warning", "warning"], ["error", false, "--fence-error", "error"], ["error", true, "--fence-text", "loading"]]) {
+                    夹具.pushMessages([消息(1, 类型, "通知正文", "测试来源", Date.now(), 加载)]);
+                    await 直到(() => 同一锚点.querySelector(`[data-message-tone="${色名}"]`), `胶囊载入实际 ${色名} 类型`);
+                    const 铃铛 = 同一锚点.querySelector("svg");
+                    断言(getComputedStyle(铃铛).color === 按主题计算颜色(色), `${色名} 铃铛计算色来自 ${色}`);
+                }
                 断言(同一锚点.offsetWidth === 28 && 同一锚点.offsetHeight === 28, "通知锚点应为28×28");
                 断言(Boolean(同一锚点.querySelector('[data-function="message"] svg path[d^="M10.268"]')), "通知显示 Lucide bell 路径");
                 断言(卡().length === 0 && !消息体() && !关闭按钮(), "常态不渲染完整消息卡与控件");
@@ -119,7 +133,7 @@
 
                 夹具.pushMessages([
                     消息(1, "info", "通知已更新", "测试来源"),
-                    消息(2, "info", "第二条通知正文", "构建"),
+                    消息(2, "info", "第二条通知正文", "构建", Date.now(), true),
                     消息(3, "warning", "第三条通知正文", "监控"),
                 ]);
                 await 直到(() => 计数() === "消息通知 3 条" && 单行()?.textContent.includes("第三条通知正文"), "多来源消息更新同一钤铛计数与最新正文");
@@ -127,9 +141,19 @@
                 悬停();
                 await 直到(() => 根().dataset.state === "hover" && 通知行().length === 3, "hover 读取三个来源的内容");
                 const 首行 = 通知行()[0];
+                const 加载图标 = 通知行()[1].querySelector('[data-visual="loading"]');
+                断言(Boolean(加载图标) && getComputedStyle(加载图标).animationDuration === "1s" && !加载图标.querySelector(".island-anchor__progress"), "原生 loading 无进度，不定加载以 1s 节奏旋转");
+                const 进度夹具 = document.createElement("div");
+                document.body.append(进度夹具);
+                const 进度根 = createRoot(进度夹具);
+                try {
+                    // 仅在断言页挂载真实内部进度渲染分支，生产原生入口仍无该字段。
+                    进度根.render(React.createElement(IslandNotificationRowIcon, { notice: { loading: true, progress: 0.45 } }));
+                    await 直到(() => 进度夹具.querySelector('[data-visual="progress"] .island-anchor__progress > path'), "经校验的内部 45% 事实走进度环");
+                } finally { 进度根.unmount(); 进度夹具.remove(); }
                 断言(首行.querySelector(".island-anchor__text").textContent === "监控 · 第三条通知正文" && /^ · \d{2}:\d{2}$/.test(首行.querySelector("time").textContent), "hover 最新一行显示来源、正文、时分");
                 断言(通知行()[1].textContent.includes("构建 · 第二条") && 通知行()[2].textContent.includes("测试来源 · 通知已更新"), "同身份更新不重复，列表按最新到旧排序");
-                断言(getComputedStyle(通知行()[0].querySelector("span")).textOverflow === "ellipsis", "hover 详情一行省略");
+                断言(getComputedStyle(通知行()[0].querySelector(".island-anchor__text")).textOverflow === "ellipsis", "hover 详情一行省略");
                 断言(getComputedStyle(锚点()).outlineWidth === "2px", "选中锚点有2px描边");
 
                 // 场景五：展开消息收进一张卡，默认折叠最新一条，按键切换完整列表。

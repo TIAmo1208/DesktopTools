@@ -5,6 +5,7 @@ import type { WeatherSourceStatus } from "../../contracts/weather";
 import { usePreferences } from "../../app/preferences/PreferencesProvider";
 import { WeatherGlyph } from "../../shared/WeatherGlyph";
 import { islandWeatherBinding, islandWeatherProjection, islandWeatherSourceName, type IslandWeatherForecast } from "./islandWeatherModel";
+import type { WeatherOutlookFacts } from "./islandWeatherOutlook";
 import "./islandWeather.css";
 
 type IslandWeatherMode = "collapsed" | "hover" | "expanded"; // 与浮岛三态一致。
@@ -14,7 +15,7 @@ export const useIslandWeather = (instanceId: string | undefined, monitorId?: str
     const { preferences } = usePreferences();
     const [sources, setSources] = useState<WeatherSourceStatus[]>();
     const [failure, setFailure] = useState<string>();
-    const [forecast, setForecast] = useState<IslandWeatherForecast>();
+    const [forecast, setForecast] = useState<IslandWeatherForecast & WeatherOutlookFacts>();
     const [configurationEpoch, setConfigurationEpoch] = useState(0); // 来源凭据或城市列表变化后重建订阅与读取。
     const source = preferences?.islandWeatherSource ?? "";
     const cityId = preferences?.islandWeatherCityId ?? "";
@@ -131,6 +132,8 @@ export const useIslandWeather = (instanceId: string | undefined, monitorId?: str
 
     return {
         ...islandWeatherProjection(binding, forecast, failure),
+        // 展望只使用同城、同来源的现有预报，不开启新订阅。
+        outlookFacts: binding?.state === "ready" && forecast?.source === binding.source && forecast.city?.id === binding.city.id ? forecast : undefined,
         binding,
         failure,
     };

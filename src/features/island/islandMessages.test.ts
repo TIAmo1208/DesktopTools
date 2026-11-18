@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseIslandMessages } from "../../contracts/island.ts";
-import { ISLAND_NOTIFICATION_ANCHOR_ID, islandDismissNotification, islandHoldMessages, islandKeepNotifications, islandLocalNotificationArrival, islandMergeMessages, islandMergeNotifications, islandMessageArrival, islandMessageFocusOrder, islandMessagePanelView, islandMessageTime, islandNotificationAnchor, islandNotificationCountLabel, islandNotificationDeadline, type IslandNotification } from "./islandMessages.ts";
+import { ISLAND_NOTIFICATION_ANCHOR_ID, islandDismissNotification, islandHoldMessages, islandKeepNotifications, islandLocalNotificationArrival, islandMergeMessages, islandMergeNotifications, islandMessageArrival, islandMessageFocusOrder, islandMessagePanelView, islandMessageTime, islandNotificationAnchor, islandNotificationCountLabel, islandNotificationDeadline, islandNotificationTone, islandNotificationVisual, type IslandNotification } from "./islandMessages.ts";
 import type { IslandMessage } from "../../contracts/island.ts";
 
 /** 构造与后端投影同形的消息，只覆盖断言需要的字段。 */
@@ -94,6 +94,32 @@ test("通知逐条保留 30s，失败和确认不超时；阅读期冻结过期�
     assert.deepEqual(islandKeepNotifications(items, 31_000, "collapsed"), [fresh, failed, awaiting]);
     assert.deepEqual(islandKeepNotifications(items, 31_001, "collapsed"), [failed, awaiting]);
     for (const mode of ["hover", "expanded"] as const) assert.equal(islandKeepNotifications(items, 90_000, mode), items);
+});
+
+test("铃铛显示真实原生类型，加载优先；进度和天气只认投影事实", () => {
+    for (const type of ["info", "success", "warning", "error"] as const) {
+        const notice = islandMessageArrival({ ...message(1), type });
+        assert.equal(islandNotificationTone(notice), type);
+        assert.deepEqual(islandNotificationVisual(notice), { kind: "type", type });
+    }
+    const loading = islandMessageArrival({ ...message(1, "已完成 45%"), type: "error", loading: true });
+    assert.equal(islandNotificationTone(loading), "loading");
+    assert.equal(loading.status, "failed"); // 原生到期语义不随视觉覆写。
+    assert.deepEqual(islandNotificationVisual(loading), { kind: "loading" });
+    for (const progress of [0, 0.45, 1]) assert.deepEqual(islandNotificationVisual({ ...loading, progress }), { kind: "progress", progress });
+    for (const progress of [-1, 1.01, NaN, Infinity]) assert.deepEqual(islandNotificationVisual({ ...loading, progress }), { kind: "loading" });
+    const weather = islandLocalNotificationArrival(1, { source: "weather", content: "天气变化", weatherCode: "302" }, 1000);
+    assert.deepEqual(islandNotificationVisual(weather), { kind: "weather", code: "302" });
+    assert.equal(islandNotificationVisual(islandLocalNotificationArrival(2, { source: "collect", content: "收录内容" }, 2000)), undefined);
+});
+
+test("天气展望事实附在本地条目，不更改摘要或到期时刻", () => {
+    const facts = { current: { condition: { code: "100" } }, hourly: { hours: [{ condition: { code: "302" } }] } };
+    const weather = islandLocalNotificationArrival(1, { source: "weather", content: "晴", weatherCode: "100", weatherOutlookFacts: facts }, 1_000);
+    assert.equal(weather.weatherOutlookFacts, facts);
+    assert.equal(islandNotificationAnchor([weather])?.unit?.primary, "晴");
+    assert.equal(islandNotificationDeadline(weather), 31_000);
+    assert.equal(islandMessageArrival(message(1)).weatherOutlookFacts, undefined);
 });
 
 test("真实天气与收录走本地投影、关闭及过期，不混淆原生身份", () => {

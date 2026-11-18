@@ -102,10 +102,12 @@ export const islandScrollGeometry = (frame: IslandStateRequest, target: IslandSt
     const window = client(frame.windowBox), content = client(target?.windowBox ?? frame.windowBox);
     const bands = islandExtraBands(window, content, edge);
     if (metrics.mode === "expanded" && target?.cards.length) {
-        // 全高窗口中最后一张可见卡片下方也属于延时退回带；间隙、圆角与整条滚动槽不变。
+        // 短卡列贴顶、贴底或居中后，只取朝向空白的一侧；卡间隙与底部 6 DIP 边距不计。
+        const start = Math.min(window.top + window.height, content.top + Math.min(...target.cards.map(({ rect }) => rect.top)));
         const bottom = Math.max(window.top, content.top + Math.max(...target.cards.map(({ rect }) => rect.top + rect.height)));
+        if ((edge === "bottom" || edge === "left" || edge === "right") && start > window.top) bands.push({ ...window, height: start - window.top });
         const height = window.top + window.height - bottom;
-        if (height > 0) bands.push({ ...window, top: bottom, height });
+        if (edge !== "bottom" && height > 0) bands.push({ ...window, top: bottom, height });
     }
     const maxScroll = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
     const visible = metrics.mode === "expanded" && metrics.settled && Number.isFinite(maxScroll) && maxScroll > 0 && window.height > 8;

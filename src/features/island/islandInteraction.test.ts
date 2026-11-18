@@ -280,27 +280,39 @@ test("展开回退计时只响应跨边界，空白列移动不会重新开始",
     assert.equal(ISLAND_MARGIN_DELAY_MS, 120);
 });
 
-test("全高展开窗口下方透明列在四边都走 120ms 额外带，槽与卡间隙仍不退回", () => {
+test("全高展开按四边选择空白带，只有离开边界启动 120ms，移动不延后", () => {
     for (const edge of islandEdges) {
         const window = { left: 100, top: 40, width: 216, height: 900 };
         const cardLeft = edge === "right" ? 16 : 0;
+        const offset = edge === "top" ? 0 : edge === "bottom" ? 696 : 351;
         const frame = { ...islandFrame("expanded", window), cards: [
-            { rect: { left: cardLeft, top: 0, width: 200, height: 110 }, radius: 12 },
-            { rect: { left: cardLeft, top: 118, width: 200, height: 80 }, radius: 12 },
-            { rect: { left: 0, top: 110, width: 200, height: 8 }, radius: 0 },
+            { rect: { left: cardLeft, top: offset, width: 200, height: 110 }, radius: 12 },
+            { rect: { left: cardLeft, top: offset + 118, width: 200, height: 80 }, radius: 12 },
+            { rect: { left: cardLeft, top: offset + 110, width: 200, height: 8 }, radius: 0 },
         ] };
-        const layout = islandScrollGeometry(frame, frame, edge, { mode: "expanded", settled: true, scrollHeight: 900, clientHeight: 900, scrollTop: 0 });
-        assert.deepEqual(layout.bands, [{ ...window, top: 238, height: 702 }]);
+        const metrics = { mode: "expanded" as const, settled: true, scrollHeight: 900, clientHeight: 900, scrollTop: 0 };
+        const layout = islandScrollGeometry(frame, frame, edge, metrics);
+        const expected = edge === "top" ? [{ ...window, top: 238, height: 702 }] : edge === "bottom" ? [{ ...window, height: 696 }] : [{ ...window, height: 351 }, { ...window, top: 589, height: 351 }];
+        assert.deepEqual(layout.bands, expected, edge);
         const contour = islandHitContour(frame.cards.slice(0, 2).map(({ rect }) => ({ rect: { ...rect, left: rect.left + window.left, top: rect.top + window.top }, radii: [12, 12, 12, 12] })), window, edge, "capsule", 0);
         const classify = (x: number, y: number) => islandHitRegion("expanded", { x, y }, layout, contour);
-        assert.equal(classify(180, 154), "transparent");
+        assert.equal(classify(180, 154 + offset), "transparent");
         assert.equal(classify(layout.gutter!.left + 2, 800), "scrollbar");
-        const region = classify(180, 800);
-        assert.equal(region, "extra-band");
-        const input = { mode: "expanded" as const, region, now: 0, busy: false, outlineDistance: 1, coreDistance: 1 };
-        const entered = islandMarginStep({ latch: "open" }, input);
-        assert.equal(islandMarginStep(entered.state, { ...input, now: 119 }).collapse, false);
-        assert.equal(islandMarginStep(entered.state, { ...input, now: 120 }).collapse, true);
+        if (edge === "bottom") assert.equal(classify(180, 937), "transparent", "底边 6 DIP 不计时");
+        for (const band of expected) {
+            const region = classify(180, band.top + band.height / 2);
+            assert.equal(region, "extra-band");
+            const dwell = islandExpandedDwellStep("content", "blank");
+            assert.deepEqual(dwell, { state: "blank", timer: "start" });
+            assert.deepEqual(islandExpandedDwellStep(dwell.state, "blank"), { state: "blank", timer: undefined });
+            assert.equal(islandExpandedDwellStep(dwell.state, "content").timer, "cancel");
+            const input = { mode: "expanded" as const, region, now: 0, busy: false, outlineDistance: 1, coreDistance: 1 };
+            const entered = islandMarginStep({ latch: "open" }, input);
+            assert.equal(islandMarginStep(entered.state, { ...input, now: 119 }).collapse, false);
+            assert.equal(islandMarginStep(entered.state, { ...input, now: 120 }).collapse, true);
+        }
+        const clipped = { ...frame, cards: [{ rect: { left: cardLeft, top: 0, width: 200, height: 900 }, radius: 12 }] };
+        assert.deepEqual(islandScrollGeometry(clipped, clipped, edge, { ...metrics, scrollHeight: 1200, scrollTop: 200 }).bands, []);
     }
 });
 

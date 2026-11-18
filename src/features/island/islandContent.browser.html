@@ -833,14 +833,22 @@
                 await 稳定("hover");
                 const 通知行 = () => [...(详情()?.querySelectorAll(".island-notification-row") ?? [])];
                 await 直到(() => 通知行().length === 3, "同一 bell 读取原生与两类本地通知");
+                const 天气行 = 通知行().find((行) => 行.textContent.includes("weather ·"));
+                const 收录行 = 通知行().find((行) => 行.textContent.includes("collect ·"));
+                断言(Boolean(天气行?.querySelector('[data-visual="weather"] svg path[d^="M7 17h9"]')) && !天气行.querySelector(".island-notification-row__outlook"), "无展望不加空行，仍保留当前 302 天气图形");
+                断言(!收录行?.querySelector(".island-notification-row__icon"), "无图标事实的收录行不渲染占位元素");
+                const 行布局 = (行) => [行.querySelector(".island-anchor__text").getBoundingClientRect().left, 行.querySelector("time").getBoundingClientRect().left, 行.querySelector("button").getBoundingClientRect().left, 行.getBoundingClientRect().height];
+                断言(通知行().every((行) => 行布局(行).every((值, 索引) => 近似(值, 行布局(通知行()[0])[索引], 0.1))) && 近似(行布局(通知行()[0])[3], 28, 0.1), "共享图标前轨，正文/时间/关闭仍对齐，行高 28 DIP 不变");
                 const 长通知 = 消息(804, "info", "W".repeat(75), "超宽通知");
                 const 短通知宽度 = 卡片().getBoundingClientRect().width;
                 夹具.pushMessages([...夹具.消息集合, 长通知]);
-                await 直到(() => 通知行().some((行) => 行.textContent.startsWith("超宽通知")) && 卡片().getBoundingClientRect().width > 短通知宽度 + 20, "hover 在线收到更长通知后扩宽");
+                await 直到(() => 通知行().some((行) => 行.querySelector(".island-anchor__text").textContent.startsWith("超宽通知")), "hover 在线收到更长通知");
+                await 稳定("hover");
+                断言(卡片().getBoundingClientRect().width > 短通知宽度 + 20, `hover 在线收到更长通知后扩宽，实际 ${短通知宽度} → ${卡片().getBoundingClientRect().width}，测宽 ${[...岛().querySelectorAll('.island-hover-width__sample')].map((节点) => 节点.getBoundingClientRect().width).join()}`);
                 await 稳定("hover");
                 const 通知峰值 = 夹具.提交.at(-1).windowBox.width;
                 const 通知提交起点 = 夹具.提交.length;
-                通知行().find((行) => 行.textContent.startsWith("超宽通知")).querySelector("button").click();
+                通知行().find((行) => 行.querySelector(".island-anchor__text").textContent.startsWith("超宽通知")).querySelector("button").click();
                 await 直到(() => 通知行().length === 3 && 夹具.关闭记录.at(-1) === 长通知.id, "逐条关闭最宽的原生通知");
                 await 稳定("hover");
                 断言(夹具.提交.at(-1).windowBox.width === 通知峰值 && 夹具.提交.slice(通知提交起点).every((提交) => 提交.windowBox.width >= 通知峰值), "删掉最长通知只改高度，本次窗口宽度无回退提交");
@@ -850,6 +858,43 @@
                 本地收录.querySelector("button").click();
                 await 直到(() => 通知行().length === 2, "本地通知可逐条关闭");
                 断言(夹具.关闭记录.length === 本地保留关闭数, "关闭本地收录不触发原生 Toast 路径");
+
+                阶段 = "天气通知按到达时预报和共享分钟时钟展示展望";
+                const 原天气时钟 = Date.now;
+                const 原天气计时器 = window.setTimeout;
+                let 天气现在 = Math.floor(原天气时钟() / 60_000) * 60_000;
+                let 下一分钟;
+                let 分钟请求数 = 0;
+                Date.now = () => 天气现在;
+                window.setTimeout = (处理, 延迟, ...参数) => {
+                    if (延迟 === 60_000) {
+                        下一分钟 = 处理;
+                        分钟请求数++;
+                        return -41;
+                    }
+                    return 原天气计时器.call(window, 处理, 延迟, ...参数);
+                };
+                try {
+                    const 小时槽 = { forecastTime: new Date(天气现在 + 60 * 60_000).toISOString(), temperature: { value: 13 }, condition: { code: "302", text: "雷阵雨" } };
+                    const 有展望预报 = { ...预报("100", "晴"), hourly: { hours: [小时槽] } };
+                    夹具.pushWeatherForecast(有展望预报);
+                    const 展望行 = () => 通知行().find((行) => 行.querySelector(".island-notification-row__outlook"));
+                    const 展望文本 = () => 展望行()?.querySelector(".island-notification-row__outlook")?.textContent;
+                    await 直到(() => 展望文本() === "预计1小时后有雨" && Boolean(下一分钟), "当前天气为晴，已有逐小时事实输出预计有雨");
+                    断言(Boolean(展望行().querySelector('[data-visual="weather"] svg path[d^="M7 17h9"]')) && 通知行().length === 3, "用展望的 302 图形而非当前晴天图形，仍只新增一条真正天气变化");
+                    断言(!天气行.querySelector(".island-notification-row__outlook"), "旧天气消息继续用到达时事实，不借新预报补字");
+                    夹具.pushWeatherForecast(预报("100", "晴")); // 同一摘要的后续数据不新建消息，不覆盖到达时的 facts。
+                    await 等待(70);
+                    断言(通知行().length === 3 && 展望文本() === "预计1小时后有雨" && 分钟请求数 === 1, "重复摘要不增加消息、时钟不重复排队");
+                    天气现在 += 60_000;
+                    下一分钟();
+                    await 直到(() => 展望文本() === "预计稍后有雨", "沿用现有分钟唤醒后，模型自行更新相对量词");
+                    展望行().querySelector("button").click();
+                    await 直到(() => 通知行().length === 2 && !展望行(), "关闭本地天气展望仍按原条目计数");
+                } finally {
+                    Date.now = 原天气时钟;
+                    window.setTimeout = 原天气计时器;
+                }
 
                 阶段 = "展开窗口工作区全高、折叠三张卡零提交";
                 // 去掉进入展开会被读掉的原生条目，确保进出时在比较同一份胶囊内容。
@@ -971,6 +1016,50 @@
                 断言(夹具.提交.length - 再进入前 === 1 && JSON.stringify(夹具.提交.at(-1).windowBox) === 全高盒, "再入态重新且只提交一次工作区全高盒");
                 按键("Escape");
                 await 稳定("collapsed");
+
+                阶段 = "展开全高窗口的四边卡列对齐";
+                const 各边位置 = [];
+                for (const 边 of ["top", "bottom", "left", "right"]) {
+                    夹具.pushPreferences({ islandEdge: 边, islandForm: "capsule", interfaceAnimations: false });
+                    await 直到(() => 岛().dataset.edge === 边, `切换到 ${边}`);
+                    await 稳定("collapsed");
+                    按键("Enter");
+                    await 稳定("expanded");
+                    const 窗 = 岛().getBoundingClientRect();
+                    const 几何 = 夹具.提交.at(-1);
+                    const 列 = [...岛().querySelectorAll(".island-card")];
+                    const 首 = 列[0].getBoundingClientRect().top - 窗.top;
+                    const 尾 = 窗.bottom - 列.at(-1).getBoundingClientRect().bottom;
+                    各边位置.push(`${边} 首 ${首.toFixed(1)} / 尾距底 ${尾.toFixed(1)} DIP`);
+                    断言(几何.windowBox.top === 0 && 几何.windowBox.height === 1040, `${边} 展开盒一直全高`);
+                    断言(近似(几何.cards[0].rect.top, 首, 0.1), `${边} 初次几何提交已含实际对齐，不把首卡提交到错误位置`);
+                    断言(边 === "top" ? 近似(首, 0, 0.1) : 边 === "bottom" ? 首 > 0 && 近似(尾, 6, 0.1) : 首 > 0 && 近似(首, 尾, 0.1), `${边} 对齐首距 ${首}，尾距 ${尾}`);
+                    const 同盒前 = 夹具.提交.length;
+                    const 开关 = 岛().querySelector('.island-card[aria-label="音乐控制"] .island-card__toggle');
+                    const 原状态 = 开关.getAttribute("aria-expanded");
+                    for (const 值 of [String(原状态 !== "true"), 原状态]) {
+                        开关.click();
+                        await 直到(() => 开关.getAttribute("aria-expanded") === 值, `${边} 卡片内部切换`);
+                        await 等待(70);
+                    }
+                    断言(夹具.提交.length === 同盒前, `${边} 折叠/展开不得提交新窗口盒`);
+                    if (边 === "bottom") {
+                        const 超高 = document.createElement("style");
+                        超高.textContent = '.island[data-state="expanded"] .island-card { min-block-size: 450px; }';
+                        document.head.append(超高);
+                        try {
+                            await 直到(() => 岛().scrollHeight > 岛().clientHeight && 岛().querySelector('.island__scrollbar').dataset.visible === "true", "贴底内容超高时出现滚动条");
+                            断言(近似(列[0].getBoundingClientRect().top, 岛().getBoundingClientRect().top, 0.1), "贴底超高时安全回顶部，不丢首卡");
+                            岛().scrollTop = 岛().scrollHeight;
+                            await 直到(() => 岛().scrollTop > 0 && Number(岛().querySelector('.island__scrollbar').getAttribute('aria-valuenow')) > 0, "贴底超高时可以向下滚动并更新滑块");
+                            断言(列.at(-1).getBoundingClientRect().bottom <= 岛().getBoundingClientRect().bottom + 0.1 && 夹具.提交.length === 同盒前, "尾卡可滚入视口，窗口仍零提交");
+                        } finally { 超高.remove(); 岛().scrollTop = 0; }
+                    }
+                    按键("Escape");
+                    await 稳定("collapsed");
+                }
+                夹具.pushPreferences({ islandEdge: "top", islandForm: "notch" });
+                await 直到(() => 岛().dataset.edge === "top", "恢复主场景贴顶");
                 悬停();
                 await 稳定("hover");
 
@@ -1120,7 +1209,7 @@
                     window.setInterval = 原注册;
                     history.replaceState(null, "", 页面地址);
                 }
-                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : `PASS 浮岛内容层：三卡折叠/展开 ${内部提交数} 次窗口提交；几何、键盘、通知开关；无演示轮转`);
+                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : `PASS 浮岛内容层：三卡折叠/展开 ${内部提交数} 次窗口提交；${各边位置.join("；")}；几何、键盘、通知开关；无演示轮转`);
             };
 
             渲染();

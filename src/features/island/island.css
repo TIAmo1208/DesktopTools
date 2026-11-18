@@ -32,13 +32,20 @@ html[data-island="true"] #root {
     overflow-x: clip;
     overscroll-behavior: contain;
     scrollbar-width: none;
-    /* 展开终态沿工作区顶部排卡，剩余透明列仍归浮岛输入；多卡共用自然内容列。 */
-    /* 360只限制下方卡片，根窗口必须容纳合法union（刘海可额外占24 DIP）。 */
+    /* 根窗口容纳完整工作区高度，多卡仍共用自然内容列。 */
     max-inline-size: none;
     grid-template-columns: max-content;
     align-content: start;
     inline-size: var(--island-expanded-inline, max-content);
-    block-size: var(--island-expanded-block, max-content);
+    block-size: var(--island-expanded-block, var(--island-work-block, max-content));
+}
+/* 安全对齐在放不下时回到顶部，保住超高内容首行及原生滚动路径。 */
+.island[data-state="expanded"][data-edge="bottom"] {
+    align-content: safe end;
+    padding-block-end: 6px; /* 沿用胶囊离工作区底边的 6 DIP。 */
+}
+.island[data-state="expanded"]:is([data-edge="left"], [data-edge="right"]) {
+    align-content: safe center;
 }
 /* 展开态滚动条在卡片外：贴右边时槽在左侧，其余在右侧；槽宽 16 与几何一致。 */
 .island[data-state="expanded"][data-scrollbar="end"] {
@@ -379,6 +386,14 @@ button.island-anchor:active {
 .island-anchor__ink[data-status="indeterminate"] { color: var(--fence-active); }
 .island-anchor__ink[data-status="awaiting"] { color: var(--fence-warning); }
 .island-anchor__ink[data-status="failed"] { color: var(--fence-error); }
+
+/* 消息铃铛按原生类型（非通用状态）上色；success 复用围栏的通过绿，主题仍可覆写。 */
+.island-anchor__ink[data-message-tone="info"],
+.island-anchor__ink[data-message-tone="loading"] { color: var(--fence-text); }
+.island-anchor__ink[data-message-tone="success"] { color: var(--fence-active); }
+.island-anchor__ink[data-message-tone="warning"] { color: var(--fence-warning); }
+.island-anchor__ink[data-message-tone="error"] { color: var(--fence-error); }
+
 .island-anchor__track { stroke: var(--fence-border); }
 
 /* 媒体图或音符背景占满圆；其他状态保持 20 DIP 安全区。 */
@@ -499,12 +514,55 @@ button.island-anchor:active {
 .island-plugin-hover,
 .island-notification-list { flex: 1 1 auto; min-inline-size: 0; }
 
-/* 每条通知单行截断，右侧关闭按钮不参与截断。 */
-.island-notification-row { display: flex; align-items: center; gap: 8px; }
+/* 消息共享文本、时间和关闭三轨；至少一行需要图标时才启用固定 16px 前轨。 */
+.island-notification-list {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content 28px;
+    column-gap: 8px;
+}
+.island-notification-list:has(.island-notification-row__icon) {
+    grid-template-columns: 16px minmax(0, 1fr) max-content 28px;
+}
+/* 只在离屏样本量正文自然宽度；可见列表的文本轨仍能收缩省略。 */
+.island-hover-width__sample .island-notification-list { grid-template-columns: repeat(2, max-content) 28px; }
+.island-hover-width__sample .island-notification-list:has(.island-notification-row__icon) { grid-template-columns: 16px repeat(2, max-content) 28px; }
+.island-notification-row {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: subgrid;
+    align-items: center;
+}
 
-/* 只截断来源与正文，时间和关闭按钮始终留在右侧。 */
-.island-notification-row > .island-anchor__text { flex: 1 1 auto; min-inline-size: 0; }
-.island-notification-row > time { flex: none; white-space: nowrap; font-size: 11px; opacity: 0.78; }
+/* 无图标的条目不渲染占位元素，启用图标列时正文仍与其他行对齐。 */
+.island-notification-row__copy { grid-column: -4 / -3; min-inline-size: 0; }
+/* 展望缺失时不渲染第二行，其他通知行高度不变。 */
+.island-notification-row__outlook { margin-block-start: 2px; font-size: 11px; opacity: 0.78; }
+.island-notification-row > time { grid-column: -3 / -2; white-space: nowrap; font-size: 11px; opacity: 0.78; }
+.island-notification-row > button { grid-column: -2 / -1; }
+.island-notification-row__icon {
+    grid-column: 1;
+    display: grid;
+    place-items: center;
+    inline-size: 16px;
+    block-size: 16px;
+}
+.island-notification-row__icon svg {
+    display: block;
+    inline-size: 16px;
+    block-size: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+/* 没有实测进度的 loading 使用现有图形与原生 Toast 的每秒一圈，不补假进度。 */
+.island-notification-row__icon[data-visual="loading"] {
+    background: currentColor;
+    mask: url("../../../resources/loading.svg") center / contain no-repeat;
+}
+.island[data-animations="true"] .island-anchor-detail .island-notification-row__icon[data-visual="loading"] {
+    animation: island-anchor-sweep 1s linear infinite;
+}
 
 /* 展开使用原卡片尺寸，只复用内容符号。 */
 .island-anchor-expanded {
