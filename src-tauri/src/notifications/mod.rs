@@ -38,7 +38,7 @@ thread_local! {
 }
 
 /// 前端与原生共享的消息协议，不新增标题或动作字段。
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct ToastRequest
 {
     pub r#type: String,  // 消息类型。
@@ -49,10 +49,11 @@ pub struct ToastRequest
     pub loading: Option<bool>, // 加载状态图标。
     #[serde(rename = "durationMs")]
     pub duration_ms: u32, // 调用方明确传入的显示毫秒数，不含悬停暂停。
+    pub progress: Option<f64>, // 确定的 0–1 进度；缺失表示只显示加载动画。
 }
 
 /// 浮岛消息投影：与原生消息同一队列的只读快照，不含动画帧与命中几何。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IslandMessage
 {
@@ -62,18 +63,68 @@ pub struct IslandMessage
     pub source: String,      // 来源标识。
     pub loading: bool,       // 加载状态图标。
     pub received_at_ms: u64, // 到达时刻的墙钟毫秒。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f64>, // 确定的 0–1 进度；缺失时只显示加载动画。
+    #[serde(skip_serializing_if = "Option::is_none", rename = "iconUrl")]
+    pub icon_url: Option<String>, // 应用 Logo 数据 URL；系统通知条目才有。
+    #[serde(skip_serializing_if = "std::ops::Not::not", rename = "external")]
+    pub external: bool, // 只读的系统通知条目：关闭只影响浮岛，不回写系统通知中心。
 }
 
 /// 浮岛消息集合变化事件；载荷是完整投影，页面不需要再次读取。
 const ISLAND_MESSAGES_EVENT: &str = "island-messages-changed";
 
-/// 当前浮岛可见的消息：排除已进入离场的项，按到达顺序返回。
-fn project_island_messages<'a>(items: impl Iterator<Item = &'a state::ToastItem>) -> Vec<IslandMessage>
+/// 系统通知在消息通道里的只读条目；与原生 Toast 共用同一投影与同一关闭入口。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalEntry
 {
-    items
+    pub key: String,              // 系统通知身份（应用 AUMID + 通知 Id），用来去重与识别撤下。
+    pub source: String,           // 应用显示名。
+    pub content: String,          // 标题与正文合并后的文本。
+    pub received_at_ms: u64,      // 系统通知创建时刻。
+    pub icon_url: Option<String>, // 应用 Logo 数据 URL。
+}
+
+/// 已并入投影的系统通知条目：保留分配的身份，轮询更新内容时身份不变。
+struct ExternalItem
+{
+    id: u64,
+    entry: ExternalEntry,
+}
+
+/// 系统通知条目的身份从该基线上分配，避免与原生 Toast 的自增 id 冲突。
+const EXTERNAL_ID_BASE: u64 = 1 << 40;
+
+/// 当前浮岛可见的消息：原生 Toast 与系统通知合并后按到达顺序返回，只读条目不带进度。
+fn project_island_messages<'a>(items: impl Iterator<Item = &'a state::ToastItem>, external: &[ExternalItem]) -> Vec<IslandMessage>
+{
+    let mut messages = items
         .filter(|item| !item.closing)
-        .map(|item| IslandMessage { id: item.id, r#type: item.request.r#type.clone(), content: item.request.content.clone(), source: item.request.source.clone(), loading: item.request.loading.unwrap_or(false), received_at_ms: item.received_at_ms })
-        .collect()
+        .map(|item| IslandMessage {
+            id: item.id,
+            r#type: item.request.r#type.clone(),
+            content: item.request.content.clone(),
+            source: item.request.source.clone(),
+            loading: item.request.loading.unwrap_or(false),
+            received_at_ms: item.received_at_ms,
+            progress: item.request.progress,
+            icon_url: None,
+            external: false,
+        })
+        .collect::<Vec<_>>();
+    messages.extend(external.iter().map(|item| IslandMessage {
+        id: item.id,
+        r#type: "info".to_string(),
+        content: item.entry.content.clone(),
+        source: item.entry.source.clone(),
+        loading: false,
+        received_at_ms: item.entry.received_at_ms,
+        progress: None,
+        icon_url: item.entry.icon_url.clone(),
+        external: true,
+    }));
+    messages.sort_by_key(|message| (message.received_at_ms, message.id));
+    messages
 }
 
 /// 从界面主题及系统设置解析出的绘图参数。
@@ -245,6 +296,9 @@ struct Runtime
     scale: f32,                          // 主显示器 DPI。
     hover_id: Option<u64>,               // 关闭按钮悬停。
     island_messages: Vec<IslandMessage>, // 上一次外发的浮岛投影，用于跳过重复广播。
+    external: Vec<ExternalItem>,         // 系统通知只读条目，与原生 Toast 共用同一投影。
+    external_dismissed: std::collections::HashSet<String>, // 用户关掉的系统通知身份；从系统通知中心消失前不再合并。
+    next_external_id: u64,               // 系统通知条目的自增序号。
 }
 
 /// 持有主显示器顶层窗口和消息队列。
@@ -262,7 +316,7 @@ impl ToastManager
     pub fn install(app: Option<AppHandle>, preferences: ApplicationPreferences, palette: Option<ThemeNotification>) -> Result<Arc<Self>, String>
     {
         let appearance = Appearance::resolve(&preferences, false, true).with_palette(palette); // 系统值随后在窗口线程解析。
-        let manager = Arc::new(Self { hwnd: AtomicIsize::new(0), app, runtime: Mutex::new(Runtime { suppressed: false, queue: ToastState::default(), preferences, appearance, frames: Vec::new(), scale: 1.0, hover_id: None, island_messages: Vec::new() }) }); // HWND 引用的稳定地址。
+        let manager = Arc::new(Self { hwnd: AtomicIsize::new(0), app, runtime: Mutex::new(Runtime { suppressed: false, queue: ToastState::default(), preferences, appearance, frames: Vec::new(), scale: 1.0, hover_id: None, island_messages: Vec::new(), external: Vec::new(), external_dismissed: std::collections::HashSet::new(), next_external_id: 0 }) }); // HWND 引用的稳定地址。
         let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(|error| error.to_string())?; // 当前模块。
         let class = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(window_proc), hInstance: HINSTANCE(module.0), lpszClassName: w!("DesktopToolsNativeToast"), hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(), ..Default::default() }; // 无不透明背景刷；默认箭头避免沿用上一个窗口的悬停光标。
         if unsafe { RegisterClassExW(&class) } == 0 && unsafe { windows::Win32::Foundation::GetLastError() } != windows::Win32::Foundation::ERROR_CLASS_ALREADY_EXISTS
@@ -281,6 +335,10 @@ impl ToastManager
         if request.content.trim().is_empty() || request.source.trim().is_empty() || request.duration_ms == 0 || !matches!(request.r#type.as_str(), "info" | "success" | "warning" | "error")
         {
             return Err("Toast 消息参数无效".into());
+        }
+        if request.progress.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+        {
+            return Err("Toast 消息进度无效".into());
         }
         let manager = Arc::clone(self); // 主线程任务执行完之前保持有效。
         app.run_on_main_thread(move || {
@@ -304,7 +362,7 @@ impl ToastManager
     {
         match self.runtime.lock()
         {
-            Ok(runtime) => project_island_messages(runtime.queue.items.iter()),
+            Ok(runtime) => project_island_messages(runtime.queue.items.iter(), &runtime.external),
             Err(_) => Vec::new(), // 状态锁不可用时按没有消息处理，页面回落到岛卡。
         }
     }
@@ -318,7 +376,7 @@ impl ToastManager
             {
                 return;
             };
-            let messages = project_island_messages(runtime.queue.items.iter()); // 与命令读取同一投影。
+            let messages = project_island_messages(runtime.queue.items.iter(), &runtime.external); // 与命令读取同一投影。
             if messages == runtime.island_messages
             {
                 return; // 同一集合（含仅动画推进）不外发。
@@ -342,6 +400,18 @@ impl ToastManager
     {
         let manager = Arc::clone(self); // 主线程任务完成前保持有效。
         app.run_on_main_thread(move || {
+            if id >= EXTERNAL_ID_BASE
+            {
+                // 系统通知只读条目：只从浮岛投影撤下，不调用系统通知中心的移除。
+                if let Ok(mut runtime) = manager.runtime.lock()
+                    && let Some(index) = runtime.external.iter().position(|item| item.id == id)
+                {
+                    let item = runtime.external.remove(index);
+                    let _ = runtime.external_dismissed.insert(item.entry.key);
+                }
+                manager.sync_island_messages();
+                return;
+            }
             if let Ok(mut runtime) = manager.runtime.lock()
             {
                 let animated = runtime.appearance.animated; // 当前有效动画。
@@ -350,6 +420,42 @@ impl ToastManager
             manager.refresh();
         })
         .map_err(|error| error.to_string())
+    }
+
+    /// 系统通知监听同步只读条目：新增、更新与撤下都收敛到同一消息投影，不弹原生 Toast。
+    pub fn sync_external(&self, entries: Vec<ExternalEntry>)
+    {
+        {
+            let Ok(mut runtime) = self.runtime.lock()
+            else
+            {
+                return;
+            };
+            let incoming = entries.iter().map(|entry| entry.key.clone()).collect::<std::collections::HashSet<_>>(); // 本轮系统通知身份。
+            runtime.external.retain(|item| incoming.contains(&item.entry.key)); // 系统通知中心里已不存在的条目同步撤下。
+            runtime.external_dismissed.retain(|key| incoming.contains(key)); // 消失后解除忽略，下次同身份重新出现仍可显示。
+            for entry in entries
+            {
+                if runtime.external_dismissed.contains(&entry.key)
+                {
+                    continue;
+                }
+                if let Some(existing) = runtime.external.iter_mut().find(|item| item.entry.key == entry.key)
+                {
+                    existing.entry = entry; // 同身份更新正文或 Logo，身份不变。
+                    continue;
+                }
+                runtime.next_external_id += 1;
+                let id = EXTERNAL_ID_BASE + runtime.next_external_id;
+                runtime.external.push(ExternalItem { id, entry });
+            }
+            runtime.external.sort_by_key(|item| (item.entry.received_at_ms, item.id));
+            while runtime.external.len() > 16
+            {
+                runtime.external.remove(0); // 只保留最近的系统通知，避免无限增长。
+            }
+        }
+        self.sync_island_messages();
     }
 
     /// 同锁写入已保存偏好与主题 palette，保留现有系统深浅与动画解析值直到页面补齐。

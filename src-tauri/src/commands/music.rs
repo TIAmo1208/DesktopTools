@@ -11,3 +11,7 @@ pub fn get_music_details() -> serde_json::Value { crate::platform::windows::musi
 /// 执行当前媒体会话的播放控制动作。
 #[command]
 pub fn execute_music_action(action: String, expected_session: String) -> Result<(), String> { crate::platform::windows::music::execute_action(&action, &expected_session) }
+
+/// 请求当前媒体会话跳转到指定播放位置，单位毫秒。
+#[command]
+pub fn seek_music_position(expected_session: String, position_ms: u64) -> Result<(), String> { crate::platform::windows::music::execute_seek(&expected_session, position_ms) }

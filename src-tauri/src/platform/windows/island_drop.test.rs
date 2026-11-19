@@ -14,18 +14,28 @@ fn collect_effect_only_reports_copy()
 #[test]
 fn enter_reports_typed_fact_and_never_returns_none()
 {
-    let collect = island_enter_decision(false, true, true, DROPEFFECT_COPY);
+    let collect = island_enter_decision(false, true, true, true, DROPEFFECT_COPY);
     assert_eq!(collect.effect, DROPEFFECT_COPY);
-    assert!(collect.accepts_collect);
     assert_eq!(collect.fact, Some(IslandDropFact { active: true, kind: IslandDropKind::Collect }));
 
     // 收集箱未启用、格式不含收集箱、源不允许复制都归入 reject，但 Enter 的效果必须非 NONE。
     for (accepting, offer_has_collect, allowed) in [(false, true, DROPEFFECT_COPY), (true, false, DROPEFFECT_COPY), (true, true, DROPEFFECT_MOVE), (true, true, DROPEFFECT_NONE), (false, false, DROPEFFECT_MOVE | DROPEFFECT_LINK)]
     {
-        let decision = island_enter_decision(false, accepting, offer_has_collect, allowed);
+        let decision = island_enter_decision(false, accepting, offer_has_collect, true, allowed);
         assert_ne!(decision.effect, DROPEFFECT_NONE, "Enter 必须返回有效效果：{allowed:?}");
-        assert!(!decision.accepts_collect);
         assert_eq!(decision.fact, Some(IslandDropFact { active: true, kind: IslandDropKind::Reject }));
+    }
+}
+
+/// 显示区域之外（展开态透明列）不进入接收路径、不发事实，效果仍非 NONE 以维持 OS 会话。
+#[test]
+fn outside_display_never_starts_receiving()
+{
+    for (accepting, offer_has_collect, allowed) in [(true, true, DROPEFFECT_COPY), (true, false, DROPEFFECT_COPY), (false, true, DROPEFFECT_MOVE)]
+    {
+        let decision = island_enter_decision(false, accepting, offer_has_collect, false, allowed);
+        assert_ne!(decision.effect, DROPEFFECT_NONE, "透明列也要保持 OS 会话：{allowed:?}");
+        assert_eq!(decision.fact, None, "透明列不发接收事实");
     }
 }
 
@@ -45,9 +55,8 @@ fn right_button_drag_is_rejected_without_fact()
 {
     for (accepting, offer_has_collect, allowed) in [(true, true, DROPEFFECT_COPY), (false, true, DROPEFFECT_COPY), (true, false, DROPEFFECT_MOVE)]
     {
-        let decision = island_enter_decision(true, accepting, offer_has_collect, allowed);
+        let decision = island_enter_decision(true, accepting, offer_has_collect, true, allowed);
         assert_eq!(decision.effect, DROPEFFECT_NONE);
-        assert!(!decision.accepts_collect);
         assert_eq!(decision.fact, None);
     }
 }

@@ -1115,6 +1115,41 @@ pub(crate) struct IslandDragResult
 /// Win32 客户区命中规则：左上含、右下不含，圆角不参与矩形内外事实。
 fn point_inside_client(point: POINT, rect: RECT) -> bool { point.x >= rect.left && point.y >= rect.top && point.x < rect.right && point.y < rect.bottom }
 
+/// 投放点是否落在卡片显示区域内：展开态透明列不属于卡片，不进入接收路径。
+/// OLE 给的是屏幕物理像素，卡片矩形是窗口内 DIP，先按窗口原点与缩放换算。
+pub(crate) fn drop_point_inside_cards(x: i32, y: i32) -> bool
+{
+    ISLAND.with(|slot| {
+        let slot = match slot.try_borrow()
+        {
+            Ok(slot) => slot,
+            Err(_) => return false, // 状态提交期间不参与命中，避免借用冲突。
+        };
+        let Some(window) = slot.as_ref()
+        else
+        {
+            return false;
+        };
+        let Some(geometry) = window.geometry.as_ref()
+        else
+        {
+            return false;
+        };
+        let mut rect = RECT::default();
+        if unsafe { GetWindowRect(window.hwnd, &mut rect) }.is_err()
+        {
+            return false;
+        }
+        let scale = if window.monitor.scale_factor > 0.0 { window.monitor.scale_factor } else { 1.0 };
+        let local_x = (x - rect.left) as f64 / scale;
+        let local_y = (y - rect.top) as f64 / scale;
+        geometry.cards.iter().any(|card| {
+            let card = card.rect;
+            local_x >= card.left && local_x < card.left + card.width && local_y >= card.top && local_y < card.top + card.height
+        })
+    })
+}
+
 /// 仅在成功吸附并提交最终几何后调用，使用同一物理客户区坐标空间。
 fn cursor_inside_client(hwnd: HWND) -> bool
 {

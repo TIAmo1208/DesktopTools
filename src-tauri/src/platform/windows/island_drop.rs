@@ -43,43 +43,85 @@ pub(crate) fn register(hwnd: HWND, port: Arc<dyn crate::drop_bridge::IslandDropP
         let port = port.clone(); // 每个窗口共用同一应用层端口。
         let session = Rc::new(RefCell::new(None::<IslandDropSession>)); // 本次原生会话的进入事实。
         let engaged = Rc::new(Cell::new(None::<IslandDropKind>)); // 本次拖入是否进过接收路径及类型；右键保持 None。
+        let collectable = Rc::new(Cell::new(false)); // 本次拖入的格式能否收入，与当前光标是否在显示区域无关。
+        let right_drag = Rc::new(Cell::new(false)); // 右键拖入整段会话都不进入接收路径。
         let handler_port = port.clone();
         let handler_session = session.clone();
         let handler_engaged = engaged.clone();
+        let handler_collectable = collectable.clone();
+        let handler_right_drag = right_drag.clone();
         let target = drop_target::create_drop_target(
             Some(target_window),
             Rc::new(move |phase| match phase
             {
-                DropPhase::Enter(data, keys, _point, allowed) =>
+                DropPhase::Enter(data, keys, point, allowed) =>
                 {
                     *handler_session.borrow_mut() = None;
                     handler_engaged.set(None);
+                    handler_collectable.set(false);
                     let paths = drop_content::collect_file_paths(data).unwrap_or_default(); // 保留失效路径，由收入规则逐项处理。
                     let offer = drop_content::offer(data, &paths); // 只探测格式，不读取正文。
-                    let decision = island_enter_decision(keys.0 & windows::Win32::System::SystemServices::MK_RBUTTON.0 != 0, handler_port.collect_accepting(), offer.targets.contains(&drop_content::COLLECT), allowed);
+                    let right_button = keys.0 & windows::Win32::System::SystemServices::MK_RBUTTON.0 != 0;
+                    handler_right_drag.set(right_button);
+                    let inside_display = super::island::drop_point_inside_cards(point.x, point.y); // 透明列不算显示区域。
+                    let decision = island_enter_decision(right_button, handler_port.collect_accepting(), offer.targets.contains(&drop_content::COLLECT), inside_display, allowed);
+                    // 收入能力与光标位置分开记录：从透明列移进卡片时 Over 仍要能激活接收态。
+                    let collectable_offer = !right_button && handler_port.collect_accepting() && offer.targets.contains(&drop_content::COLLECT) && collect_effect(allowed) != DROPEFFECT_NONE;
+                    handler_collectable.set(collectable_offer);
                     if let Some(fact) = decision.fact
                     {
                         handler_port.island_drop_fact(fact); // 不可接收也要让页面拿到事实，否则「无法接收」永远不可达。
                         handler_engaged.set(Some(fact.kind));
                     }
-                    if decision.accepts_collect
+                    if collectable_offer
                     {
                         let collect_names = drop_target::source_drag_session(data).and_then(|source| source.collect_names.clone());
                         *handler_session.borrow_mut() = Some(IslandDropSession { collect_names, offer }); // 数据对象只在原生回调生命周期内有效。
                     }
                     Ok(decision.effect)
                 }
-                DropPhase::Over(_keys, _point, allowed) => Ok(island_over_effect(handler_engaged.get(), allowed)),
-                DropPhase::Drop(data, _keys, _point, allowed) =>
+                DropPhase::Over(_keys, point, allowed) =>
+                {
+                    if handler_right_drag.get()
+                    {
+                        return Ok(DROPEFFECT_NONE); // 右键会话不显示接收态。
+                    }
+                    // 同一窗口内从卡片移到透明列（或反向）必须同步接收态，不能只看进入时的位置。
+                    let next = if super::island::drop_point_inside_cards(point.x, point.y)
+                    {
+                        Some(if handler_collectable.get() { IslandDropKind::Collect } else { IslandDropKind::Reject })
+                    }
+                    else
+                    {
+                        None
+                    };
+                    let current = handler_engaged.get();
+                    if next != current
+                    {
+                        match (next, current)
+                        {
+                            (Some(kind), _) => handler_port.island_drop_fact(IslandDropFact { active: true, kind }),
+                            (None, Some(kind)) => handler_port.island_drop_fact(IslandDropFact { active: false, kind }),
+                            (None, None) => {}
+                        }
+                        handler_engaged.set(next);
+                    }
+                    Ok(island_over_effect(next, allowed))
+                }
+                DropPhase::Drop(data, _keys, point, allowed) =>
                 {
                     let engaged = handler_engaged.replace(None); // 放下即结束会话，随后 Leave 不再重复通知。
                     let session = handler_session.borrow_mut().take();
+                    handler_collectable.set(false);
+                    let right_drag = handler_right_drag.replace(false);
                     if let Some(fact) = island_leave_decision(engaged)
                     {
                         handler_port.island_drop_fact(fact);
                     }
+                    // 释放点必须仍在显示区域内；快速移动可能没有最后一次 Over，因此按当前坐标与会话资格判定。
+                    let inside_display = super::island::drop_point_inside_cards(point.x, point.y);
                     let has_collect = session.as_ref().is_some_and(|session| session.offer.targets.contains(&drop_content::COLLECT));
-                    let decision = island_drop_decision(engaged, session.is_some(), has_collect, allowed);
+                    let decision = island_drop_decision(if inside_display && !right_drag { Some(IslandDropKind::Collect) } else { None }, session.is_some(), has_collect, allowed);
                     let (Some(session), IslandDropDecision::Income) = (session, decision)
                     else
                     {
@@ -122,6 +164,7 @@ pub(crate) fn register(hwnd: HWND, port: Arc<dyn crate::drop_bridge::IslandDropP
                 DropPhase::Leave =>
                 {
                     handler_session.borrow_mut().take();
+                    handler_right_drag.set(false); // 会话结束即复位，下一次拖入重新判定。
                     if let Some(fact) = island_leave_decision(handler_engaged.replace(None))
                     {
                         handler_port.island_drop_fact(fact);
@@ -175,28 +218,33 @@ fn reject_effect(allowed: DROPEFFECT) -> DROPEFFECT
     DROPEFFECT_COPY // 源没有声明任何效果时仍返回非 NONE，事实先于最终效果送达页面。
 }
 
-/// 一次进入的纯决策：是否进入收入路径、回给 OS 的投放效果与要广播的进入事实。
+/// 一次进入的纯决策：回给 OS 的投放效果与要广播的进入事实。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct IslandEnterDecision
 {
     pub effect: DROPEFFECT,           // 交给 OS 的投放效果。
-    pub accepts_collect: bool,        // 只有收集箱内容进入收入路径。
-    pub fact: Option<IslandDropFact>, // 右键不进入接收路径，也不发事件。
+    pub fact: Option<IslandDropFact>, // 右键与透明列不广播事实。
 }
 
-/// 进入判定：右键一律拒绝；其余拖入都返回有效效果并广播 collect 或 reject 事实。
-pub(crate) fn island_enter_decision(right_button: bool, accepting: bool, offer_has_collect: bool, allowed: DROPEFFECT) -> IslandEnterDecision
+/// 进入判定：右键一律拒绝；显示区域之外不广播事实；其余返回有效效果并广播 collect 或 reject 事实。
+/// 收入会话由调用方按格式能力单独记录，从透明列移进卡片时由 Over 重新激活接收态。
+pub(crate) fn island_enter_decision(right_button: bool, accepting: bool, offer_has_collect: bool, inside_display: bool, allowed: DROPEFFECT) -> IslandEnterDecision
 {
     if right_button
     {
-        return IslandEnterDecision { effect: DROPEFFECT_NONE, accepts_collect: false, fact: None };
+        return IslandEnterDecision { effect: DROPEFFECT_NONE, fact: None };
+    }
+    if !inside_display
+    {
+        // 透明列只保持 OS 拖放会话，页面不显示接收态，放下时也不会收入。
+        return IslandEnterDecision { effect: reject_effect(allowed), fact: None };
     }
     if accepting && offer_has_collect && collect_effect(allowed) != DROPEFFECT_NONE
     {
-        return IslandEnterDecision { effect: DROPEFFECT_COPY, accepts_collect: true, fact: Some(IslandDropFact { active: true, kind: IslandDropKind::Collect }) };
+        return IslandEnterDecision { effect: DROPEFFECT_COPY, fact: Some(IslandDropFact { active: true, kind: IslandDropKind::Collect }) };
     }
     // 不可接收也要返回有效效果：进入先用源允许的效果，随后的 Over 立刻改报 NONE，光标表现为不可接收。
-    IslandEnterDecision { effect: reject_effect(allowed), accepts_collect: false, fact: Some(IslandDropFact { active: true, kind: IslandDropKind::Reject }) }
+    IslandEnterDecision { effect: reject_effect(allowed), fact: Some(IslandDropFact { active: true, kind: IslandDropKind::Reject }) }
 }
 
 /// 移动判定：只有已进入收集箱接收路径才报复制效果；reject 立即报禁止。

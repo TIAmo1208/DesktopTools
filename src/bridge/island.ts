@@ -2,7 +2,6 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { parseIslandDropFact, parseIslandMessages, parseIslandSnapshot, parseIslandStateRequest, parseIslandDragResult, type IslandDropFact, type IslandMessage, type IslandSnapshot, type IslandStateRequest } from "../contracts/island";
 import { parsePreferences } from "../contracts/settings";
 import { COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT } from "./components";
-import { getPreferences, savePreferences } from "./settings";
 import { invokeRuntime, listenRuntime } from "./runtime";
 
 /** 岛实例不从工作区取得，统一读取独立投影。 */
@@ -14,11 +13,9 @@ export const setIslandState = (request: IslandStateRequest) => invokeRuntime<voi
 /** 常态或 hover 进入原生移动循环，返回吸附完成时的权威指针位置。 */
 export const beginIslandDrag = async () => parseIslandDragResult(await invokeRuntime<unknown>("begin_island_drag"));
 
-/** 收起态逐卡保存；与排序共用偏好路径，提交前读取权威偏好。 */
-export const saveIslandCardCollapsed = async (islandCardCollapsed: Record<string, boolean>) => {
-    const preferences = await getPreferences();
-    return savePreferences(parsePreferences({ ...preferences, islandCardCollapsed }));
-};
+/** 收起态逐卡保存：只写这一项，不走整份偏好往返。 */
+export const saveIslandCardCollapsed = async (islandCardCollapsed: Record<string, boolean>) =>
+    parsePreferences(await invokeRuntime<unknown>("save_island_card_collapsed", { islandCardCollapsed }));
 
 /** 投放目标进入/离开时由原生广播；载荷是带类型的投放事实，坏载荷只记警告、不改页面投放状态。 */
 export const listenIslandDropActive = async (onFact: (fact: IslandDropFact) => void): Promise<UnlistenFn> =>
@@ -34,10 +31,8 @@ export const listenIslandDropActive = async (onFact: (fact: IslandDropFact) => v
 export const islandCursorInside = async () => await invokeRuntime<boolean>("island_cursor_inside");
 
 /** 两个排序入口共用偏好路径；提交前读取权威偏好，避免使用页面旧副本。 */
-export const saveIslandCardOrder = async (islandCardOrder: string[]) => {
-    const preferences = await getPreferences(); // 保留岛位置及其他已保存字段。
-    return savePreferences(parsePreferences({ ...preferences, islandCardOrder }));
-};
+export const saveIslandCardOrder = async (islandCardOrder: string[]) =>
+    parsePreferences(await invokeRuntime<unknown>("save_island_card_order", { islandCardOrder }));
 
 /** 复用清单与偏好事件作为失效通知，不发布岛专用事件，也不轮询。 */
 export const listenIslandSnapshots = async (onSnapshot: (snapshot: IslandSnapshot) => void, onError: (error: unknown) => void): Promise<UnlistenFn> => {

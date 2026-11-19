@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseIslandMessages } from "../../contracts/island.ts";
-import { ISLAND_NOTIFICATION_ANCHOR_ID, islandDismissNotification, islandHoldMessages, islandKeepNotifications, islandLocalNotificationArrival, islandMergeMessages, islandMergeNotifications, islandMessageArrival, islandMessageFocusOrder, islandMessagePanelView, islandMessageTime, islandNotificationAnchor, islandNotificationCountLabel, islandNotificationDeadline, islandNotificationTone, islandNotificationVisual, type IslandNotification } from "./islandMessages.ts";
+import { ISLAND_NOTIFICATION_ANCHOR_ID, islandCapsuleGlyph, islandDismissNotification, islandHoldMessages, islandKeepNotifications, islandLocalNotificationArrival, islandMergeMessages, islandMergeNotifications, islandMessageArrival, islandMessageFocusOrder, islandMessagePanelView, islandMessageTime, islandNotificationAnchor, islandNotificationContentDeadline, islandNotificationContentVisible, islandNotificationCountLabel, islandNotificationDeadline, islandNotificationTone, islandNotificationVisual, type IslandNotification } from "./islandMessages.ts";
+import { islandHoverContent } from "./islandContent.ts";
 import type { IslandMessage } from "../../contracts/island.ts";
 
 /** 构造与后端投影同形的消息，只覆盖断言需要的字段。 */
@@ -81,19 +82,64 @@ test("通知计数封顶但不丢原条目，恰好 99 条不显示加号", () =
     assert.equal(many.length, 103);
 });
 
-test("通知逐条保留 30s，失败和确认不超时；阅读期冻结过期条目", () => {
+test("通知正文先展示一段、图标再保留一段，失败确认与有效进度不超时；阅读期冻结过期条目", () => {
     const pending = islandMessageArrival({ ...message(1), receivedAtMs: 1_000 });
     const failed = islandMessageArrival({ ...message(2), type: "error", loading: true, receivedAtMs: 0 });
     const awaiting: IslandNotification = { ...pending, key: "local:confirm", status: "awaiting" };
     const fresh: IslandNotification = { ...pending, key: "local:weather", source: "weather", receivedAtMs: 1_001 };
-    const items = [fresh, pending, failed, awaiting];
+    const running: IslandNotification = { ...pending, key: "local:progress", loading: true, progress: 0.4 };
+    const items = [fresh, pending, failed, awaiting, running];
+    // 两段时长各自从到达时刻起算、互不串接：正文 5s 截止在 6000，寿命取两者较长的 30s，到 31000 移除。
+    assert.equal(islandNotificationContentDeadline(pending), 6_000);
     assert.equal(islandNotificationDeadline(pending), 31_000);
     assert.equal(islandNotificationDeadline(failed), undefined);
     assert.equal(islandNotificationDeadline(awaiting), undefined);
+    assert.equal(islandNotificationDeadline(running), undefined, "有明确且未走满的进度不自动移除");
+    assert.equal(islandNotificationContentVisible(pending, 5_999), true);
+    assert.equal(islandNotificationContentVisible(pending, 6_000), false);
     assert.equal(islandKeepNotifications(items, 30_999, "collapsed"), items);
-    assert.deepEqual(islandKeepNotifications(items, 31_000, "collapsed"), [fresh, failed, awaiting]);
-    assert.deepEqual(islandKeepNotifications(items, 31_001, "collapsed"), [failed, awaiting]);
+    assert.deepEqual(islandKeepNotifications(items, 31_000, "collapsed"), [fresh, failed, awaiting, running], "同批到达的末尾条目仍差 1ms 到期");
+    assert.deepEqual(islandKeepNotifications(items, 31_001, "collapsed"), [failed, awaiting, running]);
     for (const mode of ["hover", "expanded"] as const) assert.equal(islandKeepNotifications(items, 90_000, mode), items);
+});
+
+test("两段时长独立起算：正文长于锚点时一起结束，正文短于锚点时锚点继续留", () => {
+    const notice = islandMessageArrival({ ...message(1), receivedAtMs: 1_000 });
+    // 正文 40s、锚点 30s：正文更长，寿命跟正文一起结束，没有只留图标的阶段。
+    const longContent = { contentMs: 40_000, anchorMs: 30_000 };
+    assert.equal(islandNotificationDeadline(notice, longContent), 41_000);
+    assert.equal(islandNotificationContentVisible(notice, 40_999, longContent), true);
+    assert.equal(islandNotificationContentVisible(notice, 41_000, longContent), false);
+    // 正文 5s、锚点 30s：正文收起后锚点再留 25s。
+    const shortContent = { contentMs: 5_000, anchorMs: 30_000 };
+    assert.equal(islandNotificationDeadline(notice, shortContent), 31_000);
+    assert.equal(islandNotificationContentVisible(notice, 5_999, shortContent), true);
+    assert.equal(islandNotificationContentVisible(notice, 6_000, shortContent), false);
+});
+
+test("正文期结束后锚点只留身份与计数，胶囊不再有可展示正文", () => {
+    const notice = islandMessageArrival({ ...message(1), receivedAtMs: 1_000 });
+    assert.equal(islandNotificationAnchor([notice], { nowMs: 5_999 })?.unit?.primary, "消息1");
+    const anchor = islandNotificationAnchor([notice], { nowMs: 6_000 });
+    assert.equal(anchor?.id, ISLAND_NOTIFICATION_ANCHOR_ID);
+    assert.equal(anchor?.unit, undefined, "正文期结束不再提供内容单元");
+    assert.equal(anchor?.count, 1, "锚点身份与计数仍保留");
+    // hover 仍能从计数得到可读行，不显示空内容。
+    assert.equal(islandHoverContent(anchor).lines[0], "1 条消息");
+});
+
+test("胶囊图标按最新条目类型：普通铃铛、成功对勾、警告三角、错误叉、加载进度环", () => {
+    const glyph = (type: IslandMessage["type"], loading = false, progress?: number) => islandCapsuleGlyph({ ...islandMessageArrival({ ...message(1), type, loading }), progress });
+    assert.deepEqual(glyph("info"), { kind: "bell" });
+    assert.deepEqual(glyph("success"), { kind: "type", type: "success" });
+    assert.deepEqual(glyph("warning"), { kind: "type", type: "warning" });
+    assert.deepEqual(glyph("error"), { kind: "type", type: "error" });
+    assert.deepEqual(glyph("info", true, 0.42), { kind: "progress", progress: 0.42 });
+    assert.deepEqual(glyph("info", true), { kind: "loading" });
+    assert.deepEqual(glyph("info", true, 1.2), { kind: "loading" }, "非法进度回落不定加载");
+    assert.deepEqual(islandCapsuleGlyph(undefined), { kind: "bell" }, "没有条目时仍用铃铛");
+    const weather = islandLocalNotificationArrival(1, { source: "weather", content: "多云", weatherCode: "302" }, 1_000);
+    assert.deepEqual(islandCapsuleGlyph(weather), { kind: "bell" }, "天气本地条目在胶囊用铃铛");
 });
 
 test("铃铛显示真实原生类型，加载优先；进度和天气只认投影事实", () => {

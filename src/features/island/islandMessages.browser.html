@@ -122,12 +122,20 @@
                 };
                 for (const [类型, 加载, 色, 色名] of [["info", false, "--fence-text", "info"], ["success", false, "--fence-active", "success"], ["warning", false, "--fence-warning", "warning"], ["error", false, "--fence-error", "error"], ["error", true, "--fence-text", "loading"]]) {
                     夹具.pushMessages([消息(1, 类型, "通知正文", "测试来源", Date.now(), 加载)]);
-                    await 直到(() => 同一锚点.querySelector(`[data-message-tone="${色名}"]`), `胶囊载入实际 ${色名} 类型`);
-                    const 铃铛 = 同一锚点.querySelector("svg");
-                    断言(getComputedStyle(铃铛).color === 按主题计算颜色(色), `${色名} 铃铛计算色来自 ${色}`);
+                    const 墨层 = await 直到(() => 同一锚点.querySelector(`[data-message-tone="${色名}"]`), `胶囊载入实际 ${色名} 类型`);
+                    // 颜色画在墨层上，图形本身（图标、进度环、loading mask）不再各自带色。
+                    断言(getComputedStyle(墨层).color === 按主题计算颜色(色), `${色名} 墨层计算色来自 ${色}`);
                 }
                 断言(同一锚点.offsetWidth === 28 && 同一锚点.offsetHeight === 28, "通知锚点应为28×28");
-                断言(Boolean(同一锚点.querySelector('[data-function="message"] svg path[d^="M10.268"]')), "通知显示 Lucide bell 路径");
+                // 胶囊图形按最新条目类型：普通铃铛、成功/警告/错误用类型图标、加载换进度环。
+                夹具.pushMessages([消息(1, "info", "通知正文", "测试来源", Date.now())]);
+                await 直到(() => 同一锚点.querySelector('[data-function="message"] svg path[d^="M10.268"]'), "普通消息显示 Lucide bell 路径");
+                for (const 类型 of ["success", "warning", "error"]) {
+                    夹具.pushMessages([消息(1, 类型, "通知正文", "测试来源", Date.now())]);
+                    await 直到(() => 同一锚点.querySelector(`[data-message-tone="${类型}"] .island-anchor__icon svg`), `${类型} 消息显示类型图标`);
+                }
+                夹具.pushMessages([消息(1, "error", "通知正文", "测试来源", Date.now(), true)]);
+                await 直到(() => 同一锚点.querySelector('[data-message-tone="loading"] .island-anchor__loading'), "无进度的加载消息显示统一 loading 图形");
                 断言(卡().length === 0 && !消息体() && !关闭按钮(), "常态不渲染完整消息卡与控件");
                 断言(盒().height === 44 && 根().querySelector('[data-anchor="event:音乐控制"]'), "常态尺寸与音乐锚点保留");
 
@@ -182,12 +190,18 @@
                 await 直到(() => 根().dataset.state === "collapsed", "关闭后回到常态");
 
                 // 保留并独立验证读取期限、错误离场与逐条关闭。
-                夹具.pushMessages([消息(4, "info", "第四条通知正文", "测试来源", Date.now() - 29_200), 消息(5, "error", "第五条通知正文", "监控", Date.now() - 31_000)]);
+                夹具.pushMessages([消息(4, "info", "第四条通知正文", "测试来源", Date.now() - 29_000), 消息(5, "error", "第五条通知正文", "监控", Date.now() - 31_000)]);
+                // 正文期已过的通知只剩锚点，等几何与切态就绪再进入阅读，避免在窗口提交期间丢指针。
+                await 直到(() => Boolean(锚点()), "过期正文仍保留消息锚点");
+                await 等待(300);
                 悬停();
-                await 直到(() => 根().dataset.state === "hover" && 通知行().some((行) => 行.textContent.includes("第四条通知正文")), "进入 hover 阅读即将过期的通知");
+                await 直到(() => 根().dataset.state === "hover", "进入 hover 阅读");
+                // 正文期已过时胶囊正文让位给其它锚点，hover 初选跟随胶囊正文；这里显式选中消息锚点再读列表。
+                根().querySelector('button[data-anchor="message:notifications"]')?.click();
+                await 直到(() => 通知行().some((行) => 行.textContent.includes("第四条通知正文")), "进入 hover 阅读即将过期的通知");
                 夹具.pushMessages([]);
                 await 等待(900);
-                断言(通知行().some((行) => 行.textContent.includes("第四条通知正文")) && 通知行().some((行) => 行.textContent.includes("第五条通知正文")), "原生离场和 30s 到期不抽走正在读的通知");
+                断言(通知行().some((行) => 行.textContent.includes("第四条通知正文")) && 通知行().some((行) => 行.textContent.includes("第五条通知正文")), "原生离场和保留期到期不抽走正在读的通知");
                 按键("Escape");
                 await 直到(() => 根().dataset.state === "collapsed" && 计数() === "消息通知 1 条", "回常态后过期普通通知撤下，超时的失败通知仍在");
 
@@ -203,8 +217,8 @@
                 按键("Escape");
                 await 直到(() => 根().dataset.state === "collapsed", "回到常态测量静默过期");
                 夹具.pushMessages([消息(8, "info", "静默到期", "超时", Date.now() - 29_300)]);
-                await 直到(() => Boolean(锚点()), "30s 前可见");
-                await 直到(() => !锚点(), "无需下一次快照也在 30s 到点撤下");
+                await 直到(() => Boolean(锚点()), "保留期前可见");
+                await 直到(() => !锚点(), "无需下一次快照也在保留期到点撤下");
 
                 // 模拟原生桥因暂停而没有外发：命令快照能看到，页面事件完全不到达。
                 const 恢复桥 = window.__DESKTOP_TOOLS_NATIVE__;
@@ -303,10 +317,15 @@
                 const 列表框 = 五行[0].parentElement.getBoundingClientRect();
                 断言(五行.map((行) => 行.querySelector(".island-message__body").textContent).join() === "第五条,第四条,第三条,第二条,第一条", "只显示最近五条原生消息，最新在前");
                 断言(近似(行矩形(五行[0]).top, 列表框.top) && 近似(行矩形(五行.at(-1)).bottom, 列表框.bottom), "首尾与列表缘对齐，无额外分隔留白");
-                断言(new Set(五行.map((行) => 行.querySelector(".island-message__icon svg").innerHTML)).size === 4 && getComputedStyle(五行[0].querySelector(".island-message__icon")).opacity === "0.6", "四种状态分别保留图形，加载图标仍为 60%");
+                const 消息图形 = (行) => {
+                    const svg = 行.querySelector(".island-message__icon svg");
+                    if (svg) return svg.innerHTML;
+                    return 行.querySelector(".island-message__loading") ? "loading" : "none";
+                }; // 加载态用统一 loading 图形，其余用类型图标。
+                断言(new Set(五行.map(消息图形)).size === 5 && !五行.some((行) => 消息图形(行) === "none") && getComputedStyle(五行[0].querySelector(".island-message__icon")).opacity === "0.6", "四种状态与加载各保留一种图形，加载图标仍为 60%");
                 for (const [序号, 行] of 五行.entries()) {
                     const 图标盒 = 行.querySelector(".island-message__icon").getBoundingClientRect();
-                    const 字形 = 行.querySelector(".island-message__icon svg").getBoundingClientRect();
+                    const 字形 = (行.querySelector(".island-message__icon svg") ?? 行.querySelector(".island-message__loading")).getBoundingClientRect();
                     const 中轨 = 行.querySelector(".island-message__info").getBoundingClientRect();
                     const 关闭 = 行.querySelector("button");
                     const 关闭框 = 关闭.getBoundingClientRect();

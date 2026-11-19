@@ -78,7 +78,7 @@ export const useIslandWeather = (instanceId: string | undefined, monitorId?: str
     useEffect(() => {
         setForecast(undefined);
         setFailure(undefined);
-        if (!islandEnabled || !instanceId || !readySource || !readyCityId || !monitorId) return;
+        if (!islandEnabled || !instanceId || !readySource || !readyCityId) return;
         let active = true; // 换来源、换城市或卸载后拒绝旧响应。
         let revision = 0; // 隐藏恢复和配置变化共用同一代次。
         let stop: (() => void) | undefined; // 活动订阅退订入口。
@@ -86,7 +86,8 @@ export const useIslandWeather = (instanceId: string | undefined, monitorId?: str
         const config = { source: readySource, cityId: readyCityId } as const;
         const load = () => {
             if (!active || document.visibilityState === "hidden") return;
-            if (!stop && !pending) {
+            // 活动订阅需要显示器身份；身份还没到也先完成一次读取，卡片不卡在「正在获取」。
+            if (monitorId && !stop && !pending) {
                 pending = true;
                 void listenWeatherForecast(instanceId, monitorId, config, (value) => {
                     const next = value as IslandWeatherForecast;

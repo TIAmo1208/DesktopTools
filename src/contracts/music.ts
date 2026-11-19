@@ -9,6 +9,9 @@ export interface MusicMediaSnapshot {
     canPrevious: boolean; // 上一曲能力。
     canPlayPause: boolean; // 当前播放动作能力。
     canNext: boolean; // 下一曲能力。
+    canSeek: boolean; // 是否允许跳转播放位置；进度条据此决定可拖动还是只读。
+    seekMinMs?: number; // 系统给出的可跳转下界；缺失表示播放器没有给出区间。
+    seekMaxMs?: number; // 系统给出的可跳转上界。
 }
 
 /** 时间轴原始 100ns ticks 保留字符串；LastUpdatedTime 为 1601 纪元。 */
@@ -91,6 +94,12 @@ export const parseMusicSnapshot = (value: unknown): MusicMediaSnapshot | undefin
     for (const key of ["title", "artist", "source", "sessionId"]) if (typeof media[key] !== "string") throw new Error("媒体信息无效");
     if (!media.sessionId) throw new Error("媒体会话身份无效");
     for (const key of ["canPrevious", "canPlayPause", "canNext"]) if (typeof media[key] !== "boolean") throw new Error("媒体能力无效");
+    // 旧载荷没有跳转能力位；缺省按不可跳转处理，提供时必须是布尔。
+    const canSeek = media.canSeek === undefined ? false : media.canSeek;
+    if (typeof canSeek !== "boolean") throw new Error("媒体能力无效");
+    const seekRange = [media.seekMinMs, media.seekMaxMs];
+    // 原生 Option 为 None 时序列化为 null；null 与缺省都表示播放器没有给出区间。
+    if (seekRange.some((value) => value != null && (typeof value !== "number" || !Number.isFinite(value) || value < 0))) throw new Error("媒体跳转区间无效");
     if (!["playing", "paused", "stopped", "unknown"].includes(String(media.playback))) throw new Error("媒体播放状态无效");
     if (
         media.artworkUrl != null &&
@@ -107,5 +116,8 @@ export const parseMusicSnapshot = (value: unknown): MusicMediaSnapshot | undefin
         canPrevious: media.canPrevious as boolean,
         canPlayPause: media.canPlayPause as boolean,
         canNext: media.canNext as boolean,
+        canSeek: canSeek as boolean,
+        seekMinMs: media.seekMinMs == null ? undefined : (media.seekMinMs as number),
+        seekMaxMs: media.seekMaxMs == null ? undefined : (media.seekMaxMs as number),
     };
 };

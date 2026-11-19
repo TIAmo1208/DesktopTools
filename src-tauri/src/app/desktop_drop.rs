@@ -291,7 +291,7 @@ pub(crate) fn receive_island_collect(app: &AppHandle, content: crate::collect::I
 pub(crate) fn report_content_error(app: &AppHandle, error: String)
 {
     crate::log_error!("拖放：内容收入失败，错误：{error}");
-    let _ = app.state::<std::sync::Arc<crate::notifications::ToastManager>>().publish(app, crate::notifications::ToastRequest { r#type: "error".into(), content: error, source: "content-drop".into(), dedupe_key: None, loading: None, duration_ms: 6000 });
+    let _ = app.state::<std::sync::Arc<crate::notifications::ToastManager>>().publish(app, crate::notifications::ToastRequest { r#type: "error".into(), content: error, source: "content-drop".into(), dedupe_key: None, loading: None, duration_ms: 6000, progress: None });
 }
 
 /// 将已确认的工作区 DIP 指针映射到实际存在的共享围栏。

@@ -20,6 +20,9 @@ export interface IslandMessage {
     source: string; // 来源标识。
     loading: boolean;
     receivedAtMs: number; // 到达时刻的墙钟毫秒。
+    progress?: number; // 确定的 0–1 进度；缺失时只显示加载动画。
+    iconUrl?: string; // 应用 Logo 数据 URL；系统通知条目才有。
+    external?: boolean; // 只读的系统通知条目：关闭只影响浮岛，不回写系统通知中心。
 }
 
 const ISLAND_MESSAGE_TYPES: readonly IslandMessage["type"][] = ["info", "success", "warning", "error"];
@@ -44,16 +47,29 @@ export const parseIslandMessages = (value: unknown): IslandMessage[] => {
     const seen = new Set<number>(); // 同一集合内身份必须唯一。
     return value.map((entry): IslandMessage => {
         const item = record(entry); // 单条消息投影。
-        const keys = ["id", "type", "content", "source", "loading", "receivedAtMs"];
-        if (Object.keys(item).length !== keys.length || keys.some((key) => !Object.hasOwn(item, key))) throw new Error("岛消息字段无效");
+        const keys = ["id", "type", "content", "source", "loading", "receivedAtMs", "progress", "iconUrl", "external"];
+        if (Object.keys(item).some((key) => !keys.includes(key)) || keys.slice(0, 6).some((key) => !Object.hasOwn(item, key))) throw new Error("岛消息字段无效");
         const id = item.id;
         if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0 || seen.has(id)) throw new Error("岛消息身份无效");
         if (!ISLAND_MESSAGE_TYPES.includes(item.type as IslandMessage["type"])) throw new Error("岛消息类型无效");
         if (typeof item.content !== "string" || !item.content.trim() || typeof item.source !== "string" || !item.source.trim()) throw new Error("岛消息正文或来源无效");
         if (typeof item.loading !== "boolean") throw new Error("岛消息加载状态无效");
         if (typeof item.receivedAtMs !== "number" || !Number.isSafeInteger(item.receivedAtMs) || item.receivedAtMs < 0) throw new Error("岛消息时间无效");
+        if (item.progress !== undefined && (typeof item.progress !== "number" || !Number.isFinite(item.progress) || item.progress < 0 || item.progress > 1))
+            throw new Error("岛消息进度无效");
+        if (item.external !== undefined && typeof item.external !== "boolean") throw new Error("岛消息来源无效");
+        if (
+            item.iconUrl !== undefined &&
+            (typeof item.iconUrl !== "string" || !/^data:image\/(jpeg|png|gif|webp|bmp);base64,[A-Za-z0-9+/]*={0,2}$/.test(item.iconUrl))
+        )
+            throw new Error("岛消息图标无效");
         seen.add(id);
-        return { id, type: item.type as IslandMessage["type"], content: item.content, source: item.source, loading: item.loading, receivedAtMs: item.receivedAtMs };
+        // 可选参数只在消息通道真的注入时出现，旧载荷的投影形状保持不变。
+        const message: IslandMessage = { id, type: item.type as IslandMessage["type"], content: item.content, source: item.source, loading: item.loading, receivedAtMs: item.receivedAtMs };
+        if (item.progress !== undefined) message.progress = item.progress as number;
+        if (item.iconUrl !== undefined) message.iconUrl = item.iconUrl as string;
+        if (item.external !== undefined) message.external = item.external as boolean;
+        return message;
     });
 };
 

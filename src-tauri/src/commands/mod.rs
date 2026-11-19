@@ -18,7 +18,7 @@ mod router;
 pub mod weather;
 mod workspace;
 mod workspace_menu;
-pub use music::{execute_music_action, get_current_music_session};
+pub use music::{execute_music_action, get_current_music_session, seek_music_position};
 
 /// 程序启动事件是否已外发：首批宿主就绪只发一次。
 static STARTED_EVENT_SENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

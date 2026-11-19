@@ -100,13 +100,34 @@ const CurrentModule = ({ forecast, state }: { forecast?: Forecast; state: Module
     );
 };
 
+/** 单个小时格的最小可读宽度与格间距；可见数量由实际宽度算出，不写死五列。 */
+const HOURLY_SLOT_MIN = 56;
+const HOURLY_SLOT_GAP = 8;
+
 const HourlyModule = ({ forecast, state }: { forecast?: Forecast; state: ModuleState }) => {
     const city = forecast?.city;
     const hours = forecast?.hourly?.hours ?? [];
+    const grid = useRef<HTMLDivElement>(null);
+    const [columns, setColumns] = useState(5); // 可见小时数，按宽度自适应。
     const [page, setPage] = useState(0);
-    const pageSize = 5;
+    // 宽度决定一次显示几个小时：每格不少于 56，随格子宽度取整。
+    useLayoutEffect(() => {
+        const node = grid.current;
+        if (!node) return;
+        const update = () => {
+            const width = node.clientWidth;
+            if (width > 0) setColumns(Math.max(1, Math.min(12, Math.floor((width + HOURLY_SLOT_GAP) / (HOURLY_SLOT_MIN + HOURLY_SLOT_GAP)))));
+        };
+        update();
+        if (typeof ResizeObserver === "undefined") return;
+        const observer = new ResizeObserver(update);
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, [hours.length]);
+    const pageSize = Math.max(1, Math.min(columns, hours.length || columns));
     const pages = Math.max(1, Math.ceil(hours.length / pageSize));
     useEffect(() => setPage((value) => Math.min(value, pages - 1)), [pages]);
+    const visible = hours.slice(page * pageSize, page * pageSize + pageSize);
     return (
         <section className="weather-tile__module weather-tile__hourly-module" aria-label="未来 24 小时">
             <header>
@@ -120,8 +141,8 @@ const HourlyModule = ({ forecast, state }: { forecast?: Forecast; state: ModuleS
                     </button>
                 </div>
             </header>
-            <div className="weather-tile__hourly">
-                {hours.slice(page * pageSize, page * pageSize + pageSize).map((item, index) => (
+            <div className="weather-tile__hourly" ref={grid} style={{ gridTemplateColumns: `repeat(${pageSize}, minmax(0, 1fr))` }}>
+                {visible.map((item, index) => (
                     <div className="weather-tile__hour" key={`${item.forecastTime ?? "hour"}-${index}`}>
                         <small>{city ? formatHour(item.forecastTime, city) : "--:--"}</small>
                         <WeatherGlyph className="weather-tile__glyph" code={item.condition?.code} />

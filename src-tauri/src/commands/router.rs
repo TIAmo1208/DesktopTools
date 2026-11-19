@@ -27,6 +27,29 @@ pub(crate) fn route_island(command: &str, app: &AppHandle, runtime: &DesktopHost
         })()),
         "begin_island_drag" => Some(island::execute_begin_island_drag(app).map_err(serialize_error).and_then(serialize_result)),
         "island_cursor_inside" => Some(island::execute_island_cursor_inside(app).map_err(serialize_error).and_then(serialize_result)),
+        // 岛页只写这两项：卡顺序与卡内收起态。整份偏好保存仍只属于设置窗口。
+        "save_island_card_collapsed" => Some((|| -> Result<Value, Value> {
+            let collapsed: std::collections::BTreeMap<String, bool> = command_argument(&arguments, "islandCardCollapsed", "岛卡收起状态无效").map_err(serialize_error)?;
+            let normalized = crate::contracts::settings::normalize_island_card_flags(collapsed); // 与整份保存共用同一条岛卡标识边界。
+            app.state::<crate::preferences::SettingsState>()
+                .update(|preferences| {
+                    preferences.island_card_collapsed = normalized;
+                    Ok(())
+                })
+                .map_err(serialize_error)
+                .and_then(serialize_result)
+        })()),
+        "save_island_card_order" => Some((|| -> Result<Value, Value> {
+            let order: Vec<String> = command_argument(&arguments, "islandCardOrder", "岛卡顺序无效").map_err(serialize_error)?;
+            let normalized = crate::contracts::settings::normalize_island_card_order(order); // 去重、限定前缀与上限。
+            app.state::<crate::preferences::SettingsState>()
+                .update(|preferences| {
+                    preferences.island_card_order = normalized;
+                    Ok(())
+                })
+                .map_err(serialize_error)
+                .and_then(serialize_result)
+        })()),
         _ => None,
     }
 }
@@ -102,6 +125,11 @@ pub(crate) fn route_music(command: &str, app: &AppHandle, runtime: &DesktopHostR
             let action: String = command_argument(&arguments, "action", "媒体动作参数无效").map_err(serialize_error)?; // 原生桌面通道与 Tauri 使用相同的动作入口。
             let expected_session: String = command_argument(&arguments, "expectedSession", "媒体会话参数无效").map_err(serialize_error)?; // 用户点击时的会话代次。
             music::execute_music_action(action, expected_session).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
+        })()),
+        "seek_music_position" => Some((|| -> Result<Value, Value> {
+            let expected_session: String = command_argument(&arguments, "expectedSession", "媒体会话参数无效").map_err(serialize_error)?; // 拖动时的会话代次。
+            let position_ms: u64 = command_argument(&arguments, "positionMs", "媒体跳转位置无效").map_err(serialize_error)?; // 目标位置以毫秒传递。
+            music::seek_music_position(expected_session, position_ms).map_err(|message| serialize_error(DesktopHostError::invalid_readiness(message))).and_then(serialize_result)
         })()),
         _ => None,
     }

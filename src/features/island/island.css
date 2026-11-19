@@ -396,6 +396,14 @@ button.island-anchor:active {
 
 .island-anchor__track { stroke: var(--fence-border); }
 
+/* 系统通知条目的应用 Logo 占 20 DIP 安全区，不铺满整圆。 */
+.island-anchor__logo {
+    display: block;
+    inline-size: 20px;
+    block-size: 20px;
+    border-radius: 3px;
+    object-fit: contain;
+}
 /* 媒体图或音符背景占满圆；其他状态保持 20 DIP 安全区。 */
 .island-anchor__ink[data-kind="music"],
 .island-anchor__media {
@@ -539,12 +547,41 @@ button.island-anchor:active {
 .island-notification-row__outlook { margin-block-start: 2px; font-size: 11px; opacity: 0.78; }
 .island-notification-row > time { grid-column: -3 / -2; white-space: nowrap; font-size: 11px; opacity: 0.78; }
 .island-notification-row > button { grid-column: -2 / -1; }
+/* 无确定进度的加载统一用 resources/loading.svg，着色走 mask；关闭动效时静止。 */
+.island-anchor__loading {
+    display: block;
+    inline-size: 20px;
+    block-size: 20px;
+    background: currentColor;
+    mask: url("../../../resources/loading.svg") center / contain no-repeat;
+}
+.island-anchor__loading[data-motion="on"] {
+    animation: island-anchor-sweep 1s linear infinite;
+}
+.island-message__loading {
+    display: block;
+    inline-size: 16px;
+    block-size: 16px;
+    background: currentColor;
+    mask: url("../../../resources/loading.svg") center / contain no-repeat;
+}
+.island[data-animations="true"] .island-message__loading {
+    animation: island-anchor-sweep 1s linear infinite;
+}
 .island-notification-row__icon {
     grid-column: 1;
     display: grid;
     place-items: center;
     inline-size: 16px;
     block-size: 16px;
+}
+/* 系统通知条目在图标位显示来源应用 Logo，尺寸与类型图标一致。 */
+.island-notification-row__logo {
+    display: block;
+    inline-size: 16px;
+    block-size: 16px;
+    border-radius: 3px;
+    object-fit: contain;
 }
 .island-notification-row__icon svg {
     display: block;
@@ -709,21 +746,103 @@ button.island-anchor:active {
 .island-music__timeline {
     margin-block-start: 10px;
 }
-.island-music__timeline progress {
+/* 只读进度与可拖滑块共用同一套轨道与圆点外观：同一高度、同一配色、同一滑块尺寸。 */
+/* 不可控播放源：静态轨道 + 位置圆点，整块不显示手型，悬停也不变化。 */
+.island-music__progress {
+    position: relative;
+    display: block;
+    inline-size: 100%;
+    block-size: 16px;
+    margin: -6px 0;
+    cursor: default;
+}
+.island-music__progress::before {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    inset-block-start: 50%;
+    block-size: 3px;
+    margin-block-start: -1.5px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--fence-text) 18%, transparent);
+}
+.island-music__progress-fill {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-start: 0;
+    block-size: 3px;
+    margin-block-start: -1.5px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--fence-text) 80%, transparent);
+}
+.island-music__progress-knob {
+    position: absolute;
+    inset-block-start: 50%;
+    inline-size: 10px;
+    block-size: 10px;
+    margin-block-start: -5px;
+    border-radius: 50%;
+    background: var(--fence-text);
+    opacity: 0;
+}
+/* 位置圆点只在悬停进度条时出现，平时保持一条干净的进度线；只读条悬停不改变光标与轨道。 */
+.island-music__progress:hover .island-music__progress-knob {
+    opacity: 1;
+}
+/* 可控播放源：整块 16px 都能按住，轨道 3px；手型与放大只出现在悬停、按下这两个状态。 */
+.island-music__seek {
     display: block;
     appearance: none;
     inline-size: 100%;
-    block-size: 3px;
+    block-size: 16px;
+    margin: -6px 0;
     border: 0;
+    background: transparent;
+    cursor: default;
+}
+.island-music__seek::-webkit-slider-runnable-track {
+    block-size: 3px;
+    border-radius: 2px;
     background: color-mix(in srgb, var(--fence-text) 18%, transparent);
 }
-.island-music__timeline progress::-webkit-progress-bar {
-    background: color-mix(in srgb, var(--fence-text) 18%, transparent);
+.island-music__seek::-webkit-slider-thumb {
+    appearance: none;
+    inline-size: 10px;
+    block-size: 10px;
+    margin-block-start: -3.5px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--fence-text);
+    opacity: 0;
 }
-.island-music__timeline progress::-webkit-progress-value {
-    background: color-mix(in srgb, var(--fence-text) 80%, transparent);
+/* 圆点只在悬停、按下或键盘聚焦时显示，平时只留进度线。 */
+.island-music__seek:hover::-webkit-slider-thumb,
+.island-music__seek:focus-visible::-webkit-slider-thumb {
+    opacity: 1;
 }
-.island-music__timeline > div {
+.island-music__seek:hover {
+    cursor: pointer;
+}
+.island-music__seek:hover::-webkit-slider-runnable-track {
+    background: color-mix(in srgb, var(--fence-text) 28%, transparent);
+}
+.island-music__seek:active::-webkit-slider-thumb {
+    inline-size: 12px;
+    block-size: 12px;
+    margin-block-start: -4.5px;
+    opacity: 1;
+}
+.island-music__seek:active {
+    cursor: grabbing;
+}
+.island-music__seek:active::-webkit-slider-thumb {
+    transform: scale(1.1);
+}
+.island-music__seek:focus-visible {
+    outline: 2px solid var(--fence-active);
+    outline-offset: 3px;
+}
+.island-music__stamps {
     display: flex;
     justify-content: space-between;
     margin-block-start: 4px;
@@ -787,9 +906,22 @@ button.island-anchor:active {
 /* 只夹住歌词与回落文案；播放进度只移动其后代，绝不改盒尺寸。 */
 .island-anchor-label[data-music="true"] .island-anchor__text,
 .island-music__line {
+    position: relative;
     margin-block: 0;
     inline-size: var(--island-capsule-line-max);
     overflow: clip;
+}
+/* 换句交接只动外层，歌词按进度的横向滚动仍只作用在当前行。 */
+.island-music__handoff {
+    display: block;
+}
+.island-music__outgoing {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    display: block;
+    white-space: nowrap;
+    pointer-events: none;
 }
 .island-music__line[data-motion="off"] .island-music__current {
     inline-size: 100%;
@@ -901,6 +1033,13 @@ button.island-anchor:active {
     inline-size: 20px;
     block-size: 20px;
     margin-block-start: calc((18px - 20px) / 2);
+}
+.island-message__logo {
+    display: block;
+    inline-size: 16px;
+    block-size: 16px;
+    border-radius: 3px;
+    object-fit: contain;
 }
 .island-message__icon svg {
     inline-size: 16px;

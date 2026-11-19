@@ -11,7 +11,9 @@ import {
     ISLAND_HOVER_CONTROL_LIMIT,
     ISLAND_HOVER_LINE_LIMIT,
     ISLAND_LAYER_ORDER,
-    ISLAND_MESSAGE_ANCHOR_TTL_MS,
+    ISLAND_MESSAGE_ANCHOR_MS,
+    ISLAND_MESSAGE_CONTENT_MS,
+    ISLAND_MESSAGE_HANDOFF_MS,
     ISLAND_NOTICE_LAYER,
     ISLAND_STATUS_SPECS,
     islandAnchorGlyph,
@@ -64,7 +66,9 @@ test("内容层复用视觉硬数值：锚点 28、间距 12、最多并排 3 �
     assert.equal(ISLAND_ANCHOR_SLOTS, 3);
     assert.ok(ISLAND_ANCHOR_GROW_MS >= 280 && ISLAND_ANCHOR_GROW_MS <= 320, "生长节奏在 280–320ms 内");
     assert.ok(ISLAND_ANCHOR_SHRINK_MS >= 200 && ISLAND_ANCHOR_SHRINK_MS <= 280, "收缩节奏在 200–280ms 内");
-    assert.equal(ISLAND_MESSAGE_ANCHOR_TTL_MS, 30_000);
+    assert.equal(ISLAND_MESSAGE_CONTENT_MS, 5_000);
+    assert.equal(ISLAND_MESSAGE_ANCHOR_MS, 30_000);
+    assert.equal(ISLAND_MESSAGE_HANDOFF_MS, 300);
     assert.equal(ISLAND_HOVER_LINE_LIMIT, 2);
     assert.equal(ISLAND_HOVER_CONTROL_LIMIT, 3);
 });
@@ -308,7 +312,7 @@ test("通知保留时长只有一处，旧天气与收录提醒的独立定时�
     const renderer = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
     const css = readFileSync(new URL("./island.css", import.meta.url), "utf8");
     const constants = new Set([...model.matchAll(/\b(ISLAND_[A-Z_]*_MS)\b/g)].map((match) => match[1]));
-    assert.deepEqual([...constants].sort(), ["ISLAND_ANCHOR_GROW_MS", "ISLAND_ANCHOR_SHRINK_MS", "ISLAND_MESSAGE_ANCHOR_TTL_MS"]);
+    assert.deepEqual([...constants].sort(), ["ISLAND_ANCHOR_GROW_MS", "ISLAND_ANCHOR_SHRINK_MS", "ISLAND_MESSAGE_ANCHOR_MS", "ISLAND_MESSAGE_CONTENT_MS", "ISLAND_MESSAGE_HANDOFF_MS"]);
     assert.equal([...`${model}\n${messages}\n${renderer}\n${css}`.matchAll(/\b30_000\b|\b30000\b/g)].length, 1);
     assert.match(renderer, /islandNotificationDeadline\(/);
     const cssDurations = new Set([...css.matchAll(/\b[0-9]+(?:\.[0-9]+)?ms\b/g)].map((match) => match[0]));

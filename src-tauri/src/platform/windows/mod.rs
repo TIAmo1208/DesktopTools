@@ -21,6 +21,7 @@ mod island_drop;
 pub mod music;
 pub mod netease_cdp;
 pub(crate) mod popup_layer;
+pub(crate) mod system_notifications;
 pub mod settings;
 mod shell;
 pub(crate) mod shell_image;

@@ -12,8 +12,12 @@ export const ISLAND_ANCHOR_SIZE = 28;
 export const ISLAND_ANCHOR_GAP = 12;
 /** 胶囊最多并排的锚点数（沿贴边方向）；第 4 枚起折成一枚「＋N」圆。 */
 export const ISLAND_ANCHOR_SLOTS = 3;
-/** 通知条目的保留时长，由 islandMessages 的合并投影消费；确认和失败不超时。 */
-export const ISLAND_MESSAGE_ANCHOR_TTL_MS = 30_000;
+/** 胶囊消息正文的默认展示时长；到点后只保留锚点图标，设置项可覆盖。 */
+export const ISLAND_MESSAGE_CONTENT_MS = 5_000;
+/** 正文收起后消息锚点图标的默认保留时长，可与正文时长分别设置。 */
+export const ISLAND_MESSAGE_ANCHOR_MS = 30_000;
+/** 胶囊消息换文的交接时长：与歌词同轴一次性移动，线性、只播一次。 */
+export const ISLAND_MESSAGE_HANDOFF_MS = 300;
 /** 锚点插入与内容展开的时长，与渲染层 WAAPI、island.css 的 `--island-anchor-grow` 共用；取生长节奏 `280`–`320ms` 的定点值。 */
 export const ISLAND_ANCHOR_GROW_MS = 300;
 /** 旧内容收回的时长，与渲染层 WAAPI、island.css 的 `--island-anchor-shrink` 共用；取收缩节奏 `200`–`280ms` 的定点值。 */
@@ -145,6 +149,7 @@ export interface IslandAnchor
     kind?: IslandFunctionKind; // 功能身份；缺省按普通事件处理。
     unit?: IslandContentUnit; // 纯锚点没有内容单元。
     count?: number; // 合并通知条数，超过 99 表示「99+」。
+    noticeKey?: string; // 合并通知锚点最新条目的身份；同毫秒到达的不同条目也能区分。
 }
 
 /** 功能身份缺省为普通事件；插件卡没有单独身份时也走事件图标。 */
