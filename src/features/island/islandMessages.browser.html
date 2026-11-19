@@ -325,13 +325,15 @@
                 断言(new Set(五行.map(消息图形)).size === 5 && !五行.some((行) => 消息图形(行) === "none") && getComputedStyle(五行[0].querySelector(".island-message__icon")).opacity === "0.6", "四种状态与加载各保留一种图形，加载图标仍为 60%");
                 for (const [序号, 行] of 五行.entries()) {
                     const 图标盒 = 行.querySelector(".island-message__icon").getBoundingClientRect();
-                    const 字形 = (行.querySelector(".island-message__icon svg") ?? 行.querySelector(".island-message__loading")).getBoundingClientRect();
+                    const 字形节点 = 行.querySelector(".island-message__icon svg") ?? 行.querySelector(".island-message__loading");
+                    // 加载图形带旋转动画，取布局盒而非旋转后的外接矩形；SVG 没有 offset 尺寸，仍用外接矩形。
+                    const 字形尺寸 = 字形节点 instanceof SVGElement ? 字形节点.getBoundingClientRect() : { width: 字形节点.offsetWidth, height: 字形节点.offsetHeight };
                     const 中轨 = 行.querySelector(".island-message__info").getBoundingClientRect();
                     const 关闭 = 行.querySelector("button");
                     const 关闭框 = 关闭.getBoundingClientRect();
                     const 样式 = getComputedStyle(行);
                     断言(样式.display === "grid" && 样式.columnGap === "8px" && 近似(中轨.left - 图标盒.right, 8) && 近似(关闭框.left - 中轨.right, 8) && 图标盒.width === 20 && 关闭框.width === 28, "每行 20 / 文字 / 28 三轨及 8px 间隙");
-                    断言(图标盒.height === 20 && 字形.width === 16 && 字形.height === 16 && 近似(图标盒.top + 10, 正文矩形(行).top + 9), "20px 光学盒与正文首行垂直居中，图形 16px");
+                    断言(图标盒.height === 20 && 字形尺寸.width === 16 && 字形尺寸.height === 16 && 近似(图标盒.top + 10, 正文矩形(行).top + 9), "20px 光学盒与正文首行垂直居中，图形 16px");
                     断言(近似(关闭框.top, 正文矩形(行).top) && 近似(关闭框.right, 切换按钮().getBoundingClientRect().right) && 关闭框.height === 28 && getComputedStyle(关闭).margin === "0px", "关闭按钮行起点对齐、与卡头同一右缘、无负外边距");
                     if (!序号) continue;
                     断言(样式.borderBlockStartWidth === "1px" && 近似(行矩形(行).top - 行矩形(五行[序号 - 1]).bottom, 4) && 近似(正文矩形(行).top - 行矩形(行).top, 5) && 近似(正文矩形(行).top - 正文矩形(五行[序号 - 1]).top, 43), "相邻行按 4+1+4 分隔，正文首行步距 43px");

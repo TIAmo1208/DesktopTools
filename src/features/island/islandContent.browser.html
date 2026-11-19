@@ -117,6 +117,9 @@
 
             const 结果 = document.getElementById("result");
             const 失败 = [];
+            // 系统开启减少动效时内容层直接落终态，动画与接力节奏断言在本环境无法成立，按环境跳过。
+            const 减少动效 = matchMedia("(prefers-reduced-motion: reduce)").matches;
+            const 跳过 = []; // 当前环境无法验证的动效项。
             // 失败先写出的结论不被迟到的成功覆盖。
             const report = (text) => {
                 if (!结果.textContent.startsWith("FAIL")) 结果.textContent = text;
@@ -289,7 +292,8 @@
                     } else if (用例.形 === "sweep") {
                         const 扫 = 墨节点.querySelector(".island-anchor__sweep");
                         断言(Boolean(扫), "无总量运行中必须绘制不定弧");
-                        断言(扫.dataset.motion === "true", `不定弧应带 data-motion=true，实际 ${扫.dataset.motion}`);
+                        if (减少动效) 跳过.push("不定弧动画标记");
+                        else 断言(扫.dataset.motion === "true", `不定弧应带 data-motion=true，实际 ${扫.dataset.motion}`);
                         断言(/^M10 1\.5 A8\.5/.test(扫.getAttribute("d") ?? ""), "不定弧必须是 SVG 实线弧");
                         断言(!墨节点.innerHTML.includes("stroke-dasharray"), "不定弧不得用 stroke-dasharray 模拟");
                     } else if (["pause", "check", "alert", "cross"].includes(用例.符号)) {
@@ -654,8 +658,8 @@
                 // ---- 八、换通知正文的滚动与跨层级接力 ----
 
                 阶段 = "八、换通知正文的滚动与跨层级接力";
-                // 系统开启减少动效时内容层按既有规则直接落终态，200–320ms 节奏无法观察；先明确判定环境。
-                断言(!matchMedia("(prefers-reduced-motion: reduce)").matches, "环境：系统开启了减少动效，无法验证 200–320ms 接力节奏；请关闭后重跑");
+                // 系统开启减少动效时内容层直接落终态，换文滚动与 200–320ms 接力节奏无法观察，只记录跳过。
+                if (减少动效) 跳过.push("换文滚动与跨层级接力节奏（300/240ms）");
                 渲染({ contentFacts: [] });
                 await 直到(() => !锚点("event:投放底稿"), "清理内容事实");
 
@@ -668,19 +672,22 @@
                 夹具.pushMessages([甲一条]);
                 await 直到(() => 文案(通知锚点)?.textContent.startsWith("第一条正文"), "同来源首条消息显示", 4000);
                 夹具.pushMessages([甲一条, 甲二条]);
-                await 直到(
-                    () => 文案(通知锚点)?.textContent.startsWith("第二条正文") && 标签(通知锚点)?.querySelector(".island-anchor-label__outgoing")?.textContent.startsWith("第一条正文"),
-                    "同来源换文在内容内滚动",
-                    4000,
-                );
-                const 滚动摘要 = 动画摘要(标签(通知锚点));
-                // 换文沿用文档节奏：上一行上移 100% 渐出、下一行自下方 100% 渐入，各 300ms 重叠。
-                const 入场滚动 = 滚动摘要.find((项) => 帧值(项.首帧, "transform") === "translateY(100%)");
-                const 离场滚动 = 滚动摘要.find((项) => 帧值(项.末帧, "transform") === "translateY(-100%)");
-                断言(入场滚动?.时长 === 300 && 入场滚动?.延迟 === 0, `新内容应 300ms 自下向上进入，实际 ${入场滚动?.时长}/${入场滚动?.延迟}`);
-                断言(帧值(入场滚动?.首帧, "opacity") === "0" && 帧值(入场滚动?.末帧, "opacity") === "1", "新内容应同时渐入");
-                断言(帧值(入场滚动?.末帧, "transform") === "none", "新内容滚动终点应回正");
-                断言(离场滚动?.时长 === 300 && 帧值(离场滚动?.末帧, "opacity") === "0", `旧内容应 300ms 向上渐出，实际 ${离场滚动?.时长}`);
+                await 直到(() => 文案(通知锚点)?.textContent.startsWith("第二条正文"), "同来源换文到最新一条", 4000);
+                if (!减少动效) {
+                    await 直到(
+                        () => 标签(通知锚点)?.querySelector(".island-anchor-label__outgoing")?.textContent.startsWith("第一条正文"),
+                        "同来源换文在内容内滚动",
+                        4000,
+                    );
+                    const 滚动摘要 = 动画摘要(标签(通知锚点));
+                    // 换文沿用文档节奏：上一行上移 100% 渐出、下一行自下方 100% 渐入，各 300ms 重叠。
+                    const 入场滚动 = 滚动摘要.find((项) => 帧值(项.首帧, "transform") === "translateY(100%)");
+                    const 离场滚动 = 滚动摘要.find((项) => 帧值(项.末帧, "transform") === "translateY(-100%)");
+                    断言(入场滚动?.时长 === 300 && 入场滚动?.延迟 === 0, `新内容应 300ms 自下向上进入，实际 ${入场滚动?.时长}/${入场滚动?.延迟}`);
+                    断言(帧值(入场滚动?.首帧, "opacity") === "0" && 帧值(入场滚动?.末帧, "opacity") === "1", "新内容应同时渐入");
+                    断言(帧值(入场滚动?.末帧, "transform") === "none", "新内容滚动终点应回正");
+                    断言(离场滚动?.时长 === 300 && 帧值(离场滚动?.末帧, "opacity") === "0", `旧内容应 300ms 向上渐出，实际 ${离场滚动?.时长}`);
+                }
                 await 等待(350); // 等滚动结束，再验证跨来源追加。
 
                 const 原通知锚点 = 锚点(通知锚点);
@@ -690,18 +697,23 @@
                 await 等待(350);
 
                 渲染({ contentFacts: [事实("确认源", "awaiting", "需要确认", undefined, "confirm")] });
-                // 先抓 240ms 的收回动画：它完成后会自行取消，等播报被动更新可能已经错过。
-                await 直到(() => 动画摘要(标签(通知锚点)).some((项) => 项.时长 === 240), "被抢占的消息内容开始收回", 4000);
-                const 乙标签动画 = 动画摘要(标签(通知锚点));
-                断言(Boolean(乙标签动画.find((项) => 项.时长 === 240)), "被抢占的消息内容应收回（240ms）");
+                // 先抓 240ms 的收回动画：它完成后会自行取消，等播报被动更新可能已经错过；减少动效下没有动画，只记录跳过。
+                if (!减少动效) {
+                    await 直到(() => 动画摘要(标签(通知锚点)).some((项) => 项.时长 === 240), "被抢占的消息内容开始收回", 4000);
+                    const 乙标签动画 = 动画摘要(标签(通知锚点));
+                    断言(Boolean(乙标签动画.find((项) => 项.时长 === 240)), "被抢占的消息内容应收回（240ms）");
+                }
+                await 直到(() => 锚点("confirm:确认源") && 文案("confirm:确认源")?.textContent === "需要确认", "更高优先级层级显示新内容", 4000);
                 断言(文案("confirm:确认源")?.textContent === "需要确认", "更高优先级层级应立即显示新内容，不等旧内容收完");
                 断言(锚点("confirm:确认源").getBoundingClientRect().left >= 锚点(通知锚点).getBoundingClientRect().right, "层级切换的新锚点应从右侧插入");
-                const 丙插入 = 动画摘要(墨("confirm:确认源")).find((项) => 项.时长 === 300 && Number(帧值(项.首帧, "opacity")) === 0);
-                断言(Boolean(丙插入) && 帧值(丙插入?.首帧, "transform") === "translateY(6px)", "新锚点应先自下而上渐入（300ms）");
-                const 丙展开 = 动画摘要(标签("confirm:确认源")).find((项) => 项.时长 === 300);
-                断言(丙展开?.延迟 === 300, `新内容应在锚点渐入后再向右展开（延迟 300ms），实际 ${丙展开?.延迟}`);
-                断言(帧值(丙展开?.首帧, "inlineSize") === "0px", "新内容必须从新锚点向右展开");
-                断言((丙展开?.延迟 ?? 0) >= (丙插入?.时长 ?? Infinity), "顺序：先插入锚点，再展开内容");
+                if (!减少动效) {
+                    const 丙插入 = 动画摘要(墨("confirm:确认源")).find((项) => 项.时长 === 300 && Number(帧值(项.首帧, "opacity")) === 0);
+                    断言(Boolean(丙插入) && 帧值(丙插入?.首帧, "transform") === "translateY(6px)", "新锚点应先自下而上渐入（300ms）");
+                    const 丙展开 = 动画摘要(标签("confirm:确认源")).find((项) => 项.时长 === 300);
+                    断言(丙展开?.延迟 === 300, `新内容应在锚点渐入后再向右展开（延迟 300ms），实际 ${丙展开?.延迟}`);
+                    断言(帧值(丙展开?.首帧, "inlineSize") === "0px", "新内容必须从新锚点向右展开");
+                    断言((丙展开?.延迟 ?? 0) >= (丙插入?.时长 ?? Infinity), "顺序：先插入锚点，再展开内容");
+                }
                 await 直到(() => 播报().includes("确认源 · 待确认"), "更高优先级层级进入播报", 4000);
 
                 // 状态变化取消未完成动画并直接落终态。
@@ -939,7 +951,7 @@
                 const 真invoke = 原生.invoke;
                 let 正在保存 = 0, 保存峰值 = 0;
                 原生.invoke = async (命令, 载荷) => {
-                    if (命令 !== "save_preferences") return 真invoke.call(原生, 命令, 载荷);
+                    if (命令 !== "save_island_card_collapsed") return 真invoke.call(原生, 命令, 载荷); // 卡内收起态走逐项保存命令。
                     保存峰值 = Math.max(保存峰值, ++正在保存);
                     try {
                         await 等待(120); // 原生回执刻意慢于连续点击。
@@ -962,13 +974,15 @@
                             const 之前 = 开关.getAttribute("aria-expanded");
                             实点折叠(开关);
                             await 直到(() => 开关.getAttribute("aria-expanded") !== 之前, `${节点.getAttribute("aria-label")} 第 ${i + 1} 次点击生效`);
-                            if (i === 0) 断言(高度动画(节点)?.effect.getTiming().duration === 240, "开动效时卡片以 240ms 改变高度");
+                            if (i === 0 && !减少动效) 断言(高度动画(节点)?.effect.getTiming().duration === 240, "开动效时卡片以 240ms 改变高度");
                             await 等待(25);
                         }
                         await 直到(() => !高度动画(节点) && !正在保存, "等反向过渡与迟到回执结束");
                         断言(开关.getAttribute("aria-expanded") === 初始, "十次切换偶数回到初态，迟到回执不反转按钮");
                     }
-                    断言(保存峰值 === 1 && 夹具.提交.length === 快速提交前, "持久化串行；卡内动画期间与收尾均无新窗口盒提交");
+                    if (减少动效) 跳过.push("卡内 240ms 高度动画与动画期间零窗口提交");
+                    else 断言(夹具.提交.length === 快速提交前, "卡内动画期间与收尾均无新窗口盒提交");
+                    断言(保存峰值 === 1, "持久化串行，迟到回执不反转按钮");
                 } finally { 原生.invoke = 真invoke; }
                 夹具.pushPreferences({ interfaceAnimations: false });
                 await 直到(() => 岛().dataset.animations === undefined, "恢复无动效验证精确窗口回落");
@@ -1211,7 +1225,13 @@
                     window.setInterval = 原注册;
                     history.replaceState(null, "", 页面地址);
                 }
-                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : `PASS 浮岛内容层：三卡折叠/展开 ${内部提交数} 次窗口提交；${各边位置.join("；")}；几何、键盘、通知开关；无演示轮转`);
+                report(
+                    失败.length
+                        ? `FAIL\n- ${失败.join("\n- ")}`
+                        : 跳过.length
+                          ? `SKIP：系统开启减少动效，跳过 ${跳过.join("、")}；其余三卡折叠/展开、几何、键盘、通知开关与隐藏合并通过`
+                          : `PASS 浮岛内容层：三卡折叠/展开 ${内部提交数} 次窗口提交；${各边位置.join("；")}；几何、键盘、通知开关；无演示轮转`,
+                );
             };
 
             渲染();

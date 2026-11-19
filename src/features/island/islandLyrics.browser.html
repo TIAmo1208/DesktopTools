@@ -95,6 +95,9 @@
             const 延迟一致 = (节点, 秒) => String(getComputedStyle(节点).transitionDelay).split(",").every((值) => 值.trim() === 秒);
             const 标题 = "这是一个特别长的歌曲标题用于触发常态胶囊与回落循环的横向滚动";
             const 第三句 = "第三句歌词收尾";
+            // 系统开启减少动效时内容层与滚动层不创建动画，动效时序断言在本环境无法成立，按环境跳过。
+            const 减少动效 = matchMedia("(prefers-reduced-motion: reduce)").matches;
+            const 跳过 = []; // 当前环境无法验证的动效项。
 
             const 运行 = async () => {
                 await 直到(() => 根(), "岛根节点挂载");
@@ -107,7 +110,10 @@
                 夹具.pushMusic(媒体(标题, "测试艺人"));
                 夹具.pushDetails({ timeline: 时间轴(12000, 标题, "测试艺人"), lyrics: 逐句歌词 });
                 await 直到(() => 行()?.textContent === 逐句歌词[1].text, "常态显示当前句");
-                await 直到(() => Number.parseFloat(行().style.getPropertyValue("--island-lyric-distance")) > 0, "长句测得滚动距离");
+                if (减少动效) 跳过.push("常态长句滚动距离与滚动动画名");
+                else {
+                    await 直到(() => Number.parseFloat(行().style.getPropertyValue("--island-lyric-distance")) > 0, "长句测得滚动距离");
+                }
                 await 直到(() => !根().style.inlineSize && Math.abs(窗口()?.width - 盒().width) < 1, "播放窗口稳定");
                 let 音乐锚点 = 圆();
                 断言(播报().endsWith("新增 1 条"), "首批音乐锚点必须随首次播报计入新增");
@@ -117,7 +123,7 @@
                 断言(卡盒().width === 240 && 长句宽 === 264 && 行().clientWidth === 188, "横向播放档位 240，歌词盒为 240−52");
                 const 常态高度 = 盒().height;
                 断言(常态高度 === 44 && 圆().offsetWidth === 28 && 圆().offsetHeight === 28, "常态高44，圆锚点28×28");
-                断言(getComputedStyle(当前行()).animationName === "island-lyric-scroll-x", "超长当前句按横向播放进度滚动");
+                if (!减少动效) 断言(getComputedStyle(当前行()).animationName === "island-lyric-scroll-x", "超长当前句按横向播放进度滚动");
                 夹具.pushDetails({ timeline: 时间轴(22000, 标题, "测试艺人"), lyrics: 逐句歌词 });
                 await 直到(() => 行()?.textContent === 第三句, "同档换到短句");
                 await 等待(120); // 让 ResizeObserver、帧合并和串行提交有机会落地，以免把尚未提交误记成零提交。
@@ -183,24 +189,27 @@
                 断言(槽()[0] === 逐句歌词[1].text, `跳转后前一句应同步为第二句，实际 ${槽()[0]}`);
                 const 当前槽 = document.querySelector(".island-music__lyrics p[data-current='true']");
                 const 其余槽 = [...document.querySelectorAll(".island-music__lyrics p")].find((节点) => 节点 !== 当前槽);
-                断言(过渡一致(当前槽, "0.2s") && 延迟一致(当前槽, "0.08s"), `展开当前句应延后 80ms、200ms 过渡，实际 ${getComputedStyle(当前槽).transitionDuration}/${getComputedStyle(当前槽).transitionDelay}`);
-                断言(其余槽 && 过渡一致(其余槽, "0.14s") && 延迟一致(其余槽, "0s"), `展开其余句应 140ms、不延迟，实际 ${其余槽 ? `${getComputedStyle(其余槽).transitionDuration}/${getComputedStyle(其余槽).transitionDelay}` : "不存在"}`);
-                const 当前下标 = Number(当前槽?.dataset.lineIndex);
-                let 已播放动画 = false;
-                let 未播放动画 = false;
-                for (let 次 = 0; 次 < 15 && !(已播放动画 && 未播放动画); 次 += 1) {
-                    for (const 行节点 of document.querySelectorAll(".island-music__lyrics p[data-line-index]")) {
-                        const 下标 = Number(行节点.dataset.lineIndex);
-                        for (const 项 of 行节点.getAnimations()) {
-                            const 时长 = Number(项.effect?.getTiming().duration);
-                            const 延迟 = Number(项.effect?.getTiming().delay);
-                            if (下标 < 当前下标 && 时长 === 220 && 延迟 === 0) 已播放动画 = true;
-                            if (下标 >= 当前下标 && 时长 === 240 && 延迟 === 80) 未播放动画 = true;
+                if (减少动效) 跳过.push("展开换句过渡时长与两段位移动画");
+                else {
+                    断言(过渡一致(当前槽, "0.2s") && 延迟一致(当前槽, "0.08s"), `展开当前句应延后 80ms、200ms 过渡，实际 ${getComputedStyle(当前槽).transitionDuration}/${getComputedStyle(当前槽).transitionDelay}`);
+                    断言(其余槽 && 过渡一致(其余槽, "0.14s") && 延迟一致(其余槽, "0s"), `展开其余句应 140ms、不延迟，实际 ${其余槽 ? `${getComputedStyle(其余槽).transitionDuration}/${getComputedStyle(其余槽).transitionDelay}` : "不存在"}`);
+                    const 当前下标 = Number(当前槽?.dataset.lineIndex);
+                    let 已播放动画 = false;
+                    let 未播放动画 = false;
+                    for (let 次 = 0; 次 < 15 && !(已播放动画 && 未播放动画); 次 += 1) {
+                        for (const 行节点 of document.querySelectorAll(".island-music__lyrics p[data-line-index]")) {
+                            const 下标 = Number(行节点.dataset.lineIndex);
+                            for (const 项 of 行节点.getAnimations()) {
+                                const 时长 = Number(项.effect?.getTiming().duration);
+                                const 延迟 = Number(项.effect?.getTiming().delay);
+                                if (下标 < 当前下标 && 时长 === 220 && 延迟 === 0) 已播放动画 = true;
+                                if (下标 >= 当前下标 && 时长 === 240 && 延迟 === 80) 未播放动画 = true;
+                            }
                         }
+                        if (!(已播放动画 && 未播放动画)) await 等待(20);
                     }
-                    if (!(已播放动画 && 未播放动画)) await 等待(20);
+                    断言(已播放动画 && 未播放动画, `展开换句应分已播放/未播放两段位移，实际 已播放=${已播放动画} 未播放=${未播放动画}`);
                 }
-                断言(已播放动画 && 未播放动画, `展开换句应分已播放/未播放两段位移，实际 已播放=${已播放动画} 未播放=${未播放动画}`);
 
                 // 场景六（补）：展开态溢出滚动——超长歌名与当前句滚动，其余句保持截断。
                 const 长歌词 = 逐句歌词.map((行, 下标) => (下标 === 1 ? { ...行, text: "当前句故意写得非常非常长以便在展开态触发慢速滚动而不是被截断" } : 行));
@@ -236,7 +245,13 @@
                 断言(通知锚点.length === 1 && 通知锚点[0].dataset.anchor === "message:notifications", "多来源消息合并到同一身份");
                 断言(通知锚点[0]?.getAttribute("aria-label") === "消息通知 2 条", "合并锚点计数保留两条消息");
                 断言(播报().endsWith("新增 1 条") && !播报().includes("首条新消息"), `只播报最新一条与新增锚点数，实际 ${播报()}`);
-                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}` : "PASS 浮岛歌词跨句零提交/四边档位/展开回归与新增播报");
+                report(
+                    失败.length
+                        ? `FAIL\n- ${失败.join("\n- ")}`
+                        : 跳过.length
+                          ? `SKIP：系统开启减少动效，跳过 ${跳过.join("、")}；其余跨句零提交、四边档位、展开与播报通过`
+                          : "PASS 浮岛歌词跨句零提交/四边档位/展开回归与新增播报",
+                );
             };
 
             运行().catch((错误) => {

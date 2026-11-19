@@ -1,4 +1,4 @@
-// 无头运行真实组件浏览器断言页：每个页面一个独立的 Edge headless 实例 + CDP 读取 #result，输出 PASS/FAIL；样张页记 INSPECT，真机专用页记 SKIP。
+// 无头运行真实组件浏览器断言页：每个页面一个独立的 Edge headless 实例 + CDP 读取 #result，输出 PASS/FAIL；样张页记 INSPECT，真机专用页记 SKIP，页面因系统减少动效自报 SKIP 时同样只记跳过。
 import { execFileSync, spawn } from "node:child_process"; // 进程控制：结束残留 Edge 与启动无头 Edge。
 import { createHash } from "node:crypto";
 import { connect } from "node:net"; // 探测 127.0.0.1:1420 是否监听。
@@ -12,7 +12,7 @@ import { 断言页, 真机专用页, 检查页 } from "./断言页目录.mjs"; /
 
 const 开发服务器地址 = "http://127.0.0.1:1420"; // 由 npm run dev 提供的断言页服务地址。
 const 轮询间隔毫秒 = 100; // 每页读取 #result 的固定间隔，不引入常驻轮询。
-const 默认超时毫秒 = 20000; // 单页从打开到出现结论的上限；4 秒内无结论基本就是页面缺依赖或脚本异常。
+const 默认超时毫秒 = 30000; // 单页从打开到出现结论的上限；islandContent 全量断言实测约 21 秒，留足慢机器余量。
 const 端点超时毫秒 = 30000; // 等待 Edge 写出调试端点的上限；实测首次启动 1 秒内即可写出，留足慢机器余量。
 
 // 退出码语义：0 全部通过，1 存在失败页，2 环境问题。
@@ -20,8 +20,8 @@ const 退出码 = { 通过: 0, 失败: 1, 环境: 2 }; // 与设计文档一致�
 
 // 解析命令行参数，未识别参数按环境问题（用法错误）退出，不抛未捕获堆栈。
 const 参数 = process.argv.slice(2); // 原始命令行参数。
-const 选项 = { 超时毫秒: 默认超时毫秒, 页过滤: "", 详细: false, 浮岛像素: false, 像素筛选: "", 像素对照: "normal", 自然帧: false, 像素基线: "", 稳态对照: false }; // 运行选项。
-const 用法 = "用法：node scripts/跑断言页.mjs [--页 <路径子串>] [--超时 30000] [--verbose] [--浮岛像素 [--像素筛选 <形态/边/DPR/方向/毫秒/背景的正则>] [--像素基线 <旧证据目录>] [--像素对照 normal|card-solid|patch-solid|all-solid|overlap] [--自然帧] [--稳态对照]]"; // 默认不进行像素取证；取证入口只针对islandFillet独立运行。
+const 选项 = { 超时毫秒: 默认超时毫秒, 页过滤: "", 详细: false, 减少动效: false, 浮岛像素: false, 像素筛选: "", 像素对照: "normal", 自然帧: false, 像素基线: "", 稳态对照: false }; // 运行选项。
+const 用法 = "用法：node scripts/跑断言页.mjs [--页 <路径子串>] [--超时 30000] [--verbose] [--减少动效] [--浮岛像素 [--像素筛选 <形态/边/DPR/方向/毫秒/背景的正则>] [--像素基线 <旧证据目录>] [--像素对照 normal|card-solid|patch-solid|all-solid|overlap] [--自然帧] [--稳态对照]]"; // 默认不进行像素取证；取证入口只针对islandFillet独立运行；--减少动效 用于本地复现动效关闭环境。
 
 // 参数不属于页面判定结果：打印用法后以「环境」退出码结束，避免被读成断言失败。
 function 参数错误(说明) {
@@ -55,6 +55,8 @@ for (let 索引 = 0; 索引 < 参数.length; 索引 += 1) {
         选项.稳态对照 = true;
     } else if (当前 === "--自然帧") {
         选项.自然帧 = true;
+    } else if (当前 === "--减少动效") {
+        选项.减少动效 = true; // 用 Chromium 开关复现「系统开启减少动效」，便于核对页面是否按环境跳过。
     } else if (当前 === "--verbose") {
         选项.详细 = true;
     } else {
@@ -203,6 +205,7 @@ async function 启动浏览器(可执行文件) {
             "--no-default-browser-check",
             "--disable-gpu",
             "--allow-running-insecure-content",
+            ...(选项.减少动效 ? ["--force-prefers-reduced-motion"] : []), // 本地复现「系统开启减少动效」的环境。
         ],
         { stdio: ["ignore", "ignore", "pipe"], windowsHide: true, detached: true },
     ); // 无头浏览器进程，独立进程组便于按进程树结束。
@@ -297,11 +300,13 @@ async function 打开并读取(相对路径, 是否检查页, 端点地址) {
     let 连接; // 页面级 CDP 连接。
     let 结论; // 判定结果。
 
-    // 页面自身写出的结论：PASS 原样保留，FAIL 带上脚本异常。
+    // 页面自身写出的结论：PASS 原样保留，SKIP 表示环境不具备判定条件，FAIL 带上脚本异常。
     const 判定 = (当前) =>
         当前.文本.startsWith("PASS")
             ? { 状态: "PASS", 文本: 当前.文本 }
-            : { 状态: "FAIL", 文本: 当前.报错 ? `${当前.文本}\n__lastError: ${当前.报错}` : 当前.文本 };
+            : 当前.文本.startsWith("SKIP")
+              ? { 状态: "SKIP", 文本: 当前.文本 }
+              : { 状态: "FAIL", 文本: 当前.报错 ? `${当前.文本}\n__lastError: ${当前.报错}` : 当前.文本 };
     // 只读页面 #result 与脚本异常，不在页面内做任何操作。
     const 读取 = async () => {
         const 结果集 = await 连接.发送("Runtime.evaluate", { expression: 读取脚本, returnByValue: true, awaitPromise: false });
@@ -337,7 +342,7 @@ async function 打开并读取(相对路径, 是否检查页, 端点地址) {
         while (Date.now() < 截止) {
             const 当前 = await 读取();
             最后文本 = 当前.文本 || 最后文本;
-            if (/^(PASS|FAIL)/.test(当前.文本)) {
+            if (/^(PASS|SKIP|FAIL)/.test(当前.文本)) {
                 结论 = 判定(当前);
                 break;
             }
@@ -376,13 +381,14 @@ async function 打开并读取(相对路径, 是否检查页, 端点地址) {
 function 汇总(记录) {
     const 失败数 = 记录.filter((项) => 项.状态 === "FAIL").length; // 未通过页数。
     const 检查数 = 记录.filter((项) => 项.状态 === "INSPECT").length; // 只核对加载的页数。
-    const 跳过数 = 记录.filter((项) => 项.状态 === "SKIP").length; // 真机专用页数。
+    const 跳过数 = 记录.filter((项) => 项.状态 === "SKIP").length; // 环境不具备判定条件的页（减少动效）与真机专用页。
     for (const 项 of 记录) {
         console.log(`${项.状态.padEnd(7)} ${String(项.耗时毫秒).padStart(6)}ms  ${项.页}`);
         if (项.状态 === "FAIL") console.log(`        ${项.文本.split("\n").slice(0, 20).join("\n        ")}`);
+        else if (项.状态 === "SKIP") console.log(`        ${项.文本.split("\n")[0]}`); // 跳过原因必须可见，否则无法区分环境与功能问题。
         else if (选项.详细) console.log(`        ${项.文本}`);
     }
-    console.log(`\n共 ${记录.length} 页：断言通过 ${记录.length - 失败数 - 检查数 - 跳过数}，检查页 ${检查数}，真机专用跳过 ${跳过数}，失败 ${失败数}`); // 检查页只核对加载，真机专用页不计失败。
+    console.log(`\n共 ${记录.length} 页：断言通过 ${记录.length - 失败数 - 检查数 - 跳过数}，检查页 ${检查数}，跳过 ${跳过数}，失败 ${失败数}`); // 检查页只核对加载；环境跳过与真机专用都不计失败。
     return 失败数 === 0;
 }
 

@@ -56,6 +56,9 @@
             const assert = (condition, message) => {
                 if (!condition) throw new Error(message);
             }; // 浏览器 DOM 与几何断言。
+            // 系统开启减少动效时不创建高度动画，动画启动断言在本环境无法成立，按环境跳过。
+            const 减少动效 = matchMedia("(prefers-reduced-motion: reduce)").matches;
+            const 跳过 = []; // 当前环境无法验证的动效项。
             try {
                 const root = createRoot(document.getElementById("fixture")); // 单一测试表面。
                 flushSync(() => root.render(h(PreferencesProvider, null, h(Fixture))));
@@ -87,13 +90,19 @@
                     "静态帧时钟垂直位置变化",
                 );
                 toggleCollapsed();
-                const collapse = source.getAnimations().find((animation) => animation.effect?.target === source && animation.playState === "running"); // 公共外壳只为状态切换创建高度动画。
-                assert(collapse && collapse.playState === "running", "格子折叠高度动画未启动");
+                if (减少动效) 跳过.push("折叠与展开高度动画启动");
+                else {
+                    const collapse = source.getAnimations().find((animation) => animation.effect?.target === source && animation.playState === "running"); // 公共外壳只为状态切换创建高度动画。
+                    assert(collapse && collapse.playState === "running", "格子折叠高度动画未启动");
+                }
                 await new Promise((resolve) => setTimeout(resolve, 40));
                 toggleCollapsed();
-                const expand = source.getAnimations().find((animation) => animation.effect?.target === source && animation.playState === "running"); // 展开反向使用同一公共路径。
-                assert(expand && expand.playState === "running", "格子展开高度动画未启动");
-                await expand.finished;
+                if (减少动效) await new Promise((resolve) => setTimeout(resolve, 60)); // 减少动效下直接等 React 提交终态，不 await 不存在的动画。
+                else {
+                    const expand = source.getAnimations().find((animation) => animation.effect?.target === source && animation.playState === "running"); // 展开反向使用同一公共路径。
+                    assert(expand && expand.playState === "running", "格子展开高度动画未启动");
+                    await expand.finished;
+                }
                 assert(source.getBoundingClientRect().height === 180 && !viewport.inert, "格子展开终态或内容命中错误");
                 document.documentElement.dataset.interfaceAnimations = "off";
                 toggleCollapsed();
@@ -329,8 +338,9 @@
                     if (originalNative) window.__DESKTOP_TOOLS_NATIVE__ = originalNative;
                     else delete window.__DESKTOP_TOOLS_NATIVE__;
                 }
-                document.getElementById("result").textContent =
-                    "PASS：完整静态帧、折叠动效、命中排除、标签校验、准备与拖动 Escape、内容键盘、临时展开、收集箱统一创建及围栏内容尺寸";
+                document.getElementById("result").textContent = 跳过.length
+                    ? `SKIP：系统开启减少动效，跳过 ${跳过.join("、")}；完整静态帧、命中排除、标签校验、准备与拖动 Escape、内容键盘、临时展开、收集箱统一创建及围栏内容尺寸通过`
+                    : "PASS：完整静态帧、折叠动效、命中排除、标签校验、准备与拖动 Escape、内容键盘、临时展开、收集箱统一创建及围栏内容尺寸";
             } catch (error) {
                 document.getElementById("result").textContent = "FAIL：" + error.stack;
             }
