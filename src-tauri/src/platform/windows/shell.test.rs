@@ -226,6 +226,16 @@ fn cancellation_is_not_inferred_from_ordinary_partial_failure()
     assert!(cancelled.aborted);
 }
 
+/// 补偿目标名取源文件的真实文件名：Shell 未给名字时不依赖会被「隐藏扩展名」裁掉的编辑名。
+#[test]
+fn compensation_target_name_uses_filesystem_name()
+{
+    assert_eq!(super::compensation_target_name(std::path::Path::new(r"C:\work\item.txt"), None).unwrap(), "item.txt");
+    assert_eq!(super::compensation_target_name(std::path::Path::new(r"C:\work\archive.tar.gz"), None).unwrap(), "archive.tar.gz");
+    assert_eq!(super::compensation_target_name(std::path::Path::new(r"C:\work\item.txt"), Some("renamed.md".to_string())).unwrap(), "renamed.md");
+    assert!(super::compensation_target_name(std::path::Path::new(r"C:\"), None).is_err());
+}
+
 /// 补偿源变化时不执行文件动作；目标同名冲突在 Pre 回调拒绝而不是覆盖。
 #[test]
 fn native_compensation_preserves_changed_source_and_conflicting_destination()

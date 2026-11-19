@@ -77,6 +77,16 @@ struct ShellItemMetadata
     name: Option<String>,
 }
 
+/// 补偿目标名：Shell 未给出新名字时取源文件的真实文件名，不取可能被「隐藏扩展名」裁掉的编辑名。
+fn compensation_target_name(source_path: &std::path::Path, shell_name: Option<String>) -> Result<String, String>
+{
+    match shell_name
+    {
+        Some(name) => Ok(name),
+        None => source_path.file_name().map(|name| name.to_string_lossy().into_owned()).ok_or_else(|| "补偿源没有文件名".to_string()),
+    }
+}
+
 /// 实现 IFileOperationProgressSink 的项目结果采集回调。
 #[allow(non_snake_case)]
 impl IFileOperationProgressSink_Impl for FileOperationProgressSink_Impl
@@ -187,15 +197,16 @@ impl FileOperationProgressSink_Impl
         }
         if let Some(name) = new_name
         {
-            let name = if name.is_null()
+            // 未给名字时用源文件的真实文件名：编辑名会随「隐藏已知文件类型的扩展名」丢掉后缀。
+            let shell_name = if name.is_null()
             {
-                shell_item_name(source, SIGDN_PARENTRELATIVEEDITING)
+                None
             }
             else
             {
-                unsafe { name.to_string() }.map_err(|error| error.to_string())
-            }
-            .map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?;
+                Some(unsafe { name.to_string() }.map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.to_string()))?)
+            };
+            let name = compensation_target_name(std::path::Path::new(&path), shell_name).map_err(|error| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error))?;
             let parent = if let Some(destination) = destination
             {
                 shell_item_name(destination, SIGDN_FILESYSPATH).map(std::path::PathBuf::from)
