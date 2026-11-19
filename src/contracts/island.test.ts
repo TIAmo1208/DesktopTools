@@ -208,5 +208,6 @@ test("岛与桌面入口并列，桥仅复用既有通知并且读取不发布�
     const bridge = readFileSync(new URL("../bridge/island.ts", import.meta.url), "utf8");
     assert.match(bridge, /COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "preferences-changed"/);
     assert.doesNotMatch(bridge, /setInterval|setTimeout/);
-    assert.match(bridge, /getPreferences\(\)/);
+    assert.match(bridge, /getIslandSnapshot\(\)/); // 读取只走独立投影命令，不直读偏好。
+    assert.doesNotMatch(bridge, /dispatchEvent|\.emit\(/); // 只订阅清单与偏好事件，不自建快照事件。
 });

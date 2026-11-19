@@ -192,10 +192,12 @@ test("岛音乐卡调用点消费投影与调度，回退到内联定时或旧�
     assert.doesNotMatch(component, /island-music__reserve/);
     assert.doesNotMatch(component, /island-lyric-scroll-[xy]"/); // 轴向只由 islandScrollAnimationName 决定。
     assert.doesNotMatch(component, /animationPlayState: scroll\.paused/); // 暂停映射只由 islandScrollPlayState 决定。
-    // 展开进度条的量程、夹紧与占位必须走 musicProgressRange；回退到 durationMs||1 会红。
+    // 展开进度条的可跳转区间、夹紧与占位必须走 musicProgressRange 与系统区间；回退到 durationMs||1 会红。
     assert.match(component, /musicProgressRange\(music\.timeline, music\.lyrics, position\)/);
-    assert.match(component, /max=\{progress\.max\}/);
-    assert.match(component, /value=\{progress\.value\}/);
+    assert.match(component, /max=\{Math\.round\(seekMax\)\}/); // 可跳转时量程取系统给出的区间。
+    assert.match(component, /value=\{Math\.round\(Math\.min\(Math\.max\(seekMin, displayPosition\), seekMax\)\)\}/); // 显示位置夹在区间内。
+    assert.match(component, /aria-valuemax=\{Math\.round\(progress\.max\)\}/); // 只读回退按投影的 max 报给读屏。
+    assert.match(component, /aria-valuenow=\{Math\.round\(progress\.value\)\}/);
     assert.match(component, /\{progress\.totalMs > 0 \? formatTime\(progress\.totalMs\) : "--:--"\}/);
     assert.doesNotMatch(component, /durationMs \|\| 1/);
     assert.doesNotMatch(component, /formatTime\(music\.timeline\?\.durationMs \?\? 0\)/);
