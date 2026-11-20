@@ -10,6 +10,7 @@
             import { createRoot } from "react-dom/client";
             import { flushSync } from "react-dom";
             import { CollectBoxTile } from "./CollectBoxTile.tsx";
+            import { 创建弹层夹具 } from "../../popup-layer/popupFixture.tsx"; // 置顶弹层替身：菜单与确认框按真实组件渲染在本页。
             import { createWorkspaceDropTarget } from "../../workspace/surface/workspaceDropTarget.ts";
             import { collectHitRegions } from "../../workspace/surface/workspaceSurfaceProjection.ts";
             import "../../../styles/global.css";
@@ -28,6 +29,7 @@
             }; // 等待 React 和布局提交。
             const calls = []; // 记录业务入口与生命周期结果。
             const listeners = new Map(); // 原生事件替身。
+            const 弹层 = 创建弹层夹具({ 回传: (结果) => listeners.get("popup-layer-result")?.(结果) }); // 弹层结果按原协议回到宿主。
             let failRead = true; // 验证首次失败和重试。
             let resolveDrag; // 控制准备请求迟到。
             let resolveDelete; // 控制删除请求重入。
@@ -74,6 +76,14 @@
             window.__DESKTOP_TOOLS_NATIVE__ = {
                 invoke: async (command, args) => {
                     calls.push({ command, args });
+                    if (command === "open_popup_layer") {
+                        弹层.处理请求(args.request); // 用页内真实弹层组件替代置顶窗口。
+                        return;
+                    }
+                    if (command === "update_popup_layer_payload") {
+                        弹层.更新载荷(args.requestId, args.payload); // 复选菜单保持打开时换命令表。
+                        return;
+                    }
                     if (command === "get_collect_items") {
                         if (failRead) throw Error("测试读取失败");
                         return items;
@@ -183,14 +193,19 @@
                 assert(!calls.some((call) => call.command === "open_collect_item"), "不可用项允许打开");
                 key(options()[2], "Delete");
                 await settle();
-                assert(document.querySelector("dialog")?.open && document.activeElement?.textContent === "取消", "删除确认默认焦点错误");
-                const remove = [...document.querySelectorAll("dialog button")].find((button) => button.textContent === "删除");
+                const 确认框 = 弹层.容器.querySelector(".popup-confirm");
+                assert(确认框 && document.activeElement?.textContent === "取消", "删除确认默认焦点错误");
+                const 删除请求 = calls.filter((call) => call.command === "open_popup_layer").at(-1)?.args.request;
+                const remove = [...弹层.容器.querySelectorAll("button")].find((button) => button.textContent === "删除");
                 click(remove);
-                click(remove);
+                await settle();
+                // 同一请求重复回传结果（旧窗口连点）不得重复删除：宿主收到首个结果后已退订。
+                listeners.get("popup-layer-result")?.({ requestId: 删除请求.requestId, kind: "confirm", confirmed: true, dismissed: false });
+                await settle();
                 assert(calls.filter((call) => call.command === "delete_collect_item").length === 1, "删除重复提交");
                 resolveDelete();
                 await settle();
-                assert(!document.querySelector("dialog") && selected().length === 1, "删除失败没有保留选择");
+                assert(!弹层.容器.querySelector(".popup-confirm") && selected().length === 1, "删除失败没有保留选择");
                 key(options()[0], "a", { ctrlKey: true });
                 assert(selected().length === 3, "列表 Ctrl+A 失败");
                 click(document.querySelector('[aria-label="排序方式"]'));
@@ -237,6 +252,7 @@
                 }
                 target.clear();
                 assert(!document.querySelector("[data-collect-drop-target]"), "投放结束残留高亮");
+                弹层.销毁(); // 断言页收尾：卸载弹层组件与容器。
                 document.getElementById("result").textContent = "PASS：加载/重试、原生命中、图片尺寸、多选/键盘、删除互斥/失败、筛选焦点、迟到拖动、投放高亮";
             } catch (error) {
                 document.getElementById("result").textContent = `FAIL: ${error.stack}`;

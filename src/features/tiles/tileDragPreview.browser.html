@@ -15,6 +15,7 @@
             import { collectHitRegions } from "../workspace/surface/workspaceSurfaceProjection.ts";
             import { PreferencesProvider } from "../../app/preferences/PreferencesProvider.tsx";
             import { CollectBoxTile } from "../tile-content/collect-box/CollectBoxTile.tsx";
+            import { 创建弹层夹具 } from "../popup-layer/popupFixture.tsx"; // 置顶弹层替身：格子菜单按真实组件渲染在本页。
             import "../../styles/global.css";
             import "../../styles/fenceTokens.css"; // 与 DesktopWorkspace.tsx 的加载顺序一致：围栏令牌在工作区布局之前。
             import "../workspace/surface/DesktopWorkspace.css";
@@ -229,9 +230,18 @@
                 // 收集箱菜单只发送统一创建意图；已存在的展开尺寸与折叠覆盖分别保留。
                 const originalNative = window.__DESKTOP_TOOLS_NATIVE__; // 验证结束后恢复原生边界。
                 const commands = []; // 实际经过 bridge 的命令及载荷。
+                const 弹层监听 = new Map(); // 弹层结果订阅，按事件名登记。
+                const 弹层 = 创建弹层夹具({ 回传: (结果) => 弹层监听.get("popup-layer-result")?.(结果) }); // 菜单在页内真实渲染。
                 window.__DESKTOP_TOOLS_NATIVE__ = {
-                    invoke: async (command, payload) => commands.push({ command, payload }),
-                    listen: async () => () => {},
+                    invoke: async (command, payload) => {
+                        commands.push({ command, payload });
+                        if (command === "open_popup_layer") 弹层.处理请求(payload.request);
+                        else if (command === "update_popup_layer_payload") 弹层.更新载荷(payload.requestId, payload.payload);
+                    },
+                    listen: async (name, callback) => {
+                        弹层监听.set(name, callback);
+                        return () => 弹层监听.delete(name);
+                    },
                 };
                 try {
                     const bounds = { left: 80, top: 100, width: 640, height: 480 }; // 故意与新实例默认尺寸不同。
@@ -253,10 +263,13 @@
                     const collect = document.querySelector(".desktop-tile"); // 正式收集箱公共外框与菜单。
                     assert(collect.style.width === "640px" && collect.style.height === "56px", "收集箱折叠覆盖未保留展开宽度");
                     flushSync(() => collect.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 110 })));
-                    const create = [...document.querySelectorAll("[role=menuitem]")].find((item) => item.textContent === "新建收集项"); // 未注册内容时工具未就绪。
+                    await new Promise((resolve) => setTimeout(resolve, 0)); // 菜单请求经假桥异步进入弹层夹具。
+                    const 菜单请求 = commands.filter((entry) => entry.command === "open_popup_layer").at(-1)?.payload.request;
+                    assert(菜单请求?.kind === "menu", "右键菜单未走置顶弹层请求");
+                    const create = [...弹层.容器.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === "新建收集项"); // 未注册内容时工具未就绪。
                     assert(create?.disabled, "收集项创建菜单缺失或未就绪时未禁用");
-                    flushSync(() => create.click());
-                    await Promise.resolve();
+                    create.click();
+                    await new Promise((resolve) => setTimeout(resolve, 0));
                     const requests = commands.filter((entry) => entry.command === "create_collect_box"); // 不依赖其他公共菜单命令的数量。
                     assert(requests.length === 0, "新建收集项错误调用格子创建接口");
                     assert(bounds.width === 640 && bounds.height === 480, "折叠尺寸污染权威展开边界");
@@ -334,6 +347,7 @@
                     assert(document.querySelector(".fence").getBoundingClientRect().height === 24, "内容下限撑破极小临时投射");
                     assert(fenceBounds.width === 80 && fenceBounds.height === 48, "呈现计算自动改写了持久边界");
                 } finally {
+                    弹层.销毁(); // 卸载弹层组件与容器。
                     root.unmount();
                     if (originalNative) window.__DESKTOP_TOOLS_NATIVE__ = originalNative;
                     else delete window.__DESKTOP_TOOLS_NATIVE__;
