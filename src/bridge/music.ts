@@ -61,6 +61,9 @@ export const listenMusicFacts = async (
 export const executeMusicAction = (action: "previous" | "play" | "pause" | "next", expectedSession: string) =>
     invokeRuntime<void>("execute_music_action", { action, expectedSession });
 
+/** 请求跳转播放位置；expectedSession 为拖动时的会话代次，位置单位毫秒。 */
+export const seekMusicPosition = (expectedSession: string, positionMs: number) => invokeRuntime<void>("seek_music_position", { expectedSession, positionMs });
+
 /** 订阅后端仅在媒体快照变化时发布的事件。 */
 export const listenMusicSession = (onSnapshot: (snapshot: MusicMediaSnapshot | undefined) => void, onError: (error: unknown) => void): Promise<UnlistenFn> =>
     listenRuntime<unknown>("music-session-changed", (payload) => {

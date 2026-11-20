@@ -11,6 +11,7 @@ export interface MessageNotification {
     dedupeKey?: string; // 同一来源待显示消息的去重标识。
     loading?: boolean; // 是否显示加载状态。
     durationMs?: number; // 显示时长，单位毫秒；省略时使用 4000ms，悬停暂停计时。
+    progress?: number; // 确定的 0–1 进度；省略时只显示加载动画。
 }
 
 /** 向程序通知管道提交一条新消息。 */
@@ -19,6 +20,7 @@ export const publishMessage = (message: MessageNotification) => {
     if (!["info", "success", "warning", "error"].includes(message.type)) return;
     const durationMs = message.durationMs ?? 4000; // 每次发送给原生的消息都携带明确期限。
     if (!Number.isInteger(durationMs) || durationMs < 1 || durationMs > 0xffffffff) return;
+    if (message.progress !== undefined && (!Number.isFinite(message.progress) || message.progress < 0 || message.progress > 1)) return;
     void Promise.resolve()
         .then(() => invokeRuntime("publish_message_notification", { message: { ...message, durationMs } }))
         .catch(() => undefined);

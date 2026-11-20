@@ -10,12 +10,7 @@
     grid-template-columns: minmax(0, 1fr);
     align-content: start;
 }
-/* 紧凑分区标题。 */
-.feature-settings h2 {
-    margin: 0 0 16px;
-    font-size: 18px;
-}
-/* 二级页标题在页头行内，不带任何外边距；提高选择器权重，不受上面的分区标题规则影响。 */
+/* 二级页标题在页头行内，不带任何外边距；一级分组标题走共享 settings__group-title，不在页里再定字号。 */
 .feature-settings h2.feature-settings__detail-title {
     margin: 0;
     font-size: 18px;
@@ -50,22 +45,21 @@
     max-width: none;
     padding: 0;
 }
-/* 功能说明或提示，排在设置行之前。 */
+/* 功能说明或提示，排在设置行之前；自身不留边距，与后续行的间隔由列表容器间隔供给。 */
 .feature-settings__hint {
-    margin: 0 0 12px;
+    margin: 0;
     color: var(--color-muted);
     font-size: 12px;
     line-height: 18px;
 }
 
-/* 功能设置行的名称和控件。 */
+/* 功能设置行的名称和控件；行距由所在列表容器的 gap 提供，行自身不再留外边距。 */
 .feature-settings__row {
     user-select: none;
     display: flex;
     align-items: center;
     gap: 12px;
     min-height: 70px;
-    margin-bottom: 4px;
     padding: 16px 20px;
     border: 1px solid var(--color-border);
     border-radius: var(--surface-radius);
@@ -253,6 +247,11 @@
     font: inherit;
     color: var(--color-text);
     background: var(--color-subtle);
+}
+/* 下拉停用时用次要色文字，与共享 .settings__select:disabled 同一口径，不只靠浏览器默认灰。 */
+.feature-settings select:disabled {
+    color: var(--color-muted);
+    cursor: default;
 }
 /* 原生字体图标式返回命令，只在二级页标题行里出现。 */
 .feature-settings__back {

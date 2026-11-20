@@ -122,14 +122,34 @@ pub struct ApplicationPreferences
     pub island_edge: String,                   // 岛贴边方向，空字符串按顶部处理，偏移为 0 时居中。
     pub island_offset: f64,                    // 沿贴边方向的偏移，单位 DIP。
     pub island_hide_on_fullscreen: bool,       // 前台全屏时隐藏岛。
+    #[serde(default, deserialize_with = "deserialize_island_anchor_visible")]
+    pub island_anchor_visible: std::collections::BTreeMap<String, bool>, // 逐功能「上浮岛显示」开关：键只允许 music、message、plugin，缺字段按空映射，前端逐项默认显示。
     #[serde(default, deserialize_with = "deserialize_island_card_order")]
     pub island_card_order: Vec<String>, // 已启用岛卡及其展开态排列顺序。
+    #[serde(default)]
+    pub island_weather_source: String, // 浮岛天气卡选择的来源，空串表示尚未选择。
+    #[serde(default)]
+    pub island_weather_city_id: String, // 浮岛天气卡选择的城市标识，空串表示尚未选择。
+    #[serde(default, deserialize_with = "deserialize_island_card_collapsed")]
+    pub island_card_collapsed: std::collections::BTreeMap<String, bool>, // 当前处于收起态的岛卡；只在记忆开启的卡片上写入。
+    #[serde(default, deserialize_with = "deserialize_island_card_collapse_memory")]
+    pub island_card_collapse_memory: std::collections::BTreeMap<String, bool>, // 逐卡「记忆收起状态」开关，缺失视为开启。
+    #[serde(default = "default_island_collect_collapsed_count")]
+    pub island_collect_collapsed_count: u8, // 收集箱收起时显示的最近条目数。
+    #[serde(default = "default_true")]
+    pub island_collect_collapsed_default: bool, // 收集箱默认收起；没有记忆状态时以此为准。
     #[serde(default, deserialize_with = "deserialize_disabled_plugins")]
     pub disabled_plugins: Vec<String>, // 宿主停用的插件标识，不属于插件自己的设置文件。
 }
 
 /// 岛展开卡默认圆角，偏好与主题基线共用。
 fn default_island_radius() -> u8 { 12 }
+
+/// 收集箱收起时默认显示的最近条目数。
+fn default_island_collect_collapsed_count() -> u8 { 3 }
+
+/// 缺省为真的开关字段只用于「记忆收起状态」这类默认开启项。
+fn default_true() -> bool { true }
 
 /// 首次启动跟随系统，并沿用现有双击打开行为。
 impl Default for ApplicationPreferences
@@ -181,7 +201,14 @@ impl Default for ApplicationPreferences
             island_edge: String::new(),
             island_offset: 0.0,
             island_hide_on_fullscreen: true,
+            island_anchor_visible: std::collections::BTreeMap::new(),
             island_card_order: Vec::new(),
+            island_weather_source: String::new(),
+            island_weather_city_id: String::new(),
+            island_card_collapsed: std::collections::BTreeMap::new(),
+            island_card_collapse_memory: std::collections::BTreeMap::new(),
+            island_collect_collapsed_count: default_island_collect_collapsed_count(),
+            island_collect_collapsed_default: true,
             disabled_plugins: Vec::new(),
         }
     }
@@ -247,6 +274,54 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(normalize_island_card_order(Vec::<String>::deserialize(deserializer)?))
+}
+
+/// 收起态与记忆开关共用同一条岛卡标识边界：official. 或 plugin. 前缀，去重后最多 32 项。
+pub fn normalize_island_card_flags(values: impl IntoIterator<Item = (String, bool)>) -> std::collections::BTreeMap<String, bool>
+{
+    let mut kept = std::collections::BTreeMap::new(); // 只保留合法岛卡标识。
+    for (card_id, value) in values
+    {
+        let valid = ["official.", "plugin."].iter().any(|prefix| card_id.starts_with(prefix) && card_id.len() > prefix.len()); // 前缀后必须有名称。
+        if !valid || kept.len() >= 32
+        {
+            continue;
+        }
+        kept.insert(card_id, value);
+    }
+    kept
+}
+
+/// 缺失字段走默认空表；出现的非法岛卡在反序列化时丢弃。
+fn deserialize_island_card_collapsed<'de, D>(deserializer: D) -> Result<std::collections::BTreeMap<String, bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(normalize_island_card_flags(std::collections::BTreeMap::<String, bool>::deserialize(deserializer)?.into_iter()))
+}
+
+/// 记忆开关与收起态共用同一份标识边界。
+fn deserialize_island_card_collapse_memory<'de, D>(deserializer: D) -> Result<std::collections::BTreeMap<String, bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(normalize_island_card_flags(std::collections::BTreeMap::<String, bool>::deserialize(deserializer)?.into_iter()))
+}
+
+/// 浮岛锚点显隐严格校验：键只接受 music、message、plugin，值必须为布尔；未知键与非布尔值直接报错，不静默丢弃。
+fn deserialize_island_anchor_visible<'de, D>(deserializer: D) -> Result<std::collections::BTreeMap<String, bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let visible = std::collections::BTreeMap::<String, bool>::deserialize(deserializer)?; // 非布尔值由 serde 原生按布尔边界报错。
+    for key in visible.keys()
+    {
+        if !matches!(key.as_str(), "music" | "message" | "plugin")
+        {
+            return Err(serde::de::Error::custom(format!("浮岛锚点显隐键无效：{key}")));
+        }
+    }
+    Ok(visible)
 }
 
 /// 字体族名只做字形名边界校验：内置系统字体和插件自带字体共用这条规则。
@@ -338,6 +413,18 @@ impl ApplicationPreferences
         {
             return Err("岛偏移必须为有限的 DIP 数值".to_string());
         }
+        if !matches!(self.island_weather_source.as_str(), "" | "qweather" | "foreca")
+        {
+            return Err("浮岛天气来源必须为空、qweather 或 foreca".to_string());
+        }
+        if self.island_weather_city_id.len() > 1024 || self.island_weather_city_id.chars().any(char::is_control)
+        {
+            return Err("浮岛天气城市标识无效".to_string());
+        }
+        if !self.island_weather_city_id.is_empty() && self.island_weather_source.is_empty()
+        {
+            return Err("浮岛天气城市必须同时选择来源".to_string());
+        }
         if !(16..=64).contains(&self.music_spectrum_bars)
         {
             return Err("频谱段数必须为 16 到 64 之间的整数".to_string());
@@ -377,9 +464,12 @@ mod island_tests
         assert_eq!(defaults.island_edge, "");
         assert_eq!(defaults.island_offset, 0.0);
         assert!(defaults.island_hide_on_fullscreen);
+        assert!(defaults.island_anchor_visible.is_empty()); // 旧配置缺字段时锚点显隐按空映射读取。
         assert!(defaults.island_card_order.is_empty());
+        assert!(defaults.island_weather_source.is_empty());
+        assert!(defaults.island_weather_city_id.is_empty());
         assert!(defaults.validate().is_ok());
-        let selected = ApplicationPreferences { island_radius: 16, island_form: "notch".into(), island_enabled: true, island_edge: "left".into(), island_offset: -12.5, island_hide_on_fullscreen: false, island_card_order: vec!["official.music".into(), "plugin.clock".into()], ..defaults }; // 非默认岛偏好。
+        let selected = ApplicationPreferences { island_radius: 16, island_form: "notch".into(), island_enabled: true, island_edge: "left".into(), island_offset: -12.5, island_hide_on_fullscreen: false, island_card_order: vec!["official.music".into(), "plugin.clock".into()], island_weather_source: "qweather".into(), island_weather_city_id: "101010100".into(), ..defaults }; // 非默认岛偏好。
         let value = serde_json::to_value(&selected).unwrap(); // 实际持久化字段名。
         assert_eq!(value["islandRadius"], 16);
         assert_eq!(value["islandForm"], "notch");
@@ -388,7 +478,36 @@ mod island_tests
         assert_eq!(value["islandOffset"], -12.5);
         assert_eq!(value["islandHideOnFullscreen"], false);
         assert_eq!(value["islandCardOrder"], serde_json::json!(["official.music", "plugin.clock"]));
+        assert_eq!(value["islandWeatherSource"], "qweather");
+        assert_eq!(value["islandWeatherCityId"], "101010100");
         assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap(), selected);
+    }
+
+    /// 锚点显隐严格校验：缺字段与空对象按空映射读取，键只接受约定三值，非布尔值与未知键直接报错。
+    #[test]
+    fn island_anchor_visible_is_strict_map()
+    {
+        let legacy: ApplicationPreferences = serde_json::from_str("{}").unwrap(); // 缺字段的旧配置仍可解析。
+        assert!(legacy.island_anchor_visible.is_empty());
+        let selected: ApplicationPreferences = serde_json::from_value(serde_json::json!({ "islandAnchorVisible": {"music": true, "message": false, "plugin": true} })).unwrap();
+        assert_eq!(selected.island_anchor_visible, std::collections::BTreeMap::from([("music".into(), true), ("message".into(), false), ("plugin".into(), true)]));
+        let value = serde_json::to_value(&selected).unwrap(); // 序列化字段名与内容按 camelCase 保留。
+        assert_eq!(value["islandAnchorVisible"], serde_json::json!({"music": true, "message": false, "plugin": true}));
+        assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap(), selected);
+        let empty: ApplicationPreferences = serde_json::from_value(serde_json::json!({ "islandAnchorVisible": {} })).unwrap(); // 空对象与缺字段等价。
+        assert!(empty.island_anchor_visible.is_empty());
+        for bad_value in [serde_json::json!(null), serde_json::json!(0), serde_json::json!(1), serde_json::json!("true"), serde_json::json!([])]
+        {
+            let mut broken = serde_json::json!({ "islandAnchorVisible": {"music": true, "message": true, "plugin": true} }); // 每种非布尔值单独验证。
+            broken["islandAnchorVisible"]["music"] = bad_value;
+            assert!(serde_json::from_value::<ApplicationPreferences>(broken).is_err());
+        }
+        for unknown_key in ["capsule", "weather", "Music", "music ", ""]
+        {
+            assert!(serde_json::from_value::<ApplicationPreferences>(serde_json::json!({ "islandAnchorVisible": { unknown_key: true } })).is_err());
+        }
+        let single: ApplicationPreferences = serde_json::from_value(serde_json::json!({ "islandAnchorVisible": {"message": false} })).unwrap(); // 只校验出现过的键，单键保存同样合法。
+        assert_eq!(single.island_anchor_visible, std::collections::BTreeMap::from([("message".into(), false)]));
     }
 
     /// 方向严格限制为约定值，偏移不能是 NaN 或无穷。
@@ -439,6 +558,26 @@ mod island_tests
         let selected: ApplicationPreferences = serde_json::from_value(serde_json::json!({"islandForm": "notch"})).unwrap();
         assert_eq!(selected.island_form, "notch");
         assert!(selected.validate().is_ok());
+    }
+
+    /// 浮岛天气只接受已接入来源与有界城市标识，城市不能脱离来源单独保存。
+    #[test]
+    fn island_weather_binding_validates_source_and_city()
+    {
+        for source in ["", "qweather", "foreca"]
+        {
+            assert!(ApplicationPreferences { island_weather_source: source.into(), ..Default::default() }.validate().is_ok());
+        }
+        for source in ["Qweather", "owm", " qweather", "qweather "]
+        {
+            assert!(ApplicationPreferences { island_weather_source: source.into(), ..Default::default() }.validate().is_err());
+        }
+        assert!(ApplicationPreferences { island_weather_city_id: "city".into(), ..Default::default() }.validate().is_err()); // 没有来源不能只存城市。
+        assert!(ApplicationPreferences { island_weather_source: "qweather".into(), island_weather_city_id: "city".into(), ..Default::default() }.validate().is_ok());
+        assert!(ApplicationPreferences { island_weather_source: "qweather".into(), island_weather_city_id: "x".repeat(1025), ..Default::default() }.validate().is_err());
+        assert!(ApplicationPreferences { island_weather_source: "qweather".into(), island_weather_city_id: "line\nbreak".into(), ..Default::default() }.validate().is_err());
+        let parsed: ApplicationPreferences = serde_json::from_value(serde_json::json!({"islandWeatherSource": "foreca", "islandWeatherCityId": "abc"})).unwrap();
+        assert!(parsed.validate().is_ok());
     }
 
     /// 反序列化去重并丢弃非法项，只保留首次出现的前 32 个岛卡。

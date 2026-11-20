@@ -1,6 +1,6 @@
 [package]
 name = "desktop-tools"
-version = "0.5.1"
+version = "0.6.0"
 description = "Windows desktop content workspace"
 edition = "2024"
 build = "build.rs"
@@ -43,6 +43,11 @@ tauri = { version = "2", features = ["tray-icon"] }
 webview2-com = "0.38"
 windows = { version = "0.61.3", features = [
   "UI_ViewManagement",
+  "Foundation",
+  "UI_Notifications",
+  "UI_Notifications_Management",
+  "Foundation_Collections",
+  "ApplicationModel",
   "Media_Control",
   "Win32_System_WinRT",
   "Storage_Streams",
@@ -79,6 +84,7 @@ windows = { version = "0.61.3", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 windows-core = "0.61.2"
+windows-future = "0.2"
 wry = { version = "0.55.1", default-features = false, features = ["protocol"] }
 cpal = "0.18.2"
 realfft = "3.5.0"

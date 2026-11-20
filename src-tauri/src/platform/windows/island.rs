@@ -8,11 +8,11 @@ use std::{
     num::NonZeroIsize,
     rc::Rc,
     sync::{
-        Arc, Mutex, OnceLock,
+        Mutex, OnceLock,
         atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
     },
 };
-use tauri::{AppHandle, Emitter, Listener, Manager};
+use tauri::{AppHandle, Emitter, Listener};
 use windows::{
     Win32::{
         Foundation::{CloseHandle, ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SetLastError, WIN32_ERROR, WPARAM},
@@ -177,7 +177,7 @@ pub(crate) fn island_page_url(boot: u64, theme_css: Option<&str>) -> tauri::Url
     url
 }
 
-/// 页面提交的窗口内局部卡片区域，圆角半径也使用 DIP。
+/// 页面提交的窗口内局部卡片区域，圆角半径也使用 DIP；锚点行复用同一形状，只是必须为圆形。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct IslandCard
@@ -185,6 +185,9 @@ pub(crate) struct IslandCard
     pub rect: IslandRect,
     pub radius: f64,
 }
+
+/// 胶囊最多并排 3 枚锚点，多出的折成一枚「＋N」圆；锚点区域上限与页面契约一致。
+const ISLAND_ANCHOR_REGION_LIMIT: usize = 4;
 
 /// 一次状态切换的完整几何；window_box 为屏幕绝对 DIP 窗口盒，viewport 为固定页面原点视口。
 #[derive(Clone, Debug, Deserialize)]
@@ -195,24 +198,35 @@ pub(crate) struct IslandStateRequest
     pub window_box: IslandRect,
     pub viewport: IslandRect,
     pub cards: Vec<IslandCard>,
+    #[serde(default)]
+    pub anchors: Vec<IslandCard>, // 只由常态提交的胶囊锚点行；悬停列表与展开卡片不提交几何。
 }
 
 impl IslandStateRequest
 {
-    /// IPC 不接受非有限数、无界区域、盒外卡片、超出视口的窗口或未知状态。
+    /// IPC 不接受非有限数、无界区域、盒外卡片、非圆形锚点、超出视口的窗口或未知状态。
     pub(crate) fn validate(&self) -> Result<(), String>
     {
         if !matches!(self.state.as_str(), "collapsed" | "hover" | "expanded")
         {
             return Err("未知岛状态".into());
         }
-        if !valid_rect(self.window_box) || !valid_rect(self.viewport) || self.viewport.width > 16_384.0 || self.viewport.height > 16_384.0 || self.cards.is_empty() || self.cards.len() > 128
+        if !valid_rect(self.window_box) || !valid_rect(self.viewport)
         {
-            return Err("岛窗口盒、视口或卡片数量无效".into());
+            return Err("岛区域无效".into());
+        }
+        if self.viewport.width > 16_384.0 || self.viewport.height > 16_384.0
+        {
+            return Err("岛固定视口过大".into());
         }
         if !window_in_viewport(self.window_box, self.viewport)
         {
             return Err("岛窗口盒超出固定视口".into());
+        }
+        // 卡片区域数量上限与其他两态共用；常态另有「恰好一个胶囊区域」的门禁。
+        if self.cards.is_empty() || self.cards.len() > 128
+        {
+            return Err("岛卡片数量无效".into());
         }
         for card in &self.cards
         {
@@ -221,9 +235,27 @@ impl IslandStateRequest
                 return Err("岛卡片区域或圆角无效".into());
             }
         }
+        // 常态是恰好一个胶囊区域：原生拖动中心与窗口夹紧按它计算，锚点行另由 anchors 承载。
         if self.state == "collapsed" && self.cards.len() != 1
         {
-            return Err("常态岛必须只有一个胶囊区域".into());
+            return Err("常态必须恰好一个胶囊区域".into());
+        }
+        // 锚点行只由常态提交：悬停锚点列表与展开卡片由渲染层绘制，不参与原生几何。
+        if !self.anchors.is_empty() && self.state != "collapsed"
+        {
+            return Err("锚点行只由常态提交".into());
+        }
+        if self.anchors.len() > ISLAND_ANCHOR_REGION_LIMIT
+        {
+            return Err("岛锚点数量无效".into());
+        }
+        for anchor in &self.anchors
+        {
+            // 锚点只作圆形蒙版：宽高相等、圆角等于半边长，且整体落在窗口盒内。
+            if !valid_rect(anchor.rect) || anchor.rect.left < 0.0 || anchor.rect.top < 0.0 || anchor.rect.left + anchor.rect.width > self.window_box.width || anchor.rect.top + anchor.rect.height > self.window_box.height || (anchor.rect.width - anchor.rect.height).abs() > 0.5 || !anchor.radius.is_finite() || (anchor.radius - anchor.rect.width.min(anchor.rect.height) / 2.0).abs() > 0.5
+            {
+                return Err("岛锚点区域或圆形无效".into());
+            }
         }
         Ok(())
     }
@@ -297,6 +329,8 @@ fn px_span(start: f64, length: f64, scale: f64) -> (i32, i32)
 struct IslandWindow
 {
     hwnd: HWND,                           // 外层不激活工具窗口。
+    #[allow(dead_code)] // 只靠声明顺序在 WebView 之前撤销投放目标，不参与读取。
+    drop_targets: Option<super::island_drop::IslandDropTargets>, // 根窗口与 WebView2 后代的 Shell 投放目标；先于 WebView 释放。
     webview: Rc<WebView>,                 // UI 线程可克隆快照，在借用期外调整 Controller。
     app: AppHandle,                       // 松手保存偏好所需应用状态。
     monitor: DesktopHostMonitor,          // 主屏当前工作区与缩放。
@@ -397,6 +431,9 @@ static READER: OnceLock<crate::preferences::PreferencesReader> = OnceLock::new()
 /// 应用层注入的偏好写入口；落点写回不再直接持有存储。
 static WRITER: OnceLock<std::sync::Arc<dyn crate::preferences::PreferencesWriter>> = OnceLock::new();
 
+/// 应用层注入的浮岛投放端口；平台不直接调用收集与岛卡状态。
+static DROP_PORT: OnceLock<std::sync::Arc<dyn crate::drop_bridge::IslandDropPort>> = OnceLock::new();
+
 /// 读取当前偏好；未注入时给出可诊断错误。
 fn read_preferences() -> Result<crate::contracts::settings::ApplicationPreferences, String> { READER.get().ok_or_else(|| "岛偏好读取器未初始化".to_string())?() }
 
@@ -404,11 +441,12 @@ fn read_preferences() -> Result<crate::contracts::settings::ApplicationPreferenc
 fn suppressed(snapshot: &super::refresh_policy::ForegroundSnapshot, hide_fullscreen: bool) -> bool { snapshot.locked == Some(true) || (hide_fullscreen && snapshot.fullscreen == Some(true)) }
 
 /// 在既有前台事件上重新断言置顶，不启动轮询。
-pub(crate) fn install(app: &AppHandle, command_handler: super::NativeCommandHandler, read_preferences: crate::preferences::PreferencesReader, write_preferences: std::sync::Arc<dyn crate::preferences::PreferencesWriter>)
+pub(crate) fn install(app: &AppHandle, command_handler: super::NativeCommandHandler, read_preferences: crate::preferences::PreferencesReader, write_preferences: std::sync::Arc<dyn crate::preferences::PreferencesWriter>, drop_port: std::sync::Arc<dyn crate::drop_bridge::IslandDropPort>)
 {
     let _ = COMMAND_HANDLER.set(command_handler); // 只注入一次，重复安装保留首个。
     let _ = READER.set(read_preferences); // 读数经应用层注入。
     let _ = WRITER.set(write_preferences); // 落点写回经应用层端口。
+    let _ = DROP_PORT.set(drop_port); // 投放收入经应用层端口。
     let handle = app.clone(); // 事件闭包不持有任何 Win32 资源。
     app.listen("desktop-refresh-policy-changed", move |_| {
         let _ = handle.run_on_main_thread(|| apply_policy(true));
@@ -622,7 +660,24 @@ fn create(app: &AppHandle) -> Result<(), String>
         return Err(format!("岛置顶失败：{error}"));
     }
     crate::log_info!("岛：已创建隐藏窗口，显示器={}，工作区=[{}, {}, {}, {}]，缩放={}", monitor.id, monitor.work_x, monitor.work_y, monitor.work_width, monitor.work_height, monitor.scale_factor);
-    ISLAND.with(|slot| *slot.borrow_mut() = Some(IslandWindow { hwnd, webview: Rc::new(webview), app: app.clone(), monitor, geometry: None, drag: DragProgress::default(), surface: AppliedSurface::default(), screenshot_hidden: false }));
+    let drop_targets = match DROP_PORT.get().cloned()
+    {
+        Some(port) => match super::island_drop::register(hwnd, port)
+        {
+            Ok(targets) => Some(targets),
+            Err(error) =>
+            {
+                crate::log_warn!("岛：拖放目标初始化失败，卡片仍显示但不接收投放，错误：{error}");
+                None
+            }
+        },
+        None =>
+        {
+            crate::log_warn!("岛：投放端口未注入，收集内容暂不接收");
+            None
+        }
+    }; // 拖放失败不阻止浮岛出现，设置页仍可开关卡片。
+    ISLAND.with(|slot| *slot.borrow_mut() = Some(IslandWindow { hwnd, drop_targets, webview: Rc::new(webview), app: app.clone(), monitor, geometry: None, drag: DragProgress::default(), surface: AppliedSurface::default(), screenshot_hidden: false }));
     ISLAND_HWND.store(hwnd.0 as isize, Ordering::Release);
     Ok(())
 }
@@ -631,7 +686,7 @@ fn create(app: &AppHandle) -> Result<(), String>
 pub(crate) fn dispatch_script(script: &str)
 {
     let target = ISLAND.with(|slot| slot.borrow().as_ref().map(|window| (Rc::clone(&window.webview), window.hwnd, window.app.clone()))); // 岛关闭时没有投递目标。
-    let Some((webview, hwnd, app)) = target
+    let Some((webview, hwnd, _app)) = target
     else
     {
         return;
@@ -1060,12 +1115,54 @@ pub(crate) struct IslandDragResult
 /// Win32 客户区命中规则：左上含、右下不含，圆角不参与矩形内外事实。
 fn point_inside_client(point: POINT, rect: RECT) -> bool { point.x >= rect.left && point.y >= rect.top && point.x < rect.right && point.y < rect.bottom }
 
+/// 投放点是否落在卡片显示区域内：展开态透明列不属于卡片，不进入接收路径。
+/// OLE 给的是屏幕物理像素，卡片矩形是窗口内 DIP，先按窗口原点与缩放换算。
+pub(crate) fn drop_point_inside_cards(x: i32, y: i32) -> bool
+{
+    ISLAND.with(|slot| {
+        let slot = match slot.try_borrow()
+        {
+            Ok(slot) => slot,
+            Err(_) => return false, // 状态提交期间不参与命中，避免借用冲突。
+        };
+        let Some(window) = slot.as_ref()
+        else
+        {
+            return false;
+        };
+        let Some(geometry) = window.geometry.as_ref()
+        else
+        {
+            return false;
+        };
+        let mut rect = RECT::default();
+        if unsafe { GetWindowRect(window.hwnd, &mut rect) }.is_err()
+        {
+            return false;
+        }
+        let scale = if window.monitor.scale_factor > 0.0 { window.monitor.scale_factor } else { 1.0 };
+        let local_x = (x - rect.left) as f64 / scale;
+        let local_y = (y - rect.top) as f64 / scale;
+        geometry.cards.iter().any(|card| {
+            let card = card.rect;
+            local_x >= card.left && local_x < card.left + card.width && local_y >= card.top && local_y < card.top + card.height
+        })
+    })
+}
+
 /// 仅在成功吸附并提交最终几何后调用，使用同一物理客户区坐标空间。
 fn cursor_inside_client(hwnd: HWND) -> bool
 {
     let mut point = POINT::default(); // 当前屏幕物理坐标。
     let mut rect = RECT::default(); // 最终窗口客户区物理矩形。
     unsafe { GetAsyncKeyState(VK_ESCAPE.0 as i32) >= 0 && GetCursorPos(&mut point).is_ok() && ScreenToClient(hwnd, &mut point).as_bool() && GetClientRect(hwnd, &mut rect).is_ok() && point_inside_client(point, rect) }
+}
+
+/// 拖出结束后读取真实光标是否仍在岛窗口内；不依赖 WebView2 是否补发 pointerleave。
+pub(crate) fn cursor_inside() -> Result<bool, String>
+{
+    let hwnd = ISLAND.with(|slot| slot.borrow().as_ref().map(|resource| resource.hwnd)).ok_or("岛未开启")?; // 窗口尚未创建时按未开启处理。
+    Ok(cursor_inside_client(hwnd))
 }
 
 /// 常态与 hover 均可进入原生移动循环，展开态只允许卡片排序，不移动窗口。
@@ -1294,7 +1391,7 @@ mod reentrancy_tests
     #[test]
     fn island_state_failure_injection_always_clears_geometry_and_disables_drag()
     {
-        let previous = IslandStateRequest { state: "collapsed".into(), window_box: IslandRect { left: 0.0, top: 0.0, width: 100.0, height: 40.0 }, viewport: IslandRect { left: -10.0, top: -10.0, width: 120.0, height: 60.0 }, cards: vec![] }; // 不创建真实 HWND。
+        let previous = IslandStateRequest { state: "collapsed".into(), window_box: IslandRect { left: 0.0, top: 0.0, width: 100.0, height: 40.0 }, viewport: IslandRect { left: -10.0, top: -10.0, width: 120.0, height: 60.0 }, cards: vec![], anchors: vec![] }; // 不创建真实 HWND。
         for stage in [StateStage::WindowBox, StateStage::WebView, StateStage::Commit]
         {
             let mut geometry = Some(previous.clone());

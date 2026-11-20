@@ -80,6 +80,32 @@ export const parseThemeBaseline = (value: unknown): ThemeBaseline => {
     };
 };
 
+/** 可单独上浮岛的功能锚点。胶囊与 hover 共用同一枚开关。 */
+export const ISLAND_ANCHOR_KEYS = ["music", "message", "plugin"] as const;
+
+/** 上浮岛锚点键。 */
+export type IslandAnchorKey = (typeof ISLAND_ANCHOR_KEYS)[number];
+
+/** 音乐锚点默认显示。可单独调整，不连动其它功能。 */
+export const ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT = true;
+
+/** 消息通知锚点默认显示。可单独调整，不连动其它功能。 */
+export const ISLAND_ANCHOR_MESSAGE_VISIBLE_DEFAULT = true;
+
+/** 插件卡锚点默认显示。可单独调整，不连动其它功能。 */
+export const ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT = true;
+
+/** 逐项默认值。缺失键按这里读取，不把默认写回已保存映射。 */
+export const ISLAND_ANCHOR_VISIBLE_DEFAULTS: Record<IslandAnchorKey, boolean> = {
+    music: ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT,
+    message: ISLAND_ANCHOR_MESSAGE_VISIBLE_DEFAULT,
+    plugin: ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT,
+};
+
+/** 读取某一功能锚点是否在胶囊与 hover 显示；缺偏好、缺映射或缺少该键时用该项默认值。 */
+export const islandAnchorVisible = (preferences: { islandAnchorVisible?: Record<string, boolean> } | undefined, key: IslandAnchorKey): boolean =>
+    preferences?.islandAnchorVisible?.[key] ?? ISLAND_ANCHOR_VISIBLE_DEFAULTS[key];
+
 /** 已由 Rust 保存的应用偏好。 */
 export interface ApplicationPreferences {
     configDirectory: string; // 下次启动使用的配置目录。
@@ -123,7 +149,14 @@ export interface ApplicationPreferences {
     islandEdge: "" | "top" | "bottom" | "left" | "right"; // 空串按顶部处理，偏移为 0 时居中。
     islandOffset: number; // 沿贴边方向的有限 DIP 偏移。
     islandHideOnFullscreen: boolean; // 前台全屏时隐藏岛。
+    islandAnchorVisible: Record<string, boolean>; // 逐功能「上浮岛显示」：键只允许 music、message、plugin，缺键按各项默认值。
     islandCardOrder: string[]; // 已启用岛卡及展开顺序，最多 32 条。
+    islandWeatherSource: "" | "qweather" | "foreca"; // 浮岛天气卡选择的来源，空串表示尚未选择。
+    islandWeatherCityId: string; // 浮岛天气卡选择的城市标识，空串表示尚未选择。
+    islandCardCollapsed: Record<string, boolean>; // 处于收起态的岛卡；只在记忆开启的卡片上写入。
+    islandCardCollapseMemory: Record<string, boolean>; // 逐卡「记忆收起状态」开关，缺失视为开启。
+    islandCollectCollapsedCount: number; // 收集箱收起时显示的最近条目数。
+    islandCollectCollapsedDefault: boolean; // 收集箱默认收起。
     islandRadius: number; // 岛展开卡圆角，独立于界面圆角。
     islandForm: "capsule" | "notch"; // 胶囊离边 6px；刘海贴边并以贴边侧直角衔接。
     disabledPlugins: string[]; // 宿主停用的插件标识，不属于插件自己的设置文件。
@@ -230,6 +263,20 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     const islandCardOrder = [
         ...new Set(cards.filter((card: string) => ["official.", "plugin."].some((prefix) => card.startsWith(prefix) && card.length > prefix.length))),
     ].slice(0, 32); // 按首次出现顺序规范化。
+    const islandWeatherSource = candidate.islandWeatherSource === undefined ? "" : candidate.islandWeatherSource; // 缺失配置尚未选择来源。
+    if (islandWeatherSource !== "" && islandWeatherSource !== "qweather" && islandWeatherSource !== "foreca") throw new Error("浮岛天气来源无效");
+    const islandWeatherCityId = candidate.islandWeatherCityId === undefined ? "" : candidate.islandWeatherCityId; // 缺失配置尚未选择城市。
+    if (typeof islandWeatherCityId !== "string" || islandWeatherCityId.length > 1024 || /[\u0000-\u001f\u007f-\u009f]/.test(islandWeatherCityId))
+        throw new Error("浮岛天气城市标识无效");
+    if (islandWeatherCityId && !islandWeatherSource) throw new Error("浮岛天气城市必须同时选择来源");
+    const anchorVisible = parseIslandAnchorVisible(candidate.islandAnchorVisible); // 缺字段为空映射；未知键与非布尔值拒绝整份配置。
+    const islandCardCollapsed = parseIslandCardFlags(candidate.islandCardCollapsed); // 缺失或非法项按未收起的空表处理。
+    const islandCardCollapseMemory = parseIslandCardFlags(candidate.islandCardCollapseMemory); // 缺失视为逐卡记忆开启。
+    const islandCollectCollapsedCount = candidate.islandCollectCollapsedCount === undefined ? 3 : candidate.islandCollectCollapsedCount; // 收起时默认显示三条。
+    if (typeof islandCollectCollapsedCount !== "number" || !Number.isInteger(islandCollectCollapsedCount) || islandCollectCollapsedCount < 1 || islandCollectCollapsedCount > 10)
+        throw new Error("收集箱收起条数无效");
+    const islandCollectCollapsedDefault = candidate.islandCollectCollapsedDefault === undefined ? true : candidate.islandCollectCollapsedDefault; // 收集箱默认收起。
+    if (typeof islandCollectCollapsedDefault !== "boolean") throw new Error("收集箱默认收起开关无效");
     const disabledPlugins = parseDisabledPlugins(candidate.disabledPlugins); // 缺失、非数组和非法条目都按空或丢弃处理。
     const themePluginId = candidate.themePluginId ?? null; // 缺省不选择外部主题，不检查目录存在性。
     if (themePluginId !== null && (typeof themePluginId !== "string" || !themePluginId.trim())) throw new Error("主题插件标识无效");
@@ -264,8 +311,40 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         islandRadius,
         islandForm,
         islandCardOrder,
+        islandAnchorVisible: anchorVisible,
+        islandWeatherSource,
+        islandWeatherCityId,
+        islandCardCollapsed,
+        islandCardCollapseMemory,
+        islandCollectCollapsedCount,
+        islandCollectCollapsedDefault,
         disabledPlugins,
     };
+};
+
+/** 锚点显隐只接受 music、message、plugin 的布尔值；未知键与非布尔值拒绝整份配置。缺字段按空映射。 */
+const parseIslandAnchorVisible = (value: unknown): Record<string, boolean> => {
+    if (value === undefined) return {};
+    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("浮岛锚点显隐数据无效");
+    const visible: Record<string, boolean> = {}; // 已通过键与布尔校验的显隐。
+    for (const [key, flag] of Object.entries(value)) {
+        if (!(ISLAND_ANCHOR_KEYS as readonly string[]).includes(key)) throw new Error("浮岛锚点显隐键无效");
+        if (typeof flag !== "boolean") throw new Error("浮岛锚点显隐数据无效");
+        visible[key] = flag;
+    }
+    return visible;
+};
+
+/** 岛卡布尔表只保留 official. 或 plugin. 前缀的标识，最多 32 项。 */
+const parseIslandCardFlags = (value: unknown): Record<string, boolean> => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+    const kept: Record<string, boolean> = {}; // 合法岛卡及其开关值。
+    for (const [key, flag] of Object.entries(value as Record<string, unknown>)) {
+        if (typeof flag !== "boolean" || !["official.", "plugin."].some((prefix) => key.startsWith(prefix) && key.length > prefix.length)) continue;
+        if (Object.keys(kept).length >= 32) break;
+        kept[key] = flag;
+    }
+    return kept;
 };
 
 /** 停用名单只保留带 plugin. 前缀且前缀后仍有名称的标识，去重后最多 64 条。 */

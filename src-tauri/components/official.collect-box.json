@@ -1,9 +1,11 @@
 {
   "id": "official.collect-box",
   "name": "收集箱",
+  "description": "显示最近收集项；浮岛开启这张卡后，在胶囊或 hover 态把文本、链接、图片或文件拖到浮岛上即可收入。",
   "entry": "official:collect-box",
   "requiredCapabilities": [],
   "creatable": true,
   "removable": true,
+  "island": true,
   "persistenceVersion": 1
 }

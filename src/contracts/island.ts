@@ -20,6 +20,9 @@ export interface IslandMessage {
     source: string; // 来源标识。
     loading: boolean;
     receivedAtMs: number; // 到达时刻的墙钟毫秒。
+    progress?: number; // 确定的 0–1 进度；缺失时只显示加载动画。
+    iconUrl?: string; // 应用 Logo 数据 URL；系统通知条目才有。
+    external?: boolean; // 只读的系统通知条目：关闭只影响浮岛，不回写系统通知中心。
 }
 
 const ISLAND_MESSAGE_TYPES: readonly IslandMessage["type"][] = ["info", "success", "warning", "error"];
@@ -44,17 +47,48 @@ export const parseIslandMessages = (value: unknown): IslandMessage[] => {
     const seen = new Set<number>(); // 同一集合内身份必须唯一。
     return value.map((entry): IslandMessage => {
         const item = record(entry); // 单条消息投影。
-        const keys = ["id", "type", "content", "source", "loading", "receivedAtMs"];
-        if (Object.keys(item).length !== keys.length || keys.some((key) => !Object.hasOwn(item, key))) throw new Error("岛消息字段无效");
+        const keys = ["id", "type", "content", "source", "loading", "receivedAtMs", "progress", "iconUrl", "external"];
+        if (Object.keys(item).some((key) => !keys.includes(key)) || keys.slice(0, 6).some((key) => !Object.hasOwn(item, key))) throw new Error("岛消息字段无效");
         const id = item.id;
         if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0 || seen.has(id)) throw new Error("岛消息身份无效");
         if (!ISLAND_MESSAGE_TYPES.includes(item.type as IslandMessage["type"])) throw new Error("岛消息类型无效");
         if (typeof item.content !== "string" || !item.content.trim() || typeof item.source !== "string" || !item.source.trim()) throw new Error("岛消息正文或来源无效");
         if (typeof item.loading !== "boolean") throw new Error("岛消息加载状态无效");
         if (typeof item.receivedAtMs !== "number" || !Number.isSafeInteger(item.receivedAtMs) || item.receivedAtMs < 0) throw new Error("岛消息时间无效");
+        if (item.progress !== undefined && (typeof item.progress !== "number" || !Number.isFinite(item.progress) || item.progress < 0 || item.progress > 1))
+            throw new Error("岛消息进度无效");
+        if (item.external !== undefined && typeof item.external !== "boolean") throw new Error("岛消息来源无效");
+        if (
+            item.iconUrl !== undefined &&
+            (typeof item.iconUrl !== "string" || !/^data:image\/(jpeg|png|gif|webp|bmp);base64,[A-Za-z0-9+/]*={0,2}$/.test(item.iconUrl))
+        )
+            throw new Error("岛消息图标无效");
         seen.add(id);
-        return { id, type: item.type as IslandMessage["type"], content: item.content, source: item.source, loading: item.loading, receivedAtMs: item.receivedAtMs };
+        // 可选参数只在消息通道真的注入时出现，旧载荷的投影形状保持不变。
+        const message: IslandMessage = { id, type: item.type as IslandMessage["type"], content: item.content, source: item.source, loading: item.loading, receivedAtMs: item.receivedAtMs };
+        if (item.progress !== undefined) message.progress = item.progress as number;
+        if (item.iconUrl !== undefined) message.iconUrl = item.iconUrl as string;
+        if (item.external !== undefined) message.external = item.external as boolean;
+        return message;
     });
+};
+
+/** 原生投放事实：是否处于接收态，以及接收的是收集箱还是不可接收；音乐投放本轮未实现。 */
+export interface IslandDropFact {
+    active: boolean;
+    kind: "collect" | "reject";
+}
+
+const ISLAND_DROP_KINDS: readonly IslandDropFact["kind"][] = ["collect", "reject"];
+
+/** 投放事实严格校验：未知字段、未知 kind 与非布尔 active 都拒绝，坏载荷不改变页面投放状态。 */
+export const parseIslandDropFact = (value: unknown): IslandDropFact => {
+    const item = record(value); // 原生广播的投放事实。
+    const keys = ["active", "kind"];
+    if (Object.keys(item).length !== keys.length || keys.some((key) => !Object.hasOwn(item, key))) throw new Error("岛投放事实字段无效");
+    if (typeof item.active !== "boolean") throw new Error("岛投放事实状态无效");
+    if (!ISLAND_DROP_KINDS.includes(item.kind as IslandDropFact["kind"])) throw new Error("岛投放事实类型无效");
+    return { active: item.active, kind: item.kind as IslandDropFact["kind"] };
 };
 
 /** 一次原生提交的屏幕 DIP 矩形。 */
@@ -65,12 +99,22 @@ export interface IslandRect {
     height: number;
 }
 
-/** 三态几何由页面实测，一次提交全部窗口、固定页面视口与局部卡片区域。 */
+/** 锚点行里的一枚圆形区域：锚点 `28 × 28`、间距 `12` 由内容模型给出，这里只校验形状与窗口盒。 */
+export interface IslandAnchorRegion {
+    rect: IslandRect;
+    radius: number;
+}
+
+/** 胶囊最多并排 3 枚锚点，多出的折成一枚「＋N」圆，因此常态锚点行上限为 4。 */
+export const ISLAND_ANCHOR_REGION_LIMIT = 4;
+
+/** 三态几何由页面实测，一次提交全部窗口、固定页面视口、局部卡片区域与锚点行。 */
 export interface IslandStateRequest {
     state: "collapsed" | "hover" | "expanded";
     windowBox: IslandRect;
     viewport: IslandRect; // 固定页面原点所在的屏幕视口带；父窗口只负责裁剪，内容不随窗口移动。
-    cards: { rect: IslandRect; radius: number }[];
+    cards: { rect: IslandRect; radius: number }[]; // 表面与内容区域；常态必须恰好一个胶囊区域。
+    anchors?: IslandAnchorRegion[]; // 只由常态提交：胶囊锚点行的实测圆形区域，悬停列表与展开卡片不提交几何。
 }
 
 /** 边界对象校验，不接受数组或空值。 */
@@ -90,11 +134,33 @@ const parseRect = (value: unknown): IslandRect => {
     return { left: item.left as number, top: item.top as number, width: item.width as number, height: item.height as number };
 };
 
+/** 锚点必须是圆形：宽高相等、圆角等于半边长，且整体落在窗口盒内。 */
+const parseAnchorRegion = (value: unknown, windowBox: IslandRect): IslandAnchorRegion => {
+    const anchor = record(value); // 窗口局部锚点区域。
+    if (Object.keys(anchor).some((key) => key !== "rect" && key !== "radius")) throw new Error("岛锚点字段无效");
+    const rect = parseRect(anchor.rect);
+    const radius = anchor.radius;
+    const tolerance = 0.5; // 与卡片区域共用半个 DIP 的量化容差。
+    if (
+        rect.left < 0 ||
+        rect.top < 0 ||
+        rect.left + rect.width > windowBox.width ||
+        rect.top + rect.height > windowBox.height ||
+        Math.abs(rect.width - rect.height) > tolerance ||
+        typeof radius !== "number" ||
+        !Number.isFinite(radius) ||
+        Math.abs(radius - Math.min(rect.width, rect.height) / 2) > tolerance
+    )
+        throw new Error("岛锚点区域或圆形无效");
+    return { rect, radius };
+};
+
 /** 与原生 IslandStateRequest 相同的几何门禁，错误在进入 IPC 前明确拒绝。 */
 export const parseIslandStateRequest = (value: unknown): IslandStateRequest => {
     const item = record(value); // 三态几何请求。
-    if (Object.keys(item).some((key) => !["state", "windowBox", "viewport", "cards"].includes(key))) throw new Error("岛状态字段无效");
+    if (Object.keys(item).some((key) => !["state", "windowBox", "viewport", "cards", "anchors"].includes(key))) throw new Error("岛状态字段无效");
     if (item.state !== "collapsed" && item.state !== "hover" && item.state !== "expanded") throw new Error("未知岛状态");
+    const state = item.state; // 已收窄为三态，后续校验按同一取值。
     const windowBox = parseRect(item.windowBox); // 屏幕绝对坐标。
     const viewport = parseRect(item.viewport); // 固定页面原点所在的视口带。
     if (viewport.width > 16_384 || viewport.height > 16_384) throw new Error("岛固定视口过大");
@@ -106,8 +172,8 @@ export const parseIslandStateRequest = (value: unknown): IslandStateRequest => {
         windowBox.top + windowBox.height > viewport.top + viewport.height + tolerance
     )
         throw new Error("岛窗口盒超出固定视口");
-    if (!Array.isArray(item.cards) || item.cards.length === 0 || item.cards.length > 128 || (item.state === "collapsed" && item.cards.length !== 1))
-        throw new Error("岛卡片数量无效");
+    // 卡片区域数量上限与其余两态共用；常态另有「恰好一个胶囊区域」的门禁。
+    if (!Array.isArray(item.cards) || item.cards.length === 0 || item.cards.length > 128) throw new Error("岛卡片数量无效");
     const cards = item.cards.map((value) => {
         const card = record(value); // 窗口局部卡片区域。
         if (Object.keys(card).some((key) => key !== "rect" && key !== "radius")) throw new Error("岛卡片字段无效");
@@ -126,7 +192,16 @@ export const parseIslandStateRequest = (value: unknown): IslandStateRequest => {
             throw new Error("岛卡片区域或圆角无效");
         return { rect, radius };
     });
-    return { state: item.state, windowBox, viewport, cards };
+    // 常态是恰好一个胶囊区域：原生拖动中心与窗口夹紧按它计算，锚点行另由 anchors 承载。
+    if (state === "collapsed" && cards.length !== 1) throw new Error("常态必须恰好一个胶囊区域");
+    // 锚点行只由常态提交：悬停锚点列表与展开卡片由渲染层绘制，不参与原生几何。
+    if (item.anchors !== undefined && state !== "collapsed") throw new Error("锚点行只由常态提交");
+    if (item.anchors !== undefined && (!Array.isArray(item.anchors) || item.anchors.length > ISLAND_ANCHOR_REGION_LIMIT))
+        throw new Error("岛锚点数量无效");
+    const request: IslandStateRequest = { state, windowBox, viewport, cards };
+    // 未提交锚点时不补默认值，旧几何帧与过渡帧的形状保持原样。
+    if (item.anchors !== undefined) request.anchors = (item.anchors as unknown[]).map((entry) => parseAnchorRegion(entry, windowBox));
+    return request;
 };
 
 /** 合成实例没有持久尺寸，不能套用桌面格子的最小宽高门禁。 */

@@ -1,0 +1,110 @@
+/* 浮岛天气只消费围栏文字令牌，不复用桌面天气模块的卡片、底栏与按钮。 */
+.island-weather {
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+    gap: 2px;
+    font-size: 11px;
+}
+
+.island-weather__main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-inline-size: 0;
+}
+
+.island-weather__glyph {
+    flex: none;
+    inline-size: 16px;
+    block-size: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+}
+
+.island-weather__main strong {
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1;
+}
+
+.island-weather__main span,
+.island-weather__detail,
+.island-weather__source {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.island-weather__main span {
+    font-size: 11px;
+    opacity: 0.78;
+}
+
+.island-weather__detail,
+.island-weather__source {
+    font-size: 11px;
+    line-height: 16px;
+    opacity: 0.78;
+}
+
+/* 胶囊与 hover 的固定内容盒只容纳当前天气和一行详情。 */
+.island-weather--collapsed,
+.island-weather--hover {
+    justify-content: center;
+    block-size: 100%;
+}
+
+.island-weather--collapsed .island-weather__glyph {
+    inline-size: 16px;
+    block-size: 16px;
+}
+
+.island-weather--hover .island-weather__glyph,
+.island[data-state="expanded"] .island-weather__glyph {
+    inline-size: 28px;
+    block-size: 28px;
+}
+
+.island-weather--hover .island-weather__main strong,
+.island[data-state="expanded"] .island-weather__main strong {
+    font-size: 20px;
+}
+
+.island-weather--hover .island-weather__main span,
+.island[data-state="expanded"] .island-weather__main span {
+    font-size: 13px;
+}
+
+.island-weather--expanded {
+    gap: 6px;
+}
+
+.island-weather--expanded .island-weather__main {
+    min-block-size: 44px;
+}
+
+.island-weather__status {
+    margin: 0;
+    block-size: auto;
+    color: color-mix(in srgb, var(--fence-text) 78%, transparent);
+    font-size: 11px;
+    line-height: 20px;
+}
+
+/* 竖向胶囊只保留温度，天气图形与文字在 28 DIP 内容宽内放不下。 */
+.island[data-vertical="true"] .island-weather__glyph,
+.island[data-vertical="true"] .island-weather__main span {
+    display: none;
+}
+
+.island[data-vertical="true"] .island-weather__main {
+    justify-content: center;
+}
+
+.island[data-vertical="true"] .island-weather__main strong {
+    font-size: 11px;
+}

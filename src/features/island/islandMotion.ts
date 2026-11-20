@@ -1,6 +1,22 @@
 import type { IslandRect, IslandStateRequest } from "../../contracts/island.ts";
 import { islandAttachedCorner } from "./islandGeometry.ts";
 
+/** 锚点接力复用视觉规范的跨内容位移 4 DIP；只移动详情视觉层，不改变几何。 */
+const ISLAND_HOVER_TRAVEL_DIP = 4;
+/** hover 切锚点时旧详情退出时长，不改变胶囊接力。 */
+export const ISLAND_HOVER_DETAIL_EXIT_MS = 140;
+/** 旧详情退出后，新详情入场时长，不改变顶部图标过渡。 */
+export const ISLAND_HOVER_DETAIL_ENTER_MS = 180;
+
+/** 按锚点行顺序决定离场终点与入场起点；缺少任一端时直接切换。 */
+export const islandHoverTravel = (ids: readonly string[], fromId: string | undefined, toId: string | undefined) => {
+    const from = fromId === undefined ? -1 : ids.indexOf(fromId);
+    const to = toId === undefined ? -1 : ids.indexOf(toId);
+    if (from < 0 || to < 0 || from === to) return undefined;
+    const enterX = Math.sign(to - from) * ISLAND_HOVER_TRAVEL_DIP;
+    return { exitX: -enterX, enterX };
+};
+
 /** 两态窗口盒的并集，夹在工作区内；并集是动画期间固定的原生窗口。 */
 export const islandUnionBox = (from: IslandStateRequest, to: IslandStateRequest, work: IslandRect): IslandRect => {
     const left = Math.max(work.left, Math.min(from.windowBox.left, to.windowBox.left));
@@ -15,10 +31,14 @@ export const islandUnionFrame = (from: IslandStateRequest, to: IslandStateReques
     // 展开分两段：当前卡先走满 240ms，其他卡延迟 staggerMs 后从当前卡背景弹出；其他态保持单段。
     const stagger = to.state === "expanded" && staggerMs > 0 && to.cards.length > 1 ? staggerMs : 0;
     const total = ISLAND_MOTION_MS + stagger;
-    // 展开终态保留入态并集，只有其余态在结束时收缩；内容仍使用目标屏幕坐标。
-    if (elapsed >= total && to.state !== "expanded") return to;
+    // 只在形变期间保留并集，终态精确落到目标盒；展开目标已覆盖整条工作区高度。
+    if (elapsed >= total) return to;
     const union = islandUnionBox(from, to, work);
     if (stagger > 0) return islandStaggeredFrame(from, to, elapsed, union, stagger); // 展开的两段编排。
+    if (elapsed > 0 && (from.state === "expanded" || to.state === "expanded")) {
+        // 全高盒只是宿主，不是内容尺寸；从真实卡片绝对位置插值，防止出展开时第一帧撑成整列。
+        return islandStaggeredFrame(from, to, elapsed, union, 0);
+    }
     const frame = elapsed <= 0 ? from : islandMotionFrame(from, to, elapsed, edge, work); // 起点帧必须按 from 自己的贴边锚点取窗口，否则内容会错位到 to 那一侧。
     const dx = frame.windowBox.left - union.left;
     const dy = frame.windowBox.top - union.top;
@@ -52,14 +72,16 @@ const islandStaggeredFrame = (from: IslandStateRequest, to: IslandStateRequest, 
             const start = origin
                 ? { left: origin.rect.left + (from.windowBox.left - union.left), top: origin.rect.top + (from.windowBox.top - union.top), width: origin.rect.width, height: origin.rect.height }
                 : anchor;
-            const rect = clamp({ left: mix(start.left, card.rect.left, progress), top: mix(start.top, card.rect.top, progress), width: mix(start.width, card.rect.width, progress), height: mix(start.height, card.rect.height, progress) });
+            // 宽度只用不回弹的进度：back 曲线越过 1 时会让卡宽先缩到目标以下再胀回，观感是展开前先向内收一下。
+            const widthProgress = Math.min(1, progress);
+            const rect = clamp({ left: mix(start.left, card.rect.left, progress), top: mix(start.top, card.rect.top, progress), width: mix(start.width, card.rect.width, widthProgress), height: mix(start.height, card.rect.height, progress) });
             return { rect, radius: Math.max(0, Math.min(mix(origin?.radius ?? card.radius, card.radius, progress), rect.width / 2, rect.height / 2)) };
         }
         const local = Math.min(1, Math.max(0, islandMotionProgress(elapsed - stagger)));
         const rect = clamp({ left: mix(anchor.left, card.rect.left, local), top: mix(anchor.top, card.rect.top, local), width: mix(anchor.width, card.rect.width, local), height: mix(anchor.height, card.rect.height, local) });
         return { rect, radius: Math.max(0, Math.min(mix(anchorRadius, card.radius, local), rect.width / 2, rect.height / 2)) };
     });
-    return { state: "expanded", windowBox: union, viewport: to.viewport, cards };
+    return { state: to.state, windowBox: union, viewport: to.viewport, cards };
 };
 
 export const ISLAND_MOTION_MS = 240; // 有界形变与内容显现共用时长。

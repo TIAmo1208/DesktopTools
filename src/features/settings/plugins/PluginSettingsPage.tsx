@@ -116,7 +116,15 @@ export const PluginSettingsPage = ({
         handleConfirm,
     } = usePluginSettings({ preferences, onPreferences });
 
-
+    // 从二级页返回列表后把焦点放回进入前的插件行；停留在二级页时不动，行已删除时不强制。
+    const detailOpen = Boolean(selected);
+    const returnFocusSelector = useRef<string | undefined>(undefined);
+    useEffect(() => {
+        if (!returnFocusSelector.current || detailOpen) return;
+        const target = document.querySelector<HTMLButtonElement>(returnFocusSelector.current);
+        returnFocusSelector.current = undefined;
+        target?.focus();
+    }, [detailOpen]);
     const menuPlugin = plugins?.find((plugin) => plugin.id === menu?.pluginId); // 右键时仍在列表里的插件。
     const menuUsed = menuPlugin ? pluginTileCount(components, menuPlugin.id) : 0; // 这个插件已经在桌面上的格子。
     const menuItems: DesktopTileMenuItem[] = menuPlugin
@@ -124,7 +132,10 @@ export const PluginSettingsPage = ({
               used: menuUsed,
               components, // 按类型分别计数要用到每个实例的 state。
               pluginDisabled: disabledIds.includes(menuPlugin.id),
-              onOpenSettings: () => setSelectedId(menuPlugin.id),
+              onOpenSettings: () => {
+                  returnFocusSelector.current = `[aria-label="${menuPlugin.name}设置"]`;
+                  setSelectedId(menuPlugin.id);
+              },
               onOpenDirectory: () =>
                   void openPluginDirectory(menuPlugin.id).catch((error: unknown) =>
                       publishMessage({ type: "error", content: commandErrorMessage(error), source: "plugin-settings" }),
@@ -358,6 +369,8 @@ export const PluginSettingsPage = ({
                     <p>请确认插件来源可信。插件在本机以你的权限运行，来源不明的插件可能损坏程序，或读取和泄露你的数据。</p>
                 </div>
                 <div className="plugin-settings__body">
+                    <section className="settings__group" aria-labelledby="plugin-directory-title">
+                        <h2 className="settings__group-title" id="plugin-directory-title">插件目录</h2>
                     <form
                         className="settings__row settings__directory"
                         onSubmit={(event) => {
@@ -409,18 +422,20 @@ export const PluginSettingsPage = ({
                             保存
                         </button>
                     </form>
-                    <div className="plugin-settings__list">
-                        <h2 className="plugin-settings__label">已安装插件</h2>
+                    </section>
+                    <section className="settings__group" aria-labelledby="plugin-installed-title">
+                        <h2 className="settings__group-title" id="plugin-installed-title">已安装插件</h2>
                         {plugins === undefined ? null : plugins.length === 0 ? (
                             <p className="plugin-settings__empty">
                                 尚未安装插件
                                 <small>将插件放入插件目录后重新打开程序。</small>
                             </p>
                         ) : (
-                            plugins.map((plugin) => {
+                            <ul className="plugin-settings__list settings__list" aria-labelledby="plugin-installed-title">
+                            {plugins.map((plugin) => {
                                 const pluginDisabled = disabledIds.includes(plugin.id); // 本行是否停用。
                                 return (
-                                    <div
+                                    <li
                                         className={`plugin-settings__row plugin-settings__row--link${pluginDisabled ? " plugin-settings__row--disabled" : ""}${menu?.pluginId === plugin.id ? " plugin-settings__row--selected" : ""}`}
                                         key={plugin.id}
                                         onContextMenu={(event) => {
@@ -463,19 +478,24 @@ export const PluginSettingsPage = ({
                                             type="button"
                                             data-button="row-hit"
                                             aria-label={`${plugin.name}设置`}
-                                            onClick={() => setSelectedId(plugin.id)}
+                                            onClick={() => {
+                                                returnFocusSelector.current = `[aria-label="${plugin.name}设置"]`;
+                                                setSelectedId(plugin.id);
+                                            }}
                                         />
-                                    </div>
+                                    </li>
                                 );
-                            })
+                            })}
+                            </ul>
                         )}
-                    </div>
+                    </section>
                     {plugins !== undefined && stale.length > 0 && (
-                        <div className="plugin-settings__stale">
-                            <h2>失效插件</h2>
-                            <p>插件因外部原因不可用，例如清单被外部删除或脚本加载失败。卸载不会留在这一节。</p>
+                        <section className="plugin-settings__stale settings__group" aria-labelledby="plugin-stale-title">
+                            <h2 className="settings__group-title" id="plugin-stale-title">失效插件</h2>
+                            <p>插件因外部原因不可用，例如清单被外部删除或脚本加载失败。</p>
+                            <ul className="plugin-settings__list settings__list" aria-labelledby="plugin-stale-title">
                             {stale.map((instance) => (
-                                <div className="plugin-settings__row" key={instance.instanceId}>
+                                <li className="plugin-settings__row" key={instance.instanceId}>
                                     <span className="plugin-settings__copy">
                                         {instance.componentId}
                                         <small>清单已不存在</small>
@@ -487,9 +507,10 @@ export const PluginSettingsPage = ({
                                      data-button="danger">
                                         移除
                                     </button>
-                                </div>
+                                </li>
                             ))}
-                        </div>
+                            </ul>
+                        </section>
                     )}
                 </div>
             </section>

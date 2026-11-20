@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 /// 正式窗口路径固定透明矩形，防止重新混入裁切、材质或实验开关。
 #[test]
@@ -89,7 +90,7 @@ fn landing_cancel_and_timeout_are_bounded()
 #[test]
 fn animation_submission_failure_clears_intermediate_and_final_state_can_recover()
 {
-    let final_state = IslandStateRequest { state: "collapsed".into(), window_box: work(0.0, 0.0, 200.0, 44.0), viewport: work(-12.0, -12.0, 224.0, 68.0), cards: vec![IslandCard { rect: work(0.0, 0.0, 200.0, 44.0), radius: 22.0 }] }; // 合法最终常态可重新恢复。
+    let final_state = IslandStateRequest { state: "collapsed".into(), window_box: work(0.0, 0.0, 200.0, 44.0), viewport: work(-12.0, -12.0, 224.0, 68.0), cards: vec![IslandCard { rect: work(0.0, 0.0, 200.0, 44.0), radius: 22.0 }], anchors: vec![IslandCard { rect: work(8.0, 8.0, 28.0, 28.0), radius: 14.0 }] }; // 合法最终常态可重新恢复。
     let mut invalid = final_state.clone();
     invalid.cards[0].rect.width = 201.0; // 模拟 overshoot 使卡片越出本帧窗口盒。
     let mut geometry = Some(final_state.clone()); // 上一合法帧不能在下一帧错误后残留。
@@ -130,7 +131,7 @@ fn window_drag_accepts_collapsed_and_hover_only()
 {
     for (state, allowed) in [("collapsed", true), ("hover", true), ("expanded", false), ("unknown", false)]
     {
-        let geometry = IslandStateRequest { state: state.into(), window_box: work(0.0, 0.0, 200.0, 72.0), viewport: work(-12.0, -12.0, 224.0, 96.0), cards: vec![] };
+        let geometry = IslandStateRequest { state: state.into(), window_box: work(0.0, 0.0, 200.0, 72.0), viewport: work(-12.0, -12.0, 224.0, 96.0), cards: vec![], anchors: vec![] };
         assert_eq!(can_drag(Some(&geometry)), allowed, "{state}");
     }
     assert!(!can_drag(None));
@@ -172,7 +173,7 @@ fn child_noactivate_style_preserves_bits_and_is_idempotent()
 #[test]
 fn state_request_rejects_invalid_geometry_and_unknown_states()
 {
-    let valid = IslandStateRequest { state: "collapsed".into(), window_box: work(-100.0, 40.0, 200.0, 80.0), viewport: work(-112.0, 28.0, 224.0, 104.0), cards: vec![IslandCard { rect: work(0.0, 0.0, 200.0, 80.0), radius: 40.0 }] }; // 合法调用方实测区域。
+    let valid = IslandStateRequest { state: "collapsed".into(), window_box: work(-100.0, 40.0, 200.0, 80.0), viewport: work(-112.0, 28.0, 224.0, 104.0), cards: vec![IslandCard { rect: work(0.0, 0.0, 200.0, 80.0), radius: 40.0 }], anchors: vec![] }; // 合法调用方实测区域。
     assert!(valid.validate().is_ok());
     for state in ["hover", "expanded"]
     {
@@ -197,10 +198,12 @@ fn state_request_rejects_invalid_geometry_and_unknown_states()
     assert!(request.validate().is_err());
     request = valid.clone();
     request.cards.clear();
-    assert!(request.validate().is_err());
+    assert_eq!(request.validate().unwrap_err(), "岛卡片数量无效");
     request = valid.clone();
     request.cards.push(valid.cards[0].clone());
-    assert!(request.validate().is_err());
+    assert_eq!(request.validate().unwrap_err(), "常态必须恰好一个胶囊区域"); // 常态只提交一张胶囊卡片。
+    request.state = "expanded".into();
+    assert!(request.validate().is_ok());
     request = valid.clone();
     request.viewport.left = valid.window_box.left + 1.0;
     assert!(request.validate().is_err()); // 窗口超出固定视口。
@@ -212,6 +215,49 @@ fn state_request_rejects_invalid_geometry_and_unknown_states()
     assert!(request.validate().is_ok());
     request.cards = vec![valid.cards[0].clone(); 129];
     assert!(request.validate().is_err());
+}
+
+/// 常态必须恰好一张胶囊卡片；锚点行只由常态提交，并单独校验圆形与窗口盒。
+#[test]
+fn state_request_requires_one_capsule_and_validates_collapsed_anchor_row()
+{
+    let anchor = |left: f64, top: f64| IslandCard { rect: work(left, top, 28.0, 28.0), radius: 14.0 }; // 28 × 28 圆形锚点。
+    let mut request = IslandStateRequest { state: "collapsed".into(), window_box: work(0.0, 0.0, 200.0, 44.0), viewport: work(-12.0, -12.0, 224.0, 68.0), cards: vec![IslandCard { rect: work(0.0, 0.0, 200.0, 44.0), radius: 22.0 }], anchors: vec![anchor(8.0, 8.0)] };
+    assert!(request.validate().is_ok());
+    // 3 枚并排 + 1 枚「＋N」折叠圆是锚点区域的上限。
+    request.anchors = (0..4).map(|index| anchor(8.0 + f64::from(index) * 40.0, 8.0)).collect();
+    assert!(request.validate().is_ok());
+    request.anchors.push(anchor(168.0, 8.0));
+    assert_eq!(request.validate().unwrap_err(), "岛锚点数量无效");
+    request.anchors = vec![anchor(180.0, 8.0)]; // 越出窗口盒。
+    assert_eq!(request.validate().unwrap_err(), "岛锚点区域或圆形无效");
+    request.anchors = vec![IslandCard { rect: work(8.0, 8.0, 28.0, 20.0), radius: 14.0 }]; // 不是圆。
+    assert_eq!(request.validate().unwrap_err(), "岛锚点区域或圆形无效");
+    request.anchors = vec![IslandCard { rect: work(8.0, 8.0, 28.0, 28.0), radius: 12.0 }]; // 圆角不等于半边长。
+    assert_eq!(request.validate().unwrap_err(), "岛锚点区域或圆形无效");
+    request.anchors = vec![];
+    assert!(request.validate().is_ok());
+    // 常态多张卡片不合法；悬停与展开携带锚点行同样拒绝。
+    let mut multiple = request.clone();
+    multiple.cards.push(IslandCard { rect: work(100.0, 0.0, 100.0, 44.0), radius: 22.0 });
+    assert_eq!(multiple.validate().unwrap_err(), "常态必须恰好一个胶囊区域");
+    for state in ["hover", "expanded"]
+    {
+        let mut carrying = request.clone();
+        carrying.state = state.into();
+        carrying.anchors = vec![anchor(8.0, 8.0)];
+        assert_eq!(carrying.validate().unwrap_err(), "锚点行只由常态提交");
+    }
+    // 缺省 anchors 的旧载荷解析为空锚点行，过渡帧与旧渲染层不被当成坏数据。
+    let legacy = serde_json::json!({
+        "state": "collapsed",
+        "windowBox": { "left": 0.0, "top": 0.0, "width": 200.0, "height": 44.0 },
+        "viewport": { "left": -12.0, "top": -12.0, "width": 224.0, "height": 68.0 },
+        "cards": [{ "rect": { "left": 0.0, "top": 0.0, "width": 200.0, "height": 44.0 }, "radius": 22.0 }],
+    });
+    let parsed: IslandStateRequest = serde_json::from_value(legacy).unwrap();
+    assert!(parsed.anchors.is_empty());
+    assert!(parsed.validate().is_ok());
 }
 
 /// 夹紧后仍在视口内但原点被移动，同样会破坏页面 margin 与父窗口裁剪的对齐，必须拒绝。

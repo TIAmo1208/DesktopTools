@@ -1,6 +1,7 @@
 import type { CollectItem } from "../../../bridge/collect";
+import { orderCollectViewItems, type CollectViewLayout } from "../../../shared/collectView.ts";
 
-export type CollectBoxLayout = "mixed" | "separated";
+export type CollectBoxLayout = CollectViewLayout;
 export type CollectBoxFilter = Record<CollectItem["kind"], boolean>;
 export interface CollectBoxState {
     layout: CollectBoxLayout;
@@ -33,14 +34,8 @@ export const mergeCollectItems = (current: CollectItem[], next: CollectItem[], d
         .map((item) => ({ ...item, available: false })),
 ];
 
-/** 按置顶、布局和当前排序生成稳定呈现顺序。 */
-export const orderCollectItems = (items: CollectItem[], layout: CollectBoxLayout, sort: "time" | "name") => {
-    const ordered = [...items].sort((a, b) =>
-        b.pinned === a.pinned ? (sort === "time" ? b.createdUnixMs - a.createdUnixMs : a.name.localeCompare(b.name)) : b.pinned ? 1 : -1,
-    );
-    if (layout === "mixed") return ordered;
-    return (["text", "image", "file"] as const).flatMap((kind) => ordered.filter((item) => item.kind === kind));
-};
+/** 按置顶、布局和当前排序生成稳定呈现顺序；规则与浮岛卡共用。 */
+export const orderCollectItems = (items: CollectItem[], layout: CollectBoxLayout, sort: "time" | "name") => orderCollectViewItems(items, layout, sort);
 
 /** 筛选不可见条目，并限制选择集合只包含当前可见项。 */
 export const filterCollectItems = (items: CollectItem[], filters: CollectBoxFilter) => items.filter((item) => filters[item.kind]);

@@ -81,7 +81,7 @@ fn native_toast_resource_usage()
                 let mut runtime = manager.runtime.lock().unwrap(); // 入队后释放，避免窗口重入。
                 for index in 0..count
                 {
-                    runtime.queue.enqueue(ToastRequest { r#type: "info".into(), content: format!("消息资源测量 {index}"), source: "resource-test".into(), dedupe_key: None, loading: Some(loading && (scenario != "loading折叠隐藏" || index == 0)), duration_ms: 60000 }, 64.0, Instant::now(), true);
+                    runtime.queue.enqueue(ToastRequest { r#type: "info".into(), content: format!("消息资源测量 {index}"), source: "resource-test".into(), dedupe_key: None, loading: Some(loading && (scenario != "loading折叠隐藏" || index == 0)), duration_ms: 60000, progress: None }, 64.0, Instant::now(), true);
                 }
                 if expanded
                 {

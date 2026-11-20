@@ -2,7 +2,7 @@ use super::*;
 use std::time::Duration;
 
 /// 构造正式协议消息，不绕过真实队列路径。
-fn message(content: &str) -> ToastRequest { ToastRequest { r#type: "info".into(), content: content.into(), source: "test".into(), dedupe_key: None, loading: None, duration_ms: 4000 } }
+fn message(content: &str) -> ToastRequest { ToastRequest { r#type: "info".into(), content: content.into(), source: "test".into(), dedupe_key: None, loading: None, duration_ms: 4000, progress: None } }
 
 /// 两个用例都建真实 Toast 窗口，安装会改写进程级前台快照；串行执行避免互相覆盖。
 static TOAST_SNAPSHOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -199,15 +199,15 @@ fn island_projection_orders_dedupes_and_drops_closed_messages()
     queue.enqueue(ToastRequest { dedupe_key: Some("same".into()), ..message("重复") }, 64.0, now, true);
     assert!(!queue.enqueue(ToastRequest { dedupe_key: Some("same".into()), ..message("重复") }, 64.0, now, true)); // 同来源同键被拒绝。
     queue.enqueue(message("第三条"), 64.0, now, true);
-    let projected = project_island_messages(queue.items.iter());
+    let projected = project_island_messages(queue.items.iter(), &[]);
     assert_eq!(projected.iter().map(|message| message.content.as_str()).collect::<Vec<_>>(), ["第一条", "重复", "第三条"]);
     assert!(projected.iter().all(|message| message.received_at_ms > 0), "投影必须带墙钟到达时刻");
     assert_eq!(projected.iter().map(|message| message.id).collect::<Vec<_>>(), queue.items.iter().map(|item| item.id).collect::<Vec<_>>());
     let closed = projected[0].id; // 关闭最早进入的一条。
     queue.close(closed, now, true);
-    assert_eq!(project_island_messages(queue.items.iter()).iter().map(|message| message.content.as_str()).collect::<Vec<_>>(), ["重复", "第三条"]);
+    assert_eq!(project_island_messages(queue.items.iter(), &[]).iter().map(|message| message.content.as_str()).collect::<Vec<_>>(), ["重复", "第三条"]);
     queue.tick(now + Duration::from_secs(5), true); // 全部超过 4 秒期限。
-    assert!(project_island_messages(queue.items.iter()).is_empty(), "过期消息必须从投影移除");
+    assert!(project_island_messages(queue.items.iter(), &[]).is_empty(), "过期消息必须从投影移除");
 }
 
 /// 无宿主句柄时同步仍推进投影缓存；同一集合不重复推进。

@@ -145,11 +145,6 @@
 
 /* 任务菜单样式在 PluginTaskMenu.css，避免后加载的页面样式盖掉条目分隔。 */
 
-/* 目录行和已安装列表拉开。表面仍用配置目录那一套。 */
-.plugin-settings__body > .settings__directory {
-    margin-bottom: 16px;
-}
-
 /* 添加按钮禁用。 */
 .plugin-settings__add-main:disabled,
 .plugin-settings__add-more:disabled {
@@ -283,20 +278,6 @@
     outline-offset: 2px;
 }
 
-/* 插件页标题。 */
-.plugin-settings h2 {
-    margin: 0 0 16px;
-    font-size: 18px;
-}
-
-/* 一级列表的节标签，不和页标题抢层级。 */
-.plugin-settings h2.plugin-settings__label {
-    margin: 0 0 8px;
-    color: var(--color-muted);
-    font-size: 12px;
-    font-weight: 600;
-}
-
 /* 条目节标题。 */
 .plugin-settings h3 {
     margin: 16px 0 8px;
@@ -333,13 +314,12 @@
     outline-offset: 2px;
 }
 
-/* 插件行与启用行。 */
+/* 插件行与启用行；行距由所在设置列表容器的 gap 提供。 */
 .plugin-settings__row {
     display: flex;
     align-items: center;
     gap: 12px;
     min-height: 70px;
-    margin-bottom: 4px;
     padding: 16px 20px;
     border: 1px solid var(--color-border);
     border-radius: var(--surface-radius);
@@ -589,21 +569,14 @@
     background: var(--color-subtle);
 }
 
-/* 失效实例节。 */
-.plugin-settings__stale {
-    margin-top: 16px;
-}
-
-/* 失效节标题用错误色，和普通插件节分开。 */
+/* 失效节标题沿用共享分组标题式样，仅以错误色和普通节分开；间距由共享规则提供。 */
 .plugin-settings__stale h2 {
     color: var(--color-error);
-    font-size: 12px;
-    font-weight: 600;
 }
 
-/* 失效节说明：只讲外部原因，不把卸载算进来。 */
+/* 失效节说明：只讲外部原因，不把卸载算进来；间距交给分组容器的 gap。 */
 .plugin-settings__stale > p {
-    margin: 0 0 8px;
+    margin: 0;
     color: var(--color-muted);
     font-size: 12px;
 }

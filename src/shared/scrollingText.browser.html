@@ -50,6 +50,9 @@
                 const longText = "这是一行明显超出当前列宽的歌名，用来验证慢速往返滚动是否生效";
                 const shortText = "短文本";
                 const root = createRoot(document.getElementById("fixture"));
+                // 系统开启减少动效时 CSS 不创建滚动动画，动画类断言在本环境无法成立，按环境跳过。
+                const 减少动效 = matchMedia("(prefers-reduced-motion: reduce)").matches;
+                const 跳过 = []; // 当前环境无法验证的动效项。
 
                 // 一次渲染三个用例：溢出可滚动、短文本不滚动、关闭动效时不滚动。
                 const render = (wide) =>
@@ -93,9 +96,12 @@
                 if (!(distance > 0)) throw new Error(`溢出距离必须为正，实际 ${overflowTrack.style.getPropertyValue("--overflow-distance")}`);
                 const duration = Number.parseFloat(overflowTrack.style.getPropertyValue("--overflow-duration"));
                 if (!(duration >= 4000)) throw new Error(`往返周期不短于 4s，实际 ${duration}`);
-                const running = animation("overflow");
-                if (running.length !== 1) throw new Error(`溢出用例应只有一条滚动动画，实际 ${running.length}`);
-                if (running[0].animationName !== "scrolling-text-loop") throw new Error(`动画名应为 scrolling-text-loop，实际 ${running[0].animationName}`);
+                if (减少动效) 跳过.push("滚动动画条数与动画名");
+                else {
+                    const running = animation("overflow");
+                    if (running.length !== 1) throw new Error(`溢出用例应只有一条滚动动画，实际 ${running.length}`);
+                    if (running[0].animationName !== "scrolling-text-loop") throw new Error(`动画名应为 scrolling-text-loop，实际 ${running[0].animationName}`);
+                }
 
                 if (box("short")?.dataset.overflow !== "false") throw new Error("短文本不得判定为溢出");
                 if (animation("short").length !== 0) throw new Error("短文本不应有滚动动画");
@@ -108,7 +114,9 @@
                 if (box("overflow")?.dataset.overflow !== "false") throw new Error("列宽足够后必须撤销溢出滚动");
                 if (animation("overflow").length !== 0) throw new Error("列宽足够后不得保留滚动动画");
 
-                document.getElementById("result").textContent = "PASS：溢出判定、动画名与时长、重新测量与关闭动效都符合约定";
+                document.getElementById("result").textContent = 跳过.length
+                    ? `SKIP：系统开启减少动效，跳过 ${跳过.join("、")}；溢出判定、时长变量、截断与重新测量通过`
+                    : "PASS：溢出判定、动画名与时长、重新测量与关闭动效都符合约定";
                 root.unmount();
             } catch (error) {
                 document.getElementById("result").textContent = "FAIL：" + (error?.stack ?? error);

@@ -21,6 +21,33 @@ pub(crate) struct ExternalDrop
     pub portal_root: Option<String>,        // 门户目标绑定根目录。
 }
 
+/// 浮岛投放的类型事实：接收收集箱或不可接收；右键拖入不产生事实。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IslandDropFact
+{
+    pub active: bool, // 是否处于接收态；离开与放下都发 false。
+    pub kind: IslandDropKind,
+}
+
+/// 接收类型；音乐投放本轮不实现，不声明第三取值。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum IslandDropKind
+{
+    Collect,
+    Reject,
+}
+
+/// 浮岛投放端口：平台只负责 OLE 会话与格式提取，岛卡状态与收集收入在应用层。
+pub(crate) trait IslandDropPort: Send + Sync + 'static
+{
+    fn collect_accepting(&self) -> bool;
+    fn island_drop_fact(&self, fact: IslandDropFact); // 进入/离开时把带类型的事实广播给页面。
+    fn receive_collect(&self, content: crate::collect::IncomingContent, mode: String, collect_names: Option<Vec<String>>) -> Result<crate::collect::ReceiveResult, String>;
+    fn report_error(&self, error: String);
+}
+
 /// 拖放用例端口：平台只提交原生事实，布局事务与文件操作在应用层。
 pub(crate) trait DesktopDropPort: Send + Sync + 'static
 {

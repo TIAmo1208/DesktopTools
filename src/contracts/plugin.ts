@@ -92,3 +92,47 @@ export const parsePluginInstallProgress = (value: unknown): PluginInstallProgres
     if (typeof progress.percent !== "number" || progress.percent < 0 || progress.percent > 100) throw new Error("插件安装进度无效");
     return { taskId: progress.taskId, stage: progress.stage, percent: progress.percent, sourceName: progress.sourceName };
 };
+
+/** 插件外壳可选的 hover 内容入口：拿到容器与上下文，可以返回清理函数。 */
+export type PluginHoverRenderer<TContext = unknown> = (container: HTMLElement, context: TContext) => void | (() => void);
+
+/** hover 入口的采纳结果：未提供时两边为空，非法时只给原因，采纳时只给渲染函数。 */
+export interface PluginHoverAdoption<TContext = unknown>
+{
+    render?: PluginHoverRenderer<TContext>; // 通过严格校验的渲染入口。
+    reason?: string; // 未采纳的原因；没有提供入口时不填。
+}
+
+/** 严格校验可选的 hover 入口：只有函数被采纳，其余写法一律给出可展示的原因。 */
+export const adoptPluginHover = <TContext>(value: unknown): PluginHoverAdoption<TContext> =>
+{
+    if (value === undefined) return {};
+    if (typeof value !== "function") return { reason: "插件 hover 入口不是函数" };
+    return { render: value as PluginHoverRenderer<TContext> };
+};
+
+/**
+ * 调用插件 hover 入口并返回一定可调用的清理函数：入口抛错只回报给调用方并当作没有内容，
+ * 返回值不是函数时忽略，避免调用方拿到脏清理。
+ */
+export const mountPluginHover = <TContext>(render: PluginHoverRenderer<TContext>, container: HTMLElement, context: TContext, onFailure?: (error: unknown) => void): (() => void) =>
+{
+    try
+    {
+        const cleanup = render(container, context);
+        return typeof cleanup === "function" ? cleanup : () => undefined;
+    }
+    catch (error)
+    {
+        onFailure?.(error);
+        return () => undefined;
+    }
+};
+
+/** 同一清单标识只保留首份外壳：已登记时不覆盖，返回本次是否采纳。 */
+export const adoptPluginShellOnce = <T>(registry: Map<string, T>, pluginId: string, value: T): boolean =>
+{
+    if (registry.has(pluginId)) return false;
+    registry.set(pluginId, value);
+    return true;
+};

@@ -28,7 +28,7 @@ impl MonitorSignal
     fn starts_convergence(self) -> bool { !matches!(self, Self::MediaPropertiesChanged) }
 
     /// 属性事件已经更新缓存修订，其余信号强制读取完整媒体属性。
-    fn force_properties(self) -> bool { !matches!(self, Self::MediaPropertiesChanged) }
+    fn force_properties(self) -> bool { matches!(self, Self::CurrentSessionChanged | Self::SessionsChanged | Self::PlaybackInfoChanged | Self::Converge) }
 }
 
 static MONITOR_SIGNAL: OnceLock<mpsc::SyncSender<MonitorSignal>> = OnceLock::new(); // 页面恢复和媒体动作复用监听线程。
@@ -133,6 +133,9 @@ pub struct MusicSnapshot
     pub can_previous: bool,          // 当前会话是否支持上一曲。
     pub can_play_pause: bool,        // 当前状态对应动作是否支持。
     pub can_next: bool,              // 当前会话是否支持下一曲。
+    pub can_seek: bool,              // 当前会话是否声明可跳转播放位置；只读进度条据此决定能否拖动。
+    pub seek_min_ms: Option<f64>,    // 系统给出的可跳转下界；缺失表示播放器没有给出区间。
+    pub seek_max_ms: Option<f64>,    // 系统给出的可跳转上界；只有上下界有效且上界大于下界才算可拖动。
     pub artwork_url: Option<String>, // 当前封面数据 URL。
 }
 
@@ -186,7 +189,7 @@ pub fn start_monitor(app: tauri::AppHandle, read_preferences: crate::preferences
         let (sender, receiver) = mpsc::sync_channel(8); // 保留少量事件类型，读取仍由单一工作线程串行执行。
         let _ = MONITOR_SIGNAL.set(sender.clone());
         let mut manager_subscription: Option<(SessionManager, i64, i64)> = None; // 管理器与当前会话、会话集合令牌。
-        let mut session_subscription: Option<(Session, i64, i64)> = None; // 当前会话的媒体和播放事件。
+        let mut session_subscription: Option<(Session, i64, i64)> = None; // 当前会话的媒体与播放事件。
         let mut convergence: Option<Convergence> = None; // 只在明确触发后存在的有限检查过程。
         let mut wake = MonitorWake::Signal(MonitorSignal::CurrentSessionChanged); // 启动时立即订阅并读取一次。
         loop
@@ -428,17 +431,21 @@ pub fn read_current_session(force_properties: bool) -> windows::core::Result<Opt
     {
         return Err(windows::core::Error::new(windows::core::HRESULT(0x80004004u32 as i32), "播放来源已变化，正在重新同步媒体"));
     }
-    // 时间轴读取失败只清空第二类事实，不改变播放控制能力。
-    let timeline = (|| -> windows::core::Result<details::Timeline> {
-        let timeline = session.GetTimelineProperties()?;
-        let position = timeline.Position()?.Duration;
-        let end = timeline.EndTime()?.Duration;
-        let updated = timeline.LastUpdatedTime()?.UniversalTime;
+    let can_seek = controls.IsPlaybackPositionEnabled().unwrap_or(false);
+    // 时间轴读取失败只清空第二类事实，不改变播放控制能力；跳转区间与时间轴同一次读取，避免重复 COM 调用。
+    let (timeline, seek_range) = (|| -> windows::core::Result<(details::Timeline, Option<(f64, f64)>)> {
+        let properties = session.GetTimelineProperties()?;
+        let position = properties.Position()?.Duration;
+        let end = properties.EndTime()?.Duration;
+        let updated = properties.LastUpdatedTime()?.UniversalTime;
+        let min = properties.MinSeekTime()?.Duration as f64 / 10_000.0;
+        let max = properties.MaxSeekTime()?.Duration as f64 / 10_000.0;
+        let seek_range = if max.is_finite() && min.is_finite() && max > min.max(0.0) { Some((min.max(0.0), max)) } else { None };
         let now_ms = chrono::Utc::now().timestamp_millis();
         let (advancing, duration_ms, position_ms) = project_timeline(status == PlaybackStatus::Playing, position, end, updated, now_ms);
-        Ok(details::Timeline { session_id: session_id.clone(), title: title.clone(), artist: artist.clone(), position_ticks: position.to_string(), end_time_ticks: end.to_string(), last_updated_time_ticks: updated.to_string(), playback_status: status.0, position_ms, duration_ms, advancing })
+        Ok((details::Timeline { session_id: session_id.clone(), title: title.clone(), artist: artist.clone(), position_ticks: position.to_string(), end_time_ticks: end.to_string(), last_updated_time_ticks: updated.to_string(), playback_status: status.0, position_ms, duration_ms, advancing }, seek_range))
     })()
-    .ok();
+    .map_or((None, None), |(timeline, seek)| (Some(timeline), seek));
     let source = session.SourceAppUserModelId()?.to_string(); // 播放源身份：歌词源按它切换，未知来源走通用兜底。
     details::update(timeline, source.clone());
     Ok(Some(MusicSnapshot {
@@ -455,6 +462,9 @@ pub fn read_current_session(force_properties: bool) -> windows::core::Result<Opt
             _ => false,
         },
         can_next: controls.IsNextEnabled()?,
+        can_seek,
+        seek_min_ms: seek_range.map(|(min, _)| min),
+        seek_max_ms: seek_range.map(|(_, max)| max),
         artwork_url,
     }))
 }
@@ -607,6 +617,88 @@ pub fn execute_action(action: &str, expected_session: &str) -> Result<(), String
     {
         request_convergence();
     }
+    result
+}
+
+/// 对当前 GSMTC 会话请求跳转播放位置；只发送一次，结果不明时不自动重放。
+pub fn execute_seek(expected_session: &str, position_ms: u64) -> Result<(), String>
+{
+    if expected_session.is_empty()
+    {
+        return Err("媒体跳转会话参数无效".to_string());
+    }
+    let expected_session = expected_session.to_string(); // 用户拖动时的会话代次。
+    let requested_ticks = position_ms.saturating_mul(10_000).min(i64::MAX as u64) as i64; // 毫秒换成 GSMTC 使用的 100ns ticks。
+    if ACTION_BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err()
+    {
+        return Err("媒体动作仍在处理中，请稍后重新操作".to_string());
+    }
+    let (reply, response) = mpsc::channel(); // 调用方有界等待，不 join 潜在卡住的 COM 调用。
+    std::thread::spawn(move || {
+        let action_guard = ActionGuard; // 在线程真实结束时解锁。
+        std::hint::black_box(&action_guard);
+        let result = (|| -> Result<(), String> {
+            use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
+            unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(|error| format!("初始化媒体控制失败：{error}"))?;
+            let result = (|| -> windows::core::Result<()> {
+                let deadline = Instant::now() + Duration::from_secs(4); // 整条跳转链共用期限，超时不重放。
+                let manager = session_manager(deadline)?;
+                let session = manager.GetCurrentSession()?; // 发送前重新获取实际目标。
+                let target_matches = {
+                    let current = CURRENT_SESSION.lock().unwrap_or_else(|error| error.into_inner());
+                    current.0.to_string() == expected_session && current.1.as_ref() == Some(&session)
+                }; // 会话代次与实例都必须未变。
+                if !target_matches
+                {
+                    return Err(windows::core::Error::new(windows::core::HRESULT(0x80004004u32 as i32), "播放来源已变化，请重新操作"));
+                }
+                let controls = session.GetPlaybackInfo()?.Controls()?; // 能力位只作提示：部分播放器不声明但仍接受跳转，因此仍尝试一次。
+                if !controls.IsPlaybackPositionEnabled().unwrap_or(false)
+                {
+                    let _ = crate::tools::log::debug("媒体：播放器未声明可跳转，仍尝试发送位置", file!(), line!());
+                }
+                // 用系统给出的可跳转区间夹紧目标，不把越界位置发给播放器；量程缺失时只保留非负请求。
+                let timeline = session.GetTimelineProperties()?;
+                let min = timeline.MinSeekTime()?.Duration.max(0); // 系统可能给出负区间，非负请求不能夹成负值。
+                let max = timeline.MaxSeekTime()?.Duration.max(0);
+                let target = if max > min { requested_ticks.clamp(min, max) } else { requested_ticks.max(0) };
+                if Instant::now() >= deadline
+                {
+                    return Err(windows::core::Error::new(windows::core::HRESULT(0x800705B4u32 as i32), "媒体跳转超时，未发送动作"));
+                }
+                let _ = crate::tools::log::debug(format!("请求媒体跳转：位置={position_ms}ms，目标={target}ticks，会话={expected_session}"), file!(), line!());
+                if wait_media!(session.TryChangePlaybackPositionAsync(target), deadline)?
+                {
+                    Ok(())
+                }
+                else
+                {
+                    Err(windows::core::Error::new(windows::core::HRESULT(0x80004005u32 as i32), "播放器拒绝了进度跳转"))
+                }
+            })();
+            unsafe { RoUninitialize() };
+            result.map_err(|error| format!("媒体跳转未完成：{error}，正在重新同步媒体"))
+        })(); // 初始化失败也通过同一结果通道返回。
+        if let Err(error) = &result
+        {
+            let _ = crate::tools::log::warn(error.clone());
+        }
+        let _ = reply.send(result);
+    });
+    let result = match response.recv_timeout(Duration::from_secs(5))
+    {
+        Ok(value) => value,
+        Err(_) => Err("媒体跳转结果未确认，正在重新同步媒体".to_string()),
+    };
+    // 成功、失败与结果未确认都回读位置；播放器更新时间轴有延迟，用几次有界回读代替事件订阅，已发出的跳转不重放。
+    request_convergence();
+    std::thread::spawn(|| {
+        for delay in [Duration::from_millis(150), Duration::from_millis(400), Duration::from_millis(900)]
+        {
+            std::thread::sleep(delay);
+            request_convergence();
+        }
+    });
     result
 }
 

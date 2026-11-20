@@ -109,6 +109,7 @@
 }
 .weather-tile__hourly {
     display: grid;
+    /* 列数由页面按实测宽度写入内联样式，这里只留兜底。 */
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 8px;
     margin-top: 8px;

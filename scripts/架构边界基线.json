@@ -21,6 +21,10 @@
             "to": "music"
         },
         {
+            "from": "island",
+            "to": "notifications"
+        },
+        {
             "from": "popup-layer",
             "to": "tiles"
         },

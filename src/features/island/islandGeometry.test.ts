@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { islandCardMaskPath, islandCornerRadius, islandSeamMask, islandFilletPatches, islandGeometry, moveIslandCard, visibleIslandRect } from "./islandGeometry.ts";
+import { islandCardMaskPath, islandCornerRadius, islandSeamMask, islandFilletPatches, islandGeometry, islandWindowKey, moveIslandCard, visibleIslandRect } from "./islandGeometry.ts";
 import { parseIslandStateRequest } from "../../contracts/island.ts";
 
 // 测试独立展开M/L/A/Z路径为细分多边形，不依赖生产的几何命中判断，避免把集合包含写成自证。
@@ -73,15 +73,16 @@ test("单路径补采样为理想轮廓与接缝带的交集，四边两形态�
 
 const work = { left: 0, top: 40, width: 1920, height: 1040 }; // 顶部任务栏工作区。
 const card = { left: 0, top: 0, width: 320, height: 240 };
-test("四边贴边固定，沿边居中并应用持久偏移，偏移夹紧到居中半幅", () => {
-    for (const [edge, left, top] of [
-        ["top", 900, 46],
-        ["bottom", 900, 834],
-        ["left", 6, 540],
-        ["right", 1594, 540],
+test("四边展开统一覆盖工作区高度，水平落位与滚动槽遵循原规则", () => {
+    for (const [edge, left, measuredLeft] of [
+        ["top", 892, 0],
+        ["bottom", 892, 0],
+        ["left", 6, 0],
+        ["right", 1578, 16],
     ] as const) {
-        const request = islandGeometry("expanded", [card], 12, work, edge, 100);
-        assert.deepEqual(request.windowBox, { left, top, width: 320, height: 240 });
+        // 展开态窗口在卡片外侧多一条 16 DIP 滚动条槽；贴右边时槽在卡片左侧，实测卡片带 16 起始内缩。
+        const request = islandGeometry("expanded", [{ ...card, left: measuredLeft }], 12, work, edge, 100);
+        assert.deepEqual(request.windowBox, { left, top: work.top, width: 336, height: work.height });
         assert.deepEqual(parseIslandStateRequest(request), request);
     }
     assert.equal(islandGeometry("hover", [card], 16, work, "right", 2000).windowBox.top, 840);
@@ -93,17 +94,37 @@ test("三态尺寸变化时贴边侧固定，沿边以中心对称扩展", () =>
     const collapsed = islandGeometry("collapsed", [{ ...card, width: 44, height: 44 }], 22, work, "top", 0);
     const expanded = islandGeometry("expanded", [card], 12, work, "top", 0);
     const center = (rect: { left: number; width: number }) => rect.left + rect.width / 2;
-    assert.equal(center(collapsed.windowBox), center(expanded.windowBox)); // 水平中心不动。
-    assert.equal(collapsed.windowBox.top, expanded.windowBox.top); // 顶边固定。
-    assert.ok(expanded.windowBox.top + expanded.windowBox.height > collapsed.windowBox.top + collapsed.windowBox.height); // 向屏幕中心方向长。
+    assert.equal(center(collapsed.windowBox), center(expanded.windowBox)); // 展开窗口含滚动条槽整体沿边居中，槽不会把窗口推出工作区。
+    assert.equal(collapsed.windowBox.top, work.top + 6); // 胶囊仍离开边缘 6 DIP。
+    assert.equal(expanded.windowBox.top, work.top);
+    assert.equal(expanded.windowBox.height, work.height);
 });
 test("实测统一宽度、各自高度，间隙透明但仍归岛命中", () => {
     const request = islandGeometry("expanded", [card, { ...card, top: 248, height: 120 }], 12, work, "bottom", 0);
-    assert.equal(request.windowBox.height, 368);
+    assert.equal(request.windowBox.height, work.height);
     assert.deepEqual(request.cards[2], { rect: { left: 0, top: 240, width: 320, height: 8 }, radius: 0 });
     assert.deepEqual(parseIslandStateRequest(request), request);
-    assert.throws(() => islandGeometry("expanded", [{ ...card, height: 2000 }], 12, work, "top", 0));
+    const tall = islandGeometry("expanded", [{ ...card, height: 2000 }, { ...card, top: 2008 }], 12, work, "bottom", 0);
+    assert.deepEqual(tall.windowBox, request.windowBox);
+    assert.deepEqual(tall.cards.map(({ rect }) => rect.height), [work.height]);
+    assert.deepEqual(parseIslandStateRequest(tall), tall);
+    assert.throws(() => islandGeometry("expanded", [{ ...card, width: work.width }], 12, work, "top", 0), /超过主屏工作区/);
+    assert.throws(() => islandGeometry("hover", [{ ...card, height: work.height + 1 }], 16, work, "top", 0), /超过主屏工作区/);
 });
+test("展开窗口键仅随实际列宽、工作区或三态改变，不随内部卡片变化", () => {
+    const primary = { left: 0, top: 0, width: 2560, height: 1400 };
+    const before = islandGeometry("expanded", [card, { ...card, top: 248 }], 12, primary, "top", 0);
+    const folded = islandGeometry("expanded", [{ ...card, height: 44 }, { ...card, top: 52 }], 12, primary, "top", 0);
+    const scrolled = islandGeometry("expanded", [{ ...card, top: -120 }, { ...card, top: 128 }], 12, primary, "top", 0);
+    assert.deepEqual(before.windowBox, { left: 1112, top: 0, width: 336, height: 1400 });
+    assert.notDeepEqual(folded.cards, before.cards);
+    assert.equal(islandWindowKey(folded), islandWindowKey(before));
+    assert.equal(islandWindowKey(scrolled), islandWindowKey(before));
+    const wider = islandGeometry("expanded", [{ ...card, width: 360 }], 12, primary, "top", 0);
+    assert.notEqual(islandWindowKey(wider), islandWindowKey(before));
+    assert.notEqual(islandWindowKey({ ...before, state: "hover" }), islandWindowKey(before));
+});
+
 test("负坐标工作区、竖胶囊和圆角上限", () => {
     const request = islandGeometry(
         "collapsed",
@@ -150,7 +171,7 @@ test("刘海窗口沿贴边方向外扩 12 DIP，卡片本体保持贴边并向�
 test("刘海展开态不再外扩窗口，卡片仍按岛圆角绘制", () => {
     const size = { left: 0, top: 0, width: 320, height: 240 };
     const expanded = islandGeometry("expanded", [size], 12, work, "top", 0, "notch");
-    assert.deepEqual(expanded.windowBox, { left: 800, top: 40, width: 320, height: 240 });
+    assert.deepEqual(expanded.windowBox, { left: 792, top: 40, width: 336, height: work.height });
     assert.deepEqual(expanded.cards[0]!.rect, { left: 0, top: 0, width: 320, height: 240 });
     assert.equal(islandCornerRadius(12, "notch", "top", 12), "12px"); // 展开态贴边角等于岛圆角，四角一致。
 });

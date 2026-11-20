@@ -69,12 +69,15 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
     return (
         <fieldset className="appearance-settings" disabled={unavailable} aria-label="外观偏好">
             <section className="appearance-settings__group" aria-labelledby="global-theme-title">
+                <h2 className="appearance-settings__heading" id="global-theme-title">
+                    外观主题包
+                </h2>
                 <div className="appearance-settings__row">
                     <span className="appearance-settings__label appearance-settings__label--inline">
                         <label htmlFor="interface-theme-plugin">外观主题包</label>
                         <SettingsInfo
                             label="外观主题包"
-                            description="主题包对整个应用生效：桌面网格、设置界面与自绘菜单。可设置字体、字号、圆角与两组强调色。切回默认会还原原有外观。"
+                            description="主题包对整个应用生效：桌面网格、设置界面与自绘菜单；切回默认会还原原有外观。"
                         />
                     </span>
                     <select
@@ -172,7 +175,7 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
             })}
             {themeActive && (
                 <div className="appearance-settings__theme-status" role="status">
-                    <p>当前外观由「{selectedTheme.name}」决定：强调色、圆角、字体与字号由主题写入，主题生效期间的手工修改会被下一次切换覆盖。</p>
+                    <p>当前外观由「{selectedTheme.name}」写入，手工修改会在下一次切换主题时被覆盖。</p>
                     <button
                         type="button"
                         className="appearance-settings__restore"
@@ -186,7 +189,7 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
             )}
             <section className="appearance-settings__group" aria-labelledby="shared-appearance-title">
                 <h2 className="appearance-settings__heading" id="shared-appearance-title">
-                    通用
+                    通用外观
                 </h2>
                 <div className="appearance-settings__row">
                     <label className="appearance-settings__label" htmlFor="appearance-radius">

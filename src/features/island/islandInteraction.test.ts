@@ -19,6 +19,7 @@ import {
     islandExtraBands,
     islandScrollGeometry,
     islandHitRegion,
+    islandExpandedDwellStep,
     islandMarginStep,
     islandDebugCardCount,
     islandCollapseSettle,
@@ -79,13 +80,13 @@ test("原生拖动释放后按最新命中结果重判，不沿用开始态", ()
     assert.equal(islandAfterDrag(true), "hover");
     assert.equal(islandAfterDrag(false), "collapsed");
 });
-test("展开态卡片本体只排序，不启动窗口拖动", () => {
-    assert.equal(islandDragIntent("expanded", 0, false, true), "sort");
+test("展开态卡片本体不启动窗口拖动", () => {
+    assert.equal(islandDragIntent("expanded", 0, false, true), undefined);
     assert.equal(islandDragIntent("expanded", 0, true, true), undefined);
     assert.equal(islandDragIntent("expanded", 1, false, true), undefined);
     assert.equal(islandDragIntent("expanded", 0, false, false), undefined);
 });
-test("无需句柄，合法卡片落点沿同一身份列表排序", () => {
+test("键盘排序落点沿同一身份列表移动", () => {
     const target = islandSortTarget("expanded", order, order[0], order[2]!, false);
     assert.equal(target, "plugin.two");
     assert.deepEqual(moveIslandCard(order, order[0]!, target!), ["plugin.one", "plugin.two", "official.music-control"]);
@@ -223,7 +224,7 @@ test("透明轮廓：胶囊圆角外四角与刘海补面透明扇区都算透�
     assert.equal(islandHitContour([{ rect: { left: 0, top: 0, width: 120, height: 60 }, radii: [6, 6, 6, 6] }], { left: 0, top: 0, width: 200, height: 100 }, "top", "notch", 0).arcs.length, 0);
 });
 
-test("展开态透明带命中：只有并集减目标内容盒的额外带退回，滚动条矩形先行扣除", () => {
+test("展开态透明带命中：只有并集减目标内容盒的额外带退回，卡片外侧滚动条槽整条扣除", () => {
     for (const edge of islandEdges) for (const form of islandForms) for (const dpr of islandDprs) {
         const { window, card } = islandLayoutCase(edge, form, dpr);
         const label = `${edge}/${form}/DPR${dpr}`;
@@ -251,7 +252,9 @@ test("展开态透明带命中：只有并集减目标内容盒的额外带退�
         // 未完成提交或未溢出时同一点不再归滚动条。
         const hidden = islandScrollGeometry(islandFrame("expanded", window), islandFrame("expanded", card), edge, { ...metrics, settled: false });
         assert.equal(hidden.visible, false, `${label} 未提交前不出条`);
-        assert.equal(islandHitRegion("expanded", trackPoint, hidden, contour) === "scrollbar", false, `${label} 未出条时不得占用命中`);
+        // 滚动条槽在卡片外，整条槽（间距 + 轨道）都不触发退回；未出条时槽仍是展示区，不把指针判成退回。
+        assert.ok(layout.gutter && islandPointInRect(trackPoint, layout.gutter), `${label} 轨道必须落在滚动条槽内`);
+        assert.equal(islandHitRegion("expanded", trackPoint, hidden, contour), "scrollbar", `${label} 未出条时槽仍不触发退回`);
         // 轨道与滑块都在并集窗口内，滑块不越出轨道，滚动位置线性映射。
         for (const point of [trackPoint, { x: thumb.left + thumb.width / 2, y: thumb.top + thumb.height / 2 }]) assert.ok(islandPointInRect(point, window), `${label} 滚动条必须落在并集窗口内`);
         assert.ok(thumb.height >= 24 - 1e-6 && thumb.height <= track.height + 1e-6, `${label} 滑块高度`);
@@ -264,6 +267,53 @@ test("展开态透明带命中：只有并集减目标内容盒的额外带退�
     const layout = islandScrollGeometry(islandFrame("expanded", window), islandFrame("expanded", card), "top", { mode: "expanded", settled: true, scrollHeight: 300, clientHeight: 120, scrollTop: 0 });
     const contour = islandHitContour([{ rect: card, radii: [12, 12, 12, 12] }], window, "top", "capsule", 0);
     assert.equal(islandHitRegion("expanded", { x: card.left + 0.25, y: card.top + 0.25 }, layout, contour), "transparent");
+});
+
+test("展开回退计时只响应跨边界，空白列移动不会重新开始", () => {
+    assert.deepEqual(islandExpandedDwellStep("idle", "blank"), { state: "idle", timer: undefined });
+    assert.deepEqual(islandExpandedDwellStep("idle", "content"), { state: "content", timer: undefined });
+    assert.deepEqual(islandExpandedDwellStep("content", "blank"), { state: "blank", timer: "start" });
+    for (let i = 0; i < 10; i += 1) assert.deepEqual(islandExpandedDwellStep("blank", "blank"), { state: "blank", timer: undefined });
+    assert.deepEqual(islandExpandedDwellStep("blank", "content"), { state: "content", timer: "cancel" });
+    assert.deepEqual(islandExpandedDwellStep("blank", "protected"), { state: "idle", timer: "cancel" });
+    assert.deepEqual(islandExpandedDwellStep("content", "protected"), { state: "content", timer: undefined });
+    assert.equal(ISLAND_MARGIN_DELAY_MS, 120);
+});
+
+test("全高展开按四边选择空白带，只有离开边界启动 120ms，移动不延后", () => {
+    for (const edge of islandEdges) {
+        const window = { left: 100, top: 40, width: 216, height: 900 };
+        const cardLeft = edge === "right" ? 16 : 0;
+        const offset = edge === "top" ? 0 : edge === "bottom" ? 696 : 351;
+        const frame = { ...islandFrame("expanded", window), cards: [
+            { rect: { left: cardLeft, top: offset, width: 200, height: 110 }, radius: 12 },
+            { rect: { left: cardLeft, top: offset + 118, width: 200, height: 80 }, radius: 12 },
+            { rect: { left: cardLeft, top: offset + 110, width: 200, height: 8 }, radius: 0 },
+        ] };
+        const metrics = { mode: "expanded" as const, settled: true, scrollHeight: 900, clientHeight: 900, scrollTop: 0 };
+        const layout = islandScrollGeometry(frame, frame, edge, metrics);
+        const expected = edge === "top" ? [{ ...window, top: 238, height: 702 }] : edge === "bottom" ? [{ ...window, height: 696 }] : [{ ...window, height: 351 }, { ...window, top: 589, height: 351 }];
+        assert.deepEqual(layout.bands, expected, edge);
+        const contour = islandHitContour(frame.cards.slice(0, 2).map(({ rect }) => ({ rect: { ...rect, left: rect.left + window.left, top: rect.top + window.top }, radii: [12, 12, 12, 12] })), window, edge, "capsule", 0);
+        const classify = (x: number, y: number) => islandHitRegion("expanded", { x, y }, layout, contour);
+        assert.equal(classify(180, 154 + offset), "transparent");
+        assert.equal(classify(layout.gutter!.left + 2, 800), "scrollbar");
+        if (edge === "bottom") assert.equal(classify(180, 937), "transparent", "底边 6 DIP 不计时");
+        for (const band of expected) {
+            const region = classify(180, band.top + band.height / 2);
+            assert.equal(region, "extra-band");
+            const dwell = islandExpandedDwellStep("content", "blank");
+            assert.deepEqual(dwell, { state: "blank", timer: "start" });
+            assert.deepEqual(islandExpandedDwellStep(dwell.state, "blank"), { state: "blank", timer: undefined });
+            assert.equal(islandExpandedDwellStep(dwell.state, "content").timer, "cancel");
+            const input = { mode: "expanded" as const, region, now: 0, busy: false, outlineDistance: 1, coreDistance: 1 };
+            const entered = islandMarginStep({ latch: "open" }, input);
+            assert.equal(islandMarginStep(entered.state, { ...input, now: 119 }).collapse, false);
+            assert.equal(islandMarginStep(entered.state, { ...input, now: 120 }).collapse, true);
+        }
+        const clipped = { ...frame, cards: [{ rect: { left: cardLeft, top: 0, width: 200, height: 900 }, radius: 12 }] };
+        assert.deepEqual(islandScrollGeometry(clipped, clipped, edge, { ...metrics, scrollHeight: 1200, scrollTop: 200 }).bands, []);
+    }
 });
 
 test("展开滚动条只在溢出且已提交时出现，track/thumb 几何与滚动位置一致", () => {

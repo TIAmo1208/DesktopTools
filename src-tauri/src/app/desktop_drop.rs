@@ -252,11 +252,46 @@ pub(crate) fn receive_content(app: &AppHandle, region: HitRegion, monitor_id: St
     result
 }
 
+/// 浮岛收集箱卡是否已在设置中启用；只读岛卡顺序，不要求桌面格子存在。
+pub(crate) fn island_collect_accepting(app: &AppHandle) -> Result<bool, String>
+{
+    let preferences = app.state::<crate::preferences::SettingsState>().preferences()?;
+    Ok(preferences.island_card_order.iter().any(|id| id == crate::platform::windows::drop_content::COLLECT))
+}
+
+/// 浮岛拖入只收入共享收集箱，不复用需要工作区命中区域的桌面投放目标。
+pub(crate) fn receive_island_collect(app: &AppHandle, content: crate::collect::IncomingContent, mode: String, collect_names: Option<Vec<String>>) -> Result<crate::collect::ReceiveResult, String>
+{
+    if !island_collect_accepting(app)?
+    {
+        return Err("浮岛收集箱卡片未启用".into());
+    }
+    let preferences = app.state::<crate::preferences::SettingsState>().preferences()?; // 当前配置目录。
+    let config = crate::preferences::resolve_config_directory(&preferences.config_directory)?;
+    let result = crate::commands::collect::with_collect_editor_state(app, &crate::collect::directory(&config), None, |editing| {
+        if let Some(names) = collect_names
+        {
+            crate::collect::receive_items(&config, None, &names, editing)
+        }
+        else
+        {
+            crate::collect::receive(&config, None, content, &mode, editing)
+        }
+    }); // 与桌面收集箱共用编辑窗锁和收入规则。
+    let _ = app.emit("collect-items-changed", ());
+    if let Ok(received) = &result
+        && (received.skipped > 0 || !received.failures.is_empty())
+    {
+        report_content_error(app, format!("浮岛收集：已处理 {} 项，跳过 {} 项，失败 {} 项。{}", received.processed, received.skipped, received.failures.len(), received.failures.iter().map(|failure| format!("{}：{}", failure.name, failure.error)).collect::<Vec<_>>().join("；")));
+    }
+    result
+}
+
 /// 复用原生消息管道报告执行失败，消息循环中不弹同步错误框。
 pub(crate) fn report_content_error(app: &AppHandle, error: String)
 {
     crate::log_error!("拖放：内容收入失败，错误：{error}");
-    let _ = app.state::<std::sync::Arc<crate::notifications::ToastManager>>().publish(app, crate::notifications::ToastRequest { r#type: "error".into(), content: error, source: "content-drop".into(), dedupe_key: None, loading: None, duration_ms: 6000 });
+    let _ = app.state::<std::sync::Arc<crate::notifications::ToastManager>>().publish(app, crate::notifications::ToastRequest { r#type: "error".into(), content: error, source: "content-drop".into(), dedupe_key: None, loading: None, duration_ms: 6000, progress: None });
 }
 
 /// 将已确认的工作区 DIP 指针映射到实际存在的共享围栏。
@@ -349,6 +384,23 @@ mod tests;
 pub(crate) struct AppDesktopDrop
 {
     pub app: AppHandle, // 端口实现持有的应用句柄。
+}
+
+impl crate::drop_bridge::IslandDropPort for AppDesktopDrop
+{
+    fn collect_accepting(&self) -> bool { island_collect_accepting(&self.app).unwrap_or(false) }
+
+    fn island_drop_fact(&self, fact: crate::drop_bridge::IslandDropFact)
+    {
+        if let Err(error) = self.app.emit("island-drop-active", fact)
+        {
+            crate::log_warn!("浮岛投放：状态事件发布失败，错误={error}"); // 提示失败不影响投放本身。
+        }
+    }
+
+    fn receive_collect(&self, content: crate::collect::IncomingContent, mode: String, collect_names: Option<Vec<String>>) -> Result<crate::collect::ReceiveResult, String> { receive_island_collect(&self.app, content, mode, collect_names) }
+
+    fn report_error(&self, error: String) { report_content_error(&self.app, error) }
 }
 
 impl crate::drop_bridge::DesktopDropPort for AppDesktopDrop

@@ -53,30 +53,36 @@ test("三态表面不透明度与可插值属性已登记", () => {
     }
 });
 
-test("常态音乐胶囊按档位限制尺寸并在内容盒内滚动", () => {
+test("常态胶囊歌词在锚点内容盒内限长并按贴边方向滚动", () => {
     const css = readFileSync(new URL("./island.css", import.meta.url), "utf8");
-    /** 取单条选择器规则体（按行首锚定），避免跨规则误匹配。 */
-    const ruleBody = (selector: string) => new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
-    const line = ruleBody('.island[data-state="collapsed"] .island-music__line');
-    assert.match(line, /inline-size: var\(--island-capsule-line-max/); // 固定档位尺寸由纯函数写入变量。
-    assert.match(line, /min-inline-size: 0;/);
-    assert.match(line, /overflow: clip;/); // 滚动内容在内容盒内裁切，不撑开卡片。
-    assert.doesNotMatch(line, /max-content/); // 内容不再参与胶囊尺寸，换句不重设窗口。
-    // 左右贴边保持竖排；尺寸沿用同一档位变量，不再按内容或写死 176。
-    const vertical = ruleBody('.island[data-vertical="true"] .island-music__line');
-    assert.match(vertical, /writing-mode: vertical-rl;/);
-    assert.match(vertical, /text-orientation: upright;/);
-    assert.doesNotMatch(vertical, /max-content/);
-    assert.doesNotMatch(vertical, /max-inline-size: 176px/);
-    // 当前行按内容撑开并由 transform 位移；滚动只作用于合成层。
+    /** 取包含指定首选择器的规则体（含成组选项），不跨规则匹配。 */
+    const ruleBody = (selector: string) => new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*(?:,[^{}]*)?\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+    // F1 恢复浮岛.md 28/30 的播放档位：同态跨句根宽、原生窗口盒及提交次数不变（由 Lyrics 浏览器页实测）。
+    // 只有位移子层按完整歌词度量，歌词和无词回落共享同一尺寸上限。
+    const label = ruleBody(".island-anchor-label");
+    const line = ruleBody('.island-anchor-label[data-music="true"] .island-anchor__text');
+    assert.match(line, /^\s*inline-size:\s*var\(--island-capsule-line-max\);/m);
+    assert.doesNotMatch(line, /max-content/);
+    for (const box of [label, line]) assert.match(box, /overflow:\s*clip;/);
+
+    // 左右贴边由整个锚点内容盒继承竖排，逻辑尺寸上限随之限制竖直方向。
+    const vertical = ruleBody('.island[data-vertical="true"] .island-anchor-label');
+    assert.match(vertical, /writing-mode:\s*vertical-rl;/);
+    assert.match(vertical, /text-orientation:\s*upright;/);
+    assert.match(vertical, /max-inline-size:\s*180px;/);
+
+    // 只有当前歌词允许度量完整文字；两个方向都仅以 transform 位移，不改变内容盒尺寸。
     const current = ruleBody(".island-music__current");
-    assert.match(current, /inline-size: max-content;/);
-    assert.match(current, /will-change: transform;/);
-    for (const name of ["island-lyric-scroll-x", "island-lyric-scroll-y", "island-lyric-loop-x", "island-lyric-loop-y"])
-        assert.match(css, new RegExp(`@keyframes ${name}`));
-    assert.match(css, /transform: translate3d\(calc\(-1 \* var\(--island-lyric-distance/);
-    // 减少动效时改为单行截断，不再位移。
+    assert.match(current, /inline-size:\s*max-content;/);
+    assert.match(current, /will-change:\s*transform;/);
+    const horizontalShift = /transform:\s*translate3d\(calc\(-1 \* var\(--island-lyric-distance, 0px\)\), 0, 0\);/;
+    const verticalShift = /transform:\s*translate3d\(0, calc\(-1 \* var\(--island-lyric-distance, 0px\)\), 0\);/;
+    for (const kind of ["scroll", "loop"]) {
+        assert.match(css, new RegExp(`@keyframes island-lyric-${kind}-x\\s*\\{[^@]*${horizontalShift.source}`));
+        assert.match(css, new RegExp(`@keyframes island-lyric-${kind}-y\\s*\\{[^@]*${verticalShift.source}`));
+    }
     const truncate = ruleBody('.island-music__line[data-motion="off"] .island-music__current');
-    assert.match(truncate, /overflow: hidden;/);
-    assert.match(truncate, /text-overflow: ellipsis;/);
+    assert.match(truncate, /inline-size:\s*100%;/);
+    assert.match(truncate, /overflow:\s*clip;/);
+    assert.match(truncate, /text-overflow:\s*ellipsis;/);
 });

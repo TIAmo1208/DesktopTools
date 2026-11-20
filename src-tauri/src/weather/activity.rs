@@ -67,8 +67,14 @@ fn wake(reset: bool)
     SCHEDULE.1.notify_one();
 }
 
+/// 桌面天气开关关闭时，只要浮岛天气卡启用，活动实例仍需按需刷新。
+fn weather_active(preferences: &crate::contracts::settings::ApplicationPreferences) -> bool
+{
+    preferences.weather_enabled || preferences.island_card_order.iter().any(|id| id == "official.weather")
+}
+
 /// 网络开始前和返回后都重新判断活动实例与已保存功能开关。
-fn active(read_preferences: &crate::preferences::PreferencesReader, source: Source, city: &str) -> bool { read_preferences().is_ok_and(|value| value.weather_enabled) && SCHEDULE.0.lock().unwrap_or_else(|error| error.into_inner()).consumers.values().any(|value| value.source == source && value.city.id == city && !crate::platform::windows::refresh_policy::is_paused(&value.monitor)) }
+fn active(read_preferences: &crate::preferences::PreferencesReader, source: Source, city: &str) -> bool { read_preferences().is_ok_and(|value| weather_active(&value)) && SCHEDULE.0.lock().unwrap_or_else(|error| error.into_inner()).consumers.values().any(|value| value.source == source && value.city.id == city && !crate::platform::windows::refresh_policy::is_paused(&value.monitor)) }
 
 /// 启动一个按截止时间等待的天气更新线程。
 pub(crate) fn start(app: AppHandle, read_preferences: crate::preferences::PreferencesReader)
@@ -81,7 +87,7 @@ pub(crate) fn start(app: AppHandle, read_preferences: crate::preferences::Prefer
         loop
         {
             let mut schedule = SCHEDULE.0.lock().unwrap_or_else(|error| error.into_inner());
-            let enabled = read_preferences().is_ok_and(|value| value.weather_enabled);
+            let enabled = read_preferences().is_ok_and(|value| weather_active(&value));
             let now = chrono::Utc::now().timestamp_millis(); // 每轮只为最近的活动来源位置设置一次等待。
             let next = schedule.consumers.values().filter(|value| enabled && !crate::platform::windows::refresh_policy::is_paused(&value.monitor)).map(|value| (schedule.deadlines.get(&plan_key(value.source, &value.city.id)).copied().unwrap_or(now), plan_key(value.source, &value.city.id), value.source, value.city.clone())).min_by_key(|(deadline, key, _, _)| (*deadline, key.clone())); // 同一截止时间按来源与城市固定顺序，避免计划顺序随注册次序漂移。
             let Some((deadline, key, source, city)) = next
@@ -137,6 +143,19 @@ mod tests
 
     /// 同名城市样例；来源模块的详情链接规则不参与登记。
     fn city(id: &str) -> City { City { id: id.into(), name: id.into(), adm1: String::new(), adm2: String::new(), country: String::new(), lat: "0".into(), lon: "0".into(), tz: "UTC".into(), fx_link: String::new() } }
+
+    /// 桌面天气开关关闭时，浮岛天气卡仍应驱动活动调度。
+    #[test]
+    fn island_weather_card_keeps_activity_without_desktop_switch()
+    {
+        let mut preferences = crate::contracts::settings::ApplicationPreferences::default();
+        assert!(!weather_active(&preferences));
+        preferences.island_card_order = vec!["official.weather".into()];
+        assert!(weather_active(&preferences));
+        preferences.weather_enabled = true;
+        preferences.island_card_order.clear();
+        assert!(weather_active(&preferences));
+    }
 
     /// 活动计划是进程级共享状态，两个用例合并执行以免互相清理同一份计划。
     #[test]

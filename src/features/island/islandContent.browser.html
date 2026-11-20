@@ -1,0 +1,1243 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" />
+    <title>浮岛内容层十态、边界与切换时序检查</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            background: #d6c3bb;
+        }
+        #fixture {
+            position: relative;
+            padding: 24px;
+            width: 900px;
+            height: 520px;
+            background: linear-gradient(120deg, #d8c3b8 0%, #e7d7cd 45%, #c9a89f 100%);
+        }
+        #result {
+            position: fixed;
+            left: 8px;
+            bottom: 8px;
+            margin: 0;
+            padding: 8px;
+            background: #000c;
+            color: #7dff9b;
+            font: 12px/1.5 monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+    <body>
+        <script>
+            // 模块加载失败、未处理异常和隐藏页面也必须有界写出结论。
+            const failAssertion = (reason) => {
+                const result = document.getElementById("result");
+                if (result && !/^(PASS|FAIL)/.test(result.textContent)) {
+                    result.textContent = `FAIL\\n- ${reason}`;
+                    document.body.dataset.phase = "fail";
+                }
+            };
+            window.addEventListener("error", (event) => failAssertion(event.message || "断言模块加载失败"), true);
+            window.addEventListener("unhandledrejection", (event) => failAssertion(String(event.reason)));
+            setTimeout(() => failAssertion("断言总时限 60000ms：页面状态或动画未收敛"), 60000);
+        </script>
+        <main id="fixture"></main>
+        <pre id="result">RUNNING</pre>
+        <script type="module">
+            // 证据层：L1 浏览器断言（真实 React 组件 + 真实 CSS）。原生投放 OLE 进入/离开顺序、WebView2
+            // 真实合成的材质与观感仍由 L3 真机覆盖；本页只判定 DOM、dataset 与计算样式。
+            import { 创建夹具, 消息, 媒体, 时间轴, 逐句歌词, 等待, 直到 } from "./islandFixture.js";
+
+            // 夹具必须先于产品模块的副作用安装，否则桥与订阅会拿到未替换的运行时。
+            const 夹具 = 创建夹具();
+            // 本页只验证内容层：清空岛快照里的常驻实例，避免真实音乐/天气卡抢占锚点可见位与前台排序。
+            // 快照形状仍是生产读取路径（get_island_snapshot）给出的同一份数据。
+            const 原生 = window.__DESKTOP_TOOLS_NATIVE__;
+            const 原invoke = 原生.invoke.bind(原生);
+            let 功能图标场景 = false;
+            let 插件锚点场景 = false;
+            let 收集列表 = [];
+
+            let 天气预报;
+            let 已读取天气 = false;
+            const 城市 = { id: "fixture-city", name: "测试城市", tz: "Asia/Shanghai" };
+            let 清空实例 = true; // 内容层场景用空快照；音乐档位场景再切回夹具自带的真实音乐实例。
+            原生.invoke = (命令, 载荷) => {
+                if (命令 === "get_plugin_settings") return Promise.resolve(null);
+                if (功能图标场景 && 命令 === "get_collect_items") return Promise.resolve(收集列表);
+                if (功能图标场景 && 命令 === "list_weather_sources") return Promise.resolve([{ source: "qweather", cities: [城市] }]);
+                if (功能图标场景 && 命令 === "subscribe_weather") return Promise.resolve(1);
+                if (功能图标场景 && 命令 === "get_weather_forecast") { 已读取天气 = true; return Promise.resolve(天气预报); }
+                if (命令 !== "get_island_snapshot") return 原invoke(命令, 载荷);
+                return 原invoke(命令, 载荷).then((快照) => {
+                    const instances = 清空实例 ? [] : [...快照.instances];
+                    if (!功能图标场景 && !插件锚点场景) return { ...快照, instances };
+                    const manifests = [...快照.runtime.manifests];
+                    const registrations = [...快照.runtime.instances];
+                    const 新卡片 = 功能图标场景 ? [["official.collect-box", "收集箱"], ["official.weather", "天气"]] : [];
+                    if (插件锚点场景) 新卡片.push(["plugin.anchor-fixture", "插件锚点夹具"]);
+                    for (const [id, name] of 新卡片) {
+                        const identity = { instanceId: `island.${id}`, componentId: id };
+                        manifests.push({ ...manifests[0], id, name });
+                        registrations.push({ ...registrations[0], ...identity });
+                        instances.push({ ...快照.instances[0], ...identity });
+                    }
+                    return { ...快照, runtime: { ...快照.runtime, manifests, instances: registrations }, instances };
+                });
+            };
+
+            const [岛模块, 内容模块, React模块, 根模块, 偏好模块, 样式模块] = await Promise.all([
+                import("./island.tsx"),
+                import("./islandContent.ts"),
+                import("react"),
+                import("react-dom/client"),
+                import("../../app/preferences/PreferencesProvider.tsx"),
+                import("../../styles/global.css"),
+            ]);
+            void 样式模块; // 只要求样式表加载完成，不读导出。
+            const { IslandPage } = 岛模块;
+            const { ISLAND_STATUS_SPECS, islandAnchorGlyph, islandAnchorValue } = 内容模块;
+            const React = React模块.default;
+            const { createRoot } = 根模块;
+            const { PreferencesProvider } = 偏好模块;
+
+            // 独立岛页面标记与主题，与窗口入口保持一致。
+            document.documentElement.dataset.island = "true";
+            document.documentElement.dataset.theme = "dark";
+            document.documentElement.dataset.desktopTheme = "dark";
+            const 容器 = document.getElementById("fixture");
+            let 根 = createRoot(容器);
+            const 渲染 = (属性 = {}) => 根.render(React.createElement(PreferencesProvider, null, React.createElement(IslandPage, 属性)));
+            // 音乐实例场景结束后重建岛页：用空快照重新挂载，后续内容层时序不受常驻锚点影响。
+            const 重新挂载 = () => {
+                根.unmount();
+                根 = createRoot(容器);
+                渲染();
+            };
+
+            const 结果 = document.getElementById("result");
+            const 失败 = [];
+            // 系统开启减少动效时内容层直接落终态，动画与接力节奏断言在本环境无法成立，按环境跳过。
+            const 减少动效 = matchMedia("(prefers-reduced-motion: reduce)").matches;
+            const 跳过 = []; // 当前环境无法验证的动效项。
+            // 失败先写出的结论不被迟到的成功覆盖。
+            const report = (text) => {
+                if (!结果.textContent.startsWith("FAIL")) 结果.textContent = text;
+                document.body.dataset.phase = 结果.textContent.startsWith("FAIL") ? "fail" : "pass";
+            };
+            const 断言 = (条件, 说明) => {
+                if (!条件) 失败.push(说明);
+            };
+            const 近似 = (实际, 期望, 容差 = 1) => Math.abs(实际 - 期望) <= 容差;
+
+            const 岛 = () => document.querySelector("main.island");
+            const 当前态 = () => 岛()?.dataset.state;
+            const 卡片 = () => document.querySelector(".island-card--anchors") ?? document.querySelector(".island-card");
+            const 胶囊行 = () => document.querySelector('.island-anchor-row[data-layout="capsule"]');
+            const 悬停行 = () => document.querySelector('.island-anchor-row[data-layout="hover"]');
+            const 锚点 = (身份) => document.querySelector(`.island-anchor[data-anchor="${CSS.escape(身份)}"]`);
+            const 墨 = (身份) => 锚点(身份)?.querySelector(".island-anchor__ink");
+            const 条目 = (身份) => 锚点(身份)?.closest(".island-anchor-item");
+            const 文案 = (身份) => 条目(身份)?.querySelector(".island-anchor__text");
+            const 标签 = (身份) => 条目(身份)?.querySelector(".island-anchor-label");
+            const 胶囊锚点 = () => [...(胶囊行()?.querySelectorAll(".island-anchor") ?? [])];
+            const 悬停按钮 = () => [...(悬停行()?.querySelectorAll("button.island-anchor") ?? [])];
+            const 播报 = () => document.querySelector(".island__announcer")?.textContent ?? "";
+            const 详情 = () => document.querySelector(".island-anchor-detail");
+            const 详情文本 = () => [...(详情()?.querySelectorAll(".island-anchor__text") ?? [])].map((节点) => 节点.textContent).join(" / ");
+            const 行 = () => document.querySelector(".island-music__line");
+            const 按键 = (键) => 岛().dispatchEvent(new KeyboardEvent("keydown", { key: 键, bubbles: true }));
+            const 悬停 = () => 岛().dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", relatedTarget: null }));
+
+            // 等切态完成并恢复自然布局后再测量；动画期间根节点带内联尺寸。
+            const 稳定 = async (期望) => {
+                await 直到(() => 当前态() === 期望, `切到 ${期望}`, 5000);
+                await 直到(() => !岛().style.inlineSize && !岛().style.blockSize, `${期望} 恢复自然布局`, 5000);
+                await 等待(40);
+            };
+
+            // 合成 PointerEvent 没有 OS 活动指针；只替换 capture 平台方法，命中、拖动意图与展开判定仍走生产处理器。
+            const 单击元素 = async (节点) => {
+                const 框 = 节点.getBoundingClientRect();
+                const 原set = 岛().setPointerCapture;
+                const 原has = 岛().hasPointerCapture;
+                const 原release = 岛().releasePointerCapture;
+                岛().setPointerCapture = () => {};
+                岛().hasPointerCapture = () => false;
+                岛().releasePointerCapture = () => {};
+                try {
+                    const 点 = { clientX: 框.x + 框.width / 2, clientY: 框.y + 框.height / 2, screenX: 11, screenY: 11 };
+                    节点.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse", pointerId: 7, button: 0, buttons: 1, ...点 }));
+                    岛().dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "mouse", pointerId: 7, button: 0, ...点 }));
+                } finally {
+                    岛().setPointerCapture = 原set;
+                    岛().hasPointerCapture = 原has;
+                    岛().releasePointerCapture = 原release;
+                }
+            };
+            const 单击卡片 = () => 单击元素(document.querySelector(".island-card"));
+
+            // 浮岛令牌由页面探针复制到岛根；用隐藏探针取当前主题下的计算色，避免把十六进制与 rgb 直接比较。
+            const 令牌色 = (名) => {
+                const 探针 = document.createElement("span");
+                探针.style.color = `var(${名})`;
+                探针.style.display = "none";
+                岛().appendChild(探针);
+                const 值 = getComputedStyle(探针).color;
+                探针.remove();
+                return 值;
+            };
+
+            // Web Animations 关键帧按属性名取值，兼容 camelCase 与连字符两种序列化。
+            const 帧值 = (帧, 属性) => {
+                const 目标 = 属性.replace(/-/g, "").toLowerCase();
+                for (const [键, 值] of Object.entries(帧 ?? {})) {
+                    if (键.replace(/-/g, "").toLowerCase() === 目标) return 值;
+                }
+                return undefined;
+            };
+            const 动画摘要 = (节点) =>
+                (节点?.getAnimations?.({ subtree: true }) ?? []).map((动画) => {
+                    const 时间 = 动画.effect.getTiming();
+                    const 帧 = 动画.effect.getKeyframes();
+                    return { 时长: 时间.duration, 延迟: 时间.delay ?? 0, 缓动: 时间.easing, 首帧: 帧[0], 末帧: 帧[帧.length - 1] };
+                });
+
+            const 事实 = (来源, 状态, 主信息, 附加, 层 = "event") => ({
+                source: 来源,
+                layer: 层,
+                nowMs: Date.now(),
+                unit: { status: 状态, primary: 主信息, secondary: 附加 },
+            });
+            const 主信息 = "任务正文";
+            const 长中文 = "一二三四五六七八九十一二三四五六七八九十"; // 20 个汉字，触发 18 字截断。
+            const 长英文 = "abcdefghijklmnopqrstuvwxyzabcdefghijklmn"; // 40 个字符，触发 36 字符截断。
+
+            let 阶段 = "启动"; // 失败结论带上阶段，便于定位断言。
+            const 运行 = async () => {
+                await 直到(() => 岛(), "岛根节点挂载");
+                await 直到(() => 夹具.提交.length > 0, "岛完成首次原生几何提交", 8000);
+                await 稳定("collapsed");
+
+                // ---- 一、零锚点空态与胶囊只读语义 ----
+
+                阶段 = "一、零锚点空态与胶囊只读语义";
+                const 时钟 = 锚点("clock");
+                断言(Boolean(时钟), "零锚点必须显示空态圆锚点");
+                const 时钟文本节点 = 时钟?.parentElement?.querySelector(".island-anchor__clock") ?? null;
+                const 时钟文本 = 时钟文本节点?.textContent ?? "";
+                断言(/^\d{2}:\d{2}$/.test(时钟文本), `空态时钟应显示在圆锚点右侧，实际 ${时钟文本}`);
+                断言(时钟文本节点 !== null && Number.parseFloat(getComputedStyle(时钟文本节点).fontSize) >= 13, `空态时钟字号应不小于 13px，实际 ${时钟文本节点 ? getComputedStyle(时钟文本节点).fontSize : "无节点"}`);
+                const [时, 分] = 时钟文本.split(":").map(Number);
+                const 当前时间 = new Date();
+                断言(Math.abs(时 * 60 + 分 - (当前时间.getHours() * 60 + 当前时间.getMinutes())) <= 1, `空态时钟应与当前时间一致，实际 ${时钟文本}`);
+                断言(胶囊锚点().length === 1, `零锚点只应有一个空态圆，实际 ${胶囊锚点().length}`);
+                断言(胶囊行().querySelectorAll("button").length === 0, "胶囊必须是只读的，不得出现按钮");
+                断言(岛().tabIndex === -1, `胶囊不得进入 Tab 顺序，实际 tabIndex=${岛().tabIndex}`);
+                断言([...胶囊行().querySelectorAll("*")].every((节点) => 节点.tabIndex < 0), "胶囊内不得有可聚焦元素");
+                断言(胶囊锚点().every((节点) => 节点.tagName === "SPAN" && !节点.hasAttribute("role")), "胶囊锚点必须是只读 span，不得成为按钮或可聚焦控件");
+                await 单击卡片();
+                await 稳定("expanded");
+                断言(Boolean(卡片()), "零锚点空态仍必须可单击展开");
+                按键("Escape");
+                await 稳定("collapsed");
+
+                // ---- 二、十种基础状态逐条：视觉差异、固定短词与结束后去向 ----
+
+                阶段 = "二、十种基础状态逐条：视觉差异、固定短词与结束后去向";
+                // 取消/完成的去向是「直接消失」「收成圆点」，其符号与短词由真实模型给出并在本页断言；
+                // 取消态按规格不渲染 DOM，因此同时断言它没有留下锚点或播报。
+                const 状态用例 = [
+                    { 状态: "pending", 词: "待开始", 形: "ring", 符号: "", 去向: "linger", 强调: "--fence-text" },
+                    { 状态: "running", 词: "进行中", 形: "ring", 符号: "", 去向: "linger", 强调: "--fence-active", 附加: "40%" },
+                    { 状态: "paused", 词: "暂停", 形: "glyph", 符号: "pause", 去向: "linger", 强调: "--fence-text" },
+                    { 状态: "completed", 词: "完成", 形: "glyph", 符号: "check", 去向: "dot", 强调: "--fence-text" },
+                    { 状态: "failed", 词: "失败", 形: "glyph", 符号: "alert", 去向: "linger", 强调: "--fence-error" },
+                    { 状态: "cancelled", 词: "取消", 形: "glyph", 符号: "cross", 去向: "vanish", 强调: "--fence-text" },
+                    { 状态: "awaiting", 词: "待确认", 形: "glyph", 符号: "question", 去向: "linger", 强调: "--fence-warning" },
+                    { 状态: "disconnected", 词: "未连接", 形: "glyph", 符号: "link-off", 去向: "linger", 强调: "--fence-text" },
+                    { 状态: "unauthorized", 词: "未授权", 形: "glyph", 符号: "lock", 去向: "linger", 强调: "--fence-text" },
+                    { 状态: "indeterminate", 词: "运行中", 形: "sweep", 符号: "", 去向: "linger", 强调: "--fence-active" },
+                ];
+                for (const 用例 of 状态用例) {
+                    const 来源 = `状态-${用例.状态}`;
+                    const 身份 = `event:${来源}`;
+                    const 规格 = ISLAND_STATUS_SPECS[用例.状态];
+                    const 模型字形 = islandAnchorGlyph(用例.状态, 0.4);
+                    断言(规格?.word === 用例.词, `${用例.状态} 的固定短词应为 ${用例.词}，实际 ${规格?.word}`);
+                    断言(规格?.disposition === 用例.去向, `${用例.状态} 的结束去向应为 ${用例.去向}，实际 ${规格?.disposition}`);
+                    断言(模型字形.kind === 用例.形, `${用例.状态} 的视觉种类应为 ${用例.形}，实际 ${模型字形.kind}`);
+                    if (用例.形 === "glyph") 断言(模型字形.symbol === 用例.符号, `${用例.状态} 的符号应为 ${用例.符号}，实际 ${模型字形.symbol}`);
+                    if (用例.状态 === "running") 断言(模型字形.arc === 0.4, `进行中弧长应随 40% 进度，实际 ${模型字形.arc}`);
+                    if (用例.状态 === "pending") 断言(模型字形.arc === 0, "待开始必须是空环");
+
+                    渲染({ contentFacts: [事实(来源, 用例.状态, 主信息, 用例.附加)] });
+                    if (用例.去向 === "vanish") {
+                        await 直到(() => 播报() === "" && Boolean(锚点("clock")), `${用例.状态} 直接消失并回落空态`, 4000);
+                        断言(!锚点(身份), "取消状态必须直接消失，不保留锚点");
+                        断言(!播报().includes(用例.词), "取消状态不得进入播报");
+                        continue;
+                    }
+                    await 直到(() => 墨(身份), `${用例.状态} 锚点渲染`);
+                    const 墨节点 = 墨(身份);
+                    断言(墨节点.dataset.status === 用例.状态, `${用例.状态} 锚点 data-status 应为自身，实际 ${墨节点.dataset.status}`);
+                    断言(墨节点.dataset.glyph === 用例.形, `${用例.状态} 锚点 data-glyph 应为 ${用例.形}，实际 ${墨节点.dataset.glyph}`);
+                    断言((墨节点.dataset.symbol ?? "") === 用例.符号, `${用例.状态} 锚点 data-symbol 应为 ${用例.符号}，实际 ${墨节点.dataset.symbol}`);
+                    if (用例.形 === "ring") {
+                        断言(Boolean(墨节点.querySelector(".island-anchor__track")), `${用例.状态} 必须绘制轨道`);
+                        const 实线弧 = [...墨节点.querySelectorAll("svg path")];
+                        if (用例.状态 === "pending") 断言(实线弧.length === 0, "待开始为空环，不得绘制已播弧");
+                        else 断言(实线弧.length === 1 && /A8\.5/.test(实线弧[0].getAttribute("d") ?? ""), "进行中必须用 SVG path 实线弧表示进度");
+                        断言(!墨节点.innerHTML.includes("stroke-dasharray"), `${用例.状态} 进度环不得用 stroke-dasharray 模拟`);
+                    } else if (用例.形 === "sweep") {
+                        const 扫 = 墨节点.querySelector(".island-anchor__sweep");
+                        断言(Boolean(扫), "无总量运行中必须绘制不定弧");
+                        if (减少动效) 跳过.push("不定弧动画标记");
+                        else 断言(扫.dataset.motion === "true", `不定弧应带 data-motion=true，实际 ${扫.dataset.motion}`);
+                        断言(/^M10 1\.5 A8\.5/.test(扫.getAttribute("d") ?? ""), "不定弧必须是 SVG 实线弧");
+                        断言(!墨节点.innerHTML.includes("stroke-dasharray"), "不定弧不得用 stroke-dasharray 模拟");
+                    } else if (["pause", "check", "alert", "cross"].includes(用例.符号)) {
+                        断言(Boolean(墨节点.querySelector(".island-anchor__icon svg")), `${用例.状态} 必须使用内置图标绘制符号`);
+                    } else {
+                        断言(Boolean(墨节点.querySelector("svg path")?.getAttribute("d")), `${用例.状态} 必须用路径绘制符号`);
+                        断言(!墨节点.querySelector(".island-anchor__icon"), `${用例.状态} 不应复用其他状态的图标`);
+                    }
+                    const 颜色 = getComputedStyle(墨节点).color;
+                    断言(颜色 === 令牌色(用例.强调), `${用例.状态} 锚点颜色应为 ${用例.强调}，实际 ${颜色}`);
+                    断言(播报().includes(`${来源} · ${用例.词}`), `${用例.状态} 播报必须包含来源与短词，实际 ${播报()}`);
+                    if (用例.状态 === "running") 断言(播报().includes(" · 25%"), `进行中播报应带 25% 里程碑，实际 ${播报()}`);
+                    else 断言(播报().includes(主信息), `${用例.状态} 播报必须带关键值（主信息），实际 ${播报()}`);
+                    if (用例.去向 === "dot") {
+                        断言(!文案(身份), "完成状态必须收成圆点，不得保留内容行");
+                        断言(卡片().getBoundingClientRect().width < 100, `完成后宽度应按圆收缩，实际 ${卡片().getBoundingClientRect().width}`);
+                    } else {
+                        断言(文案(身份)?.textContent?.startsWith(主信息), `${用例.状态} 应显示一行主信息，实际 ${文案(身份)?.textContent}`);
+                    }
+                }
+
+                // ---- 三、几何与排版 ----
+
+                阶段 = "三、几何与排版";
+                断言(getComputedStyle(岛()).getPropertyValue("--island-anchor-size").trim() === "28px", "锚点尺寸令牌应为 28px");
+                断言(getComputedStyle(岛()).getPropertyValue("--island-anchor-gap").trim() === "12px", "锚点间距令牌应为 12px");
+                断言(getComputedStyle(岛()).getPropertyValue("--island-anchor-grow").trim() === "300ms", "生长节奏令牌应为 300ms");
+                断言(getComputedStyle(岛()).getPropertyValue("--island-anchor-shrink").trim() === "240ms", "收缩节奏令牌应为 240ms");
+
+                const 九枚 = Array.from({ length: 9 }, (_, 序) => 事实(`数量-${序 + 1}`, "pending", `锚点${序 + 1}`));
+                渲染({ contentFacts: 九枚 });
+                await 直到(() => 胶囊锚点().length === 4, "胶囊折成 3 枚实体 + ＋N", 4000);
+                const 实体锚点 = 胶囊锚点().filter((节点) => 节点.dataset.anchor !== "overflow");
+                断言(实体锚点.length === 3, `胶囊最多并排 3 枚实体锚点，实际 ${实体锚点.length}`);
+                断言(胶囊锚点().length === 4, "第 4 枚起必须折成一枚「＋N」圆");
+                // F9：用真实 pointerdown/pointerup 落在锚点区域内，验证整条胶囊均可单击展开；
+                // 不再用 dispatchEvent(new MouseEvent("click")) 这种绕过命中与长按判定的事件伪造通过。
+                await 单击元素(实体锚点[0]);
+                await 稳定("expanded");
+                断言(当前态() === "expanded", "在锚点区域真实按下/抬起必须展开整条胶囊");
+                按键("Escape");
+                await 稳定("collapsed");
+                const 测量锚点 = 胶囊锚点().filter((节点) => 节点.dataset.anchor !== "overflow"); // 展开会重挂载胶囊，重新取节点。
+                断言(测量锚点.length === 3, `回到胶囊仍应保留 3 枚实体锚点，实际 ${测量锚点.length}`);
+                断言(锚点("overflow")?.querySelector(".island-anchor__number")?.textContent === "＋6", `＋N 应为 ＋6，实际 ${锚点("overflow")?.querySelector(".island-anchor__number")?.textContent}`);
+                for (const 节点 of 测量锚点) {
+                    const 框 = 节点.getBoundingClientRect();
+                    断言(近似(框.width, 28, 0.6) && 近似(框.height, 28, 0.6), `锚点应为 28×28，实际 ${框.width}×${框.height}`);
+                }
+                const 第二框 = 测量锚点[1].getBoundingClientRect();
+                const 第三框 = 测量锚点[2].getBoundingClientRect();
+                断言(近似(第三框.left - 第二框.right, 12, 0.8), `胶囊相邻锚点间距应为 12，实际 ${第三框.left - 第二框.right}`);
+                断言(getComputedStyle(胶囊行()).columnGap === "12px", `锚点行间距应为 12px，实际 ${getComputedStyle(胶囊行()).columnGap}`);
+
+                // ---- 四、hover：全部锚点、单选内容、2px 轮廓与键盘 ----
+
+                阶段 = "四、hover：全部锚点、单选内容、2px 轮廓与键盘";
+                悬停();
+                await 直到(() => 悬停行()?.querySelector('[aria-pressed="true"] .island-anchor__icon'), "胶囊进入 hover 显示初选");
+                const 初选图标 = 悬停行().querySelector('[aria-pressed="true"] .island-anchor__icon');
+                const 初选缩放 = 初选图标.getAnimations().find((动画) => 动画.transitionProperty === "transform");
+                断言(初选缩放?.effect.getTiming().duration === 300, "刚进入 hover 的初选也播放避让缩小");
+                await 稳定("hover");
+                const 全部按钮 = 悬停按钮();
+                断言(全部按钮.length === 9, `hover 必须列出全部 9 个未消失锚点，实际 ${全部按钮.length}`);
+                断言(全部按钮.every((节点) => 节点.tagName === "BUTTON"), "hover 锚点列表必须由按钮承载，可被指针与键盘切换");
+                断言(document.querySelectorAll(".island-anchor-detail").length === 1, "hover 下方只能显示一个锚点的内容");
+                const 悬停间距 = 全部按钮[1].getBoundingClientRect().left - 全部按钮[0].getBoundingClientRect().right;
+                断言(近似(悬停间距, 12, 0.8), `hover 锚点间距应为 12，实际 ${悬停间距}`);
+                断言(悬停行().getBoundingClientRect().height > 40, `9 枚锚点必须换行，实际行高 ${悬停行().getBoundingClientRect().height}`);
+                const 选中态 = () => 悬停按钮().find((节点) => 节点.getAttribute("aria-pressed") === "true");
+                断言(选中态() === 全部按钮[0], "hover 默认选中第一枚锚点");
+                const 图标盒 = (按钮) => 按钮.querySelector(".island-anchor__icon");
+                await 直到(() => 近似(图标盒(选中态()).getBoundingClientRect().width, 16, 0.02) && !选中态().getAnimations({ subtree: true }).length, "初选缩小和按钮过渡全部结束");
+                const 选中样式 = getComputedStyle(选中态());
+                断言(选中样式.outlineStyle === "solid" && 选中样式.outlineWidth === "2px", `选中锚点应有 2px 实线轮廓，实际 ${选中样式.outlineWidth}/${选中样式.outlineStyle}`);
+                断言(选中样式.outlineColor === 令牌色("--fence-text"), `选中轮廓应使用正文色，实际 ${选中样式.outlineColor}`);
+                断言(getComputedStyle(全部按钮[1]).outlineColor === "rgba(0, 0, 0, 0)", "未选中轮廓透明，不改变按钮盒");
+                断言(全部按钮[0].getAttribute("aria-label") === "数量-1 待开始", `锚点无障碍名应含来源与短词，实际 ${全部按钮[0].getAttribute("aria-label")}`);
+                const 接力层 = () => document.querySelector(".island-hover-relay");
+                const 切换详情 = async (键, 入, 出, 进入文案, 离场文案, 进向) => {
+                    悬停行().dispatchEvent(new KeyboardEvent("keydown", { key: 键, bubbles: true }));
+                    await 直到(() => 选中态() === 入 && 接力层()?.inert, `${键} 更新选择，旧详情先离场`);
+                    断言(详情文本().includes(离场文案) && document.querySelectorAll(".island-anchor-detail").length === 1, `${键} 离场期间没有新详情或双重布局`);
+                    const 离场 = 动画摘要(接力层()).find((项) => 项.时长 === 140 && Number(帧值(项.末帧, "opacity")) === 0);
+                    断言(帧值(离场?.末帧, "transform") === `translateX(${-进向}px)` && 离场?.缓动 === "ease-out", `${键} 旧详情向 ${-进向}px 渐出 140ms`);
+                    for (const 按钮 of [入, 出]) {
+                        const 过渡 = 按钮.getAnimations().map((动画) => 动画.transitionProperty);
+                        断言(过渡.includes("outline-color") && 过渡.includes("background-color"), `${键} 选中和取消都渐变轮廓与底色：${过渡}`);
+                        const 缩放 = 图标盒(按钮).getAnimations().find((动画) => 动画.transitionProperty === "transform");
+                        断言(缩放?.effect.getTiming().duration === 300 && getComputedStyle(图标盒(按钮)).transitionTimingFunction === "ease-out", `${键} 选中和取消都同步缩放 300ms`);
+                    }
+                    await 直到(() => !接力层().inert && 详情文本().includes(进入文案), `${键} 旧详情结束后新详情入场`);
+                    const 入场 = 动画摘要(接力层()).find((项) => 项.时长 === 180 && Number(帧值(项.首帧, "opacity")) === 0);
+                    断言(帧值(入场?.首帧, "transform") === `translateX(${进向}px)` && 入场?.缓动 === "ease-out", `${键} 新详情从 ${进向}px 渐入 180ms`);
+                    // 反向切换前等 CSS 动画彻底结束；途中反向依法缩短 CSS 过渡时长，不属于此用例。
+                    await 直到(() => [入, 出].every((按钮) => !按钮.getAnimations({ subtree: true }).length) && 近似(图标盒(入).getBoundingClientRect().width, 16, 0.02) && 近似(图标盒(出).getBoundingClientRect().width, 20, 0.02), "选中项缩至 16px，取消项回到 20px");
+                };
+                await 切换详情("ArrowRight", 全部按钮[1], 全部按钮[0], "锚点2", "锚点1", 4);
+                断言(document.activeElement === 悬停按钮()[1], "方向键切换后焦点应落在选中锚点");
+                await 切换详情("ArrowLeft", 全部按钮[0], 全部按钮[1], "锚点1", "锚点2", -4);
+                悬停行().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+                await 等待(60);
+                断言(选中态() === 悬停按钮()[0], "左端必须停住，不循环到末尾");
+                悬停行().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+                await 直到(() => document.activeElement === 详情(), "Enter 进入选中锚点的内容", 3000);
+                const 播报节点 = document.querySelector(".island__announcer");
+                断言(播报节点?.getAttribute("role") === "status" && 播报节点?.getAttribute("aria-live") === "polite", "播报节点应为 role=status 且 aria-live=polite");
+
+                // 关闭有效动效还要终止在途接力，而不是等旧详情离场完再直接换文。
+                悬停行().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+                await 直到(() => 接力层()?.inert, "确认关闭前离场在途");
+                夹具.pushPreferences({ interfaceAnimations: false });
+                await 直到(() => 岛().dataset.animations === undefined && !接力层()?.inert && 详情文本().includes("锚点2"), "关闭动效取消在途接力并显示最新详情");
+                断言(接力层().getAnimations().length === 0, "关闭动效无迟到的离场或入场动画");
+                悬停行().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+                await 直到(() => 选中态() === 全部按钮[0], "关闭动效时反向切换");
+                断言(!接力层().inert && 详情文本().includes("锚点1") && 接力层().getAnimations().length === 0, "关闭动效同帧落到新详情");
+                for (const 按钮 of 全部按钮.slice(0, 2)) {
+                    const 期望边长 = 按钮 === 选中态() ? 16 : 20;
+                    断言(getComputedStyle(按钮).transitionDuration === "0s" && getComputedStyle(图标盒(按钮)).transitionDuration === "0s" && 近似(图标盒(按钮).getBoundingClientRect().width, 期望边长, 0.02), "关闭动效按钮轮廓、底色与尺寸直接到位");
+                }
+                夹具.pushPreferences({ interfaceAnimations: true });
+                await 直到(() => 岛().dataset.animations === "true", "为后续场景恢复默认动效");
+
+                // ---- 五、hover 按全部锚点定宽，按选中内容定高（音乐胶囊的固定档位另见七续） ----
+
+                阶段 = "五、hover 按全部锚点定宽，按选中内容定高";
+                按键("Escape");
+                await 稳定("collapsed");
+                渲染({ contentFacts: [事实("宽度-1", "pending", "短"), 事实("宽度-2", "pending", "短二", "00:01")] });
+                await 直到(() => 胶囊锚点().length === 2, "两枚锚点胶囊");
+                const 胶囊宽 = 卡片().getBoundingClientRect().width;
+                悬停();
+                await 稳定("hover");
+                const 短框 = 卡片().getBoundingClientRect();
+                断言(短框.width >= 胶囊宽 - 1, `hover 宽度不得窄于胶囊，实际胶囊 ${胶囊宽} / hover ${短框.width}`);
+                渲染({ contentFacts: [事实("宽度-1", "pending", 长中文, "12:30"), 事实("宽度-2", "pending", "短二", "00:01")] });
+                await 直到(() => 详情文本().includes("一二三"), "hover 内容切到长文本", 4000);
+                await 稳定("hover");
+                const 长框 = 卡片().getBoundingClientRect();
+                断言(长框.width > 短框.width + 20, `hover 宽度应随内容变化，实际 ${短框.width} → ${长框.width}`);
+                断言(长框.height > 短框.height + 8, `hover 高度应随内容行数变化，实际 ${短框.height} → ${长框.height}`);
+                const 切换前提交数 = 夹具.提交.length;
+                const 切换前窗宽 = 夹具.提交.at(-1)?.windowBox.width;
+                悬停按钮()[0].dispatchEvent(new PointerEvent("pointerout", { bubbles: true, pointerType: "mouse", relatedTarget: 悬停按钮()[1] }));
+                await 直到(() => 详情文本().includes("短二"), "指针切换到自然宽度较短的双行内容");
+                await 稳定("hover");
+                断言(近似(卡片().getBoundingClientRect().width, 长框.width, 0.1), `指针切锚点时应保持最宽内容的宽度 ${长框.width}，实际 ${卡片().getBoundingClientRect().width}`);
+                悬停行().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+                await 直到(() => 详情文本().includes("一二三"), "键盘切回自然宽度较长的锚点");
+                await 稳定("hover");
+                断言(近似(卡片().getBoundingClientRect().width, 长框.width, 0.1), "键盘切回时卡片宽度仍恒定");
+                断言(夹具.提交.at(-1)?.windowBox.width === 切换前窗宽 && 夹具.提交.length === 切换前提交数, "等高内容切换不应提交新的窗口几何");
+                渲染({ contentFacts: [事实("宽度-1", "pending", 长中文, "12:30"), 事实("宽度-2", "pending", "W".repeat(36), "00:01")] });
+                await 直到(() => 夹具.提交.at(-1)?.windowBox.width > 切换前窗宽 + 20, "未选中的内容变长也应增大 hover 窗口宽度");
+                断言(详情文本().includes("一二三") && 夹具.提交.at(-1)?.cards.length === 1, "未选中内容仅参与测宽，不显示也不提交额外卡片区域");
+                await 稳定("hover");
+                // 第二枚仍是双行，添加同宽的单行锚点，以真实几何观察详情交接只提交一次高度。
+                渲染({ contentFacts: [事实("宽度-1", "pending", 长中文, "12:30"), 事实("宽度-2", "pending", "W".repeat(36), "00:01"), 事实("宽度-3", "pending", "单行详情")] });
+                await 直到(() => Boolean(锚点("event:宽度-3")), "新增同列的单行锚点");
+                await 稳定("hover");
+                const 高度切换前 = 夹具.提交.at(-1);
+                const 单行切换前 = 夹具.提交.length;
+                锚点("event:宽度-3").click();
+                await 直到(() => 接力层()?.inert, "不同高度详情先在原高度离场");
+                断言(夹具.提交.length === 单行切换前, "离场视觉位移不提交几何");
+                await 直到(() => 详情文本().includes("单行详情") && 夹具.提交.at(-1)?.cards[0].rect.height < 高度切换前.cards[0].rect.height, "单行接班后测量新高度");
+                await 直到(() => !接力层().getAnimations().length, "不同高度入场收束");
+                const 高度提交 = 夹具.提交.slice(单行切换前);
+                断言(高度提交.length === 1 && 高度提交[0].windowBox.width === 高度切换前.windowBox.width, `高度只重测一次且不改宽度，实际切换 ${高度提交.length} 次`);
+                const 峰值宽度 = 卡片().getBoundingClientRect().width;
+                const 变短前提交 = 夹具.提交.length;
+                渲染({ contentFacts: [事实("宽度-1", "pending", "甲"), 事实("宽度-2", "pending", "乙"), 事实("宽度-3", "pending", "丙")] });
+                await 直到(() => 详情文本() === "丙", "当前详情与最宽锚点同时变短");
+                await 稳定("hover");
+                断言(近似(卡片().getBoundingClientRect().width, 峰值宽度, 0.1) && 夹具.提交.length === 变短前提交, "本次 hover 宽度保留峰值，原生也无缩窄提交");
+                按键("Escape");
+                await 稳定("collapsed");
+                断言(卡片().getBoundingClientRect().width < 峰值宽度 - 20, "退出后胶囊恢复自然宽度");
+                悬停();
+                await 稳定("hover");
+                断言(卡片().getBoundingClientRect().width < 峰值宽度 - 20, "重新进入从短内容重新测宽，不沿用上一轮峰值");
+
+                // ---- 六、文本单行省略与数值格式 ----
+
+                阶段 = "六、文本单行省略与数值格式";
+                按键("Escape");
+                await 稳定("collapsed");
+                渲染({ contentFacts: [事实("文本-中文", "pending", 长中文)] });
+                await 直到(() => 文案("event:文本-中文")?.textContent?.endsWith("…"), "中文超长省略");
+                const 中文标签 = 文案("event:文本-中文");
+                断言([...中文标签.textContent].length === 18, `中文应截到 18 字（含省略号），实际 ${[...中文标签.textContent].length}`);
+                断言(getComputedStyle(中文标签).whiteSpace === "nowrap", "内容必须单行不换行");
+                断言(getComputedStyle(中文标签).textOverflow === "ellipsis", "超长内容必须省略");
+                断言(标签("event:文本-中文").getBoundingClientRect().height <= 30, "单行内容不得撑高胶囊");
+                渲染({ contentFacts: [事实("文本-英文", "pending", 长英文)] });
+                await 直到(() => 文案("event:文本-英文")?.textContent?.endsWith("…"), "英文超长省略");
+                断言([...文案("event:文本-英文").textContent].length === 36, `英文应截到 36 字符（含省略号），实际 ${[...文案("event:文本-英文").textContent].length}`);
+                // F5：附加项白名单由 islandAnchorValue 统一放行，只接受整数百分比、99+ 与 mm:ss。
+                断言(islandAnchorValue("40%")?.kind === "percent" && islandAnchorValue("100%")?.kind === "percent", "整数百分比应被白名单放行");
+                断言(islandAnchorValue("99+")?.kind === "count", "99+ 计数应被白名单放行");
+                断言(islandAnchorValue("12:30")?.kind === "time" && islandAnchorValue("00:00")?.kind === "time", "mm:ss 应被白名单放行");
+                断言(!islandAnchorValue("42") && !islandAnchorValue("5+") && !islandAnchorValue("12:60") && !islandAnchorValue("40.5%") && !islandAnchorValue("101%"), "裸整数、N+、越界秒与小数百分比必须被白名单拒绝");
+                渲染({ contentFacts: [事实("数值-进度", "running", "下载", "40%")] });
+                await 直到(() => 条目("event:数值-进度")?.querySelector(".island-anchor__value")?.textContent === "40%", "整数百分比可显示");
+                渲染({ contentFacts: [事实("数值-时间", "awaiting", "上传", "12:30")] });
+                await 直到(() => 条目("event:数值-时间")?.querySelector(".island-anchor__value")?.textContent === "12:30", "mm:ss 剩余时间可显示");
+                渲染({ contentFacts: [事实("数值-计数", "pending", "已完成", "99+")] });
+                await 直到(() => 条目("event:数值-计数")?.querySelector(".island-anchor__value")?.textContent === "99+", "99+ 计数可显示");
+                for (const 非法 of ["42", "5+", "12:60"]) {
+                    const 来源 = `数值-拒绝-${非法}`;
+                    渲染({ contentFacts: [事实(来源, "pending", "上传", 非法)] });
+                    await 直到(() => 文案(`event:${来源}`)?.textContent === "上传", `非法数值 ${非法} 只保留主信息`);
+                    断言(!条目(`event:${来源}`)?.querySelector(".island-anchor__value"), `非法附加项 ${非法} 不得渲染`);
+                }
+
+                // ---- 七、边界：只剩锚点、拖放接收与回退 ----
+
+                阶段 = "七、边界：只剩锚点、拖放接收与回退";
+                渲染({ contentFacts: [{ source: "仅锚点", layer: "event", nowMs: Date.now() }] });
+                await 直到(() => 锚点("event:仅锚点"), "只剩锚点仍渲染");
+                断言(!文案("event:仅锚点"), "只剩锚点不得显示内容行");
+                断言(Boolean(墨("event:仅锚点").querySelector(".island-anchor__dot")), "只剩锚点应绘制圆点");
+                断言(岛().getBoundingClientRect().height > 0, "只剩锚点不得自动隐藏");
+                断言(卡片().getBoundingClientRect().width < 100, `只剩锚点宽度应按锚点数量收缩，实际 ${卡片().getBoundingClientRect().width}`);
+                断言(播报() === "", "只剩锚点没有可播报内容");
+
+                渲染({ contentFacts: [事实("投放底稿", "pending", "原内容")] });
+                await 直到(() => 播报().includes("原内容"), "投放前恢复原内容");
+                // 原生投放事实（t8）只有 collect / reject 两种 kind；fixture 原样转发事件载荷。
+                夹具.pushDrop({ active: true, kind: "collect" });
+                await 稳定("hover");
+                断言(Boolean(锚点("drop")), "投放进入必须显示接收锚点");
+                断言(墨("drop").dataset.symbol === "release", `接收锚点应换成松手图标，实际 ${墨("drop").dataset.symbol}`);
+                断言(播报() === "松开加入收集箱", `收集箱接收文案应固定，实际 ${播报()}`);
+                断言(详情文本().includes("松开加入收集箱"), "hover 内容行必须给出松手结果");
+                断言(悬停按钮()[0]?.dataset.anchor === "drop", "拖放层级最高，接收锚点应排在最前");
+                夹具.pushDrop({ active: true, kind: "reject" });
+                await 直到(() => 播报() === "无法接收", `无匹配插件应显示无法接收，实际 ${播报()}`, 3000);
+                夹具.pushDrop({ active: false, kind: "collect" });
+                await 直到(() => !锚点("drop"), "投放离开必须回退接收态");
+                await 稳定("collapsed");
+                断言(播报().includes("原内容"), `回退后应恢复原内容，实际 ${播报()}`);
+
+                // 音乐投放当前没有原生来源（原生只上报 collect/reject）；这里只验证同一渲染分支的固定文案，
+                // 不把它记作原生可达，也不伪造 kind:"music" 事件。
+                渲染({ contentFacts: [事实("投放底稿", "pending", "原内容")], dropFact: "music" });
+                await 直到(() => 播报() === "交给音乐播放", `音乐接收文案应固定，实际 ${播报()}`);
+                断言(墨("drop").dataset.symbol === "release", "音乐接收态同样使用松手图标");
+                渲染({ contentFacts: [事实("投放底稿", "pending", "原内容")] });
+                await 直到(() => !锚点("drop"), "撤销注入后回落原内容");
+
+                // ---- 七（续）、F1 音乐胶囊固定档位与 F9 hover 控件上限 ----
+                阶段 = "七（续）、音乐胶囊固定档位与 hover 控件上限";
+                渲染({ contentFacts: [] });
+                await 直到(() => !锚点("event:投放底稿"), "清理内容事实，准备音乐档位场景");
+                // 切回夹具自带的真实音乐实例；偏好事件触发岛快照重读。此前的空快照只是内容层场景的隔离手段。
+                清空实例 = false;
+                夹具.pushPreferences({});
+                await 等待(200);
+                断言(!锚点("event:音乐控制"), "无播放/暂停会话不产生音乐锚点"); // 共享音乐源在音乐卡挂载后才建立订阅。
+                const 标题 = "测试歌曲标题";
+                const 媒体图 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAHUlEQVR4nGNgYPhPYzRqwagFoxaMWjBqAcPgtwAAUoj+EH29rRwAAAAASUVORK5CYII=";
+                夹具.pushMusic({ media: { ...媒体(标题, "测试艺人", "cloudmusic.exe").media, artworkUrl: 媒体图 } });
+                const 歌曲锚点 = "event:音乐控制";
+                await 直到(() => Boolean(锚点(歌曲锚点)), "活动音乐出现");
+                夹具.pushDetails({ timeline: 时间轴(90000, 标题, "测试艺人"), lyrics: [] });
+                await 直到(() => 墨(歌曲锚点)?.dataset.status === "running" && 播报().includes("50%"), "有进度的无歌词音乐场景已加载");
+                const 回落标题 = 文案(歌曲锚点);
+                断言(回落标题?.textContent === 标题 && !回落标题.querySelector(".island-anchor__value"), "无歌词只显示歌名，不拼艺人和进度百分比");
+                夹具.pushDetails({ timeline: 时间轴(12000, 标题, "测试艺人"), lyrics: 逐句歌词 });
+                await 直到(() => 行()?.textContent === 逐句歌词[1].text, "播放中显示当前句", 5000);
+                断言(!条目(歌曲锚点).querySelector(".island-anchor__value"), "有歌词只显示当前句，也不带百分比");
+                await 稳定("collapsed");
+                const 胶囊图 = 锚点("event:音乐控制")?.querySelector("img");
+                await 直到(() => 胶囊图?.complete && 胶囊图.naturalWidth === 32, "胶囊真实加载媒体图");
+                断言(胶囊图.offsetWidth === 28 && 胶囊图.offsetHeight === 28 && getComputedStyle(胶囊图).objectFit === "cover" && getComputedStyle(胶囊图.parentElement).borderRadius === "50%" && getComputedStyle(胶囊图.parentElement).overflow === "clip", "音乐胶囊媒体图填满28圆并裁切");
+                断言(getComputedStyle(行()).fontSize === "11px", "胶囊歌词仍使用独立的 11px 档");
+                const 档位卡宽 = 卡片().getBoundingClientRect().width;
+                const 档位根宽 = 岛().getBoundingClientRect().width;
+                const 档位行宽 = 行().clientWidth;
+                const 档位窗宽 = 夹具.提交.at(-1)?.windowBox.width;
+                const 档位提交数 = 夹具.提交.length;
+                断言(档位卡宽 === 240 && 档位行宽 === 188, `播放档位内容盒应固定为 240−52，实际 卡 ${档位卡宽} / 行 ${档位行宽}`);
+                for (const 位置 of [22000, 12000, 22000]) {
+                    const 期望句 = 位置 >= 20000 ? 逐句歌词[2].text : 逐句歌词[1].text;
+                    夹具.pushDetails({ timeline: 时间轴(位置, 标题, "测试艺人"), lyrics: 逐句歌词 });
+                    await 直到(() => 行()?.textContent === 期望句, `换句到「${期望句}」`);
+                    await 等待(120); // 给 ResizeObserver、帧合并与串行提交落地的机会，再断言「没有提交」。
+                    // F1（按 t5 纠正）：短句不再收紧胶囊；同一播放档跨句根宽与原生窗口提交都不得变化。
+                    断言(卡片().getBoundingClientRect().width === 档位卡宽 && 行().clientWidth === 档位行宽, "F1：短句不再收紧胶囊，固定内容盒在跨句时不变");
+                    断言(岛().getBoundingClientRect().width === 档位根宽, "F1：跨句根宽不变");
+                    断言(夹具.提交.at(-1)?.windowBox.width === 档位窗宽 && 夹具.提交.length === 档位提交数, "F1：同档换句原生窗口盒宽度不变且零提交");
+                }
+
+                // F9：hover 下方最多 3 个控件，且只允许可立即执行/可撤销/低风险动作；需要确认/删除/批准的操作只在展开。
+                悬停();
+                await 稳定("hover");
+                const 八分音符 = (容器) => 容器?.querySelector('[data-function="music"] svg[viewBox="0 0 24 24"]:has(path[d="m19 6-5.2-3.9a.5.5 0 0 0-.8.4V18"]):has(circle[cx="9"][cy="18"][r="4"])');
+                const 顶部音乐 = 锚点("event:音乐控制");
+                const 顶部音符 = 八分音符(顶部音乐);
+                断言(Boolean(顶部音符) && !顶部音乐?.querySelector("img"), "hover 顶部用 Lucide eighth-note，不使用专辑图");
+                await 直到(() => 顶部音乐 && !顶部音乐.getAnimations({ subtree: true }).length, "音乐初选缩放完成");
+                断言(顶部音符?.getAttribute("width") === "24" && 近似(顶部音符.getBoundingClientRect().width, 16, 0.1) && 近似(顶部音符.getBoundingClientRect().height, 16, 0.1) && 顶部音乐.offsetWidth === 28 && 顶部音乐.offsetHeight === 28 && getComputedStyle(顶部音乐).outlineWidth === "2px", "新 SVG 仍在 hover 安全盒内缩放，按钮 28×28、选中环 2px 不变");
+                const 音乐详情 = 详情().querySelector(".island-music-hover");
+                const 封面 = 音乐详情.querySelector(".island-music-hover__artwork");
+                const 封面图 = 封面.querySelector("img");
+                await 直到(() => 封面图?.complete && 封面图.naturalWidth > 0, "hover 真实加载媒体图");
+                断言(封面.offsetWidth === 48 && 封面.offsetHeight === 48 && getComputedStyle(封面).borderRadius === "16px" && getComputedStyle(封面图).objectFit === "cover", `hover 媒体图应为 48×48、16px 圆角、等比填充，实际 ${封面.offsetWidth}×${封面.offsetHeight}/${getComputedStyle(封面).borderRadius}/${getComputedStyle(封面图).objectFit}`);
+                断言(getComputedStyle(卡片()).padding === "12px" && getComputedStyle(卡片()).borderBottomRightRadius === "16px", "hover 卡保留 12px 内边距和 16px 圆角");
+                const 信息 = [...音乐详情.querySelectorAll(".island-music__metadata > span")];
+                断言(信息.map((行) => 行.textContent).join("|") === `${标题}|测试艺人|cloudmusic.exe` && 信息.map((行) => getComputedStyle(行).fontSize).join("/") === "13px/12px/11px", "hover 三行显示歌名、艺人、真实媒体输出应用 13/12/11，而非当前歌词");
+                const 控件 = [...音乐详情.querySelectorAll(".island-music__controls button")];
+                断言(控件.length === 3, `hover 三个操作槽位均保留，实际 ${控件.length}`);
+                for (const 按钮 of 控件) {
+                    const 框 = 按钮.getBoundingClientRect();
+                    const 图标 = 按钮.querySelector("svg");
+                    const 图框 = 图标.getBoundingClientRect();
+                    const 路径 = 图标.getBBox();
+                    const 视口 = 图标.viewBox.baseVal;
+                    const 命中 = document.elementFromPoint(框.right - 1, (框.top + 框.bottom) / 2);
+                    断言(框.width === 28 && 框.height === 28 && 命中 === 按钮 && 图框.width === 16 && 图框.height === 16 && 路径.x >= 0 && 路径.y >= 0 && 路径.x + 路径.width <= 视口.width && 路径.y + 路径.height <= 视口.height, `操作按钮实测 ${框.width}×${框.height}、边缘可命中且 16px 图标完整`);
+                }
+                const 安全动作 = new Set(["上一首", "暂停", "播放", "下一首", "关闭"]);
+                断言(控件.every((节点) => 安全动作.has(节点.getAttribute("aria-label") ?? "")), `hover 控件必须属于可立即执行/可撤销/低风险动作，实际 ${控件.map((节点) => 节点.getAttribute("aria-label")).join("/")}`);
+                断言(!控件.some((节点) => /删除|批准|确认|卸载|移除/.test(节点.getAttribute("aria-label") ?? "")), "需要确认/删除/批准的操作不得出现在 hover");
+                断言(详情().querySelectorAll(".island-anchor-detail__lines > *").length <= 2, "hover 可见详情最多两行");
+
+                // F9：焦点外描边是 2px + offset 2；与选中锚点的 2px、offset 0 轮廓是两条不同规则。
+                悬停行().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+                await 直到(() => document.activeElement === 悬停按钮()[0], "键盘焦点落在锚点按钮", 3000);
+                断言(document.activeElement.matches(":focus-visible"), "键盘焦点应命中 :focus-visible");
+                const 锚点焦点样式 = getComputedStyle(document.activeElement);
+                断言(锚点焦点样式.outlineWidth === "2px" && 锚点焦点样式.outlineStyle === "solid" && 锚点焦点样式.outlineOffset === "2px", `锚点焦点外描边应为 2px + offset 2，实际 ${锚点焦点样式.outlineWidth}/${锚点焦点样式.outlineStyle}/${锚点焦点样式.outlineOffset}`);
+                控件[0].focus();
+                await 等待(40);
+                const 控件焦点样式 = getComputedStyle(控件[0]);
+                断言(document.activeElement === 控件[0] && 控件焦点样式.outlineWidth === "2px" && 控件焦点样式.outlineStyle === "solid" && 控件焦点样式.outlineOffset === "2px", `控件焦点外描边应为 2px + offset 2，实际 ${控件焦点样式.outlineWidth}/${控件焦点样式.outlineStyle}/${控件焦点样式.outlineOffset}`);
+
+                按键("Escape");
+                await 稳定("collapsed");
+                夹具.pushMusic(媒体(标题, "测试艺人"));
+                await 直到(() => 锚点("event:音乐控制")?.querySelector('.island-anchor__media [data-function="music"]'), "撤下媒体图后回落音符");
+                const 音符背景 = 锚点("event:音乐控制").querySelector(".island-anchor__media");
+                const 胶囊音符 = 八分音符(音符背景);
+                const 音符形状 = 胶囊音符?.getBBox();
+                断言(胶囊音符?.getBoundingClientRect().width === 20 && 胶囊音符?.getBoundingClientRect().height === 20 && 音符形状?.x >= 1 && 音符形状?.y >= 1 && 音符形状?.x + 音符形状?.width <= 23 && 音符形状?.y + 音符形状?.height <= 23, "胶囊回落 eighth-note 等比适配 20×20 且为描边留足视口");
+                断言(getComputedStyle(音符背景).borderRadius === "50%" && getComputedStyle(音符背景).backgroundColor !== "rgba(0, 0, 0, 0)", "无媒体图用有背景的圆形音符");
+                悬停();
+                await 稳定("hover");
+                断言(八分音符(详情()?.querySelector(".island-music-hover__artwork"))?.getBoundingClientRect().width === 20 && !详情()?.querySelector("img"), "hover 详情无图也在安全盒内回落同一个 eighth-note");
+                按键("Escape");
+                await 稳定("collapsed");
+                // 恢复空实例，后续接力/隐藏合并场景仍按内容层空快照运行。
+                夹具.pushMusic(null);
+                清空实例 = true;
+                重新挂载();
+                await 直到(() => 岛() && Boolean(锚点("clock")) && !锚点("event:音乐控制"), "以内容层空快照重新挂载", 5000);
+                await 稳定("collapsed");
+
+                // ---- 八、换通知正文的滚动与跨层级接力 ----
+
+                阶段 = "八、换通知正文的滚动与跨层级接力";
+                // 系统开启减少动效时内容层直接落终态，换文滚动与 200–320ms 接力节奏无法观察，只记录跳过。
+                if (减少动效) 跳过.push("换文滚动与跨层级接力节奏（300/240ms）");
+                渲染({ contentFacts: [] });
+                await 直到(() => !锚点("event:投放底稿"), "清理内容事实");
+
+                const 通知锚点 = "message:notifications";
+                const 甲来源 = "接力源甲";
+                const 甲首刻 = Date.now(); // 固定到达时刻：重推同一集合时锚点身份与内容必须仍能对齐。
+                const 甲一条 = 消息(101, "info", "第一条正文", 甲来源, 甲首刻);
+                const 甲二条 = 消息(102, "info", "第二条正文", 甲来源, 甲首刻 + 1);
+                const 乙消息 = 消息(201, "info", "来源乙正文", "接力源乙", 甲首刻 + 2);
+                夹具.pushMessages([甲一条]);
+                await 直到(() => 文案(通知锚点)?.textContent.startsWith("第一条正文"), "同来源首条消息显示", 4000);
+                夹具.pushMessages([甲一条, 甲二条]);
+                await 直到(() => 文案(通知锚点)?.textContent.startsWith("第二条正文"), "同来源换文到最新一条", 4000);
+                if (!减少动效) {
+                    await 直到(
+                        () => 标签(通知锚点)?.querySelector(".island-anchor-label__outgoing")?.textContent.startsWith("第一条正文"),
+                        "同来源换文在内容内滚动",
+                        4000,
+                    );
+                    const 滚动摘要 = 动画摘要(标签(通知锚点));
+                    // 换文沿用文档节奏：上一行上移 100% 渐出、下一行自下方 100% 渐入，各 300ms 重叠。
+                    const 入场滚动 = 滚动摘要.find((项) => 帧值(项.首帧, "transform") === "translateY(100%)");
+                    const 离场滚动 = 滚动摘要.find((项) => 帧值(项.末帧, "transform") === "translateY(-100%)");
+                    断言(入场滚动?.时长 === 300 && 入场滚动?.延迟 === 0, `新内容应 300ms 自下向上进入，实际 ${入场滚动?.时长}/${入场滚动?.延迟}`);
+                    断言(帧值(入场滚动?.首帧, "opacity") === "0" && 帧值(入场滚动?.末帧, "opacity") === "1", "新内容应同时渐入");
+                    断言(帧值(入场滚动?.末帧, "transform") === "none", "新内容滚动终点应回正");
+                    断言(离场滚动?.时长 === 300 && 帧值(离场滚动?.末帧, "opacity") === "0", `旧内容应 300ms 向上渐出，实际 ${离场滚动?.时长}`);
+                }
+                await 等待(350); // 等滚动结束，再验证跨来源追加。
+
+                const 原通知锚点 = 锚点(通知锚点);
+                夹具.pushMessages([甲一条, 甲二条, 乙消息]);
+                await 直到(() => 文案(通知锚点)?.textContent.startsWith("来源乙正文"), "跨来源通知复用同一锚点与滚动");
+                断言(锚点(通知锚点) === 原通知锚点 && !锚点("message:接力源乙"), "其他来源不产生第二个消息锚点");
+                await 等待(350);
+
+                渲染({ contentFacts: [事实("确认源", "awaiting", "需要确认", undefined, "confirm")] });
+                // 先抓 240ms 的收回动画：它完成后会自行取消，等播报被动更新可能已经错过；减少动效下没有动画，只记录跳过。
+                if (!减少动效) {
+                    await 直到(() => 动画摘要(标签(通知锚点)).some((项) => 项.时长 === 240), "被抢占的消息内容开始收回", 4000);
+                    const 乙标签动画 = 动画摘要(标签(通知锚点));
+                    断言(Boolean(乙标签动画.find((项) => 项.时长 === 240)), "被抢占的消息内容应收回（240ms）");
+                }
+                await 直到(() => 锚点("confirm:确认源") && 文案("confirm:确认源")?.textContent === "需要确认", "更高优先级层级显示新内容", 4000);
+                断言(文案("confirm:确认源")?.textContent === "需要确认", "更高优先级层级应立即显示新内容，不等旧内容收完");
+                断言(锚点("confirm:确认源").getBoundingClientRect().left >= 锚点(通知锚点).getBoundingClientRect().right, "层级切换的新锚点应从右侧插入");
+                if (!减少动效) {
+                    const 丙插入 = 动画摘要(墨("confirm:确认源")).find((项) => 项.时长 === 300 && Number(帧值(项.首帧, "opacity")) === 0);
+                    断言(Boolean(丙插入) && 帧值(丙插入?.首帧, "transform") === "translateY(6px)", "新锚点应先自下而上渐入（300ms）");
+                    const 丙展开 = 动画摘要(标签("confirm:确认源")).find((项) => 项.时长 === 300);
+                    断言(丙展开?.延迟 === 300, `新内容应在锚点渐入后再向右展开（延迟 300ms），实际 ${丙展开?.延迟}`);
+                    断言(帧值(丙展开?.首帧, "inlineSize") === "0px", "新内容必须从新锚点向右展开");
+                    断言((丙展开?.延迟 ?? 0) >= (丙插入?.时长 ?? Infinity), "顺序：先插入锚点，再展开内容");
+                }
+                await 直到(() => 播报().includes("确认源 · 待确认"), "更高优先级层级进入播报", 4000);
+
+                // 状态变化取消未完成动画并直接落终态。
+                渲染({ contentFacts: [事实("确认源", "failed", "需要确认", undefined, "confirm")] });
+                await 直到(() => 墨("confirm:确认源")?.dataset.status === "failed", "状态变化立即落终态", 3000);
+                断言(动画摘要(标签("confirm:确认源")).length === 0, "状态变化必须取消未完成的接力动画");
+                断言(!标签("confirm:确认源")?.querySelector(".island-anchor-label__outgoing")?.textContent, "落终态后不得保留旧内容层");
+                断言(文案("confirm:确认源")?.textContent === "需要确认", "状态变化后应直接显示终态内容");
+
+                // 减少动效分支：直接落终态，不产生渐入、伸缩或滚动动画。
+                夹具.pushPreferences({ interfaceAnimations: false });
+                await 直到(() => 岛().dataset.animations === undefined, "关闭界面动效生效", 4000);
+                await 等待(350);
+                夹具.pushMessages([]);
+                按键("Enter");
+                await 稳定("expanded");
+                按键("Escape");
+                await 稳定("collapsed");
+                渲染({ contentFacts: [] });
+                await 直到(() => 播报() === "", "展开已读后没有前台锚点", 4000);
+                渲染({ contentFacts: [事实("静默源", "awaiting", "静默内容")] });
+                await 直到(() => 文案("event:静默源")?.textContent === "静默内容", "减少动效直接显示内容", 4000);
+                断言(!锚点("event:静默源").dataset.inserting, "减少动效时锚点不得带插入标记");
+                断言(动画摘要(墨("event:静默源")).length === 0, "减少动效时锚点不得有渐入动画");
+                断言(动画摘要(标签("event:静默源")).length === 0, "减少动效时内容不得有伸缩动画");
+                渲染({ contentFacts: [事实("静默源", "awaiting", "静默新内容")] });
+                await 直到(() => 文案("event:静默源")?.textContent === "静默新内容", "换文直接落终态");
+                断言(动画摘要(标签("event:静默源")).length === 0, "减少动效时换文不得有滚动/伸缩动画");
+                断言(!标签("event:静默源").querySelector(".island-anchor-label__outgoing")?.textContent, "减少动效时不得保留离场层");
+                夹具.pushPreferences({ interfaceAnimations: true });
+                await 直到(() => 岛().dataset.animations === "true", "恢复界面动效", 4000);
+
+                // ---- 九、系统隐藏合并：一个计数锚点、不逐个补播、过期丢弃、封顶 99+ ----
+
+                阶段 = "九、系统隐藏合并：一个计数锚点、不逐个补播、过期丢弃、封顶 99+";
+                渲染({ contentFacts: [] });
+                await 直到(() => !锚点("event:静默源"), "清理静默内容");
+                夹具.pushMessages([]);
+                await 等待(100);
+                夹具.setRefreshPaused(true);
+                夹具.pushMessages([
+                    消息(301, "info", "隐藏一", "隐藏源一"),
+                    消息(302, "info", "隐藏二", "隐藏源二"),
+                    消息(303, "info", "过期消息", "隐藏源三", Date.now() - 31_000),
+                ]);
+                await 等待(200);
+                夹具.setRefreshPaused(false);
+                await 直到(() => 锚点(通知锚点), "系统隐藏期间消息合并进同一 bell", 5000);
+                const 计数文本 = () => 条目(通知锚点)?.querySelector(".island-notification-count")?.textContent;
+                await 直到(() => 计数文本() === "2", "恢复后显示, 且不带已过期的通知");
+                断言(计数文本() === "2", `已过期消息应丢弃，合并计数应为 2，实际 ${计数文本()}`);
+                断言(!锚点("message:隐藏源一") && !锚点("message:隐藏源二"), "隐藏期间消息不得逐个补播");
+                夹具.setRefreshPaused(true);
+                // 原生消息投影单次最多 32 条，隐藏批次按 30 条分四次广播。
+                for (let 批 = 0; 批 < 4; 批 += 1) {
+                    const 条数 = 批 < 3 ? 30 : 10;
+                    夹具.pushMessages(Array.from({ length: 条数 }, (_, 序) => 消息(400 + 批 * 30 + 序, "info", 批 === 3 && 序 === 条数 - 1 ? "W".repeat(60) : `批量${批}-${序}`, `批量源${批}-${序}`, Date.now())));
+                    await 等待(80);
+                }
+                夹具.setRefreshPaused(false);
+                await 直到(() => 计数文本() !== "2", "隐藏批次合并进计数锚点", 5000);
+                断言(
+                    计数文本() === "99+",
+                    `合并计数封顶应显示 99+，实际 ${计数文本()}；当前锚点=${[...document.querySelectorAll(".island-anchor[data-anchor]")].map((节点) => 节点.dataset.anchor).join(" | ")}`,
+                );
+                断言(!锚点("message:批量源0-0"), "批量消息不得逐个补播");
+
+                阶段 = "胶囊通知主字号与长正文计数";
+                const 核对通知字号 = (竖排) => {
+                    const 正文 = 文案(通知锚点);
+                    const 计数 = 正文.querySelector(".island-notification-count");
+                    const 正文样式 = getComputedStyle(正文);
+                    const 卡框 = 卡片().getBoundingClientRect();
+                    const 卡样式 = getComputedStyle(卡片());
+                    const 圆框 = 锚点(通知锚点).getBoundingClientRect();
+                    const 正文框 = 正文.getBoundingClientRect();
+                    const 计数框 = 计数.getBoundingClientRect();
+                    const 文字范围 = document.createRange();
+                    文字范围.selectNodeContents(正文.firstChild);
+                    const 长文框 = 文字范围.getBoundingClientRect();
+                    const 方向 = 竖排 ? "竖排" : "横排";
+                    断言(正文样式.fontSize === "13px" && getComputedStyle(计数).fontSize === "12px", `${方向}通知正文与计数使用 13px / 12px`);
+                    断言(近似(竖排 ? 卡框.width : 卡框.height, 44, 0.1) && 卡样式.padding === "8px", `${方向}胶囊短边 44，内边距 8`);
+                    断言(近似(圆框.width, 28, 0.1) && 近似(圆框.height, 28, 0.1) && getComputedStyle(胶囊行()).gap === "12px", `${方向}圆锚点仍是 28×28 且间距 12`);
+                    断言(正文样式.whiteSpace === "nowrap" && 正文样式.textOverflow === "ellipsis" && (竖排 ? 长文框.height > 正文框.height : 长文框.width > 正文框.width), `${方向}长正文实际溢出并保持单行省略`);
+                    断言(计数.textContent === "99+" && (竖排
+                        ? 计数框.top >= 正文框.top && 计数框.bottom <= 正文框.bottom + 0.1
+                        : 计数框.left >= 正文框.left && 计数框.right <= 正文框.right + 0.1), `${方向}长正文不能截掉 99+ 计数`);
+                };
+                await 稳定("collapsed");
+                核对通知字号(false);
+                悬停();
+                await 稳定("hover");
+                断言(getComputedStyle(详情().querySelector(".island-notification-row .island-anchor__text")).fontSize === "13px", "hover 通知正文保持 13px");
+                按键("Escape");
+                await 稳定("collapsed");
+                夹具.pushPreferences({ islandEdge: "left", interfaceAnimations: false });
+                await 直到(() => 岛().dataset.vertical === "true", "切换左侧竖排通知胶囊");
+                await 稳定("collapsed");
+                核对通知字号(true);
+                夹具.pushPreferences({ islandEdge: "top", interfaceAnimations: true });
+                await 直到(() => 岛().dataset.edge === "top", "恢复顶部供后续场景");
+
+                // ---- 十、进度环实现总检 ----
+
+                阶段 = "十、进度环实现总检";
+                断言(!岛().innerHTML.includes("stroke-dasharray"), "页面不得用 stroke-dasharray 画进度环（必须 SVG 实线弧）");
+                断言(岛().isConnected && 岛().getBoundingClientRect().height > 0, "全部场景后岛内容仍必须可见");
+
+                // ---- 附加：真实收录与天气变化只在 bell 合并 ----
+                阶段 = "真实收录与天气变化并入消息通知";
+                功能图标场景 = true;
+                清空实例 = false;
+                const 预报 = (code, text) => ({ source: "qweather", city: 城市, current: { temperature: { value: 13 }, condition: { code, text } } });
+                天气预报 = 预报("100", "晴");
+                夹具.pushMessages([]);
+                夹具.pushPreferences({ islandWeatherSource: "qweather", islandWeatherCityId: 城市.id, islandAnchorVisible: { message: true }, interfaceAnimations: false });
+                重新挂载();
+                await 直到(() => 岛() && 已读取天气, "读取首份真实天气并建立通知基线");
+                await 等待(160);
+                断言(胶囊锚点().length === 1 && Boolean(锚点("clock")), "首条天气、空闲收集箱、无媒体均不驻留");
+                夹具.pushWeatherForecast(预报("302", "雷阵雨"));
+                await 直到(() => 锚点(通知锚点)?.querySelector('[data-function="message"] svg'), "摘要变化投递至 bell");
+                const 天气锚点 = 锚点(通知锚点);
+                收集列表 = [{ name: "new.md", displayName: "新收录", kind: "text", path: null, content: "# 新收录", createdUnixMs: Date.now(), pinned: false, available: true }];
+                夹具.pushCollectChanged();
+                await 直到(() => 计数文本() === "2", "真实收录与天气合并计数");
+                断言(锚点(通知锚点) === 天气锚点 && 胶囊锚点().length === 1 && !锚点("event:天气") && !锚点("event:收集箱"), "天气和收录都不再各占一枚事件锚点");
+                夹具.pushMessages([消息(803, "info", "原生通知仍走原通道", "测试")]);
+                悬停();
+                await 稳定("hover");
+                const 通知行 = () => [...(详情()?.querySelectorAll(".island-notification-row") ?? [])];
+                await 直到(() => 通知行().length === 3, "同一 bell 读取原生与两类本地通知");
+                const 天气行 = 通知行().find((行) => 行.textContent.includes("weather ·"));
+                const 收录行 = 通知行().find((行) => 行.textContent.includes("collect ·"));
+                断言(Boolean(天气行?.querySelector('[data-visual="weather"] svg path[d^="M7 17h9"]')) && !天气行.querySelector(".island-notification-row__outlook"), "无展望不加空行，仍保留当前 302 天气图形");
+                断言(!收录行?.querySelector(".island-notification-row__icon"), "无图标事实的收录行不渲染占位元素");
+                const 行布局 = (行) => [行.querySelector(".island-anchor__text").getBoundingClientRect().left, 行.querySelector("time").getBoundingClientRect().left, 行.querySelector("button").getBoundingClientRect().left, 行.getBoundingClientRect().height];
+                断言(通知行().every((行) => 行布局(行).every((值, 索引) => 近似(值, 行布局(通知行()[0])[索引], 0.1))) && 近似(行布局(通知行()[0])[3], 28, 0.1), "共享图标前轨，正文/时间/关闭仍对齐，行高 28 DIP 不变");
+                const 长通知 = 消息(804, "info", "W".repeat(75), "超宽通知");
+                const 短通知宽度 = 卡片().getBoundingClientRect().width;
+                夹具.pushMessages([...夹具.消息集合, 长通知]);
+                await 直到(() => 通知行().some((行) => 行.querySelector(".island-anchor__text").textContent.startsWith("超宽通知")), "hover 在线收到更长通知");
+                await 稳定("hover");
+                断言(卡片().getBoundingClientRect().width > 短通知宽度 + 20, `hover 在线收到更长通知后扩宽，实际 ${短通知宽度} → ${卡片().getBoundingClientRect().width}，测宽 ${[...岛().querySelectorAll('.island-hover-width__sample')].map((节点) => 节点.getBoundingClientRect().width).join()}`);
+                await 稳定("hover");
+                const 通知峰值 = 夹具.提交.at(-1).windowBox.width;
+                const 通知提交起点 = 夹具.提交.length;
+                通知行().find((行) => 行.querySelector(".island-anchor__text").textContent.startsWith("超宽通知")).querySelector("button").click();
+                await 直到(() => 通知行().length === 3 && 夹具.关闭记录.at(-1) === 长通知.id, "逐条关闭最宽的原生通知");
+                await 稳定("hover");
+                断言(夹具.提交.at(-1).windowBox.width === 通知峰值 && 夹具.提交.slice(通知提交起点).every((提交) => 提交.windowBox.width >= 通知峰值), "删掉最长通知只改高度，本次窗口宽度无回退提交");
+                断言(通知行().some((节点) => 节点.textContent.includes("weather ·") && 节点.textContent.includes("雷阵雨")) && 通知行().some((节点) => 节点.textContent.includes("collect · 新收录")), "hover 通知保留原来源与正文");
+                const 本地保留关闭数 = 夹具.关闭记录.length;
+                const 本地收录 = 通知行().find((节点) => 节点.textContent.startsWith("collect ·"));
+                本地收录.querySelector("button").click();
+                await 直到(() => 通知行().length === 2, "本地通知可逐条关闭");
+                断言(夹具.关闭记录.length === 本地保留关闭数, "关闭本地收录不触发原生 Toast 路径");
+
+                阶段 = "天气通知按到达时预报和共享分钟时钟展示展望";
+                const 原天气时钟 = Date.now;
+                const 原天气计时器 = window.setTimeout;
+                let 天气现在 = Math.floor(原天气时钟() / 60_000) * 60_000;
+                let 下一分钟;
+                let 分钟请求数 = 0;
+                Date.now = () => 天气现在;
+                window.setTimeout = (处理, 延迟, ...参数) => {
+                    if (延迟 === 60_000) {
+                        下一分钟 = 处理;
+                        分钟请求数++;
+                        return -41;
+                    }
+                    return 原天气计时器.call(window, 处理, 延迟, ...参数);
+                };
+                try {
+                    const 小时槽 = { forecastTime: new Date(天气现在 + 60 * 60_000).toISOString(), temperature: { value: 13 }, condition: { code: "302", text: "雷阵雨" } };
+                    const 有展望预报 = { ...预报("100", "晴"), hourly: { hours: [小时槽] } };
+                    夹具.pushWeatherForecast(有展望预报);
+                    const 展望行 = () => 通知行().find((行) => 行.querySelector(".island-notification-row__outlook"));
+                    const 展望文本 = () => 展望行()?.querySelector(".island-notification-row__outlook")?.textContent;
+                    await 直到(() => 展望文本() === "预计1小时后有雨" && Boolean(下一分钟), "当前天气为晴，已有逐小时事实输出预计有雨");
+                    断言(Boolean(展望行().querySelector('[data-visual="weather"] svg path[d^="M7 17h9"]')) && 通知行().length === 3, "用展望的 302 图形而非当前晴天图形，仍只新增一条真正天气变化");
+                    断言(!天气行.querySelector(".island-notification-row__outlook"), "旧天气消息继续用到达时事实，不借新预报补字");
+                    夹具.pushWeatherForecast(预报("100", "晴")); // 同一摘要的后续数据不新建消息，不覆盖到达时的 facts。
+                    await 等待(70);
+                    断言(通知行().length === 3 && 展望文本() === "预计1小时后有雨" && 分钟请求数 === 1, "重复摘要不增加消息、时钟不重复排队");
+                    天气现在 += 60_000;
+                    下一分钟();
+                    await 直到(() => 展望文本() === "预计稍后有雨", "沿用现有分钟唤醒后，模型自行更新相对量词");
+                    展望行().querySelector("button").click();
+                    await 直到(() => 通知行().length === 2 && !展望行(), "关闭本地天气展望仍按原条目计数");
+                } finally {
+                    Date.now = 原天气时钟;
+                    window.setTimeout = 原天气计时器;
+                }
+
+                阶段 = "展开窗口工作区全高、折叠三张卡零提交";
+                // 去掉进入展开会被读掉的原生条目，确保进出时在比较同一份胶囊内容。
+                通知行().find((行) => 行.textContent.includes("原生通知仍走原通道")).querySelector("button").click();
+                await 直到(() => 通知行().length === 1, "几何用例只保留本地铃铛内容");
+                按键("Escape");
+                await 稳定("collapsed");
+                const 胶囊盒 = JSON.stringify(夹具.提交.at(-1).windowBox);
+                const 展开前 = 夹具.提交.length;
+                按键("Enter");
+                await 稳定("expanded");
+                const 全高几何 = 夹具.提交.at(-1);
+                const 全高盒 = JSON.stringify(全高几何.windowBox);
+                const 卡片们 = [...岛().querySelectorAll(".island-card")];
+                const 卡列宽 = Math.ceil(Math.max(...卡片们.map((节点) => 节点.getBoundingClientRect().width)));
+                断言(全高几何.windowBox.height === 1040 && 全高几何.windowBox.top === 0 && 岛().clientHeight === 1040 && 全高几何.windowBox.width === 卡列宽 + 16, "展开按夹具工作区 1040 DIP 定高，从顶部排卡，宽度仅为内容加 16 DIP 槽");
+                断言(卡片们[0].getBoundingClientRect().top === 岛().getBoundingClientRect().top, "展开卡片从工作区顶部顺序排布");
+                断言(夹具.提交.length - 展开前 === 1, "关闭动效时入态只提交一次全高窗口");
+                const 三卡 = ["音乐控制", "收集箱", "天气"].map((名称) => 岛().querySelector(`.island-card[aria-label="${名称}"]`));
+                const 内部操作前 = 夹具.提交.length;
+                for (const 节点 of 三卡) {
+                    const 开关 = 节点.querySelector(".island-card__toggle");
+                    const 初态 = 开关.getAttribute("aria-expanded");
+                    开关.click();
+                    await 直到(() => 开关.getAttribute("aria-expanded") !== 初态, `${节点.getAttribute("aria-label")} 完成第一次折叠切换`);
+                    await 等待(80); // 留出多帧，覆盖几何 RO 与偏好重载。
+                    开关.click();
+                    await 直到(() => 开关.getAttribute("aria-expanded") === 初态, `${节点.getAttribute("aria-label")} 恢复起始展开状态`);
+                    await 等待(80);
+                }
+                断言(三卡.every((节点) => !节点?.getAnimations().some((动画) => 动画.effect.getKeyframes().some((帧) => 帧.blockSize))), "关动效时折叠立即更新，不播放高度动画");
+                const 内部提交数 = 夹具.提交.length - 内部操作前;
+                断言(内部提交数 === 0 && JSON.stringify(夹具.提交.at(-1).windowBox) === 全高盒, `三张卡逐一折叠再展开应为 0 笔窗口盒提交，实测 ${内部提交数}`);
+
+                阶段 = "音乐与天气连续点击折叠，保存回执不回滚视觉状态";
+                夹具.pushPreferences({ interfaceAnimations: true });
+                await 直到(() => 岛().dataset.animations === "true", "开动效进入卡内交互场景");
+                await 稳定("expanded");
+                const 快速提交前 = 夹具.提交.length;
+                const 真invoke = 原生.invoke;
+                let 正在保存 = 0, 保存峰值 = 0;
+                原生.invoke = async (命令, 载荷) => {
+                    if (命令 !== "save_island_card_collapsed") return 真invoke.call(原生, 命令, 载荷); // 卡内收起态走逐项保存命令。
+                    保存峰值 = Math.max(保存峰值, ++正在保存);
+                    try {
+                        await 等待(120); // 原生回执刻意慢于连续点击。
+                        return await 真invoke.call(原生, 命令, 载荷);
+                    } finally { 正在保存--; }
+                };
+                const 高度动画 = (节点) => 节点.getAnimations().find((动画) => 动画.effect.getKeyframes().some((帧) => 帧.blockSize));
+                const 实点折叠 = (按钮) => {
+                    const 框 = 按钮.getBoundingClientRect();
+                    const 点 = { bubbles: true, pointerType: "mouse", button: 0, pointerId: 42, clientX: 框.left + 框.width / 2, clientY: 框.top + 框.height / 2 };
+                    按钮.dispatchEvent(new PointerEvent("pointerdown", { ...点, buttons: 1 }));
+                    按钮.dispatchEvent(new PointerEvent("pointerup", 点));
+                    按钮.click();
+                };
+                try {
+                    for (const 节点 of [三卡[0], 三卡[2]]) {
+                        const 开关 = 节点.querySelector(".island-card__toggle");
+                        const 初始 = 开关.getAttribute("aria-expanded");
+                        for (let i = 0; i < 10; i++) {
+                            const 之前 = 开关.getAttribute("aria-expanded");
+                            实点折叠(开关);
+                            await 直到(() => 开关.getAttribute("aria-expanded") !== 之前, `${节点.getAttribute("aria-label")} 第 ${i + 1} 次点击生效`);
+                            if (i === 0 && !减少动效) 断言(高度动画(节点)?.effect.getTiming().duration === 240, "开动效时卡片以 240ms 改变高度");
+                            await 等待(25);
+                        }
+                        await 直到(() => !高度动画(节点) && !正在保存, "等反向过渡与迟到回执结束");
+                        断言(开关.getAttribute("aria-expanded") === 初始, "十次切换偶数回到初态，迟到回执不反转按钮");
+                    }
+                    if (减少动效) 跳过.push("卡内 240ms 高度动画与动画期间零窗口提交");
+                    else 断言(夹具.提交.length === 快速提交前, "卡内动画期间与收尾均无新窗口盒提交");
+                    断言(保存峰值 === 1, "持久化串行，迟到回执不反转按钮");
+                } finally { 原生.invoke = 真invoke; }
+                夹具.pushPreferences({ interfaceAnimations: false });
+                await 直到(() => 岛().dataset.animations === undefined, "恢复无动效验证精确窗口回落");
+                await 稳定("expanded");
+                const 退回测量前 = 夹具.提交.length;
+                const 原点 = 岛().getBoundingClientRect();
+                // 用窗口相对固定视口的坐标，不将断言容器的 24px 画布内边距误算成真实窗口坐标。
+                const 原生左 = 全高几何.windowBox.left - 全高几何.viewport.left;
+                const 原生顶 = 全高几何.windowBox.top - 全高几何.viewport.top;
+                const 空列点 = { x: 原生左 + 卡列宽 / 2, y: 原生顶 + 全高几何.windowBox.height - 2 };
+                断言(空列点.y - 原生顶 > 卡片们.at(-1).getBoundingClientRect().bottom - 原点.top, "测试点是末张卡片下方透明列而非卡片或窗口外");
+                const 移动 = (x, y) => document.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse", clientX: x, clientY: y }));
+                const 原定时 = window.setTimeout;
+                let 空白定时数 = 0;
+                window.setTimeout = (回调, 延迟, ...args) => {
+                    if (延迟 === 120) 空白定时数++;
+                    return 原定时.call(window, 回调, 延迟, ...args);
+                };
+                try {
+                    移动(空列点.x, 原生顶 + 10); // 从实际内容侧出发。
+                    移动(空列点.x, 空列点.y);
+                    for (let i = 1; i <= 12; i++) 移动(空列点.x, 空列点.y - i);
+                    断言(当前态() === "expanded" && 空白定时数 === 1, "空白列反复移动只注册一次回退计时");
+                    // 回到另一张卡片，尚未到点的回退应立即取消。
+                    const 天气框 = 三卡[2].getBoundingClientRect();
+                    移动(空列点.x, 原生顶 + 天气框.top - 原点.top + 10);
+                    await 等待(140);
+                    断言(当前态() === "expanded", "重新进入任一卡片后超过原截止仍保持展开");
+                    const 进列时刻 = performance.now();
+                    移动(空列点.x, 空列点.y);
+                    for (let i = 1; i <= 12; i++) 移动(空列点.x, 空列点.y - i);
+                    await 直到(() => 当前态() === "collapsed", "连续停留后回落胶囊");
+                    const 实测停留 = performance.now() - 进列时刻;
+                    断言(空白定时数 === 2 && 实测停留 >= 119, `两个真实离开边界各一笔 120ms 计时，实际 ${空白定时数} 笔/${实测停留}ms`);
+                } finally { window.setTimeout = 原定时; }
+                await 稳定("collapsed");
+                断言(JSON.stringify(夹具.提交.at(-1).windowBox) === 胶囊盒 && 夹具.提交.length - 退回测量前 === 1, "满 120ms 回落，精确恢复胶囊盒并只提交一次");
+                const 胶囊几何 = 夹具.提交.at(-1);
+                const 胶囊中心 = { x: 胶囊几何.windowBox.left - 胶囊几何.viewport.left + 胶囊几何.windowBox.width / 2, y: 胶囊几何.windowBox.top - 胶囊几何.viewport.top + 胶囊几何.windowBox.height / 2 };
+                悬停();
+                移动(胶囊中心.x, 胶囊中心.y);
+                await 等待(210);
+                断言(当前态() === "collapsed", "旧指针在收缩后的胶囊上保持不回弹，必须先离开再进入");
+                const 再进入前 = 夹具.提交.length;
+                按键("Enter");
+                await 稳定("expanded");
+                断言(夹具.提交.length - 再进入前 === 1 && JSON.stringify(夹具.提交.at(-1).windowBox) === 全高盒, "再入态重新且只提交一次工作区全高盒");
+                按键("Escape");
+                await 稳定("collapsed");
+
+                阶段 = "展开全高窗口的四边卡列对齐";
+                const 各边位置 = [];
+                for (const 边 of ["top", "bottom", "left", "right"]) {
+                    夹具.pushPreferences({ islandEdge: 边, islandForm: "capsule", interfaceAnimations: false });
+                    await 直到(() => 岛().dataset.edge === 边, `切换到 ${边}`);
+                    await 稳定("collapsed");
+                    按键("Enter");
+                    await 稳定("expanded");
+                    const 窗 = 岛().getBoundingClientRect();
+                    const 几何 = 夹具.提交.at(-1);
+                    const 列 = [...岛().querySelectorAll(".island-card")];
+                    const 首 = 列[0].getBoundingClientRect().top - 窗.top;
+                    const 尾 = 窗.bottom - 列.at(-1).getBoundingClientRect().bottom;
+                    各边位置.push(`${边} 首 ${首.toFixed(1)} / 尾距底 ${尾.toFixed(1)} DIP`);
+                    断言(几何.windowBox.top === 0 && 几何.windowBox.height === 1040, `${边} 展开盒一直全高`);
+                    断言(近似(几何.cards[0].rect.top, 首, 0.1), `${边} 初次几何提交已含实际对齐，不把首卡提交到错误位置`);
+                    断言(边 === "top" ? 近似(首, 0, 0.1) : 边 === "bottom" ? 首 > 0 && 近似(尾, 6, 0.1) : 首 > 0 && 近似(首, 尾, 0.1), `${边} 对齐首距 ${首}，尾距 ${尾}`);
+                    const 同盒前 = 夹具.提交.length;
+                    const 开关 = 岛().querySelector('.island-card[aria-label="音乐控制"] .island-card__toggle');
+                    const 原状态 = 开关.getAttribute("aria-expanded");
+                    for (const 值 of [String(原状态 !== "true"), 原状态]) {
+                        开关.click();
+                        await 直到(() => 开关.getAttribute("aria-expanded") === 值, `${边} 卡片内部切换`);
+                        await 等待(70);
+                    }
+                    断言(夹具.提交.length === 同盒前, `${边} 折叠/展开不得提交新窗口盒`);
+                    if (边 === "bottom") {
+                        const 超高 = document.createElement("style");
+                        超高.textContent = '.island[data-state="expanded"] .island-card { min-block-size: 450px; }';
+                        document.head.append(超高);
+                        try {
+                            await 直到(() => 岛().scrollHeight > 岛().clientHeight && 岛().querySelector('.island__scrollbar').dataset.visible === "true", "贴底内容超高时出现滚动条");
+                            断言(近似(列[0].getBoundingClientRect().top, 岛().getBoundingClientRect().top, 0.1), "贴底超高时安全回顶部，不丢首卡");
+                            岛().scrollTop = 岛().scrollHeight;
+                            await 直到(() => 岛().scrollTop > 0 && Number(岛().querySelector('.island__scrollbar').getAttribute('aria-valuenow')) > 0, "贴底超高时可以向下滚动并更新滑块");
+                            断言(列.at(-1).getBoundingClientRect().bottom <= 岛().getBoundingClientRect().bottom + 0.1 && 夹具.提交.length === 同盒前, "尾卡可滚入视口，窗口仍零提交");
+                        } finally { 超高.remove(); 岛().scrollTop = 0; }
+                    }
+                    按键("Escape");
+                    await 稳定("collapsed");
+                }
+                夹具.pushPreferences({ islandEdge: "top", islandForm: "notch" });
+                await 直到(() => 岛().dataset.edge === "top", "恢复主场景贴顶");
+                悬停();
+                await 稳定("hover");
+
+                阶段 = "插件自绘 hover 生命周期";
+                const { PluginSlot } = await import('../components/PluginSlot.tsx');
+                const { bindPluginApi, pluginModules, loadPluginScript } = await import('../../bridge/pluginScripts.ts');
+                const 原模块加载 = pluginModules.load;
+                pluginModules.load = async () => ({ default: {} });
+                const 插件容器 = document.createElement('div');
+                容器.append(插件容器);
+                const 插件根 = createRoot(插件容器);
+                let 绘制次数 = 0;
+                let 清理次数 = 0;
+                const 插件清单 = { id: 'plugin.hover-fixture', name: '自绘插件', script: '' };
+                bindPluginApi(插件清单.id, { renderIslandHover: (容器, 上下文) => {
+                    绘制次数++;
+                    const 自绘 = document.createElement('article');
+                    自绘.dataset.customHover = 上下文.instanceId;
+                    自绘.textContent = '插件决定自己的 DOM';
+                    容器.append(自绘);
+                    return () => { 清理次数++; 自绘.remove(); };
+                } });
+                const 绘制插件 = (instanceId) => 插件根.render(React.createElement(PluginSlot, { manifest: 插件清单, instanceId, collapsed: false, hover: true }));
+                await loadPluginScript(插件清单.id, 'fixture/hover.js');
+                绘制插件('island.plugin.hover-fixture');
+                await 直到(() => 插件容器.querySelector('article[data-custom-hover]'), '插件自定义 DOM 挂载');
+                断言(绘制次数 === 1 && 清理次数 === 0, '首轮自绘只挂载一次');
+                绘制插件('island.plugin.hover-next');
+                await 直到(() => 插件容器.querySelector('[data-custom-hover="island.plugin.hover-next"]'), '切换插件实例');
+                断言(绘制次数 === 2 && 清理次数 === 1, '切换先清理上一轮');
+                插件根.unmount();
+                断言(清理次数 === 2, '卸载调用最后一轮清理');
+                const 失败根 = createRoot(插件容器);
+                const 失败清单 = { id: 'plugin.hover-failed', name: '失败插件', script: '' };
+                bindPluginApi(失败清单.id, { renderIslandHover: () => { throw new Error('预期的插件渲染异常'); } });
+                await loadPluginScript(失败清单.id, 'fixture/failed.js');
+                pluginModules.load = 原模块加载;
+                失败根.render(React.createElement(PluginSlot, { manifest: 失败清单, instanceId: 'island.plugin.hover-failed', collapsed: false, hover: true }));
+                await 直到(() => 插件容器.textContent.includes('组件渲染失败'), '插件异常收口到既有失败态');
+                断言(岛().isConnected, '插件异常不打断浮岛');
+                失败根.unmount();
+                插件容器.remove();
+
+                阶段 = "逐功能显示开关与 hover 方向键回落";
+                功能图标场景 = false;
+                插件锚点场景 = true;
+                const 音乐锚点 = "event:音乐控制";
+                const 插件锚点 = "resident:插件锚点夹具";
+                const 样例通知 = 消息(900, "error", "真实通道的失败通知", "真实来源");
+                const 功能 = [["music", 音乐锚点], ["message", 通知锚点], ["plugin", 插件锚点]];
+                夹具.pushPreferences({ islandAnchorVisible: {} });
+                夹具.pushMessages([]);
+                重新挂载();
+                await 直到(() => 锚点(插件锚点), "真实快照挂载插件");
+                夹具.pushMusic(媒体("后台继续播放", "测试艺人"));
+                await 直到(() => 锚点(音乐锚点), "播放会话占有音乐锚点");
+                悬停();
+                await 稳定("hover");
+                锚点(音乐锚点).click();
+                await 直到(() => 锚点(音乐锚点).getAttribute("aria-pressed") === "true", "上一轮 hover 选中音乐");
+                按键("Escape");
+                await 稳定("collapsed");
+                夹具.pushMessages([样例通知]);
+                await 直到(() => 胶囊锚点().length === 3 && 文案(通知锚点)?.textContent.includes(样例通知.content), "新消息接管胶囊正文且音乐仍在");
+                悬停();
+                await 稳定("hover");
+                断言(悬停按钮()[0] !== 锚点(通知锚点) && 锚点(通知锚点).getAttribute("aria-pressed") === "true" && 通知行().length === 1,
+                    "再次进入 hover 要选中胶囊正在显示的消息，而不是第一枚或上一轮选中的音乐");
+
+                阶段 = "hover 功能图标安全区";
+                const 事件锚点 = "event:图标测试";
+                渲染({ contentFacts: [事实("图标测试", "pending", "普通事件")] });
+                await 直到(() => 锚点(事件锚点) && 近似(图标盒(锚点(通知锚点)).getBoundingClientRect().width, 16, 0.02), "普通事件进入 hover 行，初选铃铛完成缩放");
+                for (const 身份 of [音乐锚点, 通知锚点, 插件锚点, 事件锚点]) {
+                    const 按钮 = 锚点(身份);
+                    const 图标 = 按钮.querySelector(".island-anchor__icon");
+                    const 图形 = 图标.querySelector("svg");
+                    const 图框 = 图形.getBoundingClientRect();
+                    const 安全区 = 图标.getBoundingClientRect();
+                    const 圆框 = 按钮.getBoundingClientRect();
+                    const 像素 = 图形.getBBox();
+                    const 视口 = 图形.viewBox.baseVal;
+                    const 边长 = 按钮.getAttribute("aria-pressed") === "true" ? 16 : 20;
+                    const 内缩 = (28 - 边长) / 2;
+                    断言(近似(图框.width, 边长, 0.1) && 近似(图框.height, 边长, 0.1) && 近似(图框.left, 安全区.left, 0.1) && 近似(图框.top, 安全区.top, 0.1), `${身份} 的 SVG 等比落在安全区，绘制 ${边长}×${边长}，实际 ${图框.width}×${图框.height}`);
+                    断言(getComputedStyle(图标).overflow === "visible" && 像素.width > 0 && 像素.height > 0 && 像素.x >= 视口.x && 像素.y >= 视口.y && 像素.x + 像素.width <= 视口.x + 视口.width && 像素.y + 像素.height <= 视口.y + 视口.height, `${身份} 的图形不能被图标圆角蒙版或 SVG 视口截断`);
+                    断言(近似(圆框.width, 28, 0.1) && 近似(圆框.height, 28, 0.1) && 近似(安全区.left - 圆框.left, 内缩, 0.1) && 近似(安全区.top - 圆框.top, 内缩, 0.1), `${身份} 按钮不随选中缩放改变，只增加缩小图形的留白`);
+                }
+                渲染();
+                按键("Escape");
+                await 稳定("collapsed");
+                await 直到(() => !锚点(事件锚点), "清理仅用于测试的普通事件");
+                for (const [类型, 身份] of 功能) {
+                    夹具.pushPreferences({ islandAnchorVisible: { [类型]: false } });
+                    await 直到(() => !锚点(身份), `${类型} 胶囊撤下`);
+                    断言(功能.filter(([, 值]) => 值 !== 身份).every(([, 值]) => 锚点(值)), `${类型} 不连动另外两种胶囊锚点`);
+                    悬停();
+                    await 稳定("hover");
+                    断言(!锚点(身份) && 悬停按钮().length === 2, `${类型} 同步从 hover 撤下`);
+                    按键("Escape");
+                    await 稳定("collapsed");
+                    夹具.pushPreferences({ islandAnchorVisible: {} });
+                    await 直到(() => Boolean(锚点(身份)), `${类型} 重新启用后原事实可见`);
+                }
+                悬停();
+                await 稳定("hover");
+                锚点(通知锚点).click();
+                锚点(通知锚点).focus();
+                await 直到(() => 通知行().length === 1, "撤下前选中通知详情");
+                const 待回落 = 悬停按钮().filter((节点) => 节点.dataset.anchor !== 通知锚点);
+                夹具.pushPreferences({ islandAnchorVisible: { message: false } });
+                await 直到(() => !锚点(通知锚点) && !通知行().length && !播报().includes(样例通知.content), "撤下当前项后详情、计数与播报都更新");
+                const 回落 = 悬停按钮().find((节点) => 节点.getAttribute("aria-pressed") === "true");
+                断言(回落 === 待回落[0] && document.activeElement === 回落, `当前项撤下后选中并聚焦首个可用锚点，实际 ${回落?.dataset.anchor} / ${document.activeElement?.dataset.anchor ?? document.activeElement?.tagName}`);
+                回落?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+                await 直到(() => 待回落[1]?.getAttribute("aria-pressed") === "true", "方向键在仍可见的两项间移动");
+                夹具.pushPreferences({ islandAnchorVisible: { message: false, music: false, plugin: false } });
+                await 直到(() => !悬停按钮().length && 锚点("clock"), "全部撤下时回落时钟");
+                按键("Enter");
+                await 稳定("expanded");
+                for (const 名称 of ["消息", "音乐控制", "插件锚点夹具"]) 断言(岛().querySelector(`.island-card[aria-label="${名称}"]`), `${名称}的展开卡不受显示开关影响`);
+
+                阶段 = "旧演示参数不注册定时器，真实消息仍到达";
+                const 页面地址 = location.href;
+                const 原注册 = window.setInterval;
+                const 周期 = [];
+                window.setInterval = (回调, 毫秒, ...参数) => {
+                    周期.push(毫秒);
+                    return 原注册.call(window, 回调, 毫秒, ...参数);
+                };
+                try {
+                    const 旧地址 = new URL(页面地址);
+                    旧地址.searchParams.set("demo", "1");
+                    history.replaceState(null, "", 旧地址);
+                    夹具.pushPreferences({ islandAnchorVisible: {} });
+                    夹具.pushMessages([样例通知]);
+                    重新挂载();
+                    await 直到(() => 计数文本() === "1" && 锚点(插件锚点), "旧参数下仍挂载真实通知与插件锚点");
+                    夹具.pushMusic(媒体("后台继续播放", "测试艺人"));
+                    await 直到(() => 锚点(音乐锚点), "真实媒体仍可接入");
+                    const 后到 = 消息(901, "info", "后来收到的真实消息", "真实新来源");
+                    夹具.pushMessages([样例通知, 后到]);
+                    await 直到(() => 计数文本() === "2" && 播报().includes(后到.content), "只合并真正到达的通知");
+                    断言(!周期.includes(6000), `旧演示参数不得注册 6s 轮转定时器，实际周期 ${周期.join(",")}`);
+                } finally {
+                    根.unmount();
+                    window.setInterval = 原注册;
+                    history.replaceState(null, "", 页面地址);
+                }
+                report(
+                    失败.length
+                        ? `FAIL\n- ${失败.join("\n- ")}`
+                        : 跳过.length
+                          ? `SKIP：系统开启减少动效，跳过 ${跳过.join("、")}；其余三卡折叠/展开、几何、键盘、通知开关与隐藏合并通过`
+                          : `PASS 浮岛内容层：三卡折叠/展开 ${内部提交数} 次窗口提交；${各边位置.join("；")}；几何、键盘、通知开关；无演示轮转`,
+                );
+            };
+
+            渲染();
+            运行().catch((错误) => {
+                report(`FAIL\n- ${阶段}：${错误 instanceof Error ? 错误.message : String(错误)}${失败.length ? `\n- ${失败.join("\n- ")}` : ""}`);
+            });
+        </script>
+    </body>
+</html>

@@ -10,6 +10,7 @@ import {
     type PluginShellContext,
 } from "../../bridge/pluginScripts";
 import type { ComponentManifest } from "../../contracts/component";
+import { mountPluginHover } from "../../contracts/plugin";
 
 const attempted = new Set<string>(); // 已尝试插入脚本的标识，失败也不重试。
 
@@ -92,11 +93,16 @@ const syncPluginTileSettings = async (pluginId: string, paint: (settings: unknow
 };
 
 /** 先清理该实例上一轮内容，再把作者内容挂进容器。 */
-const mountPluginTile = (container: HTMLElement, context: PluginShellContext) => {
-    const renderTile = readPluginApi(context.pluginId)?.renderTile; // 多个实例共用这一份。
+const mountPluginTile = (container: HTMLElement, context: PluginShellContext, hover = false) => {
+    const renderTile = hover ? readPluginApi(context.pluginId)?.renderIslandHover : readPluginApi(context.pluginId)?.renderTile; // 多个实例共用这一份。
     if (typeof renderTile !== "function") return;
     releasePluginTile(context.instanceId);
     container.replaceChildren(); // 重挂前清掉上一轮的 DOM，否则作者用 append 就会叠出两份内容。
+    if (hover) {
+        const cleanup = mountPluginHover(renderTile, container, context, () => markPluginRenderFailed(context.pluginId, context.instanceId));
+        tileCleanups.set(context.instanceId, cleanup);
+        return;
+    }
     const cleanup = renderTile(container, {
         ...context,
         menu: {
@@ -133,12 +139,14 @@ export const PluginTileBody = ({
     tileType,
     collapsed,
     revision,
+    hover = false,
 }: {
     pluginId: string;
     instanceId: string;
     tileType: string;
     collapsed: boolean;
     revision: number;
+    hover?: boolean; // hover 与完整格子共用设置、加载和清理，不共用作者 DOM。
 }) => {
     const containerRef = useRef<HTMLDivElement>(null); // 作者内容的挂载点。
     const collapsedRef = useRef(collapsed); // 读取返回时使用当前折叠状态。
@@ -161,7 +169,7 @@ export const PluginTileBody = ({
                     collapsed: collapsedRef.current,
                     settings,
                     saveSettings: (value) => savePluginSettings(pluginId, value),
-                });
+                }, hover);
             } catch (error) {
                 console.error(`组件渲染失败：${instanceId}`, error);
                 markPluginRenderFailed(pluginId, instanceId);
@@ -190,7 +198,7 @@ export const PluginTileBody = ({
             releasePluginTile(instanceId);
             void subscription.then((unlisten) => unlisten()).catch(() => undefined);
         };
-    }, [pluginId, instanceId, revision]);
+    }, [pluginId, instanceId, revision, hover, tileType]);
 
     useEffect(() => {
         const container = containerRef.current;
@@ -203,18 +211,18 @@ export const PluginTileBody = ({
                 collapsed,
                 settings: settingsRef.current.value,
                 saveSettings: (value) => savePluginSettings(pluginId, value),
-            });
+            }, hover);
         } catch (error) {
             console.error(`组件渲染失败：${instanceId}`, error);
             markPluginRenderFailed(pluginId, instanceId);
         }
-    }, [collapsed, pluginId, instanceId]);
+    }, [collapsed, pluginId, instanceId, hover]);
 
     return <div ref={containerRef} data-plugin-container={instanceId} />;
 };
 
 /** 无格子外壳的 plugin:slot，岛与桌面复用同一加载、设置与失败隔离。 */
-export const PluginSlot = ({ manifest, instanceId, tileType = "", collapsed }: { manifest: ComponentManifest; instanceId: string; tileType?: string; collapsed: boolean }) => {
+export const PluginSlot = ({ manifest, instanceId, tileType = "", collapsed, hover = false, fallback }: { manifest: ComponentManifest; instanceId: string; tileType?: string; collapsed: boolean; hover?: boolean; fallback?: import("react").ReactNode }) => {
     const [, setEpoch] = useState(0); // 注册与失败变化触发重绘。
     useEffect(() => {
         const stop = subscribePluginHost((id) => {
@@ -224,10 +232,11 @@ export const PluginSlot = ({ manifest, instanceId, tileType = "", collapsed }: {
         void syncPluginScripts([manifest], [manifest.id]);
         return stop;
     }, [manifest]);
-    const broken = pluginTileFailed(manifest.id, instanceId);
+    const broken = hover ? pluginScriptFailed(manifest.id) || pluginRenderFailed(instanceId) : pluginTileFailed(manifest.id, instanceId);
+    if (!broken && hover && !readPluginApi(manifest.id)?.renderIslandHover) return <>{fallback}</>;
     return broken ? (
         <p role="status">组件渲染失败</p>
     ) : (
-        <PluginTileBody pluginId={manifest.id} instanceId={instanceId} tileType={tileType} collapsed={collapsed} revision={pluginRevision(manifest.id)} />
+        <PluginTileBody pluginId={manifest.id} instanceId={instanceId} tileType={tileType} collapsed={collapsed} hover={hover} revision={pluginRevision(manifest.id)} />
     );
 };

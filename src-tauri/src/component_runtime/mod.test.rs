@@ -53,7 +53,14 @@ fn official_music_island_manifest_and_snapshot()
     let directory = std::env::temp_dir().join("desktop-tools-official-music-island"); // 不读取仓库插件目录，也不创建持久布局。
     let runtime = ComponentRuntimeState::from_manifest_sources(&sources, Vec::new(), Vec::new(), &directory);
     let (_, available) = runtime.island_snapshot(&[]).unwrap(); // 未勾选时仍向设置页下发可用岛卡。
-    assert_eq!(available.manifests.iter().filter(|manifest| manifest.island).map(|manifest| manifest.id.as_str()).collect::<Vec<_>>(), ["official.music-control"]);
+    assert_eq!(
+        {
+            let mut ids = available.manifests.iter().filter(|manifest| manifest.island).map(|manifest| manifest.id.as_str()).collect::<Vec<_>>();
+            ids.sort_unstable();
+            ids
+        },
+        ["official.collect-box", "official.music-control", "official.weather"]
+    );
     assert!(available.instances.is_empty());
     let (instances, snapshot) = runtime.island_snapshot(&["official.music-control".into()]).unwrap(); // 与 get_island_snapshot 使用同一投影函数。
     assert_eq!(instances.len(), 1);
@@ -725,52 +732,14 @@ status = 1x1
     assert!(super::parse_tile_size_declaration("320x").is_none());
 }
 
-/// Debug 构建自动注入浮岛测试卡：不写偏好、不进卡片顺序，发布构建不注册。
+/// Debug 构建仍保留桌面 Debug 测试格子；浮岛不再注入测试卡。
 #[test]
-fn debug_island_card_is_injected_only_in_debug_builds()
+fn debug_island_card_is_not_injected()
 {
     let directory = std::env::temp_dir().join(format!("desktop-tools-debug-island-{}", std::process::id())); // 不读取仓库插件目录。
     std::fs::create_dir_all(&directory).unwrap();
     let runtime = ComponentRuntimeState::new(&directory);
-    let empty = runtime.island_instances(&[]);
-    if cfg!(debug_assertions)
-    {
-        // 未勾选任何卡片也自动出现，且排在卡片顺序之后。
-        assert_eq!(empty.iter().map(|instance| instance.component_id.as_str()).collect::<Vec<_>>(), ["official.debug-island"]);
-        assert_eq!(empty[0].instance_id, "island.official.debug-island");
-        let with_music = runtime.island_instances(&["official.music-control".to_string()]);
-        assert_eq!(with_music.iter().map(|instance| instance.component_id.as_str()).collect::<Vec<_>>(), ["official.music-control", "official.debug-island"]);
-        // 浮岛快照带上清单与授权投影，浮岛页可以直接渲染；工作区与设置页的清单投影不含它。
-        let (instances, island) = runtime.island_snapshot(&[]).unwrap();
-        assert_eq!(instances.len(), 1);
-        assert!(island.manifests.iter().any(|manifest| manifest.id == "official.debug-island" && manifest.island));
-        assert_eq!(island.instances[0].entry.as_deref(), Some("official:debug-island"));
-        let workspace = runtime.snapshot(&[]).unwrap();
-        assert!(!workspace.manifests.iter().any(|manifest| manifest.id == "official.debug-island"), "测试卡不得进入设置页清单");
-        assert!(!runtime.capability_declarations().iter().any(|declaration| declaration.component_id == "official.debug-island"), "测试卡不是工作区格子");
-        // 不写偏好：重复读取稳定，不因快照或能力声明而变化。
-        assert_eq!(runtime.island_instances(&[]), empty);
-    }
-    else
-    {
-        assert!(empty.is_empty(), "发布构建不注入测试卡");
-    }
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-/// 测试卡清单只在 Debug 构建注册，且沿用调试入口白名单。
-#[test]
-fn debug_island_manifest_follows_debug_gate()
-{
-    let directory = std::env::temp_dir().join(format!("desktop-tools-debug-island-manifest-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
-    let runtime = ComponentRuntimeState::new(&directory);
-    let (_, island) = runtime.island_snapshot(&[]).unwrap();
-    assert_eq!(island.manifests.iter().any(|manifest| manifest.id == "official.debug-island"), cfg!(debug_assertions));
-    // 同一身份换成非调试入口时无论如何都拒绝注册。
-    let mut manifest: ComponentManifest = serde_json::from_str(super::DEBUG_ISLAND_MANIFEST).unwrap();
-    assert_eq!(validate_manifest(&manifest), if cfg!(debug_assertions) { Ok(()) } else { Err(crate::contracts::ComponentRuntimeError::invalid_manifest("插件前端入口不受支持")) });
-    manifest.entry = "official:debug-test".to_string();
-    assert!(validate_manifest(&manifest).is_err(), "测试卡身份不接受其它入口");
+    assert!(runtime.island_instances(&[]).is_empty());
+    assert!(runtime.island_instances(&["official.music-control".to_string()]).iter().all(|instance| instance.component_id != "official.debug-island"));
     std::fs::remove_dir_all(directory).unwrap();
 }

@@ -1,13 +1,16 @@
 // 真实组件浏览器断言页（相对仓库根）。
 
 // 断言页：页面把结果写进 <pre id="result">，以 PASS 开头为通过、FAIL 开头为失败。
+// 系统开启减少动效时页面可自报 SKIP 并列出跳过的动效时序项；运行器把 SKIP 记为跳过，不计失败。
 export const 断言页 = [
     "src/shared/scrollingText.browser.html", // 单行文本溢出滚动：判定、动画名与时长、重新测量与关闭动效。
     "src/features/desktop-items/desktopItemImage.browser.html", // 桌面项图片缩略与等待状态。
     "src/features/settings/weather/weatherSettings.browser.html", // 天气设置完整交互链路。
+    "src/features/settings/island/islandSettings.browser.html", // 浮岛设置：胶囊消息通知开关与插件卡卸载入口。
     "src/features/tile-content/collect-box/collectBox.browser.html", // 收集箱加载、选择、删除与投放。
     "src/features/tiles/contentDrop.browser.html", // 格子内容拖放。
     "src/features/tiles/tileDragPreview.browser.html", // 跨屏格子拖动预览与围栏尺寸。
+    "src/features/island/islandContent.browser.html", // 浮岛内容层十态、几何、hover 列表、边界与切换时序。
     "src/features/island/islandFillet.browser.html", // 浮岛切态圆弧补面与描边。
     "src/features/island/islandLyrics.browser.html", // 浮岛歌词常态档位、无词回落、四边与展开跳转对齐。
     "src/features/island/islandMessages.browser.html", // 浮岛消息三态、关闭、阅读期暂存与通道降级。
