@@ -98,6 +98,61 @@ export const islandMotionProgress = (elapsed: number): number => {
 };
 const mix = (from: number, to: number, progress: number) => from + (to - from) * progress;
 
+/** 视口切换的遮蔽租约：owner 是唯一可绘制/解除的任务 token，masked 是当前可见性状态。 */
+export interface IslandMaskLease {
+    seq: number;
+    owner: number | undefined;
+    masked: boolean;
+}
+
+/** 新任务领取租约并使旧 token 失效；旧任务后续的绘制/解除都会被拒绝。 */
+export const beginIslandMask = (lease: IslandMaskLease): number => {
+    const token = ++lease.seq;
+    lease.owner = token;
+    lease.masked = true;
+    return token;
+};
+
+/** 仅租约所有者可解除视觉遮蔽，保留 owner 供本任务后续动画绘制。 */
+export const unmaskIslandTransition = (lease: IslandMaskLease, token: number): boolean => {
+    if (lease.owner !== token || !lease.masked) return false;
+    lease.masked = false;
+    return true;
+};
+
+/** 幂等释放：旧 token 不得解除新租约或清掉新 owner。 */
+export const releaseIslandMask = (lease: IslandMaskLease, token: number): boolean => {
+    if (lease.owner !== token) return false;
+    lease.masked = false;
+    lease.owner = undefined;
+    return true;
+};
+
+/** 当前任务是否仍持有租约；旧回包据此拒绝绘制或解除新遮蔽。 */
+export const holdsIslandMask = (lease: IslandMaskLease, token: number): boolean => lease.owner === token;
+
+/** 共享原生物理状态：pending 是尚未回包的 set_bounds 数，appliedToken 是最后成功落地的任务 token。 */
+export interface IslandNativeSwap {
+    pending: number;
+    appliedToken: string | null;
+    appliedGeometry?: IslandStateRequest;
+}
+
+/** set_bounds 发出前登记；回包后必须成对 finish。 */
+export const beginIslandNativeSwap = (swap: IslandNativeSwap): void => {
+    swap.pending += 1;
+};
+
+/** set_bounds 回包：成功记录物理落地的 token，失败也减少 pending。 */
+export const finishIslandNativeSwap = (swap: IslandNativeSwap, token: string, applied: boolean): void => {
+    swap.pending = Math.max(0, swap.pending - 1);
+    if (applied) swap.appliedToken = token;
+};
+
+/** 只有 native 已清空且本任务落地（或已按实际几何重同步）才允许解除遮蔽。 */
+export const canReleaseIslandMask = (swap: IslandNativeSwap, token: string, resynced: boolean): boolean =>
+    swap.pending === 0 && (resynced || swap.appliedToken === token);
+
 /** 固定贴边锚点，非贴边轴沿既有偏好；默认位固定既有中心而非采样新中心。 */
 export const islandMotionFrame = (from: IslandStateRequest, to: IslandStateRequest, elapsed: number, edge: string, work: IslandRect): IslandStateRequest => {
     const p = islandMotionProgress(elapsed);

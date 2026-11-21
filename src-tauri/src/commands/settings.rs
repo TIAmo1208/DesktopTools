@@ -100,6 +100,10 @@ pub(crate) fn execute_apply_preferences(app: &AppHandle, state: &SettingsState, 
         crate::platform::windows::music::request_convergence(); // 唤醒媒体监听线程，关闭时清空歌词、开启时重新取词。
     }
     crate::platform::windows::island::reconcile(app); // 岛开关与抑制偏好只消费保存后的最新事实。
+    if let Err(error) = super::component::prune_loopback_for_visibility(&app.state::<crate::component_runtime::ComponentRuntimeState>(), &app.state::<crate::workspace::WorkspaceState>(), &app.state::<SettingsState>())
+    {
+        crate::log_warn!("设置：岛可见性变化后释放 loopback 通道失败，错误码={}", error.code); // 不阻断保存，下一次快照读取仍会裁剪。
+    }
     let palette = crate::notifications::active_palette(app, &saved); // 与权威偏好同源解析，页面不再决定 Toast 配色。
     app.state::<std::sync::Arc<crate::notifications::ToastManager>>().update_preferences(saved.clone(), palette); // 同锁更新偏好与 palette 并唤醒已入队消息。
     if let Some(window) = app.get_webview_window("main")

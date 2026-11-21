@@ -323,9 +323,9 @@ fn theme_font_allowlist_matches_preferences_contract()
     assert_eq!(fonts, super::APPLICATION_FONTS);
 }
 
-/// 插件槽只接受二选一能力，且不能冒用官方入口。
+/// 插件槽允许声明已知能力集合；重复与未知能力仍失败，官方清单维持原限制。
 #[test]
-fn plugin_slot_validates_identity_entry_and_single_capability()
+fn plugin_slot_validates_identity_entry_and_capability_sets()
 {
     let mut manifest: ComponentManifest = serde_json::from_str(super::LOCAL_CLOCK_MANIFEST).unwrap(); // 从有效官方清单构造边界输入。
     manifest.id = "plugin.test".to_string();
@@ -335,8 +335,11 @@ fn plugin_slot_validates_identity_entry_and_single_capability()
         manifest.required_capabilities = vec![capability];
         assert_eq!(validate_manifest(&manifest), Ok(()));
     }
-    manifest.required_capabilities = vec![ComponentCapability::ReadHostTime, ComponentCapability::ReadCurrentMedia];
-    assert!(validate_manifest(&manifest).is_err());
+    manifest.required_capabilities = vec![ComponentCapability::ReadHostTime, ComponentCapability::ReadCurrentMedia, ComponentCapability::LoopbackChannel, ComponentCapability::PluginCredential, ComponentCapability::PublishIslandMessage, ComponentCapability::OpenUri];
+    assert_eq!(validate_manifest(&manifest), Ok(()), "插件可声明多个已知能力");
+    manifest.required_capabilities = vec![ComponentCapability::ReadHostTime, ComponentCapability::ReadHostTime];
+    assert_eq!(validate_manifest(&manifest).unwrap_err().code, "invalid-component-manifest", "重复能力仍失败");
+    assert!(serde_json::from_value::<ComponentCapability>(json!("read-registry")).is_err(), "未知能力在解析阶段失败");
     manifest.required_capabilities = vec![ComponentCapability::ReadHostTime];
     for (id, entry) in [("official.weather", "official:local-clock"), ("plugin.test", "official:local-clock"), ("official.local-clock", "plugin:slot"), ("plugin.test", "https://example.com/plugin.js")]
     {
@@ -344,6 +347,32 @@ fn plugin_slot_validates_identity_entry_and_single_capability()
         manifest.entry = entry.to_string();
         assert_eq!(validate_manifest(&manifest).unwrap_err().code, "invalid-component-manifest");
     }
+    // 官方清单仍只允许自身需要的那一个能力。
+    let mut official: ComponentManifest = serde_json::from_str(super::MUSIC_MANIFEST).unwrap();
+    official.required_capabilities = vec![ComponentCapability::ReadCurrentMedia, ComponentCapability::ReadHostTime];
+    assert_eq!(validate_manifest(&official).unwrap_err().code, "invalid-component-manifest");
+}
+
+/// 岛上实例与工作区实例共用能力授权：声明 loopback-channel 的岛插件可注册，未声明能力仍被拒。
+#[test]
+fn island_instances_authorize_only_declared_capabilities()
+{
+    let mut manifest: ComponentManifest = serde_json::from_str(super::LOCAL_CLOCK_MANIFEST).unwrap();
+    manifest.id = "plugin.island-test".to_string();
+    manifest.name = "岛测试".to_string();
+    manifest.entry = super::PLUGIN_SLOT_ENTRY.to_string();
+    manifest.island = true;
+    manifest.required_capabilities = vec![ComponentCapability::LoopbackChannel, ComponentCapability::OpenUri];
+    let source = serde_json::to_string(&manifest).unwrap();
+    let directory = std::env::temp_dir().join(format!("desktop-tools-island-capability-{}", std::process::id())); // 不读仓库插件目录。
+    let runtime = ComponentRuntimeState::from_manifest_sources(&[("plugin.island-test".to_string(), source)], Vec::new(), Vec::new(), &directory);
+    let instances = runtime.island_instances(&["plugin.island-test".to_string()]);
+    assert_eq!(instances.len(), 1);
+    assert_eq!(instances[0].instance_id, "island.plugin.island-test");
+    let registration = runtime.authorize_capability_on(&instances, "island.plugin.island-test", ComponentCapability::LoopbackChannel).expect("岛实例可按清单能力注册通道");
+    assert_eq!(registration.component_id, "plugin.island-test");
+    assert_eq!(runtime.authorize_capability_on(&instances, "island.plugin.island-test", ComponentCapability::PluginCredential).unwrap_err().code, "component-capability-denied", "未声明能力仍拒绝");
+    assert_eq!(runtime.authorize_capability_on(&instances, "plugin.island-test", ComponentCapability::LoopbackChannel).unwrap_err().code, "invalid-component-instance", "岛授权只对合成实例身份有效");
 }
 
 /// 实际目录来源有界读取、坏清单隔离、缺失目录为空、官方身份优先。
@@ -446,7 +475,7 @@ fn time_subscriptions_are_scoped_and_do_not_reuse_identity()
 #[test]
 fn manifest_rejects_an_unauthorized_capability_set()
 {
-    let manifest = ComponentManifest { theme_notification: None, theme_boot: None, id: "official.local-clock".to_string(), name: "本地时间".to_string(), version: String::new(), stylesheet_cache_key: String::new(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable: true, removable: true, island: false, persistence_version: 1, max_tiles: 0, tile_types: Vec::new(), repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
+    let manifest = ComponentManifest { theme_notification: None, theme_boot: None, id: "official.local-clock".to_string(), name: "本地时间".to_string(), version: String::new(), stylesheet_cache_key: String::new(), icon_path: String::new(), entry: "official:local-clock".to_string(), script: String::new(), role: crate::contracts::ComponentRole::Tile, stylesheet: String::new(), theme_appearance: None, theme_fonts: Vec::new(), required_capabilities: Vec::new(), creatable: true, removable: true, island: false, persistence_version: 1, max_tiles: 0, tile_types: Vec::new(), repository: String::new(), description: String::new(), author: String::new() }; // 缺少宿主时间能力的无效官方清单。
 
     assert_eq!(validate_manifest(&manifest).expect_err("空能力集合应被拒绝").code, "invalid-component-manifest");
 }
@@ -659,9 +688,9 @@ fn probe_service_status_is_authorized_per_instance()
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-/// loopback-channel 进入能力白名单且与既有能力并存，组合声明仍整份拒绝。
+/// 插件可声明多个已知能力；未知与重复声明仍整份拒绝。
 #[test]
-fn loopback_capability_is_whitelisted_alone()
+fn plugin_capability_sets_accept_multiple_known_entries()
 {
     let directory = std::env::temp_dir().join(format!("desktop-tools-plugin-loopback-gate-{}", std::process::id())); // 本测试独占目录。
     let write = |folder: &str, id: &str, capabilities: &str| {
@@ -682,16 +711,22 @@ required_capabilities = {capabilities}
     write("通道", "plugin.loopback", "loopback-channel");
     write("探活", "plugin.probe", "probe-service-status");
     write("组合", "plugin.both", "loopback-channel, probe-service-status");
+    write("未知", "plugin.unknown", "loopback-channel, readRegistry");
+    write("重复", "plugin.duplicate", "loopback-channel, loopback-channel");
     let runtime = ComponentRuntimeState::new(&directory);
     let manifests = runtime.catalog().manifests.clone(); // 解析后的插件清单。
     assert_eq!(manifests["plugin.loopback"].required_capabilities, [ComponentCapability::LoopbackChannel]);
     assert_eq!(manifests["plugin.probe"].required_capabilities, [ComponentCapability::ProbeServiceStatus], "两种能力并存");
-    assert!(!manifests.contains_key("plugin.both"), "组合声明仍整份拒绝");
+    assert_eq!(manifests["plugin.both"].required_capabilities, [ComponentCapability::LoopbackChannel, ComponentCapability::ProbeServiceStatus], "插件可声明能力集合");
+    assert!(!manifests.contains_key("plugin.unknown"), "未知能力整份拒绝");
+    assert!(!manifests.contains_key("plugin.duplicate"), "重复能力整份拒绝");
     let instance = |instance_id: &str, component_id: &str| ComponentInstanceSnapshot { instance_id: instance_id.to_string(), component_id: component_id.to_string(), monitor_id: "DISPLAY1".to_string(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 20.0, top: 20.0, width: 220.0, height: 116.0 }, state_version: 1, state: json!({}) }; // 当前测试复用的插件实例构造器。
-    let instances = [instance("channel", "plugin.loopback"), instance("probe", "plugin.probe")]; // 两个单能力实例。
+    let instances = [instance("channel", "plugin.loopback"), instance("probe", "plugin.probe"), instance("both", "plugin.both")]; // 单能力与多能力实例。
     assert_eq!(runtime.invoke_capability(&instances, "channel", ComponentCapability::ProbeServiceStatus).unwrap_err().code, "component-capability-denied");
     assert_eq!(runtime.invoke_capability(&instances, "probe", ComponentCapability::LoopbackChannel).unwrap_err().code, "component-capability-denied");
-    assert!(runtime.authorize_capability(&instances, "channel", ComponentCapability::LoopbackChannel).is_ok());
+    assert!(runtime.authorize_capability_on(&instances, "channel", ComponentCapability::LoopbackChannel).is_ok());
+    assert!(runtime.authorize_capability_on(&instances, "both", ComponentCapability::ProbeServiceStatus).is_ok(), "多能力实例按声明逐项授权");
+    assert!(runtime.authorize_capability_on(&instances, "both", ComponentCapability::PluginCredential).is_err(), "未声明的能力仍被拒绝");
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -742,4 +777,94 @@ fn debug_island_card_is_not_injected()
     assert!(runtime.island_instances(&[]).is_empty());
     assert!(runtime.island_instances(&["official.music-control".to_string()]).iter().all(|instance| instance.component_id != "official.debug-island"));
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// 新通用能力的线上名字固定为 kebab-case，前端 bridge 与清单 ini 共用同一拼写。
+#[test]
+fn generic_capability_wire_names_are_kebab_case()
+{
+    for (capability, name) in [(ComponentCapability::PluginCredential, "plugin-credential"), (ComponentCapability::PublishIslandMessage, "publish-island-message"), (ComponentCapability::OpenUri, "open-uri"), (ComponentCapability::PluginCredentialExchange, "plugin-credential-exchange")]
+    {
+        assert_eq!(serde_json::to_value(capability).unwrap(), json!(name));
+        assert_eq!(serde_json::from_value::<ComponentCapability>(json!(name)).unwrap(), capability);
+    }
+}
+
+/// 岛可见实例只看「开关打开 + 卡片在顺序里 + 插件未停用」；停用与移除后立即消失。
+#[test]
+fn visible_island_instances_follow_switch_order_and_disabled_plugins()
+{
+    let mut island_plugin: ComponentManifest = serde_json::from_str(super::MUSIC_MANIFEST).unwrap();
+    island_plugin.id = "plugin.island".to_string();
+    island_plugin.name = "岛插件".to_string();
+    island_plugin.entry = super::PLUGIN_SLOT_ENTRY.to_string();
+    island_plugin.island = true;
+    island_plugin.required_capabilities = vec![ComponentCapability::PublishIslandMessage];
+    let source = serde_json::to_string(&island_plugin).unwrap();
+    let directory = std::env::temp_dir().join(format!("desktop-tools-island-visible-{}", std::process::id())); // 不读仓库插件目录。
+    let runtime = ComponentRuntimeState::from_manifest_sources(&[("official.music-control".to_string(), super::MUSIC_MANIFEST.to_string()), ("plugin.island".to_string(), source)], Vec::new(), Vec::new(), &directory);
+    let ids = |preferences: &crate::contracts::settings::ApplicationPreferences| runtime.visible_island_instances(preferences).into_iter().map(|instance| instance.instance_id).collect::<Vec<_>>();
+    let mut preferences = crate::contracts::settings::ApplicationPreferences::default();
+    preferences.island_enabled = false;
+    preferences.island_card_order = vec!["official.music-control".to_string()];
+    assert!(ids(&preferences).is_empty(), "岛关闭时没有可见实例");
+    preferences.island_enabled = true;
+    assert_eq!(ids(&preferences), ["island.official.music-control"]);
+    preferences.island_card_order = vec!["official.music-control".to_string(), "plugin.island".to_string(), "unknown.card".to_string(), "official.music-control".to_string()];
+    assert_eq!(ids(&preferences), ["island.official.music-control", "island.plugin.island"], "未知卡片忽略、重复去重");
+    preferences.disabled_plugins = vec!["PLUGIN.ISLAND".to_string()];
+    assert_eq!(ids(&preferences), ["island.official.music-control"], "停用插件立即消失（大小写不敏感）");
+    preferences.disabled_plugins.clear();
+    preferences.island_card_order.clear();
+    assert!(ids(&preferences).is_empty(), "移除卡片后不再保留实例");
+}
+
+/// 卡片从顺序里移除后，下一次可见性裁剪立即释放该岛实例的 loopback 通道。
+#[test]
+fn removing_a_card_releases_its_loopback_channels()
+{
+    let mut island_plugin: ComponentManifest = serde_json::from_str(super::MUSIC_MANIFEST).unwrap();
+    island_plugin.id = "plugin.island".to_string();
+    island_plugin.name = "岛插件".to_string();
+    island_plugin.entry = super::PLUGIN_SLOT_ENTRY.to_string();
+    island_plugin.island = true;
+    island_plugin.required_capabilities = vec![ComponentCapability::LoopbackChannel];
+    let source = serde_json::to_string(&island_plugin).unwrap();
+    let directory = std::env::temp_dir().join(format!("desktop-tools-island-card-revoke-{}", std::process::id())); // 不读仓库插件目录。
+    let runtime = ComponentRuntimeState::from_manifest_sources(&[("plugin.island".to_string(), source)], Vec::new(), Vec::new(), &directory);
+    let mut preferences = crate::contracts::settings::ApplicationPreferences::default();
+    preferences.island_enabled = true;
+    preferences.island_card_order = vec!["plugin.island".to_string()];
+    let request = crate::contracts::RegisterLoopbackChannel { instance_id: "island.plugin.island".to_string(), channel_id: "status".to_string(), mode: crate::contracts::LoopbackChannelMode::Request, port: None, base_url: Some("http://127.0.0.1:8766".to_string()), credential_ref: None, header_name: None, credential_prefix: None };
+    runtime.loopback().register(request, "plugin.island").expect("可见岛实例可注册通道");
+    let retained = runtime.visible_island_instances(&preferences).into_iter().map(|instance| instance.instance_id).collect::<std::collections::HashSet<_>>();
+    runtime.loopback().prune(&retained);
+    assert_eq!(runtime.loopback().channel_count("island.plugin.island"), 1, "卡片仍在时不得释放通道");
+    preferences.island_card_order.clear(); // 用户移除卡片。
+    let retained = runtime.visible_island_instances(&preferences).into_iter().map(|instance| instance.instance_id).collect::<std::collections::HashSet<_>>();
+    runtime.loopback().prune(&retained);
+    assert_eq!(runtime.loopback().channel_count("island.plugin.island"), 0, "移除卡片后立即释放通道");
+}
+
+/// 插件图标只接受插件目录内的单个 SVG 文件；路径穿越、非 SVG、缺失与超大只让图标失效，不影响插件加载。
+#[test]
+fn plugin_icon_requires_single_existing_small_svg()
+{
+    let directory = std::env::temp_dir().join(format!("desktop-tools-plugin-icon-{}", std::process::id())); // 本测试独占插件目录。
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let base = "[plugin]\nid=plugin.icon-test\nname=图标插件\nversion=1.0.0\nentry=main.js\n"; // 合法必填字段。
+    let manifest = |extra: &str| super::plugin_manifest_from_ini("图标插件", &directory, &format!("{base}{extra}")).expect("图标失败不影响插件加载");
+    std::fs::write(directory.join("icon.svg"), r#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>"#).unwrap();
+    assert_eq!(manifest("icon=icon.svg\n").icon_path, "图标插件/icon.svg", "合法图标下发相对插件根的路径");
+    std::fs::write(directory.join("space.svg"), "\u{feff}\n<svg viewBox=\"0 0 24 24\"></svg>").unwrap();
+    assert_eq!(manifest("icon=space.svg\n").icon_path, "图标插件/space.svg", "允许 BOM 与空白前缀");
+    std::fs::write(directory.join("bad.svg"), "not an svg").unwrap();
+    std::fs::write(directory.join("big.svg"), format!("<svg>{}</svg>", "x".repeat(64 * 1024))).unwrap();
+    for bad in ["icon=../icon.svg\n", "icon=sub/icon.svg\n", "icon=icon.png\n", "icon=ICON.SVG\n", "icon=missing.svg\n", "icon=bad.svg\n", "icon=big.svg\n"]
+    {
+        assert_eq!(manifest(bad).icon_path, "", "{bad:?} 只让图标失效");
+    }
+    assert!(manifest("").icon_path.is_empty(), "未声明图标时为空");
+    std::fs::remove_dir_all(&directory).unwrap();
 }

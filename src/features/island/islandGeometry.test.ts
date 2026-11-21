@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { islandCardMaskPath, islandCornerRadius, islandSeamMask, islandFilletPatches, islandGeometry, islandWindowKey, moveIslandCard, visibleIslandRect } from "./islandGeometry.ts";
+import { islandCardMaskPath, islandContentOffset, islandCornerRadius, islandSeamMask, islandFilletPatches, islandGeometry, islandWindowKey, moveIslandCard, visibleIslandRect } from "./islandGeometry.ts";
 import { parseIslandStateRequest } from "../../contracts/island.ts";
+import { readFileSync } from "node:fs";
 
 // 测试独立展开M/L/A/Z路径为细分多边形，不依赖生产的几何命中判断，避免把集合包含写成自证。
 const pathPolygons = (path: string): [number, number][][] => {
@@ -98,6 +99,8 @@ test("三态尺寸变化时贴边侧固定，沿边以中心对称扩展", () =>
     assert.equal(collapsed.windowBox.top, work.top + 6); // 胶囊仍离开边缘 6 DIP。
     assert.equal(expanded.windowBox.top, work.top);
     assert.equal(expanded.windowBox.height, work.height);
+    assert.deepEqual(expanded.viewport, work); // 展开页面视口铺满工作区，透明区可收到指针。
+    assert.equal(collapsed.viewport.width, 420); // 胶囊仍使用 420 视口带，几何不变。
 });
 test("实测统一宽度、各自高度，间隙透明但仍归岛命中", () => {
     const request = islandGeometry("expanded", [card, { ...card, top: 248, height: 120 }], 12, work, "bottom", 0);
@@ -220,4 +223,40 @@ test("补面半径按沿边余量收紧，半径为 0 时不绘制", () => {
     assert.deepEqual(islandFilletPatches({ left: 12, top: 0, width: 200, height: 60 }, { left: 0, top: 0, width: 224, height: 60 }, "top", 0), []);
     // 卡片贴满窗口时没有可绘制空间，不能返回越界补面。
     assert.deepEqual(islandFilletPatches({ left: 0, top: 0, width: 200, height: 60 }, { left: 0, top: 0, width: 200, height: 60 }, "top", 12), []);
+});
+
+test("展开首帧内容偏移按贴边与偏移落在目标列，不是 (0,0)", () => {
+    const cases = [
+        ["top", 100], ["bottom", 100], ["left", 100], ["right", 100], ["top", -300], ["", 0],
+    ] as const;
+    for (const [edge, offset] of cases) {
+        const request = islandGeometry("expanded", [card], 12, work, edge, offset);
+        const content = islandContentOffset(request);
+        assert.equal(content.y, 0); // 展开内容列从工作区顶部开始。
+        assert.equal(content.x, request.windowBox.left - work.left);
+        assert.ok(content.x > 0, `${edge || "top"} 偏移 ${offset} 不应落在页面原点`);
+        assert.deepEqual(request.viewport, work);
+    }
+    assert.equal(islandContentOffset(islandGeometry("expanded", [card], 12, work, "right", 0) as never).x, 1594);
+});
+
+test("展开根铺满工作区，卡片列按贴边偏移定位且首帧不在 0,0", () => {
+    const cases = [
+        ["left", 100, 6], ["right", 100, 1594], ["top", 100, 892], ["bottom", 100, 892], ["top", 0, 792],
+    ] as const;
+    for (const [edge, offset, expected] of cases) {
+        const request = islandGeometry("expanded", [{ ...card, left: 0 }], 12, work, edge, offset);
+        const columnX = request.windowBox.left - work.left;
+        assert.equal(columnX, expected, `${edge}/${offset} 列左边距`);
+        assert.equal(columnX + request.cards[0]!.rect.left, expected); // 卡片屏幕 x 自然带列偏移。
+        assert.notEqual(columnX + request.cards[0]!.rect.top, 0); // 首帧不是左上角 (0,0)。
+        assert.deepEqual(request.viewport, work);
+    }
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /inlineSize: `\$\{expandedPaint \? work\.width : value\.windowBox\.width\}px`/); // 根宽=工作区。
+    assert.match(source, /left: `\$\{shape\.rect\.left \+ columnX\}px`/); // 卡片列绝对偏移。
+    assert.match(source, /applyViewportMargin = \(value: IslandStateRequest\) => \{\s*const offset = value\.state === "expanded"/);
+    const css = readFileSync(new URL("./island.css", import.meta.url), "utf8");
+    assert.match(css, /padding-inline-start: var\(--island-expanded-column, 0px\);/);
+    assert.match(css, /padding-inline-start: calc\(var\(--island-expanded-column, 0px\) \+ 16px\);/);
 });

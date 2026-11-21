@@ -31,14 +31,20 @@ export const islandCardAvailability = (order: readonly string[], cardId: string)
 };
 
 /** 清单里的岛卡按已启用顺序优先，其余按名称稳定排列。 */
-export const sortIslandCardManifests = (manifests: readonly ComponentManifest[], order: readonly string[]) => {
+export const sortIslandCardRows = <T extends { id: string; name: string }>(rows: readonly T[], order: readonly string[]): T[] => {
     const positions = new Map(normalizeIslandCardOrder(order).map((id, index) => [id, index]));
-    return manifests
-        .filter((manifest) => manifest.island === true)
-        .sort((left, right) => {
-            const leftIndex = positions.get(left.id);
-            const rightIndex = positions.get(right.id);
-            if (leftIndex !== undefined || rightIndex !== undefined) return (leftIndex ?? Number.MAX_SAFE_INTEGER) - (rightIndex ?? Number.MAX_SAFE_INTEGER);
-            return left.name.localeCompare(right.name, "zh");
-        });
+    return [...rows].sort((left, right) => {
+        const leftIndex = positions.get(left.id);
+        const rightIndex = positions.get(right.id);
+        if (leftIndex !== undefined || rightIndex !== undefined) return (leftIndex ?? Number.MAX_SAFE_INTEGER) - (rightIndex ?? Number.MAX_SAFE_INTEGER);
+        return left.name.localeCompare(right.name, "zh");
+    });
 };
+
+/** 岛卡列表：清单卡与设置内的合成卡（消息通知）共用同一份排序。 */
+export const sortIslandCardManifests = (manifests: readonly ComponentManifest[], order: readonly string[]) =>
+    sortIslandCardRows(manifests.filter((manifest) => manifest.island === true), order);
+
+/** 锚点显示二级页的插件卡：清单声明 island 且已启用（在卡片顺序里）。 */
+export const islandAnchorPluginCards = <T extends { id: string }>(cards: readonly T[], order: readonly string[]): T[] =>
+    cards.filter((card) => card.id.startsWith("plugin.") && order.includes(card.id));

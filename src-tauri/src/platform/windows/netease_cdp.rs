@@ -10,8 +10,7 @@ const ENDPOINT: &str = "http://127.0.0.1:9222";
 /// 单次读取的等待上限；正常响应在毫秒级。
 const TIMEOUT: Duration = Duration::from_millis(1200);
 /// 播放条滑块是网易云页面唯一稳定的播放头来源；`max` 同时给出总时长（秒）。
-const SLIDER_EXPRESSION: &str =
-    "(()=>{const e=document.querySelector('[class*=StyledSliderContainer] input');if(!e)return null;const p=Number(e.value),d=Number(e.max);return Number.isFinite(p)&&p>=0?{p:p*1000,d:Number.isFinite(d)&&d>0?d*1000:0}:null})()";
+const SLIDER_EXPRESSION: &str = "(()=>{const e=document.querySelector('[class*=StyledSliderContainer] input');if(!e)return null;const p=Number(e.value),d=Number(e.max);return Number.isFinite(p)&&p>=0?{p:p*1000,d:Number.isFinite(d)&&d>0?d*1000:0}:null})()";
 
 /// 播放源身份是否网易云（`SourceAppUserModelId` 为 `cloudmusic.exe`）。
 pub fn is_netease_source(source: &str) -> bool { source.to_ascii_lowercase().contains("cloudmusic") }

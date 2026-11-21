@@ -3,26 +3,26 @@ import { useEffect, useRef, useState } from "react";
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../../bridge/components";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../../bridge/pluginSettings";
 import { loadPluginScript, pluginScriptLoaded, readPluginApi, subscribePluginShell, type PluginSettingsEntry } from "../../../bridge/pluginScripts";
-import type { ComponentManifest } from "../../../contracts/component";
-import { islandAnchorVisible, type ApplicationPreferences, type IslandAnchorKey } from "../../../contracts/settings";
+import { pluginCapabilityContext } from "../../../bridge/pluginCapabilityHost";
+import type { ComponentCapability, ComponentManifest } from "../../../contracts/component";
+import { ISLAND_CARD_ORDER_LIMIT, ISLAND_MESSAGE_CARD_ID, islandAnchorVisible, islandMessageCardEnabled, islandMessageCardInitialization, islandPluginAnchorVisible, type ApplicationPreferences, type IslandAnchorKey } from "../../../contracts/settings";
 import backIcon from "../../../../resources/weather-back.svg?raw";
 import chevronIcon from "../../../../resources/weather-chevron-right.svg?raw";
 import trashIcon from "../../../../resources/weather-trash.svg?raw";
 import { DesktopTileMenu, type DesktopTileMenuItem } from "../../tiles/DesktopTileMenu";
 import { SettingsAbout } from "../ui";
 import { SettingsSwitch } from "../ui";
-import { islandCardAvailability, moveIslandCard, sortIslandCardManifests, updateIslandCardOrder } from "./islandSettings";
+import { islandAnchorPluginCards, islandCardAvailability, moveIslandCard, sortIslandCardManifests, sortIslandCardRows, updateIslandCardOrder } from "./islandSettings";
 import { IslandWeatherSettings } from "./IslandWeatherSettings";
 import "./IslandSettingsPage.css";
 
 /** 现成的垃圾桶图标缩到页头命令尺寸，与插件卸载按钮同一视觉。 */
 const removeIcon = trashIcon.replace("<svg ", '<svg width="18" height="18" ');
 
-/** 锚点显示二级页的三枚开关。胶囊与 hover 共用，标签即无障碍名。 */
+/** 锚点显示二级页的两个固定开关。胶囊与 hover 共用，标签即无障碍名；插件卡改为逐卡开关。 */
 const ANCHOR_ROWS = [
     ["music", "音乐上浮岛显示"],
     ["message", "消息通知上浮岛显示"],
-    ["plugin", "插件卡上浮岛显示"],
 ] as const satisfies readonly (readonly [IslandAnchorKey, string])[];
 
 /** 设置里的岛一级页、锚点显示二级页与卡片二级页。 */
@@ -43,6 +43,14 @@ export const IslandSettings = ({
     const unavailable = disabled || !preferences;
     const order = preferences?.islandCardOrder ?? [];
     const cards = sortIslandCardManifests(manifests ?? [], order);
+    // 卡片列表把消息通知作为合成行并入同一排序链；它不是插件清单，也没有卡片二级页。
+    const cardRows = sortIslandCardRows(
+        [
+            ...cards.map((card) => ({ id: card.id, name: card.name, description: card.description, isMessage: false })),
+            { id: ISLAND_MESSAGE_CARD_ID, name: "消息通知", description: "消息通知卡的展开态显示；与铃铛锚点开关互不影响。", isMessage: true },
+        ],
+        order,
+    );
     const detail = cards.find((card) => card.id === detailId);
     // 返回一级页后把焦点放回进入二级页的入口；停留在二级页时不动，入口行已删除时不强制。
     const returnFocusSelector = useRef<string | undefined>(undefined);
@@ -74,10 +82,19 @@ export const IslandSettings = ({
         void loadPluginScript(detail.id, detail.script).then(() => setShellEpoch((value) => value + 1));
     }, [detail]);
 
+    // 首次把消息通知卡插入同一份 islandCardOrder，只插一次并置初始化标记。
+    useEffect(() => {
+        const initialization = islandMessageCardInitialization(preferences);
+        if (initialization) onPreferences(initialization);
+    }, [preferences, onPreferences]);
     const saveOrder = (next: string[]) => onPreferences({ islandCardOrder: next });
     // 只改被拨动的键，其余已保存键原样保留；缺键仍由读取函数给默认值。
     const saveAnchor = (key: IslandAnchorKey, checked: boolean) =>
         onPreferences({ islandAnchorVisible: { ...(preferences?.islandAnchorVisible ?? {}), [key]: checked } });
+    // 插件卡锚点逐卡写入新映射；不再写旧全局 plugin 键。
+    const savePluginAnchor = (componentId: string, checked: boolean) =>
+        onPreferences({ islandPluginAnchorVisible: { ...(preferences?.islandPluginAnchorVisible ?? {}), [componentId]: checked } });
+    const pluginCards = islandAnchorPluginCards(cards, order); // 已启用的插件卡；未知或未启用的不列。
     const toggle = (cardId: string, enabled: boolean) => saveOrder(updateIslandCardOrder(order, cardId, enabled));
     const move = (cardId: string, direction: -1 | 1) => saveOrder(moveIslandCard(order, cardId, direction));
     const availability = detail ? islandCardAvailability(order, detail.id) : undefined;
@@ -116,8 +133,27 @@ export const IslandSettings = ({
                             />
                         </div>
                     ))}
+                    {pluginCards.length > 0 ? (
+                        pluginCards.map((card) => {
+                            const label = `${card.name}上浮岛显示`;
+                            return (
+                                <div className="settings__row" key={card.id}>
+                                    <label className="settings__row-title" htmlFor={`island-anchor-${card.id}`}>{label}</label>
+                                    <SettingsSwitch
+                                        id={`island-anchor-${card.id}`}
+                                        label={label}
+                                        checked={islandPluginAnchorVisible(preferences, card.id)}
+                                        disabled={unavailable}
+                                        onChange={(checked) => savePluginAnchor(card.id, checked)}
+                                    />
+                                </div>
+                            );
+                        })
+                    ) : (
+                        <p className="island-settings__empty">暂无可单独控制锚点显示的插件卡；启用插件卡后在这里逐卡开关。</p>
+                    )}
                 </div>
-                <p className="island-settings__hint">控制该功能锚点在胶囊与 hover 同时出现或撤下；与下方「卡片」列表的上浮岛开关不是同一件事，展开卡仍按卡片开关。</p>
+                <p className="island-settings__hint">控制该功能锚点在胶囊与 hover 同时出现或撤下；插件卡按卡控制，关闭某张卡的锚点不影响展开卡与插件运行。与下方「卡片」列表的上浮岛开关不是同一件事，展开卡仍按卡片开关。</p>
             </section>
         );
     }
@@ -210,7 +246,7 @@ export const IslandSettings = ({
                 {detail.id === "official.weather" ? <IslandWeatherSettings preferences={preferences} disabled={unavailable} onPreferences={onPreferences} /> : null}
                 {entries.length ? (
                     <div className="island-settings__entries">
-                        {entries.map((entry) => <IslandPluginEntry key={entry.id} pluginId={detail.id} entry={entry} />)}
+                        {entries.map((entry) => <IslandPluginEntry key={entry.id} pluginId={detail.id} entry={entry} capabilities={detail.requiredCapabilities} />)}
                     </div>
                 ) : detail.id === "official.music-control" || detail.id === "official.weather" ? null : detail.id === "official.collect-box" ? (
                     <p className="island-settings__empty">把文本、链接、图片或文件拖到浮岛上即可收入；展开后单击条目打开。</p>
@@ -312,43 +348,57 @@ export const IslandSettings = ({
                 </section>
             </div>
             <h2 className="island-settings__label" id="island-card-title">卡片</h2>
+            {preferences && !preferences.islandMessageCardInitialized && !preferences.islandCardOrder.includes(ISLAND_MESSAGE_CARD_ID) && preferences.islandCardOrder.length >= ISLAND_CARD_ORDER_LIMIT ? (
+                <p className="island-settings__hint">卡片顺序已满 {ISLAND_CARD_ORDER_LIMIT} 项，消息通知暂未加入；先停用一张卡再启用即可加入。</p>
+            ) : null}
             {!manifests ? (
                 <p className="island-settings__empty" role="status">正在读取浮岛卡…</p>
-            ) : cards.length === 0 ? (
-                <p className="island-settings__empty">暂无可用浮岛卡</p>
             ) : (
                 <ul className="island-settings__list settings__list" aria-labelledby="island-card-title">
-                    {cards.map((card) => {
+                    {cardRows.map((card) => {
                         const state = islandCardAvailability(order, card.id);
                         return (
                             <li
                                 className="island-settings__row"
                                 key={card.id}
-                                onContextMenu={(event) => {
-                                    event.preventDefault();
-                                    setMenu({ cardId: card.id, left: event.clientX, top: event.clientY });
-                                }}
+                                onContextMenu={
+                                    card.isMessage
+                                        ? undefined
+                                        : (event) => {
+                                              event.preventDefault();
+                                              setMenu({ cardId: card.id, left: event.clientX, top: event.clientY });
+                                          }
+                                }
                             >
                                 <span className="island-settings__copy">
                                     <strong>{card.name}</strong>
                                     <small>{card.description || card.id}</small>
                                 </span>
                                 <div className="island-settings__controls">
-                                    <SettingsSwitch label={`${card.name}上浮岛`} checked={state.enabled} disabled={unavailable} onChange={(checked) => toggle(card.id, checked)} />
+                                    {card.isMessage ? (
+                                        // 消息卡开关只控制展开态是否显示，与铃铛锚点独立。
+                                        <SettingsSwitch label="消息通知卡在展开态显示" checked={islandMessageCardEnabled(preferences)} disabled={unavailable} onChange={(checked) => onPreferences({ islandMessageCardVisible: checked })} />
+                                    ) : (
+                                        <SettingsSwitch label={`${card.name}上浮岛`} checked={state.enabled} disabled={unavailable} onChange={(checked) => toggle(card.id, checked)} />
+                                    )}
                                     <button type="button" aria-label={`${card.name}上移`} title="上移" disabled={unavailable || !state.canMoveUp} onClick={() => move(card.id, -1)} data-button="icon">↑</button>
                                     <button type="button" aria-label={`${card.name}下移`} title="下移" disabled={unavailable || !state.canMoveDown} onClick={() => move(card.id, 1)} data-button="icon">↓</button>
                                 </div>
-                                <span className="island-settings__chevron" aria-hidden="true" dangerouslySetInnerHTML={{ __html: chevronIcon }} />
-                                <button
-                                    className="island-settings__hit"
-                                    type="button"
-                                    aria-label={`打开${card.name}卡片设置`}
-                                    onClick={() => {
-                                        recordReturnFocus(`[aria-label="打开${card.name}卡片设置"]`);
-                                        setDetailId(card.id);
-                                    }}
-                                    data-button="row-hit"
-                                />
+                                {card.isMessage ? null : (
+                                    <>
+                                        <span className="island-settings__chevron" aria-hidden="true" dangerouslySetInnerHTML={{ __html: chevronIcon }} />
+                                        <button
+                                            className="island-settings__hit"
+                                            type="button"
+                                            aria-label={`打开${card.name}卡片设置`}
+                                            onClick={() => {
+                                                recordReturnFocus(`[aria-label="打开${card.name}卡片设置"]`);
+                                                setDetailId(card.id);
+                                            }}
+                                            data-button="row-hit"
+                                        />
+                                    </>
+                                )}
                             </li>
                         );
                     })}
@@ -360,7 +410,15 @@ export const IslandSettings = ({
 };
 
 /** 插件自有设置条目直接复用既有作者渲染契约。 */
-const IslandPluginEntry = ({ pluginId, entry }: { pluginId: string; entry: PluginSettingsEntry }) => {
+const IslandPluginEntry = ({
+    pluginId,
+    entry,
+    capabilities,
+}: {
+    pluginId: string;
+    entry: PluginSettingsEntry;
+    capabilities: readonly ComponentCapability[];
+}) => {
     const [host, setHost] = useState<HTMLDivElement | null>(null);
     const [settings, setSettings] = useState<unknown>(null);
 
@@ -378,9 +436,17 @@ const IslandPluginEntry = ({ pluginId, entry }: { pluginId: string; entry: Plugi
     useEffect(() => {
         if (!host || typeof entry.render !== "function") return;
         host.replaceChildren();
-        const cleanup = entry.render(host, { pluginId, instanceId: "", tileType: "", collapsed: false, settings, saveSettings: (value) => savePluginSettings(pluginId, value) });
+        const cleanup = entry.render(host, {
+            pluginId,
+            instanceId: "",
+            tileType: "",
+            collapsed: false,
+            settings,
+            saveSettings: (value) => savePluginSettings(pluginId, value),
+            ...pluginCapabilityContext(`island.${pluginId}`, capabilities), // 岛卡设置条目使用岛实例。
+        });
         return () => { if (typeof cleanup === "function") cleanup(); };
-    }, [entry, host, pluginId, settings]);
+    }, [capabilities, entry, host, pluginId, settings]);
 
     return (
         <div className="island-settings__entry">

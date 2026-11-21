@@ -55,10 +55,16 @@ export const islandGeometry = (
     return {
         state,
         windowBox,
-        viewport: islandViewport(work, edge, offset),
+        viewport: islandViewport(work, edge, offset, state),
         cards,
     };
 };
+
+/** 内容列相对页面视口的偏移；展开首帧必须先用它定位再提交窗口，避免 (0,0) 中间态。 */
+export const islandContentOffset = ({ windowBox, viewport }: Pick<IslandStateRequest, "windowBox" | "viewport">): { x: number; y: number } => ({
+    x: windowBox.left - viewport.left,
+    y: windowBox.top - viewport.top,
+});
 
 /** 展开态只在窗口盒或固定视口变化时提交，不把列表内部卡片变化当成新窗口。 */
 export const islandWindowKey = ({ state, windowBox, viewport }: IslandStateRequest): string => JSON.stringify([state, windowBox, viewport]);
@@ -73,7 +79,9 @@ export const ISLAND_VIEWPORT_WIDTH = 420;
  * 固定页面原点：视口按“最大 420 宽窗口”使用与窗口相同的边/偏移落位并同样夹紧，
  * 因此同一偏移下所有状态窗口（含较宽的展开与并集）都落在视口内；状态切换不移动视口。
  */
-export const islandViewport = (work: IslandRect, edge: string, offset: number): IslandRect => {
+export const islandViewport = (work: IslandRect, edge: string, offset: number, state: IslandStateRequest["state"] = "collapsed"): IslandRect => {
+    // 展开态页面铺满工作区，整片透明区都能收到指针事件；紧凑两态仍用 420 视口带。
+    if (state === "expanded") return { ...work };
     const horizontal = edge === "left" || edge === "right"; // 左右贴边时视口贴左右边，窗口沿竖直方向居中。
     if (horizontal)
         return {
@@ -210,6 +218,16 @@ export const moveIslandCard = (order: readonly string[], from: string, to: strin
     if (source < 0 || target < 0 || source === target) return next;
     next.splice(source, 1);
     next.splice(target, 0, from);
+    return next;
+};
+
+/** 交换完整保存顺序里的两张可见卡；未显示的消息槽与其它未参与项保持原位置。 */
+export const moveIslandVisibleCard = (order: readonly string[], from: string, to: string): string[] => {
+    const next = [...order];
+    const source = next.indexOf(from);
+    const target = next.indexOf(to);
+    if (source < 0 || target < 0 || source === target) return next;
+    [next[source], next[target]] = [next[target], next[source]];
     return next;
 };
 

@@ -13,7 +13,7 @@ const server = await createServer({
                 if (id.endsWith("/features/components/OfficialComponentHost.tsx"))
                     return `${code}\nexport { pluginVisibility, instanceVisible, pluginRenderers };`;
                 if (id.endsWith("/features/components/PluginSlot.tsx"))
-                    return `${code}\nexport { mountPluginTile, releasePluginTile, syncPluginTileSettings };`;
+                    return `${code}\nexport { mountPluginTile, syncPluginTileSettings };`; // releasePluginTile 已由生产模块导出。
             },
         },
     ],
@@ -85,7 +85,7 @@ test("插件宿主保留官方显隐、入口别名和未知入口兜底", async
     assert.match(source, /<p className="official-component__error">组件前端入口不存在<\/p>/);
     const slotSource = await readFile(new URL("./PluginSlot.tsx", import.meta.url), "utf8"); // 共享链路迁移后仍验证实际生产模块。
     assert.match(slotSource, /<div ref=\{containerRef\} data-plugin-container=\{instanceId\} \/>/);
-    assert.match(slotSource, /releasePluginTile\(instanceId\)/);
+    assert.match(slotSource, /export const releasePluginTile = \(instanceId: string\)/); // 稳定入口仍按实例释放。
     assert.match(slotSource, /removeEventListener\("desktop-refresh-changed", handleRefresh\)/);
 });
 

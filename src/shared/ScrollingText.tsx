@@ -1,13 +1,7 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { overflowDistance, overflowLoopMs } from "./textScroll";
+import { overflowDistance, overflowScrollKeyframes, overflowScrollPlan, type OverflowScrollPlan } from "./textScroll";
 import "./ScrollingText.css";
-
-/** 一次溢出滚动计划：需要位移的像素与一个往返周期的时长。 */
-interface OverflowPlan {
-    distance: number; // 需要位移的像素。
-    durationMs: number; // 一个往返周期的时长。
-}
 
 /**
  * 单行文本：内容超出可视宽度时慢速往返滚动，否则保持单行截断。
@@ -28,21 +22,34 @@ export const ScrollingText = ({
 }) => {
     const box = useRef<HTMLSpanElement>(null); // 可视宽度来源。
     const track = useRef<HTMLSpanElement>(null); // 实际内容宽度来源与动画层。
-    const [plan, setPlan] = useState<OverflowPlan>();
+    const animation = useRef<Animation | undefined>(undefined); // 当前往返动画；计划失效时同步取消。
+    const [plan, setPlan] = useState<OverflowScrollPlan>();
+    const [reducedMotion, setReducedMotion] = useState(() => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+    // 系统减少动效在运行中变化时立即停下并复位。
+    useEffect(() => {
+        if (typeof matchMedia !== "function") return;
+        const query = matchMedia("(prefers-reduced-motion: reduce)");
+        const handleChange = () => setReducedMotion(query.matches);
+        query.addEventListener("change", handleChange);
+        return () => query.removeEventListener("change", handleChange);
+    }, []);
 
     useLayoutEffect(() => {
         const boxElement = box.current;
         const trackElement = track.current;
-        if (!boxElement || !trackElement) {
-            setPlan(undefined);
+        if (!boxElement || !trackElement || typeof trackElement.animate !== "function") {
+            setPlan(undefined); // 不支持动画时保持单行省略，不留下无动画的裁切态。
             return;
         }
-        let last = 0; // 与渲染值同步的测量缓存，同一尺寸不重复写状态。
         const update = () => {
             const distance = enabled ? overflowDistance(trackElement.scrollWidth, boxElement.clientWidth) : 0;
-            if (last === distance) return;
-            last = distance;
-            setPlan(distance > 0 ? { distance, durationMs: overflowLoopMs(distance) } : undefined);
+            const next = distance > 0 ? overflowScrollPlan(distance) : undefined;
+            setPlan((current) => {
+                if (!current && !next) return current; // 已经是静态省略，不触发重渲染。
+                if (current && next && current.distance === next.distance) return current;
+                return next; // 禁用或文本变短时清空旧计划，旧动画由下方 effect 取消并复位。
+            });
         };
         update();
         const observer = new ResizeObserver(update); // 字号、内容与容器宽度变化都重新判定。
@@ -51,10 +58,25 @@ export const ScrollingText = ({
         return () => observer.disconnect();
     }, [enabled, text]);
 
-    const style = plan ? ({ "--overflow-distance": `${plan.distance}px`, "--overflow-duration": `${plan.durationMs}ms` } as CSSProperties) : undefined;
+    // 只有存在计划且未减少动效时才启动；停止/切换时取消旧动画并把位移归零。
+    useLayoutEffect(() => {
+        const trackElement = track.current;
+        animation.current?.cancel();
+        animation.current = undefined;
+        if (trackElement) trackElement.style.transform = "";
+        if (!trackElement || !plan || reducedMotion) return;
+        const frames = overflowScrollKeyframes(plan).map(({ offset, x }) => ({ offset, transform: `translate3d(${x}px, 0, 0)` }));
+        const next = trackElement.animate(frames, { duration: plan.cycleMs, iterations: Infinity, easing: "linear", fill: "both" });
+        animation.current = next;
+        return () => {
+            next.cancel();
+            trackElement.style.transform = "";
+        };
+    }, [plan, reducedMotion]);
+
     return (
         <span ref={box} className={className ? `scrolling-text ${className}` : "scrolling-text"} data-overflow={plan ? "true" : "false"} title={title}>
-            <span ref={track} className="scrolling-text__track" style={style}>
+            <span ref={track} className="scrolling-text__track">
                 {text}
             </span>
         </span>

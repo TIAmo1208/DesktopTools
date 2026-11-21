@@ -1,6 +1,7 @@
 import { readPluginApi } from "../../../bridge/pluginScripts";
-import type { ComponentInstanceSnapshot, ComponentManifest, ComponentTileType } from "../../../contracts/component";
+import type { ComponentCapability, ComponentInstanceSnapshot, ComponentManifest, ComponentTileType } from "../../../contracts/component";
 import type { PluginInstallPlan } from "../../../contracts/plugin";
+import type { ApplicationPreferences } from "../../../contracts/settings";
 
 /** 设置页里的一个插件清单。 */
 export interface PluginRow {
@@ -15,6 +16,8 @@ export interface PluginRow {
     repository?: string; // 有仓库才显示入口，不拿来拼地址。
     script: string; // 插件根内的脚本相对路径。
     role?: ComponentManifest["role"]; // 主题只在带入口脚本时加载脚本。缺省按格子。
+    island: boolean; // 清单是否允许上岛；设置条目的实例回落与能力上下文使用。
+    requiredCapabilities: ComponentCapability[]; // 清单声明的能力；未声明的通用能力不暴露给设置条目。
 }
 
 /** 卸载或移除共用的确认请求。 */
@@ -39,6 +42,8 @@ export const pluginRows = (manifests: readonly ComponentManifest[]): PluginRow[]
             repository: manifest.repository,
             script: manifest.script,
             role: manifest.role,
+            island: manifest.island === true,
+            requiredCapabilities: manifest.requiredCapabilities,
         }))
         .sort((left, right) => left.name.localeCompare(right.name, "zh"));
 
@@ -84,3 +89,24 @@ export const installSuccessMessage = () => "安装成功";
 
 /** 安装失败只带后端原因，不再附加重启或默认停用说明。 */
 export const installFailureMessage = (reason: string) => (reason.startsWith("安装失败") ? reason : `安装失败：${reason}`);
+
+/** 浮岛卡是否实际启用：清单声明 island、岛开启、卡在顺序里且插件未停用。 */
+export const pluginIslandCardActive = (
+    pluginId: string,
+    island: boolean,
+    preferences?: Pick<ApplicationPreferences, "islandEnabled" | "islandCardOrder" | "disabledPlugins">,
+): boolean =>
+    island &&
+    preferences?.islandEnabled === true &&
+    !preferences.disabledPlugins.includes(pluginId) &&
+    preferences.islandCardOrder.includes(pluginId);
+
+/** 二级页可用的实例身份：工作区已就绪实例优先，其次已启用的浮岛卡；都没有时为空串。 */
+export const pluginCapabilityInstanceId = (workspaceInstanceId: string, pluginId: string, islandActive: boolean): string =>
+    workspaceInstanceId || (islandActive ? `island.${pluginId}` : "");
+
+/** 需要实例授权的设置条目：没有可用实例或插件停用时都不渲染。 */
+export const pluginSettingsAuthorized = (instanceId: string, pluginDisabled: boolean): boolean => Boolean(instanceId) && !pluginDisabled;
+
+/** 「添加到桌面」只在清单允许创建且不是主题时出现；没有可创建类型就不渲染。 */
+export const pluginShowsAddTile = (creatable: boolean, role?: ComponentManifest["role"]): boolean => creatable === true && role !== "theme";

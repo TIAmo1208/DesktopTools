@@ -118,6 +118,28 @@ impl ComponentRuntimeState
         card_order.iter().filter(|id| seen.insert(id.as_str()) && catalog.manifests.get(id.as_str()).is_some_and(|manifest| manifest.island)).map(|id| island_instance(id.as_str())).collect::<Vec<_>>()
     }
 
+    /// 岛当前可见的合成实例：岛开关打开、卡片在 `islandCardOrder` 里且对应插件未停用。
+    ///
+    /// 能力授权与通道保留都按这份视图计算；岛关闭、卡片移除或插件停用后实例立即消失，
+    /// 不再等下一次组件快照读取。
+    pub(crate) fn visible_island_instances(&self, preferences: &crate::contracts::settings::ApplicationPreferences) -> Vec<ComponentInstanceSnapshot>
+    {
+        if !preferences.island_enabled
+        {
+            return Vec::new();
+        }
+        let catalog = self.catalog(); // 只依据已通过注册校验的清单。
+        let mut seen = HashSet::new(); // 重复卡片只保留首次出现位置。
+        preferences
+            .island_card_order
+            .iter()
+            .filter(|id| seen.insert(id.as_str()))
+            .filter(|id| !preferences.disabled_plugins.iter().any(|disabled| disabled.eq_ignore_ascii_case(id)))
+            .filter(|id| catalog.manifests.get(id.as_str()).is_some_and(|manifest| manifest.island))
+            .map(|id| island_instance(id))
+            .collect()
+    }
+
     /// 按需生成岛注册投影，不修改工作区注册集合或其修订号。
     pub(crate) fn island_snapshot(&self, card_order: &[String]) -> Result<(Vec<ComponentInstanceSnapshot>, ComponentRuntimeSnapshot), ComponentRuntimeError>
     {
@@ -150,12 +172,7 @@ impl ComponentRuntimeState
     /// 校验实例声明后执行一个已授权宿主能力。
     pub fn invoke_capability(&self, instances: &[ComponentInstanceSnapshot], instance_id: &str, capability: ComponentCapability) -> Result<ComponentCapabilityResult, ComponentRuntimeError>
     {
-        let instance = instances.iter().find(|instance| instance.instance_id == instance_id).ok_or_else(|| ComponentRuntimeError::invalid_instance("插件实例不存在"))?; // 只信调用方提供的权威临时视图。
-        let registration = self.registration_snapshot(instance); // 纯校验，不为能力读取改写工作区注册集合。
-        if registration.status != ComponentLoadStatus::Ready || !registration.authorized_capabilities.contains(&capability)
-        {
-            return Err(ComponentRuntimeError::capability_denied(capability));
-        }
+        self.authorize_capability_on(instances, instance_id, capability)?; // 纯校验，不为能力读取改写工作区注册集合。
         let payload = match capability
         {
             ComponentCapability::ReadHostTime => json!({
@@ -164,15 +181,21 @@ impl ComponentRuntimeState
             ComponentCapability::ReadCurrentMedia => crate::platform::windows::music::snapshot().map_err(|message| ComponentRuntimeError { code: "media-read-failed".to_string(), message })?,
             ComponentCapability::ProbeServiceStatus => crate::tools::probe::probe(&json!({ "service": "astrbot" })),
             ComponentCapability::LoopbackChannel => json!({}), // 通道数据只从三条通道命令交付，能力调用本身没有载荷。
+            ComponentCapability::PluginCredential => json!({}), // 凭据只写不读，能力调用不返回任何明文。
+            ComponentCapability::PublishIslandMessage => json!({}), // 投递结果经事件与消息投影交付。
+            ComponentCapability::OpenUri => json!({}), // 打开结果只报告成功或结构化错误。
+            ComponentCapability::PluginCredentialExchange => json!({}), // 兑换由专用命令完成，秘密不进入能力返回值。
         }; // 当前授权能力的最小结构化结果。
         Ok(ComponentCapabilityResult { instance_id: instance_id.to_string(), capability, payload })
     }
 
-    /// 校验实例存在、已就绪且已声明该能力，返回该实例的注册结果。
-    pub fn authorize_capability(&self, instances: &[ComponentInstanceSnapshot], instance_id: &str, capability: ComponentCapability) -> Result<ComponentRegistrationSnapshot, ComponentRuntimeError>
+    /// 纯能力校验：在调用方给出的合并视图里找到实例并确认已就绪、已声明能力；不写注册表。
+    ///
+    /// 工作区实例与浮岛合成实例共用这一条判断，避免岛实例被工作区注册集合覆盖。
+    pub fn authorize_capability_on(&self, instances: &[ComponentInstanceSnapshot], instance_id: &str, capability: ComponentCapability) -> Result<ComponentRegistrationSnapshot, ComponentRuntimeError>
     {
-        let snapshot = self.snapshot(instances)?; // 能力校验共用同一份实例注册结果。
-        let registration = snapshot.instances.iter().find(|instance| instance.instance_id == instance_id).cloned().ok_or_else(|| ComponentRuntimeError::invalid_instance("插件实例不存在"))?;
+        let instance = instances.iter().find(|instance| instance.instance_id == instance_id).ok_or_else(|| ComponentRuntimeError::invalid_instance("插件实例不存在"))?;
+        let registration = self.registration_snapshot(instance);
         if registration.status != ComponentLoadStatus::Ready || !registration.authorized_capabilities.contains(&capability)
         {
             return Err(ComponentRuntimeError::capability_denied(capability));
@@ -515,7 +538,8 @@ fn plugin_manifest_from_ini(folder_name: &str, folder: &std::path::Path, text: &
     // 主题默认没有格子；带入口脚本时按清单声明放行，供主题自带的格子使用（同一插件里既能换肤又能添格子）。
     let creatable = creatable && (role == ComponentRole::Tile || !script.is_empty());
     let max_tiles = if role == ComponentRole::Theme && !creatable { 0 } else { max_tiles }; // 不能创建的主题忽略格子上限。
-    let manifest = ComponentManifest { id, name, version, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, stylesheet_cache_key, theme_appearance, theme_notification, theme_boot, theme_fonts, required_capabilities, creatable, removable, island, persistence_version: 1, max_tiles, tile_types, repository, description, author };
+    let icon_path = plugin_icon_path(folder, folder_name, &id, values.get("icon").map(String::as_str)); // 图标失败只清空该字段。
+    let manifest = ComponentManifest { id, name, version, entry: PLUGIN_SLOT_ENTRY.to_string(), script, role, stylesheet, stylesheet_cache_key, icon_path, theme_appearance, theme_notification, theme_boot, theme_fonts, required_capabilities, creatable, removable, island, persistence_version: 1, max_tiles, tile_types, repository, description, author };
     validate_manifest(&manifest).map_err(|error| error.message)?;
     Ok(manifest)
 }
@@ -530,6 +554,82 @@ fn stylesheet_cache_key(version: &str, path: &std::path::Path) -> String
     };
     let modified = metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|elapsed| elapsed.as_nanos()).unwrap_or(0);
     format!("{version}-{}-{modified}", metadata.len())
+}
+
+/// 插件图标大小上限：64 KiB，超出只让图标失效。
+const PLUGIN_ICON_LIMIT: u64 = 64 * 1024;
+
+/// 解析可选的插件图标声明，返回相对插件根的路径（`<文件夹>/<图标>.svg`）。
+///
+/// 只接受单文件名 `<名称>.svg`（字母、数字、下划线、连字符），解析到插件目录内的同目录文件；
+/// 路径穿越、链接、非 SVG、缺失、超大或内容不是 `<svg` 根时只让图标失效并记 WARN，不影响插件加载。
+/// 快照下发相对路径而不是绝对路径：前端沿用既有 `/plugins/<相对路径>` 资产通道，宿主路径不进入页面。
+fn plugin_icon_path(folder: &std::path::Path, folder_name: &str, plugin_id: &str, raw: Option<&str>) -> String
+{
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty())
+    else
+    {
+        return String::new();
+    };
+    let stem = raw.strip_suffix(".svg").unwrap_or_default();
+    if stem.is_empty() || stem.len() > 64 || !stem.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+    {
+        crate::log_warn!("插件：图标声明无效，已忽略，插件={plugin_id}，声明={raw}");
+        return String::new();
+    }
+    if confirm_plugin_asset(folder, raw, "svg", false).is_err()
+    {
+        crate::log_warn!("插件：图标文件不存在或不是受控路径，已忽略，插件={plugin_id}");
+        return String::new();
+    }
+    let path = folder.join(raw);
+    let Ok(metadata) = std::fs::metadata(&path)
+    else
+    {
+        crate::log_warn!("插件：图标文件读取失败，已忽略，插件={plugin_id}");
+        return String::new();
+    };
+    if !metadata.is_file() || metadata.len() > PLUGIN_ICON_LIMIT
+    {
+        crate::log_warn!("插件：图标不是普通文件或超过 64 KiB，已忽略，插件={plugin_id}");
+        return String::new();
+    }
+    let Ok(bytes) = std::fs::read(&path)
+    else
+    {
+        crate::log_warn!("插件：图标文件读取失败，已忽略，插件={plugin_id}");
+        return String::new();
+    };
+    if bytes.len() as u64 > PLUGIN_ICON_LIMIT || !svg_document_prefix(&bytes)
+    {
+        crate::log_warn!("插件：图标内容不是合法 SVG，已忽略，插件={plugin_id}");
+        return String::new();
+    }
+    format!("{folder_name}/{raw}")
+}
+
+/// SVG 内容只做简单前缀检查：可选 UTF-8 BOM、可选 XML 声明与空白之后必须紧跟 `<svg`。
+fn svg_document_prefix(bytes: &[u8]) -> bool
+{
+    let mut start = usize::from(bytes.starts_with(&[0xEF, 0xBB, 0xBF])) * 3;
+    let skip_whitespace = |mut index: usize| {
+        while matches!(bytes.get(index), Some(b' ' | b'\t' | b'\r' | b'\n'))
+        {
+            index += 1;
+        }
+        index
+    };
+    start = skip_whitespace(start);
+    if bytes.get(start..).is_some_and(|rest| rest.starts_with(b"<?xml"))
+    {
+        let Some(end) = bytes[start..].windows(2).position(|pair| pair == b"?>").map(|offset| start + offset + 2)
+        else
+        {
+            return false;
+        };
+        start = skip_whitespace(end);
+    }
+    bytes.get(start..).is_some_and(|rest| rest.starts_with(b"<svg"))
 }
 
 /// 解析 ini 的 required_capabilities：逗号分隔的能力名，非法值或重复值让插件加载失败。
@@ -1087,16 +1187,16 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
     }
     if plugin_slot && manifest.required_capabilities.is_empty()
     {
-        return Ok(());
+        return Ok(()); // 未声明能力等同只有界面、没有宿主访问权。
     }
     let capabilities = manifest.required_capabilities.iter().copied().collect::<HashSet<_>>(); // 清单中唯一的能力声明集合。
     if capabilities.len() != manifest.required_capabilities.len() || capabilities.is_empty()
     {
         return Err(ComponentRuntimeError::invalid_manifest("插件能力声明无效"));
     }
-    if plugin_slot && (capabilities == HashSet::from([ComponentCapability::ReadHostTime]) || capabilities == HashSet::from([ComponentCapability::ReadCurrentMedia]) || capabilities == HashSet::from([ComponentCapability::ProbeServiceStatus]) || capabilities == HashSet::from([ComponentCapability::LoopbackChannel]))
+    if plugin_slot
     {
-        return Ok(());
+        return Ok(()); // 插件可声明任意已授权能力集合；未知能力在清单解析阶段已经失败。
     }
     let expected = if music_manifest
     {

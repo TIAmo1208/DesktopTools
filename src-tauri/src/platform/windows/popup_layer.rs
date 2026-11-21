@@ -333,10 +333,7 @@ fn create_window(app: &AppHandle, kind: PopupLayerKind, read_preferences: &crate
         if let tauri::WindowEvent::Focused(false) = event
         {
             // 同一把锁里同时取“是否已显示”和当前请求身份，避免两次检查之间换了请求。
-            let (shown, request_id) = STATE
-                .lock()
-                .map(|state| (state.shown, state.request.as_ref().map(|pending| pending.view.request_id)))
-                .unwrap_or((false, None));
+            let (shown, request_id) = STATE.lock().map(|state| (state.shown, state.request.as_ref().map(|pending| pending.view.request_id))).unwrap_or((false, None));
             let request_id = match (shown, request_id)
             {
                 (true, Some(request_id)) => request_id,
@@ -352,12 +349,7 @@ fn create_window(app: &AppHandle, kind: PopupLayerKind, read_preferences: &crate
             unsafe { GetWindowThreadProcessId(foreground, Some(&mut process)) };
             let mut class = [0_u16; 128];
             let length = unsafe { GetClassNameW(foreground, &mut class) };
-            crate::log_debug!(
-                "弹层：失活时前台窗口类={}，进程={}，本进程={}",
-                String::from_utf16_lossy(&class[..length as usize]),
-                process,
-                std::process::id()
-            );
+            crate::log_debug!("弹层：失活时前台窗口类={}，进程={}，本进程={}", String::from_utf16_lossy(&class[..length as usize]), process, std::process::id());
             // 带上请求身份：即使这次失活属于上一次显示，也不会收束新请求。
             if let Err(error) = execute_dismiss(&handle, Some(request_id))
             {
@@ -602,10 +594,7 @@ fn apply_frame(app: &AppHandle, window: &WebviewWindow, pending: &PendingRequest
     // 先在屏幕外就位：系统在“显示”这一帧会按标题栏配色绘制窗口边框，
     // 放到屏幕外可以让这一帧完全不可见，再移到目标位置（移动不会重画边框）。
     let staging = -width - 200;
-    window
-        .set_size(tauri::PhysicalSize::new(width as u32, height as u32))
-        .and_then(|()| window.set_position(tauri::PhysicalPosition::new(staging, top)))
-        .map_err(|error| format!("摆放弹层窗口失败：{error}"))?;
+    window.set_size(tauri::PhysicalSize::new(width as u32, height as u32)).and_then(|()| window.set_position(tauri::PhysicalPosition::new(staging, top))).map_err(|error| format!("摆放弹层窗口失败：{error}"))?;
     // 定位期间请求可能已被取消或结束：显示前再验一次，避免让已收束的弹层重新出现。
     if !frame_is_current(frame.request_id, generation)?
     {

@@ -295,7 +295,8 @@ const NATIVE_BRIDGE_SCRIPT: &str = r#"
       eventName === "audio-spectrum-changed" ||
       eventName === "audio-spectrum-device-changed" ||
       eventName === "popup-layer-result" ||
-      eventName === "island-drop-active"
+      eventName === "island-drop-active" ||
+      eventName === "island-plugin-message"
     ) {
       // 刷新暂停只用来省掉重建数据的开销：一次性的请求完成消息与主动删除必须照常送达，
       // 否则弹层确认/菜单选择的 Promise 永远等不到结果。
@@ -364,7 +365,7 @@ fn component_host_event_needs_time_consumers(payload: &str) -> bool { !host_even
 
 /// 需要转发到原生 WebView 的宿主事件白名单；独立岛与逐屏宿主共用同一份。
 /// 新增事件必须同时写入注入桥的 `eventCommands`，否则岛侧 `listen` 会静默丢弃。
-const FORWARDED_EVENTS: &[&str] = &[crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, "music-session-changed", "music-timeline-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", "island-messages-changed", "island-drop-active", super::popup_layer::POPUP_RESULT_EVENT, crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, crate::contracts::PLUGIN_EVENT_CHANNEL];
+const FORWARDED_EVENTS: &[&str] = &[crate::contracts::DESKTOP_HOST_SNAPSHOT_CHANGED_EVENT, crate::contracts::WORKSPACE_SNAPSHOT_CHANGED_EVENT, crate::contracts::DESKTOP_ITEM_SNAPSHOT_CHANGED_EVENT, crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, crate::contracts::ISLAND_PLUGIN_MESSAGE_EVENT, "music-session-changed", "music-timeline-changed", "preferences-changed", "windows-accent-color-changed", "component-host-event", "desktop-refresh-policy-changed", "folder-portal-changed", "collect-items-changed", "weather-configuration-changed", "weather-forecast-changed", "audio-spectrum-changed", "audio-spectrum-device-changed", "island-messages-changed", "island-drop-active", super::popup_layer::POPUP_RESULT_EVENT, crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, crate::contracts::PLUGIN_EVENT_CHANNEL];
 
 /// 将现有宿主事件转交 UI 线程的原生 WebView，页面重载后自动使用新的订阅入口。
 pub(crate) fn install_host_events(app: &AppHandle, read_preferences: crate::preferences::PreferencesReader)
@@ -1265,6 +1266,7 @@ fn read_plugin_asset(directory: &std::path::Path, relative: &str) -> Option<(&'s
         "woff" => "font/woff",
         "ttf" => "font/ttf",
         "otf" => "font/otf",
+        "svg" => "image/svg+xml", // 插件图标：只认小写扩展名，和 js/css 一致；仍走同一套路径与重解析点校验。
         _ => return None,
     }; // 其他格式不能通过插件协议读取。
     let candidate = directory.join(relative_path); // 尚未跟随链接的请求目标。
@@ -1493,9 +1495,15 @@ mod desktop_dev_tests
         std::fs::write(directory.join("plugin.test.js"), "window.test = true;").unwrap();
         std::fs::write(directory.join("plugin.test.css"), "body {}").unwrap();
         std::fs::write(directory.join("private.json"), "{}").unwrap();
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>"#;
+        std::fs::write(directory.join("icon.svg"), svg).unwrap();
+        std::fs::write(directory.join("icon.SVG"), svg).unwrap(); // 大小写变体必须被拒绝。
+        std::fs::write(root.join("outside.svg"), svg).unwrap(); // 插件根之外的图标，用于穿越用例。
         assert_eq!(super::read_plugin_asset(&directory, "plugin.test.js").unwrap().0, "text/javascript; charset=utf-8");
         assert_eq!(super::read_plugin_asset(&directory, "plugin.test.css").unwrap().1, b"body {}");
-        for path in ["", "../outside.js", "/plugin.test.js", "private.json", "missing.js", "plugin.test.js:stream", "%2e%2e/outside.js", r"..\outside.js"]
+        assert_eq!(super::read_plugin_asset(&directory, "icon.svg").unwrap(), ("image/svg+xml", svg.as_bytes().to_vec()), "插件图标可读且 content-type 正确");
+        assert!(super::read_plugin_asset(&directory, "icon.SVG").is_none(), "扩展名大小写只认小写");
+        for path in ["", "../outside.js", "../outside.svg", "/plugin.test.js", "private.json", "missing.js", "plugin.test.js:stream", "%2e%2e/outside.js", "%2e%2e%2foutside.svg", r"..\outside.js"]
         {
             assert!(super::read_plugin_asset(&directory, path).is_none(), "不安全路径应拒绝: {path}");
         }

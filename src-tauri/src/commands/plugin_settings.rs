@@ -397,7 +397,7 @@ fn publish_plugin_catalog(app: &AppHandle) -> Result<crate::contracts::Component
     runtime.reload_plugins();
     let workspace = app.state::<crate::workspace::WorkspaceState>();
     workspace.refresh_capability_declarations(&runtime.capability_declarations());
-    let snapshot = super::component::component_runtime_snapshot(&runtime, &workspace).map_err(|error| format!("插件清单刷新失败：{}", error.message))?;
+    let snapshot = super::component::component_runtime_snapshot(&runtime, &workspace, &app.state::<crate::preferences::SettingsState>()).map_err(|error| format!("插件清单刷新失败：{}", error.message))?;
     if let Err(error) = app.emit(crate::contracts::COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT, &snapshot)
     {
         crate::log_warn!("插件清单：刷新通知失败，错误：{error}");

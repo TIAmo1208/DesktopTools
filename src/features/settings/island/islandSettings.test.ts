@@ -50,7 +50,7 @@ test("行可用性在边界正确禁用排序", () => {
     assert.deepEqual(islandCardAvailability(["official.a"], "plugin.missing"), { enabled: false, canMoveUp: false, canMoveDown: false });
 });
 
-test("锚点显示二级页绑定三枚开关，音乐面板读写同一偏好，卸载入口只对插件卡渲染", () => {
+test("锚点显示二级页绑定音乐、消息与逐插件卡开关，卸载入口只对插件卡渲染", () => {
     const page = readFileSync(new URL("./IslandSettingsPage.tsx", import.meta.url), "utf8");
     const music = readFileSync(new URL("../features/FeatureSettings.tsx", import.meta.url), "utf8");
     // 一级页是二级入口，不再保留全局胶囊消息开关。
@@ -58,13 +58,19 @@ test("锚点显示二级页绑定三枚开关，音乐面板读写同一偏好�
     assert.match(page, /setAnchorPage\(true\)/);
     assert.doesNotMatch(page, /islandCapsuleMessages/);
     assert.doesNotMatch(page, /胶囊消息通知/);
-    // 三枚开关经同一读取函数与同一补丁写入，缺键默认由契约常量决定，并沿用 unavailable 停用。
-    for (const key of ["music", "message", "plugin"]) assert.match(page, new RegExp(`"${key}", "[^"]*上浮岛显示"`));
+    // 固定两枚开关经同一读取函数与同一补丁写入；插件卡改为逐卡，不再有全局 plugin 开关。
+    for (const key of ["music", "message"]) assert.match(page, new RegExp(`"${key}", "[^"]*上浮岛显示"`));
+    assert.doesNotMatch(page, /"plugin", "[^"]*上浮岛显示"/);
     assert.match(page, /id=\{`island-anchor-\$\{key\}`\}/);
     assert.match(page, /checked=\{islandAnchorVisible\(preferences, key\)\}/);
     assert.match(page, /onPreferences\(\{ islandAnchorVisible: \{ \.\.\.\(preferences\?\.islandAnchorVisible \?\? \{\}\), \[key\]: checked \} \}\)/);
+    assert.match(page, /islandAnchorPluginCards\(cards, order\)/); // 只列已启用的插件卡。
+    assert.match(page, /checked=\{islandPluginAnchorVisible\(preferences, card\.id\)\}/);
+    assert.match(page, /islandPluginAnchorVisible: \{ \.\.\.\(preferences\?\.islandPluginAnchorVisible \?\? \{\}\), \[componentId\]: checked \}/);
+    assert.match(page, /暂无可单独控制锚点显示的插件卡/); // 无卡空态。
     assert.match(page, /disabled=\{unavailable\}/);
     assert.match(page, /控制该功能锚点在胶囊与 hover 同时出现或撤下/);
+    assert.match(page, /插件卡按卡控制/);
     assert.match(page, /展开卡仍按卡片开关/);
     // 功能格子音乐二级页与浮岛二级页读同一函数、写同一字段，默认值不在页面里再写一份。
     assert.match(music, /id="feature-music-island-anchor"/);
@@ -123,4 +129,46 @@ test("一级分组标题走共享式样、功能行距交给容器 gap、二级�
         assert.match(源码, /returnFocusSelector/);
         assert.match(源码, /\.focus\(\)/);
     }
+});
+
+test("逐卡锚点：默认显示、按卡关闭、未知或未启用不列、无卡空态", async () => {
+    const { islandAnchorPluginCards } = await import("./islandSettings.ts");
+    const { islandPluginAnchorVisible } = await import("../../../contracts/settings.ts");
+    const cards = [{ id: "plugin.a" }, { id: "plugin.b" }, { id: "official.music-control" }];
+    assert.deepEqual(islandAnchorPluginCards(cards, ["plugin.a"]).map((card) => card.id), ["plugin.a"]); // 只列已启用插件卡。
+    assert.deepEqual(islandAnchorPluginCards(cards, ["plugin.a", "official.music-control"]).map((card) => card.id), ["plugin.a"]); // 官方卡不列。
+    assert.deepEqual(islandAnchorPluginCards(cards, []), []); // 没有启用的插件卡。
+    assert.equal(islandPluginAnchorVisible({ islandPluginAnchorVisible: {} }, "plugin.a"), true); // 缺省显示。
+    assert.equal(islandPluginAnchorVisible({ islandPluginAnchorVisible: { "plugin.a": false } }, "plugin.a"), false); // 按卡关闭。
+    assert.equal(islandPluginAnchorVisible({ islandPluginAnchorVisible: { "plugin.a": false } }, "plugin.b"), true); // 不影响其它卡。
+    assert.equal(islandPluginAnchorVisible({ islandPluginAnchorVisible: { "plugin.not-installed": false } }, "plugin.a"), true); // 未知键忽略。
+    const page = readFileSync(new URL("./IslandSettingsPage.tsx", import.meta.url), "utf8");
+    assert.match(page, /pluginCards\.length > 0 \?/); // 无卡时走空态而不是残留总开关。
+    assert.match(page, /暂无可单独控制锚点显示的插件卡；启用插件卡后在这里逐卡开关。/);
+});
+
+test("卡片列表把消息通知并入同一排序链，开关写展开显示偏好", async () => {
+    const { sortIslandCardRows } = await import("./islandSettings.ts");
+    const { ISLAND_MESSAGE_CARD_ID } = await import("../../../contracts/settings.ts");
+    const rows = [
+        { id: "plugin.a", name: "甲" },
+        { id: "official.weather", name: "天气" },
+        { id: ISLAND_MESSAGE_CARD_ID, name: "消息通知" },
+    ];
+    assert.deepEqual(
+        sortIslandCardRows(rows, ["official.weather", ISLAND_MESSAGE_CARD_ID, "plugin.a"]).map((row) => row.id),
+        ["official.weather", ISLAND_MESSAGE_CARD_ID, "plugin.a"],
+    ); // 与清单卡共用同一份顺序。
+    const page = readFileSync(new URL("./IslandSettingsPage.tsx", import.meta.url), "utf8");
+    assert.match(page, /sortIslandCardRows\(/);
+    assert.match(page, /消息通知卡在展开态显示/); // 消息卡开关的可访问名。
+    assert.match(page, /onPreferences\(\{ islandMessageCardVisible: checked \}\)/); // 写展开显示偏好。
+    assert.match(page, /islandMessageCardInitialization\(preferences\)/); // 首次插入一次。
+    assert.match(page, /card\.isMessage \?/); // 消息行没有卡片二级页。
+});
+
+test("消息槽满额时不静默挤掉既有卡，设置页给出满额说明", () => {
+    const page = readFileSync(new URL("./IslandSettingsPage.tsx", import.meta.url), "utf8");
+    assert.match(page, /卡片顺序已满 \{ISLAND_CARD_ORDER_LIMIT\} 项，消息通知暂未加入/); // 满额反馈。
+    assert.match(page, /preferences\.islandCardOrder\.length >= ISLAND_CARD_ORDER_LIMIT/);
 });

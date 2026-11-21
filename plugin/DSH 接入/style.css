@@ -1,0 +1,364 @@
+/* DSH 接入插件样式：颜色只使用 --fence-* 令牌，选择器全部带插件前缀。 */
+
+.plugin-dsh-status {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    height: 100%;
+    min-width: 0;
+    color: var(--fence-text);
+    font-size: 13px;
+    line-height: 18px;
+    overflow: hidden;
+}
+
+.plugin-dsh-status--collapsed {
+    height: 28px;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.plugin-dsh-status--expanded {
+    height: auto;
+    padding: 0;
+    overflow: visible;
+}
+
+.plugin-dsh-status-hover {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    max-width: 256px;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--fence-text);
+    font-size: 12px;
+    line-height: 16px;
+}
+
+.plugin-dsh-status-hover__main {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fence-text);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 18px;
+    font-variant-numeric: tabular-nums;
+}
+
+.plugin-dsh-status-hover__sub,
+.plugin-dsh-status-hover__balance,
+.plugin-dsh-status-hover__progress-value {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fence-text);
+    font-variant-numeric: tabular-nums;
+}
+
+.plugin-dsh-status-hover__progress {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 16px;
+    margin-top: 4px;
+}
+
+.plugin-dsh-status-hover__track {
+    /* 透明轨 + 正文色描边，填充改用正文色：填充对轨内面浅色约 4.54:1、深色约 5.79:1（合成预算），
+       不再用 --fence-active 对 --fence-border 的 1.25–1.58:1。45% 描边对外轮廓仅约 1.94/2.49，
+       只作轨道轮廓、不承担对比度；4px 轨在 16px 行内垂直居中，右侧留 8px。 */
+    flex: 1 1 auto;
+    min-width: 40px;
+    max-width: 160px;
+    height: 4px;
+    margin-block: 2px;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--fence-text) 45%, transparent);
+    border-radius: 2px;
+    background: transparent;
+    box-sizing: border-box;
+    align-self: center;
+}
+
+.plugin-dsh-status-hover__fill {
+    height: 100%;
+    background: var(--fence-text);
+}
+
+.plugin-dsh-status-hover__progress-value {
+    flex: none;
+    width: 40px;
+    text-align: right;
+}
+
+.plugin-dsh-status-hover__sub + .plugin-dsh-status-hover__balance {
+    margin-top: 4px;
+}
+
+.plugin-dsh-status__collapsed-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.plugin-dsh-status__head {
+    display: flex;
+    align-items: center;
+    min-height: 28px;
+    min-width: 0;
+}
+
+.plugin-dsh-status__title {
+    color: var(--fence-text);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 18px;
+}
+
+.plugin-dsh-status__main {
+    display: flex;
+    align-items: center;
+    min-height: 20px;
+    min-width: 0;
+}
+
+.plugin-dsh-status__main-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    line-height: 18px;
+}
+
+.plugin-dsh-status__main-text--amount {
+    font-size: 16px;
+    line-height: 20px;
+    font-variant-numeric: tabular-nums;
+}
+
+.plugin-dsh-status__main--identity-changed .plugin-dsh-status__main-text,
+.plugin-dsh-status__main--unauthorized .plugin-dsh-status__main-text,
+.plugin-dsh-status__main--unreachable .plugin-dsh-status__main-text,
+.plugin-dsh-status__main--error .plugin-dsh-status__main-text {
+    color: var(--fence-error);
+}
+
+.plugin-dsh-status__main--loading .plugin-dsh-status__main-text,
+.plugin-dsh-status__main--unpaired .plugin-dsh-status__main-text {
+    color: var(--fence-muted);
+}
+
+.plugin-dsh-status__hint,
+.plugin-dsh-status__history {
+    margin: 0;
+    color: var(--fence-muted);
+    font-size: 12px;
+    line-height: 16px;
+}
+
+.plugin-dsh-status__balance {
+    color: var(--fence-text);
+    font-size: 12px;
+    line-height: 16px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.plugin-dsh-status__balance-reason {
+    margin: 0;
+    color: var(--fence-muted);
+    font-size: 12px;
+    line-height: 16px;
+}
+
+.plugin-dsh-status__summary {
+    color: var(--fence-muted);
+    font-size: 12px;
+    line-height: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.plugin-dsh-status__divider {
+    height: 1px;
+    margin: 8px 0;
+    background: var(--fence-border);
+    flex: none;
+}
+
+.plugin-dsh-status__empty {
+    color: var(--fence-muted);
+    font-size: 12px;
+    line-height: 18px;
+}
+
+.plugin-dsh-status__pending {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.plugin-dsh-status__pending-row {
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) 64px 16px;
+    gap: 8px;
+    align-items: center;
+    width: 100%;
+    min-height: 36px;
+    padding: 0 4px;
+    border: 1px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--fence-text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.plugin-dsh-status__pending-row:hover,
+.plugin-dsh-status__pending-row:focus-visible {
+    border-color: var(--fence-focus-border, var(--fence-active));
+    background: var(--fence-surface);
+    outline: none;
+}
+
+.plugin-dsh-status__pending-mark {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+}
+
+.plugin-dsh-status__pending-mark::before {
+    content: "";
+    box-sizing: border-box;
+    width: 7px;
+    height: 7px;
+    border: 1px solid var(--fence-warning);
+    border-radius: 50%;
+}
+
+.plugin-dsh-status__pending-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    line-height: 18px;
+}
+
+.plugin-dsh-status__pending-title-text {
+    display: inline-block;
+    max-width: none;
+    white-space: nowrap;
+    will-change: transform;
+}
+
+.plugin-dsh-status__pending-kind {
+    color: var(--fence-muted);
+    font-size: 12px;
+    line-height: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.plugin-dsh-status__pending-go {
+    color: var(--fence-muted);
+    font-size: 16px;
+    line-height: 16px;
+    text-align: right;
+}
+
+.plugin-dsh-status__more {
+    align-self: flex-start;
+    min-height: 28px;
+    padding: 0 4px;
+    border: 1px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--fence-muted);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.plugin-dsh-status__more:hover,
+.plugin-dsh-status__more:focus-visible {
+    color: var(--fence-text);
+    border-color: var(--fence-focus-border, var(--fence-active));
+    outline: none;
+}
+
+.plugin-dsh-status__time {
+    color: var(--fence-muted);
+    font-size: 11px;
+    line-height: 16px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.plugin-dsh-status-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 520px;
+}
+
+.plugin-dsh-status-settings__label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--fence-muted);
+    font-size: 12px;
+}
+
+.plugin-dsh-status-settings__input {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 30px;
+    padding: 4px 8px;
+    border: 1px solid var(--fence-border, currentColor);
+    border-radius: 4px;
+    background: var(--fence-surface, transparent);
+    color: var(--fence-text, inherit);
+    font: inherit;
+}
+
+.plugin-dsh-status-settings__button {
+    align-self: flex-start;
+    min-height: 28px;
+    padding: 3px 12px;
+    border: 1px solid var(--fence-border, currentColor);
+    border-radius: 4px;
+    background: var(--fence-active, transparent);
+    color: var(--fence-text, inherit);
+    font: inherit;
+    cursor: pointer;
+}
+
+.plugin-dsh-status-settings__button--secondary {
+    background: var(--fence-surface, transparent);
+}
+
+.plugin-dsh-status-settings__status {
+    margin: 0;
+    color: var(--fence-muted, inherit);
+    font-size: 12px;
+}

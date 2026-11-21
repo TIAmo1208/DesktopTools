@@ -37,6 +37,15 @@ Desktop Tools 支持通过本地插件扩展桌面格子、浮岛卡与设置页
 - 桌面侧由「AstrBot 状态」格子插件经宿主的 `loopback-channel` 能力接收：一条 `mode=listen` 通道绑 `127.0.0.1:8765` 接推送，一条 `mode=request` 通道指向 `http://127.0.0.1:8766` 做拉取兜底与平台启停；双向共用 `X-Status-Token` 头，密钥存放在 Windows 凭据管理器的 `DesktopTools/astrbot-status` 记录里，插件拿不到明文。解析、缓存与过期判定都在插件内，宿主只做传输。推送端口被占用时只走拉取兜底。决策见 `docs/adr/0036-AstrBot状态采集链路.md` 与 `docs/adr/0038-插件loopback通道.md`。
 - 安装、取共享 token、在「设置 → 功能格子 → AstrBot 状态」配对以及常见故障排查，见 [AstrBot 状态插件安装与配对](./AstrBot 状态/AstrBot状态插件安装与配对.md)。
 
+## DSH 接入插件（手动安装）
+
+`DSH 接入/` 是桌面侧的浮岛卡插件，同目录下的 `dsh-bridge/`（装在 DSH 里的 Host 桥）是它配套的另一半，两者放在同一插件目录里分发：
+
+- 清单声明 `island = 1`、`creatable = 0`，不占桌面格子；在「设置 → 浮岛」勾选后出现在浮岛。
+- 能力：`loopback-channel` 连本机 `127.0.0.1:47832`；`plugin-credential` 把配对令牌写进 `DesktopTools/plugin/plugin.dsh-status/token`（只写不读）；`publish-island-message` 投递岛内提醒；`open-uri` 打开 `dsh:open`。
+- 连接、配对、轮询与提醒都在插件内；运行时只提供传输与投递，不再有原生 DSH 领域。决策见 `docs/adr/0051-DSH接入改为插件与通用能力.md`。
+- 安装与配对步骤见 [DSH 接入/README.md](./DSH%20接入/README.md)。
+
 ## 预设示例索引与开发方向
 
 仓库根目录下的 `plugin/` 目录提供主题插件、功能插件和开发示例。安装包通过 `src-tauri/tauri.installer.conf.json` 显式映射分发 `主题-青笺/`、`主题-宋律/`、`主题-夜之城/`、`主题-封锁橙/`、`AstrBot 状态/`、`docs/` 与 `README.md`；`示例/` 下的五个格子/设置/浮岛示例仅保留在仓库，不进入安装包。运行时只扫描插件根下一层含 `manifest.ini` 的文件夹，不递归扫描 `示例/`，文档目录不注册为插件。

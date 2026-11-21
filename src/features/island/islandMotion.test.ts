@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
-    islandHoverTravel,
+    islandHoverTravel, beginIslandMask, unmaskIslandTransition, releaseIslandMask, holdsIslandMask, beginIslandNativeSwap, finishIslandNativeSwap, canReleaseIslandMask,
     islandMotionFrame,
     islandMotionProgress,
     islandUnionBox,
@@ -159,7 +160,7 @@ test("偏移夹紧到边界时固定视口仍包含展开、常态与并集窗�
                     [expandedState, collapsedState],
                     [collapsedState, expandedState],
                 ] as const) {
-                    assert.deepEqual(from.viewport, to.viewport, "同一偏移下两态必须共用视口");
+                    // 展开页面视口铺满工作区，紧凑两态仍是 420 带；各自窗口落在自己的视口内。
                     assert.ok(inside(from.windowBox, from.viewport), "起点窗口必须在视口内");
                     assert.ok(inside(to.windowBox, to.viewport), "终点窗口必须在视口内");
                     for (let elapsed = 0; elapsed <= ISLAND_MOTION_MS; elapsed += 8) {
@@ -270,4 +271,259 @@ test("展开两段的并集坐标换算与单卡退化", () => {
     assert.equal(start.cards[0]!.rect.left, from.cards[0]!.rect.left + (from.windowBox.left - start.windowBox.left));
     const single: IslandStateRequest = { ...to, cards: [to.cards[0]!] };
     assert.deepEqual(islandUnionFrame(from, single, 120, "", work, ISLAND_EXPAND_STAGGER_MS), islandUnionFrame(from, single, 120, "", work)); // 单卡不启用两段。
+});
+
+test("过渡帧保持旧坐标系：旧原点与新原点下屏幕位置都不越界、不出现负局部坐标", () => {
+    const viewport = { left: 0, top: 0, width: 1920, height: 1080 };
+    const hover = {
+        state: "hover" as const,
+        windowBox: { left: 1694, top: 0, width: 220, height: 600 },
+        viewport: { left: 1500, top: 0, width: 420, height: 600 },
+        cards: [{ rect: { left: 0, top: 0, width: 220, height: 200 }, radius: 12 }],
+    };
+    const expanded = {
+        state: "expanded" as const,
+        windowBox: { left: 1694, top: 0, width: 336, height: 600 },
+        viewport,
+        cards: [{ rect: { left: 0, top: 0, width: 320, height: 600 }, radius: 12 }],
+    };
+    const screen = (frame: IslandStateRequest) => frame.windowBox.left + frame.cards[0]!.rect.left;
+    // 过渡起点按旧坐标系绘制：屏幕 x 仍是 1694，而不是把局部坐标预写成新原点后的 3194。
+    assert.equal(screen(hover), 1694);
+    for (const [from, to] of [[hover, expanded], [expanded, hover]] as const) {
+        for (const elapsed of [0, ISLAND_MOTION_MS]) {
+            const frame = islandUnionFrame(from, to, elapsed, "right", viewport);
+            const x = screen(frame);
+            assert.ok(x >= 0 && x <= viewport.width, `过渡帧屏幕 x=${x} 必须在视口内`);
+            for (const card of frame.cards) assert.ok(card.rect.left >= 0, "过渡帧不得出现负局部坐标");
+        }
+    }
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const paintIndex = source.indexOf("paint(from, 0, attachedCorner");
+    const commitIndex = source.indexOf("await commit(unionFirst)");
+    assert.ok(paintIndex > 0 && commitIndex > paintIndex);
+    assert.doesNotMatch(source.slice(paintIndex, commitIndex), /applyViewportMargin\(request\)/); // await 前不再改根坐标。
+    assert.match(source, /if \(!\(await commit\(unionFirst\)\)\) return; \/\/ 回包作废时直接丢弃/);
+    assert.match(source, /remeasure\.current\(true\); \/\/ 动画结束按实际几何复核一次/);
+    assert.doesNotMatch(source, /islandExpandedStartFrame/); // 退回也走同一旧坐标 paint，不用展开助手。
+});
+
+test("换视口期间遮蔽绘制，回包后再显示；过渡帧不越界、结束后落到目标布局", () => {
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /const transitionMasked = useRef\(false\)/);
+    assert.match(source, /transitionMasked\.current = true;/);
+    assert.match(source, /element\.style\.visibility = "hidden";/);
+    assert.match(source, /element\.style\.pointerEvents = "none";/);
+    assert.match(source, /const maskToken = beginMask\(\); \/\/ 换视口前先领取租约并遮蔽/); // 无动效与动画共用租约。
+    const maskIndex = source.indexOf('element.style.visibility = "hidden"');
+    const commitIndex = source.indexOf("await commit(unionFirst)");
+    const paintUnionIndex = source.indexOf("paint(unionFirst, 0, startAttached, staggerMs)");
+    const unmaskIndex = source.indexOf("settleMaskRelease(maskToken, { keepOwner: true");
+    assert.ok(maskIndex > 0 && commitIndex > maskIndex && paintUnionIndex > commitIndex && unmaskIndex > paintUnionIndex); // 先遮蔽、再提交、再绘制、最后解除。
+    assert.match(source, /if \(ownsMask\(maskToken\)\) settleMaskRelease\(maskToken, \{ alreadySynced: settled, failed: commitFailed \}\);/);
+    assert.match(source, /if \(transitionMasked\.current\) \{ cancelExpandedReturn\(true\); return; \} \/\/ 遮蔽期间不响应透明区回退/);
+    assert.match(source, /if \(transitionMasked\.current\) return; \/\/ 遮蔽期间不开始拖排/);
+    assert.match(source, /if \(transitionMasked\.current\) return; \/\/ 遮蔽期间不响应卡片\/空白点击/);
+
+    // 回包前后所有可见帧都用真实几何检查：屏幕位置不越出工作区。
+    const viewport = { left: 0, top: 0, width: 1920, height: 1080 };
+    const from = {
+        state: "expanded" as const,
+        windowBox: { left: 1594, top: 0, width: 336, height: 1080 },
+        viewport,
+        cards: [{ rect: { left: 0, top: 0, width: 320, height: 300 }, radius: 12 }],
+    };
+    const to = {
+        state: "hover" as const,
+        windowBox: { left: 1694, top: 0, width: 220, height: 600 },
+        viewport: { left: 1500, top: 0, width: 420, height: 600 },
+        cards: [{ rect: { left: 0, top: 0, width: 220, height: 200 }, radius: 12 }],
+    };
+    for (const elapsed of [0, 60, 120, 180, ISLAND_MOTION_MS]) {
+        const frame = islandUnionFrame(from, to, elapsed, "right", viewport);
+        for (const card of frame.cards) {
+            const x = frame.windowBox.left + card.rect.left;
+            assert.ok(x >= 0 && x <= viewport.width, `elapsed=${elapsed} 屏幕 x=${x} 必须在 0..1920`);
+        }
+    }
+    const done = islandUnionFrame(from, to, ISLAND_MOTION_MS, "right", viewport);
+    assert.deepEqual(done, to); // 解除遮蔽时已经落回目标态。
+});
+
+test("遮蔽租约：取消即恢复、新任务接管旧回包不解除、连续切换与无后续都最终可见", () => {
+    const lease = { seq: 0, owner: undefined as number | undefined, masked: false };
+    const first = beginIslandMask(lease);
+    assert.equal(lease.owner, first);
+    assert.equal(lease.masked, true);
+    assert.equal(releaseIslandMask(lease, first), true); // 队列前取消也释放。
+    assert.deepEqual(lease, { seq: 1, owner: undefined, masked: false }); // 不会一直隐藏。
+
+    const stale = beginIslandMask(lease);
+    const current = beginIslandMask(lease);
+    assert.equal(holdsIslandMask(lease, stale), false);
+    assert.equal(releaseIslandMask(lease, stale), false); // 旧回包不能解除新遮蔽。
+    assert.equal(unmaskIslandTransition(lease, stale), false);
+    assert.deepEqual(lease, { seq: 3, owner: current, masked: true });
+    assert.equal(unmaskIslandTransition(lease, current), true);
+    assert.equal(lease.owner, current); // 保留所有权供本任务动画绘制。
+    assert.equal(releaseIslandMask(lease, current), true);
+    assert.deepEqual(lease, { seq: 3, owner: undefined, masked: false });
+
+    const one = beginIslandMask(lease);
+    const two = beginIslandMask(lease);
+    assert.equal(releaseIslandMask(lease, one), false);
+    assert.equal(unmaskIslandTransition(lease, two), true);
+    assert.equal(releaseIslandMask(lease, two), true); // 连续两次后最终可见、可交互。
+
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /if \(!active \|\| !mounted\.current\) \{ settleMaskRelease\(maskToken\); return; \}/); // 队列前取消走唯一结算。
+    assert.match(source, /settleMaskRelease\(maskLease\.current\.owner, \{ resynced: nativeSwap\.appliedToken !== null \}\)/);
+    assert.match(source, /if \(!active \|\| !ownsMask\(maskToken\)\) return; \/\/ 旧回包不得绘制或解除新遮蔽/);
+    assert.match(source, /if \(ownsMask\(maskToken\)\) settleMaskRelease\(maskToken, \{ alreadySynced: settled, failed: commitFailed \}\);/);
+});
+
+test("回包先验权、终态先于释放，前置/在途取消时序正确", () => {
+    const lease = { seq: 0, owner: undefined as number | undefined, masked: false };
+    const a = beginIslandMask(lease);
+    const b = beginIslandMask(lease);
+    assert.equal(holdsIslandMask(lease, a), false); // A 回包到达时 B 已持有。
+    assert.equal(releaseIslandMask(lease, a), false); // A 的释放幂等丢弃，不影响 B。
+    assert.deepEqual(lease, { seq: 2, owner: b, masked: true });
+
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const awaitAt = source.indexOf("await setIslandState(value);");
+    const guardAt = source.indexOf("if (!active || !ownsMask(maskToken))", awaitAt);
+    const writeAt = source.indexOf("currentGeometry.current = value;", awaitAt);
+    assert.ok(guardAt > awaitAt && writeAt > guardAt); // 回包后先验权，再写几何/置 inputReady。
+    assert.match(source, /settleMaskRelease\(maskToken, \{ resynced: response, failed: !response \}\); \/\/ 回包作废也走唯一结算入口/);
+
+    const finallyAt = source.indexOf("animating = false;\n                                committing = false;");
+    const releaseAt = source.indexOf("settleMaskRelease(maskToken, { alreadySynced: settled, failed: commitFailed })", finallyAt);
+    const terminal = source.slice(finallyAt, releaseAt);
+    assert.match(terminal, /if \(settled && active && ownsMask\(maskToken\) && request\.state !== "expanded"\)/);
+    assert.match(terminal, /inputGeometryKey\.current = key;/);
+    assert.match(terminal, /remeasure\.current\(true\);/);
+    assert.ok(releaseAt > finallyAt); // 成功终态在释放前完成。
+
+    assert.match(source, /if \(nativeSwap\.pending > 0\) \{ deferredMaskReleases\.add\(token\); return; \}/); // pending 时挂续延。
+    assert.match(source, /settleMaskRelease\(maskLease\.current\.owner, \{ resynced: nativeSwap\.appliedToken !== null \}\)/);
+});
+
+test("共享原生物理状态：A 在途时 B 取消不提前揭开，回包重同步后才解除", () => {
+    const swap = { pending: 0, appliedToken: null as string | null };
+    const lease = { seq: 0, owner: undefined as number | undefined, masked: false };
+    const a = beginIslandMask(lease);
+    beginIslandNativeSwap(swap);
+    const b = beginIslandMask(lease); // B 抢到显示租约。
+    assert.equal(canReleaseIslandMask(swap, String(b), false), false); // A 在途，B 不能解除。
+    assert.equal(canReleaseIslandMask(swap, String(b), true), false); // pending 未清空，重同步也不行。
+    finishIslandNativeSwap(swap, String(a), true);
+    assert.equal(canReleaseIslandMask(swap, String(b), false), false); // 落地的是 A，不是 B。
+    assert.equal(canReleaseIslandMask(swap, String(b), true), true); // 按实际几何重同步后可释放。
+
+    const swapA = { pending: 0, appliedToken: null as string | null };
+    const leaseA = { seq: 0, owner: undefined as number | undefined, masked: false };
+    const onlyA = beginIslandMask(leaseA);
+    beginIslandNativeSwap(swapA);
+    assert.equal(canReleaseIslandMask(swapA, String(onlyA), false), false); // A 在途取消也保持遮蔽。
+    finishIslandNativeSwap(swapA, String(onlyA), true);
+    assert.equal(canReleaseIslandMask(swapA, String(onlyA), false), true); // 回包落地后才解除。
+
+    const rejected = { pending: 0, appliedToken: null as string | null };
+    beginIslandNativeSwap(rejected);
+    finishIslandNativeSwap(rejected, "stale", false);
+    assert.equal(rejected.appliedToken, null);
+    assert.equal(canReleaseIslandMask(rejected, "stale", false), false); // 过期 reject 不构成解除依据。
+
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /const nativeSwap: IslandNativeSwap = \{ pending: 0, appliedToken: null, appliedGeometry: undefined \};/); // 跨 effect 共享。
+    assert.match(source, /beginIslandNativeSwap\(nativeSwap\);/);
+    assert.match(source, /finishIslandNativeSwap\(nativeSwap, String\(maskToken\), response\);/);
+    assert.match(source, /if \(nativeSwap\.pending > 0\) \{ deferredMaskReleases\.add\(token\); return; \}/); // pending 时挂续延。
+    assert.match(source, /settleMaskRelease\(maskLease\.current\.owner, \{ resynced: nativeSwap\.appliedToken !== null \}\)/); // cleanup 走唯一结算。
+    assert.match(source, /if \(ownsMask\(maskToken\)\) \{\s*currentGeometry\.current = undefined; \/\/ 只有当前租约持有者能清共享几何/);
+    assert.match(source, /if \(actual && resyncPaint\) resyncPaint\(actual\);/); // 用原生已落地的几何重同步
+});
+
+test("遮蔽释放唯一入口：三条时序与 800ms 失败兜底", () => {
+    // 1) B 取消后 A 成功：A 回包重同步到 1694 才解除 B 的遮蔽。
+    const swap = { pending: 0, appliedToken: null as string | null };
+    const lease = { seq: 0, owner: undefined as number | undefined, masked: false };
+    const a = beginIslandMask(lease);
+    beginIslandNativeSwap(swap);
+    beginIslandMask(lease); // B 抢租约后取消。
+    finishIslandNativeSwap(swap, String(a), true);
+    const geometry = { state: "expanded" as const, windowBox: { left: 1694, top: 0, width: 336, height: 1080 }, viewport: { left: 0, top: 0, width: 1920, height: 1080 }, cards: [{ rect: { left: 0, top: 0, width: 320, height: 300 }, radius: 12 }] };
+    assert.equal(geometry.windowBox.left + geometry.cards[0]!.rect.left, 1694);
+
+    // 2) A 单独在途取消后成功：回包后 appliedToken 指向 A，才允许解除。
+    const swapA = { pending: 0, appliedToken: null as string | null };
+    const leaseA = { seq: 0, owner: undefined as number | undefined, masked: false };
+    const onlyA = beginIslandMask(leaseA);
+    beginIslandNativeSwap(swapA);
+    assert.equal(canReleaseIslandMask(swapA, String(onlyA), false), false);
+    finishIslandNativeSwap(swapA, String(onlyA), true);
+    assert.equal(canReleaseIslandMask(swapA, String(onlyA), false), true);
+
+    // 3) 过期 reject + B 取消：appliedToken 为空时 fail-closed，800ms 后才允许重同步解除。
+    const rejected = { pending: 0, appliedToken: null as string | null };
+    const stale = beginIslandMask(leaseA);
+    beginIslandNativeSwap(rejected);
+    finishIslandNativeSwap(rejected, String(stale), false);
+    assert.equal(canReleaseIslandMask(rejected, String(stale), false), false);
+    assert.equal(canReleaseIslandMask(rejected, String(stale), true), true);
+
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /const settleMaskRelease = \(token: number, options:/); // 唯一入口。
+    assert.match(source, /if \(nativeSwap\.pending > 0\) \{ deferredMaskReleases\.add\(token\); return; \}/);
+    assert.match(source, /setTimeout\(\(\) => \{[\s\S]*?settleMaskRelease\(token, \{ keepOwner, resynced: true, alreadySynced \}\);/);
+    assert.match(source, /if \(!alreadySynced\) \{\s*restoreStyles\(\);[\s\S]*?resyncPaint\(actual\);/); // restore 后再重绘。
+    assert.match(source, /requestAnimationFrame\(\(\) => \{[\s\S]*?releaseMask\(token, true\);/); // rAF 生效后解除。
+    assert.match(source, /drainMaskReleases\(response, !response\)/); // 成功与失败都 drain。
+    assert.match(source, /settleMaskRelease\(maskToken, \{ resynced: response, failed: !response \}\)/);
+    assert.equal((source.match(/releaseMask\(maskToken/g) ?? []).length, 0); // finally 不再各自解罩。
+});
+
+test("reject 必 drain、有界补偿重提交、失败 800ms 只解除 CSS", () => {
+    const swap = { pending: 0, appliedToken: null as string | null };
+    const lease = { seq: 0, owner: undefined as number | undefined, masked: false };
+    const token = beginIslandMask(lease);
+    beginIslandNativeSwap(swap);
+    finishIslandNativeSwap(swap, String(token), false);
+    assert.equal(swap.pending, 0); // 失败也成对归零。
+    assert.equal(swap.appliedToken, null);
+    assert.equal(canReleaseIslandMask(swap, String(token), false), false); // 失败不立即解除。
+
+    const recovered = { pending: 0, appliedToken: null as string | null };
+    beginIslandNativeSwap(recovered);
+    finishIslandNativeSwap(recovered, String(token), true); // 补偿成功。
+    assert.equal(recovered.pending, 0);
+    assert.equal(canReleaseIslandMask(recovered, String(token), false), true); // 补偿成功后可解除并可见。
+
+    const failed = { pending: 0, appliedToken: null as string | null };
+    beginIslandNativeSwap(failed);
+    finishIslandNativeSwap(failed, String(token), false);
+    assert.equal(canReleaseIslandMask(failed, String(token), true), true); // 800ms 兜底只解除 CSS。
+    assert.equal(failed.pending, 0);
+
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const finallyAt = source.indexOf("finishIslandNativeSwap(nativeSwap, String(maskToken), response); // 任何返回路径都成对归零 pending。");
+    const drainAt = source.indexOf("drainMaskReleases(response, !response); // reject 也一定会 drain。", finallyAt);
+    assert.ok(finallyAt > 0 && drainAt > finallyAt); // reject 的 finally 仍然 drain。
+    assert.match(source, /for \(let attempt = 0; attempt < 2 && !response; attempt \+= 1\)/);
+    assert.match(source, /setTimeout\(resolve, 100\)/);
+    assert.match(source, /islandNativeFailClosed = true;/);
+    assert.match(source, /岛原生几何提交失败，已标记 fail-closed/);
+    assert.match(source, /settleMaskRelease\(maskToken, \{ alreadySynced: settled, failed: commitFailed \}\)/); // 失败走 800ms。
+});
+
+test("fail-closed 后同一窗口盒只由外部状态变化重提一次，成功后恢复去重", () => {
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /let failClosedResubmit = islandNativeFailClosed; \/\/ 仅在本次外部状态变化后的首个测量允许绕过一次去重/);
+    assert.match(source, /const deduped = key === geometryKey\.current && \(!expanded \|\| \(from && islandWindowKey\(from\) === key\)\);/);
+    assert.match(source, /if \(deduped && !failClosedResubmit\) \{/); // 只有标记允许绕过。
+    assert.match(source, /if \(failClosedResubmit\) failClosedResubmit = false; \/\/ 一次外部变化只强制重提一次，防自激/);
+    assert.match(source, /islandNativeFailClosed = false;\s*commitFailed = false;/); // 成功后清标记、恢复去重。
+    assert.equal((source.match(/islandNativeFailClosed = true/g) ?? []).length, 1); // 只有补偿失败会置真，无外部变化不自行置真。
+    assert.match(source, /islandNativeFailClosed = true;\s*commitFailed = true;\s*console\.warn/);
 });

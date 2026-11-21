@@ -246,3 +246,75 @@ export const parseIslandSnapshot = (value: unknown): IslandSnapshot => {
     if (runtime.instances.length !== instances.length) throw new Error("岛注册集合无效");
     return { runtime, instances };
 };
+
+/** 插件向浮岛消息锚点投递一条本地条目的事件名称。 */
+export const ISLAND_PLUGIN_MESSAGE_EVENT = "island-plugin-message";
+
+/** 插件条目的四档语气；等待与完成为浮岛既有的待确认与完成视觉。 */
+export type IslandPluginMessageKind = "info" | "waiting" | "done" | "error";
+
+/** 插件消息的身份与正文上限；与 Rust 侧常量同值，前端集中在这一处。 */
+export const ISLAND_PLUGIN_MESSAGE_LIMITS = {
+    source: 128, // 来源插件 componentId 的字符上限。
+    key: 128, // 插件内去重键的字符上限；不截断，超限拒绝。
+    text: 200, // 正文的 Unicode 字符上限；超限拒绝而不是截断。
+} as const;
+
+/** 去掉 C0/C1 控制字符，并把连续空白折成单个空格；消息与摘要共用。 */
+export const stripIslandControlCharacters = (value: string): string =>
+    value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+
+/** 按 Unicode 字符计数，避免 emoji 与代理对被 JS `.length` 误判。 */
+export const islandTextLength = (value: string): number => Array.from(value).length;
+
+/** 插件投递的一条岛内消息；`source` + `key` 一起构成去重身份。 */
+export interface IslandPluginMessage {
+    source: string; // 来源插件 componentId，避免跨插件 key 冲突。
+    key: string; // 插件内稳定去重键，同一来源同 key 只保留最新一条。
+    kind: IslandPluginMessageKind; // 条目语气。
+    text: string; // 单行正文，已剥离控制字符，超长直接拒收。
+    unixMillis: number; // 投递时刻，用于按到达时间排序。
+    uri?: string; // 可选导航去向；有值时消息条目可点击打开。
+}
+
+const ISLAND_PLUGIN_MESSAGE_KINDS: readonly IslandPluginMessageKind[] = ["info", "waiting", "done", "error"];
+/** 声明式导航地址上限（字符），与宿主 `publish_island_message` 一致。 */
+const ISLAND_NAVIGATION_URI_LIMIT = 512;
+const ISLAND_NAVIGATION_SCHEMES = ["dsh:", "https:"];
+
+/**
+ * 归一化导航地址：去空白、限长、去控制字符并只放行 dsh:/https:（协议前缀不区分大小写）。
+ * 返回 undefined 表示未声明或非法；调用方不得再把它当成可点项。
+ */
+export const normalizeIslandNavigationUri = (value: unknown): string | undefined => {
+    if (typeof value !== "string") return undefined;
+    const uri = value.trim();
+    // C0/DEL/C1 都算控制字符，与 Rust char::is_control 对齐。
+    if (!uri || [...uri].length > ISLAND_NAVIGATION_URI_LIMIT || /[\u0000-\u001F\u007F-\u009F]/u.test(uri)) return undefined;
+    const colon = uri.indexOf(":");
+    if (colon <= 0) return undefined;
+    return ISLAND_NAVIGATION_SCHEMES.includes(`${uri.slice(0, colon).toLowerCase()}:`) ? uri : undefined;
+};
+
+/** 严格校验插件消息载荷；缺字段、未知语气、空正文与超限都拒绝，坏数据不进入消息锚点。 */
+export const parseIslandPluginMessage = (value: unknown): IslandPluginMessage => {
+    const item = record(value);
+    const keys = ["source", "key", "kind", "text", "unixMillis", "uri"];
+    const present = Object.keys(item);
+    if ((present.length !== 5 && present.length !== 6) || present.some((key) => !keys.includes(key)) || keys.slice(0, 5).some((key) => !Object.hasOwn(item, key)))
+        throw new Error("插件消息字段无效");
+    if (typeof item.source !== "string") throw new Error("插件消息来源无效");
+    const source = stripIslandControlCharacters(item.source);
+    if (!source || islandTextLength(source) > ISLAND_PLUGIN_MESSAGE_LIMITS.source) throw new Error("插件消息来源无效");
+    if (typeof item.key !== "string") throw new Error("插件消息身份无效");
+    const key = stripIslandControlCharacters(item.key);
+    if (!key || islandTextLength(key) > ISLAND_PLUGIN_MESSAGE_LIMITS.key) throw new Error("插件消息身份无效");
+    if (!ISLAND_PLUGIN_MESSAGE_KINDS.includes(item.kind as IslandPluginMessageKind)) throw new Error("插件消息语气无效");
+    if (typeof item.text !== "string") throw new Error("插件消息正文无效");
+    const text = stripIslandControlCharacters(item.text);
+    if (!text || islandTextLength(text) > ISLAND_PLUGIN_MESSAGE_LIMITS.text) throw new Error("插件消息正文无效");
+    if (typeof item.unixMillis !== "number" || !Number.isSafeInteger(item.unixMillis) || item.unixMillis < 0) throw new Error("插件消息时间无效");
+    const uri = item.uri === undefined ? undefined : normalizeIslandNavigationUri(item.uri); // 可选导航地址，与宿主同一白名单。
+    if (item.uri !== undefined && !uri) throw new Error("插件消息导航地址无效");
+    return { source, key, kind: item.kind as IslandPluginMessageKind, text, unixMillis: item.unixMillis, ...(uri === undefined ? {} : { uri }) };
+};

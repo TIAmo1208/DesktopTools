@@ -150,7 +150,4 @@ fn datetime_to_unix_ms(value: DateTime) -> u64
 }
 
 /// 创建时刻缺失时的回落：用当前墙钟。
-fn now_ms() -> u64
-{
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
-}
+fn now_ms() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64 }

@@ -1,4 +1,4 @@
-import { ISLAND_ANCHOR_KEYS, islandAnchorVisible, type ApplicationPreferences } from "../../contracts/settings.ts";
+import { ISLAND_ANCHOR_KEYS, islandAnchorVisible, islandPluginAnchorVisible, type ApplicationPreferences } from "../../contracts/settings.ts";
 
 /**
  * 浮岛内容层纯模型：锚点身份与顺序、十种基础状态、叠加分层与接力节奏、hover 选中、
@@ -150,6 +150,9 @@ export interface IslandAnchor
     unit?: IslandContentUnit; // 纯锚点没有内容单元。
     count?: number; // 合并通知条数，超过 99 表示「99+」。
     noticeKey?: string; // 合并通知锚点最新条目的身份；同毫秒到达的不同条目也能区分。
+    componentId?: string; // 插件卡锚点的组件标识；逐卡锚点开关按它读取。
+    iconPath?: string; // 插件清单声明的身份图标相对路径。
+    uri?: string; // 插件声明的导航去向；有值时锚点可点击。
 }
 
 /** 功能身份缺省为普通事件；插件卡没有单独身份时也走事件图标。 */
@@ -163,6 +166,9 @@ export interface IslandAnchorArrival
     nowMs: number;
     kind?: IslandFunctionKind; // 功能身份；消息、常驻卡与插件各自标注。
     unit?: IslandContentUnit;
+    componentId?: string; // 插件卡锚点的组件标识；逐卡锚点开关按它读取。
+    iconPath?: string; // 插件清单声明的身份图标相对路径。
+    uri?: string; // 插件声明的导航去向；有值时锚点可点击。
 }
 
 /** 锚点身份：同来源换层级即换锚点，同层级同来源复用同一个锚点。 */
@@ -174,8 +180,8 @@ export const islandArrive = (anchors: readonly IslandAnchor[], arrival: IslandAn
     const id = islandAnchorId(arrival.layer, arrival.source);
     const index = anchors.findIndex((anchor) => anchor.id === id);
     if (index < 0)
-        return [...anchors, { id, source: arrival.source, layer: arrival.layer, updatedAtMs: arrival.nowMs, kind: arrival.kind, unit: arrival.unit }];
-    return anchors.map((anchor, position) => (position === index ? { ...anchor, updatedAtMs: arrival.nowMs, kind: arrival.kind ?? anchor.kind, unit: arrival.unit, count: undefined } : anchor));
+        return [...anchors, { id, source: arrival.source, layer: arrival.layer, updatedAtMs: arrival.nowMs, kind: arrival.kind, unit: arrival.unit, componentId: arrival.componentId, iconPath: arrival.iconPath, uri: arrival.uri }];
+    return anchors.map((anchor, position) => (position === index ? { ...anchor, updatedAtMs: arrival.nowMs, kind: arrival.kind ?? anchor.kind, unit: arrival.unit, count: undefined, componentId: arrival.componentId ?? anchor.componentId, iconPath: arrival.iconPath ?? anchor.iconPath, uri: arrival.uri ?? anchor.uri } : anchor));
 };
 
 /** 锚点行：最多并排三枚，其余折进「＋N」；被折叠的锚点在展开里仍按原顺序排列。 */
@@ -294,9 +300,13 @@ export const islandDropFace = (target: IslandDropTarget | undefined): IslandDrop
 };
 
 /** 胶囊与 hover 共用可见锚点；仅过滤显示，不变更已到达的事实、展开卡片或默认值。 */
-export const islandDisplayAnchors = (anchors: readonly IslandAnchor[], preferences: Pick<ApplicationPreferences, "islandAnchorVisible"> | undefined): IslandAnchor[] =>
+export const islandDisplayAnchors = (
+    anchors: readonly IslandAnchor[],
+    preferences: { islandAnchorVisible?: Record<string, boolean>; islandPluginAnchorVisible?: Record<string, boolean> } | undefined,
+): IslandAnchor[] =>
     anchors.filter((anchor) => {
         const kind = anchor.layer === "message" ? "message" : anchor.kind;
+        if (kind === "plugin") return anchor.componentId === undefined || islandPluginAnchorVisible(preferences, anchor.componentId); // 插件卡逐卡开关；旧全局 plugin 键不参与。
         const key = ISLAND_ANCHOR_KEYS.find((item) => item === kind);
         return key === undefined || islandAnchorVisible(preferences, key);
     });
@@ -342,3 +352,23 @@ export const islandCollectArrival = <T extends IslandCollectEntry>(previous: rea
         .sort((left, right) => right.createdUnixMs - left.createdUnixMs)[0];
     return added ? { activity: "completed", title: title(added) } : { activity: "idle" };
 };
+
+/** 浮岛展开卡里插件内容的观察目标：容器高度跟随插件根，分组切换后会被 ResizeObserver 看到。 */
+export const ISLAND_PLUGIN_LAYOUT_SELECTOR = ".island-card [data-plugin-container]";
+
+/** 列出需要观察的插件容器；没有插件卡时返回空表。 */
+export const islandPluginLayoutTargets = (root: ParentNode): Element[] => Array.from(root.querySelectorAll(ISLAND_PLUGIN_LAYOUT_SELECTOR));
+
+/** 给每个插件容器挂同一份观察回调，返回实际观察数量，便于验证插件卡确实进入测高链。 */
+export const observeIslandPluginLayout = (root: ParentNode, observe: (target: Element) => void): number => {
+    let count = 0;
+    for (const target of islandPluginLayoutTargets(root)) {
+        observe(target);
+        count += 1;
+    }
+    return count;
+};
+
+/** 内容观察器：任何被观察目标（含插件容器）的尺寸变化都强制重测一次。 */
+export const createIslandContentResizeObserver = (measure: () => void, Observer: typeof ResizeObserver): ResizeObserver =>
+    new Observer(() => measure());

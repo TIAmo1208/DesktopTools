@@ -124,6 +124,12 @@ pub struct ApplicationPreferences
     pub island_hide_on_fullscreen: bool,       // 前台全屏时隐藏岛。
     #[serde(default, deserialize_with = "deserialize_island_anchor_visible")]
     pub island_anchor_visible: std::collections::BTreeMap<String, bool>, // 逐功能「上浮岛显示」开关：键只允许 music、message、plugin，缺字段按空映射，前端逐项默认显示。
+    #[serde(default, deserialize_with = "deserialize_island_plugin_anchor_visible")]
+    pub island_plugin_anchor_visible: std::collections::BTreeMap<String, bool>, // 逐插件卡锚点显示：键为 plugin.* 组件标识，缺省显示；映射非空时旧全局 plugin 键不再参与判定。
+    #[serde(default = "default_true")]
+    pub island_message_card_visible: bool, // 消息通知展开卡是否显示，缺省显示。
+    #[serde(default)]
+    pub island_message_card_initialized: bool, // 消息卡是否已完成首次排序插入；缺省未初始化，避免把「旧配置没有该项」当成用户关闭。
     #[serde(default, deserialize_with = "deserialize_island_card_order")]
     pub island_card_order: Vec<String>, // 已启用岛卡及其展开态排列顺序。
     #[serde(default)]
@@ -202,6 +208,9 @@ impl Default for ApplicationPreferences
             island_offset: 0.0,
             island_hide_on_fullscreen: true,
             island_anchor_visible: std::collections::BTreeMap::new(),
+            island_plugin_anchor_visible: std::collections::BTreeMap::new(),
+            island_message_card_visible: true,
+            island_message_card_initialized: false,
             island_card_order: Vec::new(),
             island_weather_source: String::new(),
             island_weather_city_id: String::new(),
@@ -323,6 +332,49 @@ where
     }
     Ok(visible)
 }
+
+/// 逐插件锚点开关的数量上限。
+pub const ISLAND_PLUGIN_ANCHOR_LIMIT: usize = 64;
+
+/// 逐插件锚点开关：键必须是 `plugin.` 开头的合法组件标识，值必须为布尔，最多 64 项。
+///
+/// 未注册但格式合法的插件键保留在映射里，由渲染侧按当前清单忽略（不生效），
+/// 这样插件临时未加载时不会丢失用户选择；格式非法、非布尔或超过上限都直接报错。
+fn deserialize_island_plugin_anchor_visible<'de, D>(deserializer: D) -> Result<std::collections::BTreeMap<String, bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let visible = std::collections::BTreeMap::<String, bool>::deserialize(deserializer)?; // 非布尔值由 serde 原生报错。
+    if visible.len() > ISLAND_PLUGIN_ANCHOR_LIMIT
+    {
+        return Err(serde::de::Error::custom(format!("逐插件锚点开关最多 {ISLAND_PLUGIN_ANCHOR_LIMIT} 项")));
+    }
+    for component_id in visible.keys()
+    {
+        if !is_plugin_component_id(component_id)
+        {
+            return Err(serde::de::Error::custom(format!("逐插件锚点开关键无效：{component_id}")));
+        }
+    }
+    Ok(visible)
+}
+
+/// 插件组件标识：`plugin.` 前缀 + 小写字母、数字、点与连字符，总长不超过 128。
+pub fn is_plugin_component_id(value: &str) -> bool
+{
+    let Some(name) = value.strip_prefix("plugin.")
+    else
+    {
+        return false;
+    };
+    !name.is_empty() && value.len() <= 128 && value.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || matches!(character, '.' | '-'))
+}
+
+/// 单张插件卡的锚点是否显示。
+///
+/// 逐卡映射是唯一生效来源：映射里没有该组件时按缺省显示。
+/// 旧的全局 `islandAnchorVisible.plugin` 只做旧配置解析兼容，不再参与判定（与前端一致）。
+pub fn island_plugin_anchor_visible(preferences: &ApplicationPreferences, component_id: &str) -> bool { preferences.island_plugin_anchor_visible.get(component_id).copied().unwrap_or(true) }
 
 /// 字体族名只做字形名边界校验：内置系统字体和插件自带字体共用这条规则。
 pub fn is_font_family_name(value: &str) -> bool { !value.is_empty() && value.len() <= 64 && value.trim() == value && !value.chars().any(|character| character.is_control() || matches!(character, ';' | '{' | '}' | '(' | ')' | '\'' | '"' | '\\')) }
@@ -481,6 +533,73 @@ mod island_tests
         assert_eq!(value["islandWeatherSource"], "qweather");
         assert_eq!(value["islandWeatherCityId"], "101010100");
         assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap(), selected);
+    }
+
+    /// 消息卡偏好：缺省可见且未初始化，往返保真，非布尔值直接报错。
+    #[test]
+    fn island_message_card_preferences_default_roundtrip_and_type_boundary()
+    {
+        let defaults: ApplicationPreferences = serde_json::from_str("{}").unwrap();
+        assert!(defaults.island_message_card_visible, "缺省显示消息卡");
+        assert!(!defaults.island_message_card_initialized, "缺省未初始化");
+        let selected = ApplicationPreferences { island_message_card_visible: false, island_message_card_initialized: true, ..defaults };
+        let value = serde_json::to_value(&selected).unwrap();
+        assert_eq!(value["islandMessageCardVisible"], false);
+        assert_eq!(value["islandMessageCardInitialized"], true);
+        assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap(), selected);
+        for broken in [serde_json::json!({ "islandMessageCardVisible": "false" }), serde_json::json!({ "islandMessageCardVisible": 0 }), serde_json::json!({ "islandMessageCardInitialized": "yes" }), serde_json::json!({ "islandMessageCardInitialized": null })]
+        {
+            assert!(serde_json::from_value::<ApplicationPreferences>(broken.clone()).is_err(), "{broken} 必须拒绝");
+        }
+    }
+
+    /// 逐插件锚点开关：缺省显示、合法写入往返、未知插件键保留但不生效。
+    #[test]
+    fn island_plugin_anchor_visible_defaults_and_roundtrip()
+    {
+        let defaults: ApplicationPreferences = serde_json::from_str("{}").unwrap();
+        assert!(defaults.island_plugin_anchor_visible.is_empty(), "旧配置缺字段按空映射读取");
+        assert!(super::island_plugin_anchor_visible(&defaults, "plugin.dsh-status"), "缺省显示");
+        let selected: ApplicationPreferences = serde_json::from_value(serde_json::json!({ "islandPluginAnchorVisible": { "plugin.dsh-status": false, "plugin.not-installed": true } })).unwrap();
+        assert_eq!(selected.island_plugin_anchor_visible, std::collections::BTreeMap::from([("plugin.dsh-status".into(), false), ("plugin.not-installed".into(), true)]));
+        assert!(!super::island_plugin_anchor_visible(&selected, "plugin.dsh-status"), "逐卡关闭生效");
+        assert!(super::island_plugin_anchor_visible(&selected, "plugin.not-installed"), "未知插件键保留但不改变缺省");
+        assert!(super::island_plugin_anchor_visible(&selected, "plugin.other"), "映射里没有的组件按缺省显示");
+        let value = serde_json::to_value(&selected).unwrap();
+        assert_eq!(value["islandPluginAnchorVisible"], serde_json::json!({ "plugin.dsh-status": false, "plugin.not-installed": true }));
+        assert_eq!(serde_json::from_value::<ApplicationPreferences>(value).unwrap(), selected);
+    }
+
+    /// 逐插件锚点开关严格校验：非法键、非布尔值与超过 64 项都报错。
+    #[test]
+    fn island_plugin_anchor_visible_rejects_invalid_entries()
+    {
+        for key in ["dsh-status", "official.clock", "plugin.", "plugin.DSH", "plugin.a b", &"plugin.".to_string().chars().chain("x".repeat(130).chars()).collect::<String>()]
+        {
+            let mut map = serde_json::Map::new();
+            map.insert(key.to_string(), serde_json::json!(true));
+            assert!(serde_json::from_value::<ApplicationPreferences>(serde_json::json!({ "islandPluginAnchorVisible": map })).is_err(), "{key:?} 应被拒绝");
+        }
+        for bad in [serde_json::json!(1), serde_json::json!("false"), serde_json::json!(null)]
+        {
+            assert!(serde_json::from_value::<ApplicationPreferences>(serde_json::json!({ "islandPluginAnchorVisible": { "plugin.dsh": bad } })).is_err());
+        }
+        let within = (0..super::ISLAND_PLUGIN_ANCHOR_LIMIT).map(|index| (format!("plugin.card-{index}"), serde_json::json!(true))).collect::<serde_json::Map<_, _>>();
+        assert!(serde_json::from_value::<ApplicationPreferences>(serde_json::json!({ "islandPluginAnchorVisible": within })).is_ok(), "上限内合法");
+        let over = (0..=super::ISLAND_PLUGIN_ANCHOR_LIMIT).map(|index| (format!("plugin.card-{index}"), serde_json::json!(true))).collect::<serde_json::Map<_, _>>();
+        assert!(serde_json::from_value::<ApplicationPreferences>(serde_json::json!({ "islandPluginAnchorVisible": over })).is_err(), "超过 64 项必须拒绝");
+    }
+
+    /// 旧全局 plugin 键只做解析兼容，不再参与判定；逐卡映射是唯一来源（与前端一致）。
+    #[test]
+    fn legacy_global_plugin_anchor_never_applies()
+    {
+        let legacy: ApplicationPreferences = serde_json::from_value(serde_json::json!({ "islandAnchorVisible": { "plugin": false } })).unwrap();
+        assert!(super::island_plugin_anchor_visible(&legacy, "plugin.dsh-status"), "旧全局键不再隐藏插件锚点");
+        assert!(super::island_plugin_anchor_visible(&legacy, "plugin.other"), "缺项按显示");
+        let mixed: ApplicationPreferences = serde_json::from_value(serde_json::json!({ "islandAnchorVisible": { "plugin": true }, "islandPluginAnchorVisible": { "plugin.dsh-status": false } })).unwrap();
+        assert!(!super::island_plugin_anchor_visible(&mixed, "plugin.dsh-status"), "逐卡映射生效");
+        assert!(super::island_plugin_anchor_visible(&mixed, "plugin.other"), "映射里没有的组件按显示");
     }
 
     /// 锚点显隐严格校验：缺字段与空对象按空映射读取，键只接受约定三值，非布尔值与未知键直接报错。

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { islandGeometry } from "./islandGeometry.ts";
 import {
     ISLAND_HOVER_DELAY_MS,
+    islandLeaveSuppressed,
     ISLAND_NO_DRAG,
     islandDragIntent,
     islandSortTarget,
@@ -18,6 +21,8 @@ import {
     islandContourDistance,
     islandExtraBands,
     islandScrollGeometry,
+    islandExpandedBlank, beginIslandExpandedGrace, islandExpandedGraceActive, ISLAND_EXPAND_GRACE_MS,
+    islandExpandedDwellBlocked,
     islandHitRegion,
     islandExpandedDwellStep,
     islandMarginStep,
@@ -233,7 +238,7 @@ test("展开态透明带命中：只有并集减目标内容盒的额外带退�
         const metrics = { mode: "expanded" as const, settled: true, scrollHeight: 900, clientHeight: card.height, scrollTop: 0 };
         const layout = islandScrollGeometry(islandFrame("expanded", window), islandFrame("expanded", card), edge, metrics);
         assert.equal(layout.visible, true, `${label} 溢出且已提交时必须出条`);
-        assert.equal(layout.bands.length, 2, `${label} 退回带数量`);
+        assert.equal(layout.bands.length, islandHorizontalEdge(edge) ? 2 : 4, `${label} 退回带数量`); // 左右贴边同时有上下与左右透明列。
         const band = layout.bands[0]!;
         const bandPoint = islandHorizontalEdge(edge)
             ? { x: band.left + band.width / 2, y: window.top + window.height / 2 }
@@ -241,13 +246,13 @@ test("展开态透明带命中：只有并集减目标内容盒的额外带退�
         assert.equal(islandHitRegion("expanded", bandPoint, layout, contour), "extra-band", `${label} 额外带必须退回`);
         assert.equal(islandHitRegion("hover", bandPoint, layout, contour), "transparent", `${label} 非展开态同一点只是透明边距`);
         assert.equal(islandHitRegion("expanded", { x: card.left + card.width / 2, y: card.top + card.height / 2 }, layout, contour), "content", `${label} 内容盒内保持内容`);
-        assert.equal(islandHitRegion("expanded", { x: window.left - 0.5, y: window.top + window.height / 2 }, layout, contour), "outside", `${label} 窗口外不归浮岛`);
+        assert.equal(islandHitRegion("expanded", { x: layout.window.left - 0.5, y: layout.window.top + layout.window.height / 2 }, layout, contour), "outside", `${label} 视口外不归浮岛`);
         const { track, thumb } = layout;
         assert.ok(track && thumb, `${label} 出条时必须有 track 与 thumb`);
         // 滚动条矩形从退回带里扣除：右侧轨道落在额外带内，但不能退回。
         const trackPoint = { x: track.left + track.width / 2, y: track.top + track.height / 2 };
         assert.ok(islandPointInRect(trackPoint, layout.window), `${label} 轨道必须落在并集窗口内`);
-        if (islandHorizontalEdge(edge)) assert.ok(layout.bands.some((value) => islandPointInRect(trackPoint, value)), `${label} 轨道落在退回带内，扣除才有意义`);
+        assert.equal(layout.bands.some((value) => islandPointInRect(trackPoint, value)), false, `${label} 轨道在内容列内，不属于透明带`); // 槽先判 scrollbar，不靠退回带扣除。
         assert.equal(islandHitRegion("expanded", trackPoint, layout, contour), "scrollbar", `${label} 滚动条必须可交互`);
         // 未完成提交或未溢出时同一点不再归滚动条。
         const hidden = islandScrollGeometry(islandFrame("expanded", window), islandFrame("expanded", card), edge, { ...metrics, settled: false });
@@ -280,46 +285,49 @@ test("展开回退计时只响应跨边界，空白列移动不会重新开始",
     assert.equal(ISLAND_MARGIN_DELAY_MS, 120);
 });
 
-test("全高展开按四边选择空白带，只有离开边界启动 120ms，移动不延后", () => {
+test("全高展开列与工作区同高时不再伪造上下空白带，只保留列外透明区", () => {
     for (const edge of islandEdges) {
-        const window = { left: 100, top: 40, width: 216, height: 900 };
-        const cardLeft = edge === "right" ? 16 : 0;
-        const offset = edge === "top" ? 0 : edge === "bottom" ? 696 : 351;
-        const frame = { ...islandFrame("expanded", window), cards: [
-            { rect: { left: cardLeft, top: offset, width: 200, height: 110 }, radius: 12 },
-            { rect: { left: cardLeft, top: offset + 118, width: 200, height: 80 }, radius: 12 },
-            { rect: { left: cardLeft, top: offset + 110, width: 200, height: 8 }, radius: 0 },
-        ] };
+        const window = { left: 0, top: 0, width: 216, height: 900 };
+        const frame = { ...islandFrame("expanded", window, window), cards: [{ rect: { left: 0, top: 0, width: 200, height: 900 }, radius: 12 }] };
         const metrics = { mode: "expanded" as const, settled: true, scrollHeight: 900, clientHeight: 900, scrollTop: 0 };
         const layout = islandScrollGeometry(frame, frame, edge, metrics);
-        const expected = edge === "top" ? [{ ...window, top: 238, height: 702 }] : edge === "bottom" ? [{ ...window, height: 696 }] : [{ ...window, height: 351 }, { ...window, top: 589, height: 351 }];
-        assert.deepEqual(layout.bands, expected, edge);
-        const contour = islandHitContour(frame.cards.slice(0, 2).map(({ rect }) => ({ rect: { ...rect, left: rect.left + window.left, top: rect.top + window.top }, radii: [12, 12, 12, 12] })), window, edge, "capsule", 0);
+        assert.deepEqual(layout.bands, [], `${edge} 全高内容列没有上下余量`);
+        const contour = islandHitContour([{ rect: { left: 0, top: 0, width: 200, height: 900 }, radii: [12, 12, 12, 12] }], window, edge, "capsule", 0);
         const classify = (x: number, y: number) => islandHitRegion("expanded", { x, y }, layout, contour);
-        assert.equal(classify(180, 154 + offset), "transparent");
-        assert.equal(classify(layout.gutter!.left + 2, 800), "scrollbar");
-        if (edge === "bottom") assert.equal(classify(180, 937), "transparent", "底边 6 DIP 不计时");
-        for (const band of expected) {
-            const region = classify(180, band.top + band.height / 2);
-            assert.equal(region, "extra-band");
-            const dwell = islandExpandedDwellStep("content", "blank");
-            assert.deepEqual(dwell, { state: "blank", timer: "start" });
-            assert.deepEqual(islandExpandedDwellStep(dwell.state, "blank"), { state: "blank", timer: undefined });
-            assert.equal(islandExpandedDwellStep(dwell.state, "content").timer, "cancel");
-            const input = { mode: "expanded" as const, region, now: 0, busy: false, outlineDistance: 1, coreDistance: 1 };
-            const entered = islandMarginStep({ latch: "open" }, input);
-            assert.equal(islandMarginStep(entered.state, { ...input, now: 119 }).collapse, false);
-            assert.equal(islandMarginStep(entered.state, { ...input, now: 120 }).collapse, true);
-        }
-        const clipped = { ...frame, cards: [{ rect: { left: cardLeft, top: 0, width: 200, height: 900 }, radius: 12 }] };
-        assert.deepEqual(islandScrollGeometry(clipped, clipped, edge, { ...metrics, scrollHeight: 1200, scrollTop: 200 }).bands, []);
+        assert.equal(classify(100, 500), "content");
+        assert.equal(classify(layout.gutter!.left + 2, 500), "scrollbar");
+        const input = { mode: "expanded" as const, region: "content" as const, now: 0, busy: false, outlineDistance: 1, coreDistance: 1 };
+        const entered = islandMarginStep({ latch: "open" }, input);
+        assert.equal(islandMarginStep(entered.state, { ...input, now: 1000 }).collapse, false); // 列内 1s 不收回。
+    }
+});
+
+test("展开四边 + 非零 offset 使用同一工作区坐标系：列内非空白、列外空白、1s 不收回", () => {
+    const work = { left: 0, top: 0, width: 2560, height: 1400 };
+    const card = { left: 0, top: 0, width: 320, height: 108 };
+    for (const edge of islandEdges) {
+        const request = islandGeometry("expanded", [card], 12, work, edge, 120);
+        const frame = { ...request, viewport: { left: 2140, top: 0, width: 420, height: 1400 } }; // 模拟仍拿旧窄视口 frame。
+        const metrics = { mode: "expanded" as const, settled: true, scrollHeight: 1400, clientHeight: 1400, scrollTop: 0 };
+        const layout = islandScrollGeometry(frame, request, edge, metrics, work);
+        const columnX = request.windowBox.left - work.left;
+        const inside = { x: columnX + 10, y: 20 };
+        const outsideLeft = { x: Math.max(0, columnX - 10), y: 20 };
+        const outsideRight = { x: columnX + request.windowBox.width + 10, y: 20 };
+        assert.equal(islandExpandedBlank(layout, inside, false), false, `${edge} ${columnX} 列内`);
+        assert.equal(islandExpandedBlank(layout, outsideLeft, false), columnX > 0, `${edge} 列左空白`);
+        assert.equal(islandExpandedBlank(layout, outsideRight, false), outsideRight.x < work.width, `${edge} 列右空白`);
+        assert.equal(layout.window.width, work.width, `${edge} 命中窗口=工作区宽`);
+        const input = { mode: "expanded" as const, region: "content" as const, now: 0, busy: false, outlineDistance: 1, coreDistance: 1 };
+        const entered = islandMarginStep({ latch: "open" }, input);
+        assert.equal(islandMarginStep(entered.state, { ...input, now: 1000 }).collapse, false, `${edge} 1s 不收回`);
     }
 });
 
 test("展开滚动条只在溢出且已提交时出现，track/thumb 几何与滚动位置一致", () => {
     const window: IslandRect = { left: 100, top: 40, width: 200, height: 200 };
     const target: IslandRect = { left: 100, top: 40, width: 160, height: 120 };
-    const frame = islandFrame("expanded", window), content = islandFrame("expanded", target);
+    const frame = islandFrame("expanded", window, window), content = islandFrame("expanded", target, window);
     const metrics = { mode: "expanded" as const, settled: true, scrollHeight: 400, clientHeight: 200, scrollTop: 0 };
     const geometry = islandScrollGeometry(frame, content, "top", metrics);
     assert.equal(geometry.visible, true);
@@ -329,12 +337,12 @@ test("展开滚动条只在溢出且已提交时出现，track/thumb 几何与�
     assert.equal(islandScrollGeometry(frame, content, "top", { ...metrics, settled: false }).visible, false);
     assert.equal(islandScrollGeometry(frame, content, "top", { ...metrics, scrollHeight: 200 }).visible, false);
     assert.equal(islandScrollGeometry(frame, content, "top", { ...metrics, scrollHeight: 100 }).visible, false);
-    assert.equal(islandScrollGeometry({ ...frame, windowBox: { ...window, height: 8 } }, content, "top", metrics).visible, false);
+    assert.equal(islandScrollGeometry({ ...frame, windowBox: { ...window, height: 8 }, viewport: { ...window, height: 8 } }, content, "top", metrics).visible, false); // 视口过矮不出条。
     // 窗口与目标缺省时客户区坐标相对固定视口，不另读 root.right。
     const offset = islandScrollGeometry(islandFrame("expanded", window, { left: 90, top: 30, width: 420, height: 300 }), undefined, "top", metrics);
-    assert.deepEqual(offset.window, { left: 10, top: 10, width: 200, height: 200 });
-    assert.deepEqual(offset.content, offset.window);
-    assert.deepEqual(offset.bands, []);
+    assert.deepEqual(offset.window, { left: 0, top: 0, width: 420, height: 300 }); // 展开视口铺满工作区。
+    assert.deepEqual(offset.content, { left: 10, top: 10, width: 200, height: 200 });
+    assert.equal(offset.bands.length, 2); // 内容列左右两侧的透明区。
     // 滑块到两端时严格贴轨道两端。
     const start = islandScrollGeometry(frame, content, "top", { ...metrics, scrollTop: 0 });
     near(start.thumb!.top, start.track!.top, "滑块顶端贴轨道顶端");
@@ -483,4 +491,150 @@ test("收起收口先瞬时隐藏再提交，取消后两者都不执行", () =>
     const settle = { hide: () => { opacity = 0; fallback.push(`hide:${opacity}`); }, commit: () => fallback.push(`commit:${opacity}`) };
     assert.equal(islandCollapseSettle(1, 1, settle), true);
     assert.deepEqual(fallback, ["hide:0", "commit:0"], "兜底必须先瞬时隐藏到 0 再提交");
+});
+
+test("展开视口铺满工作区：透明区停留/点击回退，内容列与拖动例外", () => {
+    const work = { left: 0, top: 0, width: 800, height: 600 };
+    const column = { left: 220, top: 0, width: 360, height: 600 };
+    const frame = { ...islandFrame("expanded", column, work), cards: [{ rect: { left: 0, top: 0, width: 360, height: 200 }, radius: 12 }] };
+    const layout = islandScrollGeometry(frame, frame, "top", { mode: "expanded", settled: true, scrollHeight: 600, clientHeight: 600, scrollTop: 0 });
+    assert.deepEqual(layout.window, work); // 命中窗口等于工作区，不再只有 420 带。
+    assert.equal(islandExpandedBlank(layout, { x: 50, y: 300 }, false), true); // 内容列左侧透明区。
+    assert.equal(islandExpandedBlank(layout, { x: 400, y: 300 }, false), false); // 内容列内不触发。
+    assert.equal(islandExpandedBlank(layout, { x: 50, y: 300 }, true), false); // 卡片上的操作不触发。
+    const input = { mode: "expanded" as const, region: "extra-band" as const, busy: false, outlineDistance: 1, coreDistance: 1 };
+    const entered = islandMarginStep({ latch: "open" }, { ...input, now: 0 });
+    assert.equal(islandMarginStep(entered.state, { ...input, now: 119 }).collapse, false);
+    assert.equal(islandMarginStep(entered.state, { ...input, now: 120 }).collapse, true); // 连续停留 120ms 回胶囊。
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /islandExpandedBlank\(layout, \{ x: event\.clientX, y: event\.clientY \}, onCard\)/); // 透明区单击直接回退。
+    assert.match(source, /event\.type !== "pointerup" \|\| transitionMasked\.current \|\| modeRef\.current !== "expanded" \|\| cardSorting\.current/); // 拖动中不回退。
+});
+
+test("展开工作区左右透明列都可回退：左贴边、居中、右贴边", () => {
+    const work = { left: 0, top: 0, width: 800, height: 600 };
+    for (const [edge, column] of [["left", { left: 0, width: 360 }], ["top", { left: 220, width: 360 }], ["right", { left: 440, width: 360 }]] as const) {
+        const content = { left: column.left, top: 0, width: column.width, height: 600 };
+        const frame = { ...islandFrame("expanded", content, work), cards: [{ rect: { left: 0, top: 0, width: column.width, height: 200 }, radius: 12 }] };
+        const layout = islandScrollGeometry(frame, frame, edge, { mode: "expanded", settled: true, scrollHeight: 600, clientHeight: 600, scrollTop: 0 });
+        assert.ok(layout.bands.length >= 1, `${column.left} 至少一侧有透明带`);
+        for (let x = 0; x < 800; x += 10) {
+            const blank = islandExpandedBlank(layout, { x, y: 500 }, false);
+            const inside = x >= column.left && x < column.left + column.width;
+            assert.equal(blank, !inside, `x=${x} 内容列内不退回、列外可回退`);
+        }
+        assert.equal(islandExpandedBlank(layout, { x: column.left + 10, y: 20 }, true), false); // 卡片上不退回。
+        assert.equal(islandExpandedBlank(layout, { x: layout.gutter!.left + 2, y: 500 }, false), false); // 滚动条槽不退回。
+    }
+});
+
+test("拖卡排序期间透明区 119/120ms 都不回退，结束后恢复，Esc 仍取消", () => {
+    const base = { mode: "expanded" as const, region: "extra-band" as const, outlineDistance: 1, coreDistance: 1 };
+    const sorting = islandExpandedDwellBlocked(true, false);
+    assert.equal(sorting, true);
+    const during = islandMarginStep({ latch: "open" }, { ...base, busy: sorting, now: 0 });
+    assert.equal(islandMarginStep(during.state, { ...base, busy: sorting, now: 119 }).collapse, false);
+    assert.equal(islandMarginStep(during.state, { ...base, busy: sorting, now: 120 }).collapse, false); // 第二指针拖排中不回退。
+    assert.equal(islandExpandedDwellBlocked(false, true), true); // 其它交互忙同样阻止。
+    const after = islandMarginStep({ latch: "open" }, { ...base, busy: false, now: 0 });
+    assert.equal(islandMarginStep(after.state, { ...base, busy: false, now: 119 }).collapse, false);
+    assert.equal(islandMarginStep(after.state, { ...base, busy: false, now: 120 }).collapse, true); // 排序结束恢复 120ms。
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /if \(cardSorting\.current\) \{\s*cancelExpandedReturn\(true\); \/\/ 拖卡排序期间第二指针/);
+    assert.match(source, /islandExpandedDwellBlocked\(cardSorting\.current, interactionBusy\(\)\)/); // 到点再检查。
+    assert.match(source, /suppressClick\.current = false;\s*cancelExpandedReturn\(true\); \/\/ 排序结束/);
+    assert.match(source, /if \(cardSorting\.current\) \{ endCardSort\(\); return; \} \/\/ Esc/); // 不拦截取消。
+});
+
+test("触发展开后的同一次交互在 300ms/4 DIP 内不触发空白回退", () => {
+    const start = beginIslandExpandedGrace(1000, { x: 400, y: 300 });
+    assert.equal(ISLAND_EXPAND_GRACE_MS, 300);
+    assert.equal(islandExpandedGraceActive(start, 1299, { x: 400, y: 300 }), true); // 同一指针未移动。
+    assert.equal(islandExpandedGraceActive(start, 1300, { x: 400, y: 300 }), false); // 到点恢复。
+    assert.equal(islandExpandedGraceActive(start, 1100, { x: 405, y: 300 }), false); // 移动超过 4 DIP 立即恢复。
+    assert.equal(islandExpandedGraceActive(start, 1100, { x: 404, y: 300 }), true); // 4 DIP 内仍抑制。
+    const keyboard = beginIslandExpandedGrace(1000); // Enter 展开没有指针起点，按时间窗抑制。
+    assert.equal(islandExpandedGraceActive(keyboard, 1200, { x: 900, y: 900 }), true);
+    assert.equal(islandExpandedGraceActive(keyboard, 1300, { x: 900, y: 900 }), false);
+
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /expandedGrace\.current = beginIslandExpandedGrace\(performance\.now\(\), \{ x: event\.clientX, y: event\.clientY \}\);/); // 点击展开登记。
+    assert.match(source, /expandedGrace\.current = beginIslandExpandedGrace\(performance\.now\(\)\);/); // Enter 展开登记。
+    assert.match(source, /if \(islandExpandedGraceActive\(expandedGrace\.current, performance\.now\(\), gracePoint\)\) return;/); // 抑制 120ms 停留。
+    assert.match(source, /if \(islandExpandedGraceActive\(expandedGrace\.current, performance\.now\(\), \{ x: event\.clientX, y: event\.clientY \}\)\) return;/); // 抑制空白单击。
+    assert.match(source, /if \(cardSorting\.current\) \{\s*cancelExpandedReturn\(true\); \/\/ 拖卡排序期间第二指针/); // 拖排例外未改。
+});
+
+test("卡片单击展开与拖拽解耦，控件/移动/拖排不触发", () => {
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /const tapCandidate = useRef<\{ id: number; x: number; y: number; mode: IslandMode \} \| undefined>\(undefined\);/);
+    assert.match(source, /const control = target\.closest\("button, a, input, textarea, select, \[role='button'\], \[data-island-card-handle\]"\);/); // 控件不记候选。
+    assert.match(source, /tapCandidate\.current = event\.button === 0 && !control \? \{ id: event\.pointerId, x: event\.screenX, y: event\.screenY, mode: modeRef\.current \} : undefined;/);
+    assert.match(source, /const tap = tapCandidate\.current;/);
+    assert.match(source, /const canExpand = event\.type === "pointerup" && tap && tap\.id === event\.pointerId && !suppressClick\.current && !moved && hit && root\.current\?\.contains\(hit\) && !onControl;/); // 卡片点击走 tap，不走 gesture。
+    assert.match(source, /expandedGrace\.current = beginIslandExpandedGrace\(performance\.now\(\), \{ x: event\.clientX, y: event\.clientY \}\);/); // 保留 t126 grace。
+    assert.match(source, /const intent = islandDragIntent\(mode, event\.button, Boolean\(target\.closest\(ISLAND_NO_DRAG\)\), Boolean\(target\.closest\("\.island-card"\)\)\);/); // 拖拽路径未改。
+    assert.equal(islandDragMoved({ x: 0, y: 0 }, { x: 3, y: 0 }), false);
+    assert.equal(islandDragMoved({ x: 0, y: 0 }, { x: 5, y: 0 }), true); // 超过 4 DIP 不展开。
+});
+
+test("工作区 2560、列 1092..1468、指针 1250,60 判为列内，300,60 为列外；1s 不收回", () => {
+    const work = { left: 0, top: 0, width: 2560, height: 1400 };
+    const column = { left: 1092, top: 0, width: 376, height: 1400 };
+    const frame = { ...islandFrame("expanded", column, { left: 2140, top: 0, width: 420, height: 1400 }), cards: [{ rect: { left: 1149, top: 0, width: 262, height: 108 }, radius: 12 }] };
+    const layout = islandScrollGeometry(frame, frame, "top", { mode: "expanded", settled: true, scrollHeight: 1400, clientHeight: 1400, scrollTop: 0 }, work);
+    assert.equal(islandExpandedBlank(layout, { x: 1250, y: 60 }, false), false); // 指针在卡片/列内。
+    assert.equal(islandExpandedBlank(layout, { x: 300, y: 60 }, false), true); // 列外空白。
+    assert.equal(layout.column.left, 1092);
+    assert.equal(layout.window.width, 2560);
+    const input = { mode: "expanded" as const, region: "content" as const, now: 0, busy: false, outlineDistance: 1, coreDistance: 1 };
+    const entered = islandMarginStep({ latch: "open" }, input);
+    assert.equal(islandMarginStep(entered.state, { ...input, now: 1000 }).collapse, false);
+});
+
+test("假 pointerleave：遮蔽/grace/尺寸变化/坐标仍在窗口或列内时忽略，真离开才收", () => {
+    const window = { left: 0, top: 0, width: 2560, height: 1400 };
+    const column = { left: 1092, top: 0, width: 376, height: 1400 };
+    const base = { masked: false, graceActive: false, resizedAt: 0, now: 1000 };
+    assert.equal(islandLeaveSuppressed({ ...base, point: { x: 1180, y: 80 }, windowRect: window }), true); // 指针仍在岛内。
+    assert.equal(islandLeaveSuppressed({ ...base, point: { x: 300, y: 80 }, windowRect: window, contentRect: column }), true); // 工作区内透明列也非离岛。
+    assert.equal(islandLeaveSuppressed({ ...base, point: { x: 3000, y: 80 }, windowRect: window }), false); // 真移出窗口。
+    assert.equal(islandLeaveSuppressed({ ...base, masked: true, point: { x: 3000, y: 80 } }), true);
+    assert.equal(islandLeaveSuppressed({ ...base, graceActive: true, point: { x: 3000, y: 80 } }), true);
+    assert.equal(islandLeaveSuppressed({ ...base, resizedAt: 900, now: 1100, point: { x: 3000, y: 80 } }), true); // 尺寸变化 300ms 内忽略。
+    assert.equal(islandLeaveSuppressed({ ...base, resizedAt: 700, now: 1100, point: { x: 3000, y: 80 } }), false);
+
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /const leaveIsFake = \(event\?: \{ screenX: number; screenY: number \}\): boolean =>/);
+    assert.match(source, /if \(leaveIsFake\(event\)\) return; \/\/ 窗口放大\/刚展开时的 pointerleave 不是真正离岛；真实屏幕坐标在盒外仍放行。/);
+    assert.match(source, /if \(leaveIsFake\(event\)\) return; \/\/ 假离开不撤触发者、不收起；屏幕坐标在盒外才继续。/);
+    assert.match(source, /geometryResizeAt\.current = performance\.now\(\); \/\/ 原生窗口即将换尺寸/);
+    assert.match(source, /lastPointerPoint\.current = \{ x: event\.clientX, y: event\.clientY \};/);
+});
+
+test("真离开用事件屏幕坐标：hover 窗口外 leave 收回，岛内/遮蔽/grace 忽略", () => {
+    const hoverWindow = { left: 100, top: 100, width: 286, height: 108 };
+    const base = { masked: false, graceActive: false, resizedAt: 0, now: 1000 };
+    assert.equal(islandLeaveSuppressed({ ...base, point: { x: 300, y: 800 }, windowRect: hoverWindow }), false); // 屏幕别处真离开。
+    assert.equal(islandLeaveSuppressed({ ...base, point: { x: 180, y: 150 }, windowRect: hoverWindow }), true); // 仍在 hover 窗口。
+    assert.equal(islandLeaveSuppressed({ ...base, point: { x: 1180, y: 80 }, windowRect: { left: 0, top: 0, width: 2560, height: 1400 } }), true); // 展开工作区内。
+    assert.equal(islandLeaveSuppressed({ ...base, masked: true, point: { x: 300, y: 800 }, windowRect: hoverWindow }), true);
+    assert.equal(islandLeaveSuppressed({ ...base, graceActive: true, point: { x: 300, y: 800 }, windowRect: hoverWindow }), true);
+
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /const eventPoint = event && Number\.isFinite\(event\.screenX\)/); // 事件屏幕坐标优先。
+    assert.match(source, /const point = eventPoint \?\? lastPointerScreen\.current;/); // last 仅兜底。
+    assert.match(source, /const windowRect = expanded \? expandedWork : frame\?\.windowBox;/); // 屏幕窗口盒。
+    assert.match(source, /leaveWindow\(event\);/);
+});
+
+test("收起回胶囊后复位 latch/gate，离开再进入可再次 hover", () => {
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /marginState\.current = \{ latch: next === "collapsed" \|\| !retainLatch \? "open" : "blocked" \}; \/\/ 回胶囊必须清 latch/);
+    assert.match(source, /else if \(expandedDwellClosing\.current\) \{\s*expandedReentryGate\.current = true;/);
+    assert.match(source, /\}, 600\); \/\/ 只在刚收起后的极短窗口阻止旧指针立即回 hover。/);
+    assert.match(source, /expandedReentryGate\.current = false; \/\/ 真正离开后不再阻止下一次 hover。/);
+    assert.match(source, /if \(modeRef\.current === "collapsed"\) marginState\.current = \{ latch: "open" \};/);
+    assert.match(source, /expandedReentryGate\.current = false; \/\/ 重新进入说明已离开过，解除极短 gate。/);
+    assert.match(source, /const hoverLatched = \(\) => modeRef\.current !== "collapsed" && marginState\.current\.latch !== "open";/); // hover 判定仍读同一 latch。
 });

@@ -5,43 +5,44 @@ use zeroize::Zeroize;
 
 use crate::component_runtime::ComponentRuntimeState;
 use crate::component_runtime::loopback::{LoopbackNotifier, event_kind};
-use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentRuntimeError, LoopbackChannelHandle, LoopbackChannelMode, LoopbackRequest, LoopbackResponse, RegisterLoopbackChannel};
+use crate::contracts::{COMPONENT_HOST_EVENT, ComponentCapability, ComponentRuntimeError, CredentialTarget, LEGACY_CREDENTIAL_TARGET, LoopbackChannelHandle, LoopbackChannelMode, LoopbackRequest, LoopbackResponse, RegisterLoopbackChannel, classify_credential_target};
+use crate::preferences::SettingsState;
 use crate::workspace::WorkspaceState;
 
 /// 插件在实例内注册一条本机 loopback 通道。
 #[tauri::command]
-pub fn register_loopback_channel(app: AppHandle, state: State<'_, ComponentRuntimeState>, workspace: State<'_, WorkspaceState>, instance_id: String, channel_id: String, mode: LoopbackChannelMode, port: Option<u16>, base_url: Option<String>, credential_ref: Option<String>, header_name: Option<String>) -> Result<LoopbackChannelHandle, ComponentRuntimeError> { execute_register_loopback_channel(&app, &state, &workspace, RegisterLoopbackChannel { instance_id, channel_id, mode, port, base_url, credential_ref, header_name }) }
+pub fn register_loopback_channel(app: AppHandle, state: State<'_, ComponentRuntimeState>, workspace: State<'_, WorkspaceState>, settings: State<'_, SettingsState>, instance_id: String, channel_id: String, mode: LoopbackChannelMode, port: Option<u16>, base_url: Option<String>, credential_ref: Option<String>, header_name: Option<String>, credential_prefix: Option<String>) -> Result<LoopbackChannelHandle, ComponentRuntimeError> { execute_register_loopback_channel(&app, &state, &workspace, &settings, RegisterLoopbackChannel { instance_id, channel_id, mode, port, base_url, credential_ref, header_name, credential_prefix }) }
 
 /// Tauri 与本地 transport 共用的通道注册执行。
-pub(crate) fn execute_register_loopback_channel(app: &AppHandle, state: &ComponentRuntimeState, workspace: &WorkspaceState, request: RegisterLoopbackChannel) -> Result<LoopbackChannelHandle, ComponentRuntimeError>
+pub(crate) fn execute_register_loopback_channel(app: &AppHandle, state: &ComponentRuntimeState, workspace: &WorkspaceState, settings: &SettingsState, request: RegisterLoopbackChannel) -> Result<LoopbackChannelHandle, ComponentRuntimeError>
 {
-    let workspace = workspace.snapshot().map_err(|error| ComponentRuntimeError::invalid_instance(error.message))?; // 统一工作区的实例来源。
-    let registration = state.authorize_capability(&workspace.components, &request.instance_id, ComponentCapability::LoopbackChannel)?;
+    let instances = super::component::merged_instances(state, workspace, settings)?; // 工作区实例 + 允许上岛的合成实例。
+    let registration = state.authorize_capability_on(&instances, &request.instance_id, ComponentCapability::LoopbackChannel)?; // 岛实例走同一能力门禁。
     state.loopback().set_notifier(loopback_notifier(app.clone())); // 缓冲更新后经宿主事件通知插件。
     state.loopback().register(request, &registration.component_id)
 }
 
 /// 读走通道缓冲里尚未消费的原始请求。
 #[tauri::command]
-pub fn read_loopback_channel(state: State<'_, ComponentRuntimeState>, workspace: State<'_, WorkspaceState>, instance_id: String, channel_id: String, after_sequence: Option<u64>) -> Result<Vec<LoopbackRequest>, ComponentRuntimeError> { execute_read_loopback_channel(&state, &workspace, instance_id, channel_id, after_sequence) }
+pub fn read_loopback_channel(state: State<'_, ComponentRuntimeState>, workspace: State<'_, WorkspaceState>, settings: State<'_, SettingsState>, instance_id: String, channel_id: String, after_sequence: Option<u64>) -> Result<Vec<LoopbackRequest>, ComponentRuntimeError> { execute_read_loopback_channel(&state, &workspace, &settings, instance_id, channel_id, after_sequence) }
 
 /// Tauri 与本地 transport 共用的通道读取执行。
-pub(crate) fn execute_read_loopback_channel(state: &ComponentRuntimeState, workspace: &WorkspaceState, instance_id: String, channel_id: String, after_sequence: Option<u64>) -> Result<Vec<LoopbackRequest>, ComponentRuntimeError>
+pub(crate) fn execute_read_loopback_channel(state: &ComponentRuntimeState, workspace: &WorkspaceState, settings: &SettingsState, instance_id: String, channel_id: String, after_sequence: Option<u64>) -> Result<Vec<LoopbackRequest>, ComponentRuntimeError>
 {
-    let workspace = workspace.snapshot().map_err(|error| ComponentRuntimeError::invalid_instance(error.message))?;
-    state.authorize_capability(&workspace.components, &instance_id, ComponentCapability::LoopbackChannel)?;
+    let instances = super::component::merged_instances(state, workspace, settings)?;
+    state.authorize_capability_on(&instances, &instance_id, ComponentCapability::LoopbackChannel)?;
     state.loopback().read(&instance_id, &channel_id, after_sequence)
 }
 
 /// 经 request 通道向对端发一次原始请求。
 #[tauri::command]
-pub fn request_loopback(state: State<'_, ComponentRuntimeState>, workspace: State<'_, WorkspaceState>, instance_id: String, channel_id: String, method: String, path: String, body: Option<String>) -> Result<LoopbackResponse, ComponentRuntimeError> { execute_request_loopback(&state, &workspace, instance_id, channel_id, method, path, body) }
+pub fn request_loopback(state: State<'_, ComponentRuntimeState>, workspace: State<'_, WorkspaceState>, settings: State<'_, SettingsState>, instance_id: String, channel_id: String, method: String, path: String, body: Option<String>) -> Result<LoopbackResponse, ComponentRuntimeError> { execute_request_loopback(&state, &workspace, &settings, instance_id, channel_id, method, path, body) }
 
 /// Tauri 与本地 transport 共用的出站请求执行。
-pub(crate) fn execute_request_loopback(state: &ComponentRuntimeState, workspace: &WorkspaceState, instance_id: String, channel_id: String, method: String, path: String, body: Option<String>) -> Result<LoopbackResponse, ComponentRuntimeError>
+pub(crate) fn execute_request_loopback(state: &ComponentRuntimeState, workspace: &WorkspaceState, settings: &SettingsState, instance_id: String, channel_id: String, method: String, path: String, body: Option<String>) -> Result<LoopbackResponse, ComponentRuntimeError>
 {
-    let workspace = workspace.snapshot().map_err(|error| ComponentRuntimeError::invalid_instance(error.message))?;
-    state.authorize_capability(&workspace.components, &instance_id, ComponentCapability::LoopbackChannel)?;
+    let instances = super::component::merged_instances(state, workspace, settings)?;
+    state.authorize_capability_on(&instances, &instance_id, ComponentCapability::LoopbackChannel)?;
     state.loopback().request(&instance_id, &channel_id, &method, &path, body)
 }
 
@@ -62,51 +63,50 @@ fn loopback_notifier(app: AppHandle) -> LoopbackNotifier
     })
 }
 
-/// 宿主命令允许读写的凭据目标前缀；其它程序的目标名一律拒绝。
-pub(crate) const CREDENTIAL_TARGET_PREFIX: &str = "DesktopTools/";
-
-/// 目标名总长度上限，避免异常超长目标。
-const CREDENTIAL_TARGET_LIMIT: usize = 256;
-
 /// 把用户粘贴的数据源共享密钥写入 Windows Credential Manager。
+///
+/// 只允许明确保留的旧目标；插件命名空间只能经 `plugin_credential_*` 命令按实例授权写入。
 #[tauri::command]
-pub fn set_loopback_credential(target: String, secret: String) -> Result<(), ComponentRuntimeError> { execute_set_loopback_credential(target, secret) }
+pub fn set_loopback_credential(state: State<'_, ComponentRuntimeState>, target: String, secret: String) -> Result<(), ComponentRuntimeError> { execute_set_loopback_credential(&state, target, secret) }
 
 /// Tauri 与本地 transport 共用的凭据写入执行；明文用完立即清零，不返回、不记录。
-pub(crate) fn execute_set_loopback_credential(target: String, secret: String) -> Result<(), ComponentRuntimeError>
+pub(crate) fn execute_set_loopback_credential(state: &ComponentRuntimeState, target: String, secret: String) -> Result<(), ComponentRuntimeError>
 {
-    let target = validate_credential_target(&target)?;
+    let target = validate_legacy_credential_target(&target)?;
     validate_credential_secret(&secret)?;
     let mut blob = secret.into_bytes(); // 明文只留在这一层缓冲区。
     let result = crate::platform::windows::credentials::write_secret(&target, &mut blob).map_err(|_| ComponentRuntimeError::loopback_credential_store_failed("Windows 凭据保存失败，请稍后重试"));
     blob.zeroize();
     result?;
+    state.loopback().invalidate_credential(&target); // 引用该目标的缓存通道必须重新注册后才能使用。
     crate::log_info!("loopback：共享密钥已写入凭据存储，目标={target}");
     Ok(())
 }
 
 /// 清除指定目标的共享密钥；记录本就不存在时视为成功。
 #[tauri::command]
-pub fn clear_loopback_credential(target: String) -> Result<(), ComponentRuntimeError> { execute_clear_loopback_credential(target) }
+pub fn clear_loopback_credential(state: State<'_, ComponentRuntimeState>, target: String) -> Result<(), ComponentRuntimeError> { execute_clear_loopback_credential(&state, target) }
 
 /// Tauri 与本地 transport 共用的凭据清除执行。
-pub(crate) fn execute_clear_loopback_credential(target: String) -> Result<(), ComponentRuntimeError>
+pub(crate) fn execute_clear_loopback_credential(state: &ComponentRuntimeState, target: String) -> Result<(), ComponentRuntimeError>
 {
-    let target = validate_credential_target(&target)?;
+    let target = validate_legacy_credential_target(&target)?;
     crate::platform::windows::credentials::clear_secret(&target).map_err(|_| ComponentRuntimeError::loopback_credential_store_failed("Windows 凭据清除失败，请稍后重试"))?;
+    state.loopback().invalidate_credential(&target);
     crate::log_info!("loopback：共享密钥已清除，目标={target}");
     Ok(())
 }
 
-/// 凭据目标只接受受控前缀，拒绝任意其它程序的目标名。
-fn validate_credential_target(target: &str) -> Result<String, ComponentRuntimeError>
+/// 旧命令只保留 AstrBot 的兼容目标；插件命名空间与其它名称都在访问凭据存储前拒绝。
+fn validate_legacy_credential_target(target: &str) -> Result<String, ComponentRuntimeError>
 {
     let target = target.trim();
-    if !target.starts_with(CREDENTIAL_TARGET_PREFIX) || target.len() > CREDENTIAL_TARGET_LIMIT || target[CREDENTIAL_TARGET_PREFIX.len()..].is_empty() || target.chars().any(char::is_control)
+    match classify_credential_target(target)
     {
-        return Err(ComponentRuntimeError::loopback_credential_invalid("凭据目标只能使用 DesktopTools/ 开头的受控名称"));
+        CredentialTarget::Legacy => Ok(LEGACY_CREDENTIAL_TARGET.to_string()),
+        CredentialTarget::Plugin { .. } => Err(ComponentRuntimeError::credential_target_denied("插件凭据只能通过 plugin_credential_* 命令按实例授权写入")),
+        CredentialTarget::Reserved => Err(ComponentRuntimeError::loopback_credential_invalid("凭据目标不在允许的白名单内（仅保留 DesktopTools/astrbot-status）")),
     }
-    Ok(target.to_string())
 }
 
 /// 共享密钥必须有界且不含控制字符，避免写进凭据后污染 HTTP 头。

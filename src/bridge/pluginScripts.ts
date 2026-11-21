@@ -1,5 +1,6 @@
 import { parseComponentRuntimeSnapshot } from "../contracts/component";
-import type { LoopbackResponse } from "../contracts/loopback";
+import { pluginAssetUrl } from "./pluginAssets.ts";
+import type { PluginCapabilityContext } from "./pluginCapabilities.ts";
 import { adoptPluginHover, adoptPluginShellOnce, mountPluginHover, parsePluginInstallBatch, parsePluginInstallProgress, type PluginHoverRenderer, type PluginInstallPlan, type PluginInstallProgress } from "../contracts/plugin";
 import type { PluginMenuEntry } from "./pluginMenu";
 
@@ -12,8 +13,8 @@ export const commandErrorMessage = (error: unknown) => {
 import { getPreferences } from "./settings";
 import { invokeRuntime, listenRuntime } from "./runtime";
 
-/** 传给作者渲染函数的外壳状态。格子和设置条目共用。 */
-export interface PluginShellContext {
+/** 传给作者渲染函数的外壳状态。格子和设置条目共用；通用能力按实例授权裁剪。 */
+export interface PluginShellContext extends PluginCapabilityContext {
     pluginId: string; // 清单标识。
     instanceId: string; // 当前格子实例；设置条目可以不对应单个格子。
     tileType: string; // 当前实例的格子类型键；没有声明类型或缺失时为空串。
@@ -24,7 +25,7 @@ export interface PluginShellContext {
     menu?: {
         register: (items: readonly PluginMenuEntry[]) => () => void; // 注册格子右键菜单项，返回只撤下本次注册的清理函数。
     }; // 只在 renderTile 期间使用。
-    requestLoopback?: (channelId: string, method: string, path: string) => Promise<LoopbackResponse>; // 设置条目主动拉取一次；不消费缓冲。
+    setIslandSummary?: (text: string | null, status?: string, navigation?: { uri: string }) => void; // 浮岛卡摘要/状态/可选导航；null 显式隐藏锚点。
 }
 
 /** 一个插件自己的设置行。 */
@@ -190,12 +191,8 @@ export const pluginModules = {
     load: (specifier: string): Promise<unknown> => import(/* @vite-ignore */ specifier),
 };
 
-/** 插件根相对路径变成同源地址。空路径、绝对路径和 .. 都不加载。 */
-const pluginScriptSpecifier = (script: string) => {
-    const parts = script.split("/"); // 只接受相对片段。
-    if (!script || script.startsWith("/") || parts.some((part) => !part || part === "." || part === "..")) return undefined;
-    return `/plugins/${script}`;
-};
+/** 脚本模块地址；与图标共用同一条相对路径边界。 */
+const pluginScriptSpecifier = pluginAssetUrl;
 
 /** 加载插件模块。停用的不加载；同一标识成功或失败后都不重试。reload 清掉记录后再导入。返回失败说明。 */
 export const loadPluginScript = (pluginId: string, script = "", reload = false): Promise<string | undefined> => {

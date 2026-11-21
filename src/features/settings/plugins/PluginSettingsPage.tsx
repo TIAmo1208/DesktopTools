@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { getComponentRuntimeSnapshot, listenComponentRuntimeSnapshots } from "../../../bridge/components";
-import { requestLoopback } from "../../../bridge/loopback";
+import { pluginCapabilityContext } from "../../../bridge/pluginCapabilityHost";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../../bridge/pluginSettings";
 import {
     applyPluginInstall,
@@ -25,7 +25,7 @@ import {
     type PluginSettingsEntry,
 } from "../../../bridge/pluginScripts";
 import { applyWorkspaceCommand, getWorkspaceSnapshot, listenWorkspaceSnapshots } from "../../../bridge/workspace";
-import type { ComponentInstanceSnapshot, ComponentManifest, ComponentTileType } from "../../../contracts/component";
+import type { ComponentCapability, ComponentInstanceSnapshot, ComponentManifest, ComponentTileType } from "../../../contracts/component";
 import type { PluginInstallPlan } from "../../../contracts/plugin";
 import type { ApplicationPreferences } from "../../../contracts/settings";
 import { invokeRuntime } from "../../../bridge/runtime";
@@ -45,8 +45,12 @@ import {
     installFailureMessage,
     installNotice,
     installSuccessMessage,
+    pluginCapabilityInstanceId,
     pluginDirectoryShown,
+    pluginIslandCardActive,
     pluginRows,
+    pluginSettingsAuthorized,
+    pluginShowsAddTile,
     requestPluginScript,
     taskMenuPlacement,
     type PluginConfirmRequest,
@@ -71,9 +75,8 @@ export const PluginSettingsPage = ({
 }) => {
     const {
         components,
+        registrations,
         setSelectedId,
-        openEntryIds,
-        setOpenEntryIds,
         setShellEpoch,
         loadedIds,
         setLoadedIds,
@@ -207,7 +210,11 @@ export const PluginSettingsPage = ({
         const failure = scriptlessTheme ? undefined : scriptFailure(selected.id, reloaded); // 脚本失败说明；重新加载成功后不再沿用旧失败。
         const pending = !scriptlessTheme && !pluginDisabled && entries === undefined && !failure && !pluginScriptLoaded(selected.id); // 只有还没加载完才显示加载态。
         const usedTiles = pluginTileCount(components, selected.id); // 已在桌面上的格子数。
-        const desktopInstanceId = components?.find((item) => item.componentId === selected.id)?.instanceId ?? ""; // 设置条目主动拉取用第一个桌面实例。
+        const workspaceInstanceId = registrations?.find((item) => item.componentId === selected.id && item.status === "ready")?.instanceId ?? ""; // 工作区已就绪的实例。
+        const islandActive = pluginIslandCardActive(selected.id, selected.island, preferences); // 浮岛卡是否已启用并占用 island.<pluginId>。
+        const capabilityInstanceId = pluginCapabilityInstanceId(workspaceInstanceId, selected.id, islandActive); // 两处都没有时为空串，设置条目不渲染。
+        const settingsAuthorized = pluginSettingsAuthorized(capabilityInstanceId, pluginDisabled); // 需要实例授权的设置条目。
+        const hasEntries = Boolean(entries && entries.length > 0); // 脚本已注册且至少一条设置。
         const loopbackCredential = pluginLoopbackCredential(selected.id); // 插件声明的共享 token 配对入口。
         const typeStatus = pluginTypeStatus(components, selected.id, selected.tileTypes, selected.maxTiles); // 每个类型各自的额度。
         const tileRoom = pluginTileRoom(selected.maxTiles, usedTiles); // 没有声明类型时按整体额度判断。
@@ -233,32 +240,32 @@ export const PluginSettingsPage = ({
                              data-button="icon">
                                 <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: removeIcon }} />
                             </button>
-                            <button
-                                className="settings__button settings__icon-button"
-                                type="button"
-                                disabled={!showCreatePlugin(selected.creatable) || createPluginBlocked(pluginDisabled) || creating || allFull}
-                                title={
-                                    !showCreatePlugin(selected.creatable)
-                                        ? "添加到桌面"
-                                        : createPluginBlocked(pluginDisabled)
-                                          ? "启用后可创建"
-                                          : pluginTileTypesExpand(selected.tileTypes)
-                                            ? "添加到桌面"
-                                            : addToDesktopHint(selected.maxTiles, usedTiles, tightest)
-                                }
-                                aria-label="添加到桌面"
-                                aria-haspopup={pluginTileTypesExpand(selected.tileTypes) ? "menu" : undefined}
-                                onClick={(event) => {
-                                    if (!pluginTileTypesExpand(selected.tileTypes)) {
-                                        handleCreate(selected.id, pluginSingleTileType(selected.tileTypes)); // 只有一种类型时仍是加号按钮。
-                                        return;
+                            {pluginShowsAddTile(selected.creatable, selected.role) ? (
+                                <button
+                                    className="settings__button settings__icon-button"
+                                    type="button"
+                                    disabled={createPluginBlocked(pluginDisabled) || creating || allFull}
+                                    title={
+                                        createPluginBlocked(pluginDisabled)
+                                            ? "启用后可创建"
+                                            : pluginTileTypesExpand(selected.tileTypes)
+                                              ? "添加到桌面"
+                                              : addToDesktopHint(selected.maxTiles, usedTiles, tightest)
                                     }
-                                    const rect = event.currentTarget.getBoundingClientRect(); // 下拉贴着按钮下沿。
-                                    setTypeMenu({ pluginId: selected.id, tileTypes: selected.tileTypes, maxTiles: selected.maxTiles, left: rect.left, top: rect.bottom });
-                                }}
-                             data-button="icon">
-                                <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: addIcon }} />
-                            </button>
+                                    aria-label="添加到桌面"
+                                    aria-haspopup={pluginTileTypesExpand(selected.tileTypes) ? "menu" : undefined}
+                                    onClick={(event) => {
+                                        if (!pluginTileTypesExpand(selected.tileTypes)) {
+                                            handleCreate(selected.id, pluginSingleTileType(selected.tileTypes)); // 只有一种类型时仍是加号按钮。
+                                            return;
+                                        }
+                                        const rect = event.currentTarget.getBoundingClientRect(); // 下拉贴着按钮下沿。
+                                        setTypeMenu({ pluginId: selected.id, tileTypes: selected.tileTypes, maxTiles: selected.maxTiles, left: rect.left, top: rect.bottom });
+                                    }}
+                                 data-button="icon">
+                                    <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: addIcon }} />
+                                </button>
+                            ) : null}
                             <SettingsSwitch
                                 label={pluginPowerLabel(pluginDisabled)}
                                 checked={!pluginDisabled}
@@ -282,6 +289,11 @@ export const PluginSettingsPage = ({
                         ) : null}
                     </p>
                     {selected.description ? <SettingsAbout text={selected.description} /> : null}
+                    {!pluginDisabled && hasEntries && !settingsAuthorized ? (
+                        <p className="plugin-settings__status" role="status">
+                            先在工作区添加该格子，或在设置 → 浮岛启用该卡。
+                        </p>
+                    ) : null}
                     {loopbackCredential ? <PluginLoopbackPairing pluginId={selected.id} metadata={loopbackCredential} disabled={disabled || pluginDisabled} /> : null}
                     {pending ? (
                         <p className="plugin-settings__status" role="status" aria-busy="true">
@@ -297,31 +309,24 @@ export const PluginSettingsPage = ({
                                 重新加载
                             </button>
                         </div>
-                    ) : pluginDisabled && !entries?.length ? (
+                    ) : pluginDisabled ? (
                         <p className="plugin-settings__status">插件已停用，启用后显示设置条目。</p>
                     ) : entries && entries.length > 0 ? (
-                        <div className="plugin-settings__entries">
-                            <h3>设置条目</h3>
-                            {entries.map((entry) => (
-                                <PluginEntry
-                                    key={entry.id}
-                                    pluginId={selected.id}
-                                    entry={entry}
-                                    version={selected.version}
-                                    instanceId={desktopInstanceId}
-                                    open={openEntryIds.has(entry.id)}
-                                    locked={pluginDisabled}
-                                    onToggle={() =>
-                                        setOpenEntryIds((current) => {
-                                            const next = new Set(current);
-                                            if (next.has(entry.id)) next.delete(entry.id);
-                                            else next.add(entry.id);
-                                            return next;
-                                        })
-                                    }
-                                />
-                            ))}
-                        </div>
+                        settingsAuthorized ? (
+                            <div className="settings__group plugin-settings__entries">
+                                <h3 className="settings__group-title">设置条目</h3>
+                                {entries.map((entry) => (
+                                    <PluginEntryBlock
+                                        key={entry.id}
+                                        pluginId={selected.id}
+                                        entry={entry}
+                                        version={selected.version}
+                                        instanceId={capabilityInstanceId}
+                                        capabilities={selected.requiredCapabilities}
+                                    />
+                                ))}
+                            </div>
+                        ) : null
                     ) : shape ? (
                         <p className="plugin-settings__empty">{shape}</p>
                     ) : (
@@ -834,46 +839,46 @@ const PluginLoopbackPairing = ({ pluginId, metadata, disabled }: { pluginId: str
     );
 };
 
-const PluginEntry = ({
+/** 一条设置条目：标题直接排在内容区，不再用下拉展开包裹。 */
+const PluginEntryBlock = ({
     pluginId,
     entry,
     version,
     instanceId,
-    open,
-    locked,
-    onToggle,
+    capabilities,
 }: {
     pluginId: string;
     entry: PluginSettingsEntry;
     version?: string; // 清单版本，设置条目可只读展示。
-    instanceId: string; // 第一个桌面实例；主动拉取与实例上下文使用。
-    open: boolean; // 当前是否展开。
-    locked: boolean; // 插件停用，不允许展开。
-    onToggle: () => void;
+    instanceId: string; // 设置条目使用的实例；主动拉取与通用能力共用。
+    capabilities: readonly ComponentCapability[]; // 清单声明的能力；未声明的通用能力不暴露。
 }) => (
-    <div className={`plugin-settings__entry${locked ? " plugin-settings__entry--locked" : ""}`}>
-        <button className="plugin-settings__entry-head" type="button" aria-expanded={open && !locked} disabled={locked} onClick={onToggle} data-button="row-hit">
-            {entry.name}
-            <span
-                className={`plugin-settings__chevron${open && !locked ? " plugin-settings__chevron--open" : ""}`}
-                aria-hidden="true"
-                dangerouslySetInnerHTML={{ __html: chevronIcon }}
-            />
-        </button>
-        {open && !locked && (
+    <section className="plugin-settings__entry">
+        <h4 className="settings__row-title plugin-settings__entry-title">{entry.name}</h4>
+        {typeof entry.render === "function" ? (
             <div className="plugin-settings__entry-body">
-                {typeof entry.render === "function" ? (
-                    <PluginEntryMount pluginId={pluginId} entry={entry} version={version} instanceId={instanceId} />
-                ) : (
-                    <p>该插件未提供设置内容。</p>
-                )}
+                <PluginEntryMount pluginId={pluginId} entry={entry} version={version} instanceId={instanceId} capabilities={capabilities} />
             </div>
+        ) : (
+            <p className="plugin-settings__empty">该插件未提供设置内容。</p>
         )}
-    </div>
+    </section>
 );
 
 /** 把作者内容挂进宿主容器，折叠或停用时卸掉。 */
-const PluginEntryMount = ({ pluginId, entry, version, instanceId }: { pluginId: string; entry: PluginSettingsEntry; version?: string; instanceId: string }) => {
+const PluginEntryMount = ({
+    pluginId,
+    entry,
+    version,
+    instanceId,
+    capabilities,
+}: {
+    pluginId: string;
+    entry: PluginSettingsEntry;
+    version?: string;
+    instanceId: string;
+    capabilities: readonly ComponentCapability[];
+}) => {
     const [settings, setSettings] = useState<unknown>(null); // 最近一次读到的插件设置。
     const [host, setHost] = useState<HTMLDivElement | null>(null); // 作者容器。
 
@@ -908,7 +913,7 @@ const PluginEntryMount = ({ pluginId, entry, version, instanceId }: { pluginId: 
                 pluginVersion: version,
                 settings,
                 saveSettings: (value) => savePluginSettings(pluginId, value),
-                requestLoopback: instanceId ? (channelId, method, path) => requestLoopback(instanceId, channelId, method, path) : undefined,
+                ...pluginCapabilityContext(instanceId, capabilities),
             });
         } catch (error) {
             console.error(`插件设置条目渲染失败：${pluginId}`, error);
@@ -920,7 +925,7 @@ const PluginEntryMount = ({ pluginId, entry, version, instanceId }: { pluginId: 
         return () => {
             if (typeof cleanup === "function") cleanup();
         };
-    }, [host, entry, pluginId, settings, version, instanceId]);
+    }, [host, entry, pluginId, settings, version, instanceId, capabilities]);
 
     return <div className="plugin-settings__author" ref={setHost} />;
 };

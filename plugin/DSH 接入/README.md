@@ -1,0 +1,46 @@
+# DSH 接入
+
+在浮岛卡片里显示 DSH 的账户余额、会话/job 摘要与待决列表；连接和配对都在「设置 → 插件 → DSH 接入」里完成。插件只读 DSH 桥，不写 DSH 状态、不弹原生 Toast；点击待决通过 `dsh://open` 切回 DSH，由用户在 DSH 内处理。
+
+## 使用
+
+0. 本目录包含两半，放在同一插件目录里分发：
+   - `index.js` / `manifest.ini` / `style.css`：桌面侧浮岛卡插件，装进 Desktop Tools 的插件目录。
+   - `dsh-bridge/`：DSH 侧 Host 桥插件，装进 DSH 的插件目录（不随 Desktop Tools 扫描，因为宿主只扫描插件根下一层含 `manifest.ini` 的文件夹）。
+1. 先在「设置 → 浮岛」启用「DSH 接入」卡（插件的设置条目与能力按岛实例授权）。
+2. 在「设置 → 插件 → DSH 接入」：
+   - 「DSH 桥地址」填 `http://127.0.0.1:47832`（只接受本机 http 与显式端口）。
+   - 在 DSH「设置 → DSH 桌面桥」分区里直接读取配对码，填进「配对码」并点「配对」。
+   - 配对由宿主兑换事务完成：响应里的令牌由宿主直接写入 Windows 凭据管理器，插件只拿 `{ stored: true }`，不接触明文；随后用无凭据 `/health` 确认 `bridgeId`，与桥地址一起持久写进插件设置。
+3. 浮岛卡折叠态显示待决数（有待决优先）或余额/状态；展开态显示余额、待决列表与会话/任务摘要。
+
+## 状态与生命周期
+
+- 未配对、DSH 未登录、令牌失效（401）、桥不可达、健康/快照身份不一致分别显示明确文案；余额不可用时不显示 0。401/桥身份变化会清空旧余额与待决，只显示未授权与重新配对原因。
+- 只有 `snapshot.stale=false` 且 `balance.status=error` 时才只降级余额行；`snapshot.stale=true` 表示整份不可信，会话/job/待决都按陈旧处理，不当作当前事实。
+- 配对时持久绑定 `bridgeId + baseUrl`。每次携密请求前先通过**无凭据**通道读取 `/health`，`bridgeId` 必须与持久绑定一致；同端口换桥只显示「桥身份变化，请重新配对」，不发送旧令牌并停止轮询，直到重新配对或取消配对。
+- 确认绑定后才注册带凭据通道读取 `/snapshot`；快照的 `bridgeId` 与 `bridgeInstanceId` 必须与本轮 health 一致，不一致只丢本轮。
+- 正常每 15 秒轮询，失败退避到 60 秒；单飞，不并发请求。每次挂载递增 `mountSequence`，只有当前序号的会话能发请求/应用结果/发提醒；同一实例+端点+路径的在途请求共享，旧序号的在途结果直接丢弃。
+- hover 统计使用快照可选 `taskStats`（`runCount`、`unreadCount`、`completedUnreadCount`、`unionCount`、`completeness`、`sampledAt`）：必须 `completeness="complete"` 且 `sampledAt` 与快照 `fetchedAt` 相差不超过两个轮询周期；四个计数都必须是权威非负整数，且满足 `completedUnread ≤ unread ≤ union`、`run ≤ union ≤ run + unread`。缺任一项或矛盾时显示「统计不完整」/「未读状态不可用」，不画比例、不显示百分比；缺 `runCount` 时只写「可见会话中运行 N 项」，不当作任务数、不画进度。只有四项权威计数均为 0 时才显示「暂无待关注任务」；完成未读为 0 也不画比例。
+- 只在 `document.visibilityState === "visible"` 时轮询；页面隐藏立即停表，恢复时立即重读一次并按本次快照重建基线，不补播隐藏期间的待决。
+- 改地址、取消配对、重新配对会清除/更新持久绑定并递增端点代次，作废在途请求；旧地址的绑定不会迁移到新地址。
+- 收起只改变本卡内容高度：不停止轮询、不重置基线或已见待决集合；展开态复用同一轮询会话。
+
+## 提醒
+
+新增待决按 `bridgeId + pendingId + since` 去重，通过 `publish-island-message` 投递到既有浮岛消息锚点；同一 key 只发一次。消息带 `uri: dsh://open`，宿主消息条目可点击打开；旧宿主忽略该字段也不报错。首次挂载后的第一份成功快照只建基线、不投递提醒；`snapshot.stale=true`、未授权、不可达或暂停时只更新展示，不对账、不投递、不写已见集合；隐藏恢复和断线恢复先建基线，不补发历史待决；展开/收起不重置基线或去重集合；不调用原生通知。
+
+## 浮岛呈现
+
+- 锚点摘要：按「未授权/未连接/读取失败 → 数据陈旧 → N 项待决 → 单币种金额或多币种『余额可读』→ 账号未登录/余额未授权/余额读取失败/已连接」取首个可用事实；未配对、首次连接、无事实、关闭或暂停时调用 `setIslandSummary(null)` 显式撤下，不回落清单名。摘要同时传业务状态和 `{ uri: dsh://open }` 导航，宿主据此让锚点可单击/键盘打开；隐藏档不带导航，旧宿主忽略额外参数。
+- 提供只读 `renderIslandHover`：内容宽上限 `256 DIP`，四区依次为主行运行数、副行未读/完成未读、可选进度、余额；主文/副文均用 `--fence-text` 保证对比度。复用同一实例快照，只显示新鲜快照的运行/未读计数、可证进度与固定两位余额；订阅现有轮询状态被动重绘，不新建定时器/请求，卸载时取消订阅。未配对、未连接、数据陈旧、无任务、无余额、统计不完整各有独立文案；不写 0 冒充未知、不造比例。详情组有名称，读屏顺序为主→副→进度→余额；不提供 hover 点击目标。胶囊仍由 `setIslandSummary` 单独驱动。
+- 身份图标为 `icon.svg`（24 视口）；展开卡按简单纵向堆叠：标题、主状态行、余额（单币种一行 / 多币种逐行）、会话/任务摘要、分隔线、待决列表（最多 5 条）与时间行。不提供卡内分组折叠或 `aria-expanded`，卡片不使用内部滚动条；待决整行 `button` 打开 `dsh://open`，成功静默移除该行，失败静默保留，不弹 Toast、不抢焦点。
+- 锚点金额最多两位小数并去掉多余尾零；展开余额行与 hover 余额固定两位小数（`12.3` → `12.30`），不使用科学计数法。
+- 超长待决标题在指针进入该行后按 20 DIP/s 往返滚动（端点停顿、周期不少于 4s），离开、切换、重绘时复位；`prefers-reduced-motion: reduce` 时不启动并保持省略号。胶囊与 hover 不滚动。
+
+## 实现边界
+
+- 清单声明 `loopback-channel`、`plugin-credential`、`plugin-credential-exchange`、`publish-island-message`、`open-uri`；配对依赖新的宿主兑换能力。
+- 只使用宿主提供的 `context.*` 能力（`registerLoopbackChannel`、`requestLoopback`、`exchangeCredential`、`setCredential`、`clearCredential`、`publishIslandMessage`、`openUri`），不访问宿主页面全局桥，因此在正式设置窗也能配对。
+- 快照通道注册使用 `credentialRef=DesktopTools/plugin/plugin.dsh-status/token`、`headerName=Authorization`、`credentialPrefix="Bearer "`；凭据槽只存原始 token。
+- 只读：不注册审批应答者、不调用 `publish_message_notification`、不写 DSH 状态。

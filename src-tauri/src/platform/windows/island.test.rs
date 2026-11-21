@@ -532,3 +532,95 @@ fn island_window_rejects_external_close_and_recovers_disposed_webview()
     assert!(source.contains("forget_disposed_window()"));
     assert!(source.contains("reconcile(&app)")); // 清理后按当前偏好重建，不靠下一次偏好保存。
 }
+
+/// 展开态窗口覆盖整个工作区（宽高都含），内容列仍按贴边锚点停靠，四边任务栏都不遮卡片。
+#[test]
+fn expanded_frame_covers_whole_work_area_with_content_column_anchored()
+{
+    let cases = [
+        ("taskbar-bottom", IslandRect { left: 0.0, top: 0.0, width: 1920.0, height: 1040.0 }),
+        ("taskbar-top", IslandRect { left: 0.0, top: 40.0, width: 1920.0, height: 1040.0 }),
+        ("taskbar-left", IslandRect { left: 60.0, top: 0.0, width: 1860.0, height: 1080.0 }),
+        ("taskbar-right", IslandRect { left: 0.0, top: 0.0, width: 1860.0, height: 1080.0 }),
+        ("secondary-negative", IslandRect { left: -1920.0, top: 0.0, width: 1920.0, height: 1040.0 }), // 副屏在左侧，工作区坐标为负。
+    ];
+    let content = (420.0, 1040.0); // 展开内容列：420 DIP 视口带（360 卡宽 + 16 滚动条槽 + 余量）。
+    for (name, work) in cases
+    {
+        for anchor in ["top", "bottom", "left", "right"]
+        {
+            let frame = expanded_window_frame(work, content, anchor);
+            assert_eq!(frame.window, work, "{name}/{anchor} 展开窗口盒必须覆盖整个工作区");
+            assert_eq!(frame.available_height, work.height, "{name}/{anchor} 可用高度等于工作区高度");
+            let (offset_x, offset_y) = frame.content_offset;
+            assert!(offset_x >= -0.5 && offset_y >= -0.5, "{name}/{anchor} 内容偏移不能为负");
+            assert!(offset_x + content.0 <= work.width + 0.5 && offset_y + content.1 <= work.height + 0.5, "{name}/{anchor} 内容列落在工作区内");
+            match anchor
+            {
+                "left" => assert_eq!(offset_x, 0.0, "{name}/left 内容贴工作区左侧"),
+                "right" => assert_eq!(offset_x + content.0, work.width, "{name}/right 内容贴工作区右侧"),
+                _ => assert_eq!(offset_x, (work.width - content.0) / 2.0, "{name}/{anchor} 水平居中"),
+            }
+        }
+    }
+    let bottom = expanded_window_frame(cases[0].1, (420.0, 800.0), "bottom"); // 内容矮于工作区时仍从顶部开始，窗口不缩。
+    assert_eq!(bottom.window.height, 1040.0, "窗口高度不随内容高度变化");
+    assert_eq!(bottom.window.top, 0.0);
+    let wider = expanded_window_frame(cases[0].1, (4000.0, 1040.0), "top"); // 内容列宽于工作区时按工作区夹紧。
+    assert_eq!(wider.window.width, 1920.0);
+    assert_eq!(wider.content_offset.0, 0.0);
+}
+
+/// 工作区覆盖范围按显示器自身 DPI 转物理像素：单屏与负坐标副屏都不产生比例误差。
+#[test]
+fn expanded_frame_work_area_converts_at_each_monitor_dpi()
+{
+    for (scale, expected_width, expected_height) in [(1.0, 1920, 1040), (1.25, 2400, 1300), (1.5, 2880, 1560)]
+    {
+        let frame = expanded_window_frame(IslandRect { left: 0.0, top: 0.0, width: 1920.0, height: 1040.0 }, (420.0, 1040.0), "top");
+        assert_eq!(px_span(frame.window.left, frame.window.width, scale), (0, expected_width), "缩放 {scale} 的横向物理范围");
+        assert_eq!(px_span(frame.window.top, frame.window.height, scale), (0, expected_height), "缩放 {scale} 的纵向物理范围");
+    }
+    let secondary = expanded_window_frame(IslandRect { left: -1920.0, top: -40.0, width: 1920.0, height: 1040.0 }, (420.0, 1040.0), "left");
+    assert_eq!(px_span(secondary.window.left, secondary.window.width, 1.5), (-2880, 2880), "负坐标按副屏原点转物理像素");
+}
+
+/// 复审反例：右贴边、工作区 1920、内容列 420 时，实卡 x≈1734 必须被接受，空白 x≈196 必须被拒绝。
+#[test]
+fn expanded_cards_rebase_to_work_area_origin_for_right_edge()
+{
+    let work = IslandRect { left: 0.0, top: 0.0, width: 1920.0, height: 1040.0 };
+    let submitted = IslandRect { left: 1538.0, top: 0.0, width: 378.0, height: 1040.0 }; // 复审里的原窄窗横坐标。
+    let mut cards = vec![IslandCard { rect: IslandRect { left: 196.0, top: 8.0, width: 180.0, height: 400.0 }, radius: 0.0 }]; // 页面局部坐标。
+    rebase_expanded_cards(&mut cards, submitted, work);
+    assert_eq!(cards[0].rect.left, 1734.0, "实卡左缘应落在工作区坐标 1734");
+    let hit = |x: f64| cards.iter().any(|card| x >= card.rect.left - 0.5 && x <= card.rect.left + card.rect.width + 0.5);
+    assert!(hit(1734.0), "实卡 x≈1734 必须被接受");
+    assert!(!hit(196.0), "空白 x≈196 必须被拒绝");
+}
+
+/// 四边、负坐标副屏与 100/125/150% 缩放：重基准只平移不缩放，屏幕绝对位置保持不变。
+#[test]
+fn expanded_cards_rebase_across_edges_dpi_and_negative_monitors()
+{
+    let primary = IslandRect { left: 0.0, top: 0.0, width: 1920.0, height: 1040.0 };
+    let secondary = IslandRect { left: -1920.0, top: 0.0, width: 1920.0, height: 1040.0 }; // 副屏在左侧，工作区坐标为负。
+    let cases = [("right", primary, 1500.0), ("left", primary, 0.0), ("top", primary, 750.0), ("bottom", primary, 750.0), ("secondary", secondary, -1170.0)];
+    for (name, work, page_left) in cases
+    {
+        let submitted = IslandRect { left: page_left, top: work.top, width: 420.0, height: work.height };
+        let mut cards = vec![IslandCard { rect: IslandRect { left: 16.0, top: 8.0, width: 360.0, height: 400.0 }, radius: 0.0 }];
+        rebase_expanded_cards(&mut cards, submitted, work);
+        let absolute = page_left + 16.0; // 页面绝对位置（屏幕 DIP）。
+        assert_eq!(cards[0].rect.left + work.left, absolute, "{name} 重基准后屏幕绝对位置不变");
+        assert!(cards[0].rect.left >= 0.0, "{name} 局部坐标以工作区原点为 0");
+        assert!(cards[0].rect.left + cards[0].rect.width <= work.width + 0.5, "{name} 重基准后仍落在父窗局部矩形内");
+        for scale in [1.0, 1.25, 1.5]
+        {
+            assert_eq!(px_span(cards[0].rect.left, cards[0].rect.width, scale), px_span(absolute - work.left, cards[0].rect.width, scale), "{name} 缩放 {scale} 的物理位置一致");
+        }
+        let hit = |x: f64| cards.iter().any(|card| x >= card.rect.left + work.left - 0.5 && x <= card.rect.left + work.left + card.rect.width + 0.5);
+        assert!(hit(absolute), "{name} 卡片命中");
+        assert!(!hit(page_left + 1.0), "{name} 卡外空白不命中");
+    }
+}

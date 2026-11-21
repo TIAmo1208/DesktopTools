@@ -19,32 +19,7 @@
     will-change: auto;
 }
 
-/* 慢速往返：两端各留一段停顿，中段线性滑动，回到起点后循环。 */
-@keyframes scrolling-text-loop {
-    0%,
-    7% {
-        transform: translate3d(0, 0, 0);
-    }
-    45%,
-    55% {
-        transform: translate3d(calc(-1 * var(--overflow-distance, 0px)), 0, 0);
-    }
-    93%,
-    100% {
-        transform: translate3d(0, 0, 0);
-    }
-}
-
-/* 只有溢出且测量给出计划时才启用动画；时长与距离都由内联变量给出。 */
+/* 只有 JS 精确关键帧在跑时才提升为合成层；停止后立即释放。 */
 .scrolling-text[data-overflow="true"] .scrolling-text__track {
     will-change: transform;
-    animation: scrolling-text-loop var(--overflow-duration, 4000ms) linear infinite;
-}
-
-/* 减少动效或用户关闭界面动画时不产生滚动，保持单行截断。 */
-@media (prefers-reduced-motion: reduce) {
-    .scrolling-text[data-overflow="true"] .scrolling-text__track {
-        animation: none;
-        will-change: auto;
-    }
 }

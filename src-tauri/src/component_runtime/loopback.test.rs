@@ -12,10 +12,10 @@ use crate::contracts::LoopbackChannelMode;
 fn free_port() -> u16 { TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port() }
 
 /// 造一条 listen 通道的注册请求。
-fn listen_request(instance_id: &str, channel_id: &str, port: u16) -> RegisterLoopbackChannel { RegisterLoopbackChannel { instance_id: instance_id.to_string(), channel_id: channel_id.to_string(), mode: LoopbackChannelMode::Listen, port: Some(port), base_url: None, credential_ref: None, header_name: None } }
+fn listen_request(instance_id: &str, channel_id: &str, port: u16) -> RegisterLoopbackChannel { RegisterLoopbackChannel { instance_id: instance_id.to_string(), channel_id: channel_id.to_string(), mode: LoopbackChannelMode::Listen, port: Some(port), base_url: None, credential_ref: None, header_name: None, credential_prefix: None } }
 
 /// 造一条 request 通道的注册请求。
-fn request_request(instance_id: &str, channel_id: &str, port: u16) -> RegisterLoopbackChannel { RegisterLoopbackChannel { instance_id: instance_id.to_string(), channel_id: channel_id.to_string(), mode: LoopbackChannelMode::Request, port: None, base_url: Some(format!("http://127.0.0.1:{port}")), credential_ref: None, header_name: None } }
+fn request_request(instance_id: &str, channel_id: &str, port: u16) -> RegisterLoopbackChannel { RegisterLoopbackChannel { instance_id: instance_id.to_string(), channel_id: channel_id.to_string(), mode: LoopbackChannelMode::Request, port: None, base_url: Some(format!("http://127.0.0.1:{port}")), credential_ref: None, header_name: None, credential_prefix: None } }
 
 /// 发一条原始 HTTP 请求并读完整响应；服务端一律 Connection: close。
 fn send_http(port: u16, request: &str) -> String
@@ -64,13 +64,13 @@ fn registration_validates_endpoint_and_reports_occupied_ports()
     let port = free_port();
     let mut mismatched = listen_request("instance-1", "status", port);
     mismatched.base_url = Some("http://127.0.0.1:8766".to_string());
-    assert_eq!(registry.register_with_credential(mismatched, "plugin.astrbot", None).unwrap_err().code, "loopback-address-invalid");
+    assert_eq!(registry.register_with_credential(mismatched, "plugin.astrbot", None, None).unwrap_err().code, "loopback-address-invalid");
     let mut missing_port = listen_request("instance-1", "status", port);
     missing_port.port = None;
-    assert_eq!(registry.register_with_credential(missing_port, "plugin.astrbot", None).unwrap_err().code, "loopback-address-invalid");
+    assert_eq!(registry.register_with_credential(missing_port, "plugin.astrbot", None, None).unwrap_err().code, "loopback-address-invalid");
     let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap(); // 被其它进程占用的端口。
     let occupied_port = occupied.local_addr().unwrap().port();
-    assert_eq!(registry.register_with_credential(listen_request("instance-1", "status", occupied_port), "plugin.astrbot", None).unwrap_err().code, "loopback-port-in-use");
+    assert_eq!(registry.register_with_credential(listen_request("instance-1", "status", occupied_port), "plugin.astrbot", None, None).unwrap_err().code, "loopback-port-in-use");
     assert_eq!(registry.channel_count("instance-1"), 0);
 }
 
@@ -80,7 +80,7 @@ fn listen_channel_buffers_raw_requests_and_read_consumes_them()
 {
     let registry = LoopbackRegistry::new();
     let port = free_port();
-    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", None).unwrap();
+    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", None, None).unwrap();
     let first = send_http(port, "POST /snapshot HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"status\":1");
     assert!(first.starts_with("HTTP/1.1 200"), "{first}");
     send_http(port, "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
@@ -106,8 +106,8 @@ fn listen_channel_enforces_the_declared_credential_header()
 {
     let registry = LoopbackRegistry::new();
     let port = free_port();
-    let credential = Arc::new(ChannelCredential { header_name: "X-Status-Token".to_string(), secret: Zeroizing::new("secret-token".to_string()) });
-    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", Some(credential)).unwrap();
+    let credential = Arc::new(ChannelCredential { header_name: "X-Status-Token".to_string(), prefix: None, secret: Zeroizing::new("secret-token".to_string()) });
+    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", Some(credential), None).unwrap();
     assert!(send_http(port, "POST /snapshot HTTP/1.1\r\nContent-Length: 2\r\n\r\nok").starts_with("HTTP/1.1 401"));
     assert!(send_http(port, "POST /snapshot HTTP/1.1\r\nX-Status-Token: nope\r\nContent-Length: 2\r\n\r\nok").starts_with("HTTP/1.1 401"));
     assert!(registry.read("instance-1", "status", None).unwrap().is_empty(), "被拒请求不进入缓冲");
@@ -124,7 +124,7 @@ fn oversized_inbound_body_is_rejected_and_counted()
 {
     let registry = LoopbackRegistry::new();
     let port = free_port();
-    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", None).unwrap();
+    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", None, None).unwrap();
     let response = send_http(port, &format!("POST /snapshot HTTP/1.1\r\nContent-Length: {}\r\n\r\n", BODY_LIMIT + 1));
     assert!(response.starts_with("HTTP/1.1 413"), "{response}");
     assert!(registry.read("instance-1", "status", None).unwrap().is_empty());
@@ -136,7 +136,7 @@ fn malformed_inbound_request_is_rejected()
 {
     let registry = LoopbackRegistry::new();
     let port = free_port();
-    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", None).unwrap();
+    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", None, None).unwrap();
     assert!(send_http(port, "GARBAGE\r\n\r\n").starts_with("HTTP/1.1 400"));
     assert!(registry.read("instance-1", "status", None).unwrap().is_empty());
 }
@@ -172,7 +172,7 @@ fn live_notifications_start_only_after_the_first_read()
     let recorder = Arc::clone(&seen);
     registry.set_notifier(Arc::new(move |channel_id: &str| recorder.lock().unwrap().push(channel_id.to_string())));
     let port = free_port();
-    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", None).unwrap();
+    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", None, None).unwrap();
     send_http(port, "POST /snapshot HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     assert!(seen.lock().unwrap().is_empty(), "没有订阅读者时不发事件");
     registry.read("instance-1", "status", None).unwrap();
@@ -186,12 +186,12 @@ fn channel_limit_replacement_and_release_hold_the_hard_limits()
 {
     let registry = LoopbackRegistry::new();
     let first_port = free_port();
-    registry.register_with_credential(listen_request("instance-1", "one", first_port), "plugin.astrbot", None).unwrap();
-    registry.register_with_credential(listen_request("instance-1", "two", free_port()), "plugin.astrbot", None).unwrap();
+    registry.register_with_credential(listen_request("instance-1", "one", first_port), "plugin.astrbot", None, None).unwrap();
+    registry.register_with_credential(listen_request("instance-1", "two", free_port()), "plugin.astrbot", None, None).unwrap();
     assert_eq!(registry.channel_count("instance-1"), 2);
-    let error = registry.register_with_credential(listen_request("instance-1", "three", free_port()), "plugin.astrbot", None).unwrap_err();
+    let error = registry.register_with_credential(listen_request("instance-1", "three", free_port()), "plugin.astrbot", None, None).unwrap_err();
     assert_eq!(error.code, "loopback-channel-limit");
-    registry.register_with_credential(listen_request("instance-1", "one", first_port), "plugin.astrbot", None).unwrap(); // 同名通道替换，旧端口先释放。
+    registry.register_with_credential(listen_request("instance-1", "one", first_port), "plugin.astrbot", None, None).unwrap(); // 同名通道替换，旧端口先释放。
     registry.release_component("plugin.astrbot");
     assert_eq!(registry.channel_count("instance-1"), 0);
     drop(TcpListener::bind(("127.0.0.1", first_port)).unwrap()); // 端口已随实例释放。
@@ -203,7 +203,7 @@ fn prune_releases_channels_of_removed_instances()
 {
     let registry = LoopbackRegistry::new();
     let port = free_port();
-    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", None).unwrap();
+    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", None, None).unwrap();
     registry.prune(&HashSet::from(["instance-2".to_string()]));
     assert_eq!(registry.channel_count("instance-1"), 0);
     drop(TcpListener::bind(("127.0.0.1", port)).unwrap());
@@ -225,8 +225,8 @@ fn request_channel_forwards_raw_response_and_injects_credential()
         let _ = stream.write_all(b"HTTP/1.1 201 Created\r\nX-Reply: yes\r\nContent-Length: 5\r\n\r\nhello");
     });
     let registry = LoopbackRegistry::new();
-    let credential = Arc::new(ChannelCredential { header_name: "X-Status-Token".to_string(), secret: Zeroizing::new("secret-token".to_string()) });
-    registry.register_with_credential(request_request("instance-1", "control", port), "plugin.astrbot", Some(credential)).unwrap();
+    let credential = Arc::new(ChannelCredential { header_name: "X-Status-Token".to_string(), prefix: None, secret: Zeroizing::new("secret-token".to_string()) });
+    registry.register_with_credential(request_request("instance-1", "control", port), "plugin.astrbot", Some(credential), None).unwrap();
     let response = registry.request("instance-1", "control", "POST", "/api/platform/start", Some("{}".to_string())).unwrap();
     assert_eq!(response.status, 201);
     assert_eq!(response.body, "hello");
@@ -242,7 +242,7 @@ fn request_direction_and_arguments_are_validated()
 {
     let registry = LoopbackRegistry::new();
     let port = free_port();
-    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", None).unwrap();
+    registry.register_with_credential(listen_request("instance-1", "status", port), "plugin.astrbot", None, None).unwrap();
     assert_eq!(registry.request("instance-1", "status", "GET", "/", None).unwrap_err().code, "loopback-address-invalid");
     assert!(validate_method("GET / HTTP/1.1").is_err());
     assert!(validate_request_path("//evil").is_err());
@@ -257,9 +257,10 @@ fn missing_credential_record_reports_unavailable()
     assert_eq!(error.code, "loopback-credential-unavailable");
     let mut missing_header = request_request("instance-1", "control", 8766);
     missing_header.credential_ref = Some("DesktopTools/loopback-test-missing".to_string());
-    assert_eq!(resolve_credential(&missing_header).err().unwrap().code, "loopback-credential-unavailable");
+    assert_eq!(resolve_credential(&missing_header, "plugin.astrbot").err().unwrap().code, "credential-target-denied", "未许可旧目标在读取凭据前拒绝");
+    missing_header.credential_ref = Some("DesktopTools/plugin/plugin.astrbot/missing".to_string());
     missing_header.header_name = Some("X-Status-Token".to_string());
-    assert_eq!(resolve_credential(&missing_header).err().unwrap().code, "loopback-credential-unavailable");
+    assert_eq!(resolve_credential(&missing_header, "plugin.astrbot").err().unwrap().code, "loopback-credential-unavailable", "自己的命名空间缺少记录时按不可用处理");
 }
 
 /// 宿主序列化的字段名与前端契约逐字段一致，通知种类前缀可被前端识别。
@@ -291,8 +292,8 @@ fn a_second_data_source_reuses_the_same_host_path()
     registry.set_notifier(Arc::new(move |channel_id: &str| recorder.lock().unwrap().push(channel_id.to_string())));
     let astrbot_port = free_port();
     let demo_port = free_port();
-    registry.register_with_credential(listen_request("instance-1", "astrbot-push", astrbot_port), "plugin.astrbot", None).unwrap();
-    registry.register_with_credential(listen_request("instance-1", "demo-push", demo_port), "plugin.demo", None).unwrap();
+    registry.register_with_credential(listen_request("instance-1", "astrbot-push", astrbot_port), "plugin.astrbot", None, None).unwrap();
+    registry.register_with_credential(listen_request("instance-1", "demo-push", demo_port), "plugin.demo", None, None).unwrap();
     registry.read("instance-1", "astrbot-push", None).unwrap();
     registry.read("instance-1", "demo-push", None).unwrap();
 
@@ -309,4 +310,51 @@ fn a_second_data_source_reuses_the_same_host_path()
     assert_eq!(seen.lock().unwrap().as_slice(), ["astrbot-push", "demo-push"], "两条通道各自通知，互不串数据");
     registry.release_component("plugin.demo"); // 只释放另一个数据源的插件。
     assert_eq!(registry.channel_count("instance-1"), 1, "两条通道互相独立");
+}
+
+/// 凭据前缀只允许 Bearer；注入与入站校验使用「前缀 + 原始秘密」。
+#[test]
+fn credential_prefix_is_limited_to_bearer()
+{
+    let mut request = request_request("instance-1", "control", 8766);
+    request.credential_ref = Some("DesktopTools/plugin/plugin.astrbot/token".to_string());
+    request.header_name = Some("Authorization".to_string());
+    request.credential_prefix = Some("Basic ".to_string());
+    assert_eq!(resolve_credential(&request, "plugin.astrbot").err().unwrap().code, "loopback-credential-invalid", "只允许 Bearer 前缀");
+    let credential = ChannelCredential { header_name: "Authorization".to_string(), prefix: Some("Bearer ".to_string()), secret: Zeroizing::new("raw-secret".to_string()) };
+    assert_eq!(credential.header_value().as_str(), "Bearer raw-secret");
+    assert!(header_matches(&[LoopbackHeader { name: "Authorization".to_string(), value: "Bearer raw-secret".to_string() }], "Authorization", credential.header_value().as_bytes()));
+    assert!(!header_matches(&[LoopbackHeader { name: "Authorization".to_string(), value: "raw-secret".to_string() }], "Authorization", credential.header_value().as_bytes()), "缺少前缀的入站请求不得通过");
+}
+
+/// 凭据写入/清除/兑换后，引用该目标的缓存通道立即失效（目标名比较不区分大小写）。
+#[test]
+fn credential_change_invalidates_channels_referencing_the_target()
+{
+    let registry = LoopbackRegistry::new();
+    let credential = Arc::new(ChannelCredential { header_name: "Authorization".to_string(), prefix: Some("Bearer ".to_string()), secret: Zeroizing::new("raw-secret".to_string()) });
+    registry.register_with_credential(request_request("instance-1", "control", 8766), "plugin.astrbot", Some(credential), Some("DesktopTools/plugin/plugin.astrbot/token".to_string())).unwrap();
+    assert_eq!(registry.channel_count("instance-1"), 1);
+    registry.invalidate_credential("desktoptools/PLUGIN/plugin.astrbot/TOKEN");
+    assert_eq!(registry.channel_count("instance-1"), 0, "大小写变体也要让缓存通道失效");
+}
+
+/// 生产注册路径把校验后的凭据目标写进通道记录：凭据变更后引用通道立即失效。
+///
+/// 用合成目标与合成秘密验证命名空间与失效链路，不读写任何真实用户凭据。
+#[test]
+fn production_registration_records_credential_target_for_invalidation()
+{
+    let target = format!("DesktopTools/plugin/plugin.loopback-test/token-{}", std::process::id());
+    crate::platform::windows::credentials::write_secret(&target, &mut b"raw-token".to_vec()).expect("写入测试凭据");
+    let registry = LoopbackRegistry::new();
+    let mut request = request_request("instance-1", "control", 8766);
+    request.credential_ref = Some(target.clone());
+    request.header_name = Some("Authorization".to_string());
+    request.credential_prefix = Some("Bearer ".to_string());
+    registry.register(request, "plugin.loopback-test").expect("生产注册路径应成功");
+    assert_eq!(registry.channel_count("instance-1"), 1);
+    registry.invalidate_credential(&target.to_ascii_uppercase());
+    assert_eq!(registry.channel_count("instance-1"), 0, "凭据变更后引用该目标的通道必须立即失效");
+    crate::platform::windows::credentials::clear_secret(&target).expect("清理测试凭据");
 }

@@ -20,6 +20,7 @@ mod workspace;
 
 use app::ApplicationState;
 use commands::get_desktop_item_image;
+use commands::plugin::{open_uri, plugin_credential_clear, plugin_credential_exchange, plugin_credential_set, publish_island_message};
 use commands::sync_message_appearance;
 use commands::{apply_plugin_install, apply_plugin_installs, cancel_plugin_install, choose_plugin_directory, create_plugin_component, get_plugin_settings, open_plugin_directory, open_plugin_repository, prepare_plugin_install_from_archive, prepare_plugin_install_from_folder, resolved_plugin_directory, save_plugin_settings, uninstall_plugin};
 use commands::{apply_workspace_command, apply_workspace_interaction, begin_desktop_host_input_drag, delete_desktop_items, end_desktop_host_input_drag, execute_music_action, seek_music_position, exit_desktop_tools, get_application_snapshot, get_component_runtime_snapshot, get_current_music_session, get_desktop_host_snapshot, get_desktop_item_snapshot, get_workspace_snapshot, inspect_workspace_backup, invoke_component_capability, list_workspace_auto_snapshots, open_desktop_items, open_settings_window, paste_desktop_items, publish_desktop_host_readiness, publish_message_notification, record_desktop_host_input_probe, record_desktop_host_renderer_heartbeat, redo_workspace, rename_desktop_item, restore_workspace_backup, set_application_status, set_desktop_item_clipboard, show_workspace_context_menu, start_desktop_item_change_monitor, start_desktop_item_drag, undo_workspace, update_desktop_host_hit_map, write_workspace_backup};
@@ -198,6 +199,11 @@ pub fn run()
             get_island_messages,
             dismiss_island_message,
             update_desktop_host_hit_map,
+            plugin_credential_set,
+            plugin_credential_clear,
+            plugin_credential_exchange,
+            publish_island_message,
+            open_uri,
         ])
         .register_asynchronous_uri_scheme_protocol(crate::platform::windows::SETTINGS_PROTOCOL, |context, request, responder| {
             let app = context.app_handle().clone(); // 设置窗口页面来源。

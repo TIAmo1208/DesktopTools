@@ -509,7 +509,14 @@ struct FetchedLyrics
 /// 播放器已上报的真实时长优先；不报时用歌词源时长兜底，仍未知保持 0。
 fn effective_duration(declared_ms: f64, derived_ms: Option<f64>) -> f64
 {
-    if declared_ms.is_finite() && declared_ms > 0.0 { declared_ms } else { derived_ms.filter(|value| value.is_finite() && *value > 0.0).unwrap_or(0.0) }
+    if declared_ms.is_finite() && declared_ms > 0.0
+    {
+        declared_ms
+    }
+    else
+    {
+        derived_ms.filter(|value| value.is_finite() && *value > 0.0).unwrap_or(0.0)
+    }
 }
 
 /// 歌词入口：按当前播放源选择歌词源；未登记来源与取词失败都回退 LRCLIB。
@@ -545,14 +552,7 @@ fn fetch_lrclib_lyrics(client: &reqwest::blocking::Client, timeline: &Timeline) 
     let has_duration = duration.is_finite() && duration > 0.0;
     // 播放器标题可能带副标题：主标题与原始标题都查询，去重后最多 6 个查询。
     let mut queries: Vec<(String, Option<String>)> = Vec::new();
-    for (title, artist) in [
-        (query_title_stripped(&simplified_title), Some(simplified_artist.clone())),
-        (simplified_title.clone(), Some(simplified_artist.clone())),
-        (query_title_stripped(&traditional_title), Some(traditional_artist.clone())),
-        (traditional_title.clone(), Some(traditional_artist.clone())),
-        (query_title_stripped(&simplified_title), None),
-        (query_title_stripped(&traditional_title), None),
-    ]
+    for (title, artist) in [(query_title_stripped(&simplified_title), Some(simplified_artist.clone())), (simplified_title.clone(), Some(simplified_artist.clone())), (query_title_stripped(&traditional_title), Some(traditional_artist.clone())), (traditional_title.clone(), Some(traditional_artist.clone())), (query_title_stripped(&simplified_title), None), (query_title_stripped(&traditional_title), None)]
     {
         if title.trim().is_empty()
         {
@@ -676,12 +676,7 @@ fn read_body(response: reqwest::blocking::Response) -> Result<String, Box<dyn st
 fn fetch_netease_lyrics(client: &reqwest::blocking::Client, timeline: &Timeline) -> Result<Option<(Vec<LyricLine>, f64)>, Box<dyn std::error::Error>>
 {
     let keyword = format!("{} {}", to_simplified(timeline.title.trim()), to_simplified(timeline.artist.trim()));
-    let response = client
-        .get("https://music.163.com/api/search/get")
-        .header(reqwest::header::REFERER, "https://music.163.com/")
-        .query(&[("s", keyword.as_str()), ("type", "1"), ("limit", "10")])
-        .send()?
-        .error_for_status()?;
+    let response = client.get("https://music.163.com/api/search/get").header(reqwest::header::REFERER, "https://music.163.com/").query(&[("s", keyword.as_str()), ("type", "1"), ("limit", "10")]).send()?.error_for_status()?;
     let search: NeteaseSearch = serde_json::from_str(&read_body(response)?)?;
     let Some(songs) = search.result.and_then(|result| result.songs)
     else
@@ -691,12 +686,7 @@ fn fetch_netease_lyrics(client: &reqwest::blocking::Client, timeline: &Timeline)
     // 同名同艺人常有多个版本，第一条可能无词；按搜索顺序取到第一条有同步词的为止，最多 5 条。
     for song in select_netease_songs(&songs, &timeline.title, &timeline.artist).into_iter().take(5)
     {
-        let response = client
-            .get("https://music.163.com/api/song/lyric")
-            .header(reqwest::header::REFERER, "https://music.163.com/")
-            .query(&[("id", song.id.to_string()), ("lv", "1".to_string()), ("tv", "-1".to_string())])
-            .send()?
-            .error_for_status()?;
+        let response = client.get("https://music.163.com/api/song/lyric").header(reqwest::header::REFERER, "https://music.163.com/").query(&[("id", song.id.to_string()), ("lv", "1".to_string()), ("tv", "-1".to_string())]).send()?.error_for_status()?;
         let lyric: NeteaseLyric = serde_json::from_str(&read_body(response)?)?;
         let lines = parse_lrc(&to_simplified(&lyric.lrc.map(|lrc| lrc.lyric).unwrap_or_default()));
         if !lines.is_empty()
@@ -929,12 +919,7 @@ mod netease_tests
     fn netease_song_selection_keeps_all_matching_versions()
     {
         let song = |id: i64, name: &str, artist: &str, duration: Option<f64>| NeteaseSong { id, name: name.into(), artists: vec![NeteaseArtist { name: artist.into() }], duration };
-        let songs = vec![
-            song(1, "晴天", "周杰伦", Some(269_117.0)),
-            song(2, "晴天 (Live)", "周杰伦", Some(300_000.0)),
-            song(3, "晴天", "孙燕姿", Some(200_000.0)),
-            song(4, "晴天", "周杰伦", Some(236_818.0)),
-        ];
+        let songs = vec![song(1, "晴天", "周杰伦", Some(269_117.0)), song(2, "晴天 (Live)", "周杰伦", Some(300_000.0)), song(3, "晴天", "孙燕姿", Some(200_000.0)), song(4, "晴天", "周杰伦", Some(236_818.0))];
         let ids = |title: &str, artist: &str| select_netease_songs(&songs, title, artist).iter().map(|song| song.id).collect::<Vec<_>>();
         assert_eq!(ids("晴天", "周杰伦"), vec![1, 4]);
         assert_eq!(ids("晴天 (Live)", "周杰伦"), vec![2]);

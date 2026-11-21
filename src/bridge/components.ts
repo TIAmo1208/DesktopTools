@@ -1,14 +1,18 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import { parseApplicationCommandError } from "../contracts/application";
+import { publishIslandMessagePayload } from "./pluginMessagePayload.ts";
 import {
     parseComponentCapabilityResult,
     parseComponentHostEvent,
     parseComponentRuntimeSnapshot,
+    parsePluginCredentialExchangeResult,
     type ComponentCapability,
     type ComponentCapabilityResult,
     type ComponentHostEvent,
     type ComponentRuntimeSnapshot,
+    type PluginCredentialExchange,
+    type PluginCredentialExchangeResult,
 } from "../contracts/component";
 import { invokeRuntime, listenRuntime } from "./runtime";
 
@@ -71,4 +75,50 @@ export const listenComponentHostEvents = async (
         stop();
         throw error;
     }
+};
+
+/** 写入插件自己的凭据槽位；值只经命令提交，不回读明文。 */
+export const setPluginCredential = async (instanceId: string, slot: string, value: string): Promise<void> => {
+    await invokeRuntime("plugin_credential_set", { instanceId, slot, value }).catch((error: unknown) => {
+        throw parseApplicationCommandError(error);
+    });
+};
+
+/** 清除插件自己的凭据槽位。 */
+export const clearPluginCredential = async (instanceId: string, slot: string): Promise<void> => {
+    await invokeRuntime("plugin_credential_clear", { instanceId, slot }).catch((error: unknown) => {
+        throw parseApplicationCommandError(error);
+    });
+};
+
+/** 向浮岛消息锚点投递一条本地条目；uri 只在声明时随命令下发，不进入原生 Toast 队列。 */
+export const publishIslandMessage = async (instanceId: string, key: string, kind: string, text: string, uri?: string): Promise<void> => {
+    await invokeRuntime("publish_island_message", publishIslandMessagePayload(instanceId, key, kind, text, uri)).catch((error: unknown) => {
+        throw parseApplicationCommandError(error);
+    });
+};
+
+/** 打开插件请求的 URI；协议白名单由宿主校验。 */
+export const openPluginUri = async (instanceId: string, uri: string): Promise<void> => {
+    await invokeRuntime("open_uri", { instanceId, uri }).catch((error: unknown) => {
+        throw parseApplicationCommandError(error);
+    });
+};
+
+/** 让宿主向本机地址取回秘密并直接落槽；只返回是否存储，不把秘密带回页面。 */
+export const exchangePluginCredential = async (
+    instanceId: string,
+    slot: string,
+    request: PluginCredentialExchange,
+): Promise<PluginCredentialExchangeResult> => {
+    const response = await invokeRuntime<unknown>("plugin_credential_exchange", {
+        instanceId,
+        slot,
+        url: request.url,
+        body: request.body ?? null,
+        extract: request.extract,
+    }).catch((error: unknown) => {
+        throw parseApplicationCommandError(error);
+    });
+    return parsePluginCredentialExchangeResult(response);
 };
