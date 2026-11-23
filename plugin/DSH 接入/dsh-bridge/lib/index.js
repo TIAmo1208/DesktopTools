@@ -61,7 +61,7 @@ const MAX_TEXT_CHARS = 256
 const MAX_ID_CHARS = 128
 
 /** job 枚举只查活跃/最近的会话，避免全量扫描。 */
-const JOB_SCAN_SESSIONS = 16
+const JOB_SCAN_SESSIONS = 64 // 扫描全部可见会话（合同上限 64）；只扫前 16 个会漏掉后面的 running job。
 
 /** 会话/job 缓存的有界保留量（超出后回收已结束对象）。 */
 const SESSION_KEEP = 256
@@ -331,6 +331,14 @@ export function createBridge(options) {
   const pending = new Map()
   /** 事件兜底 job：jobId -> { id, label, status }。 */
   const eventJobs = new Map()
+  /** job 归属会话：jobId -> sessionId，用于把 running job 计入会话。 */
+  const jobSession = new Map()
+  /** 会话最近一次直接用户消息时间：id -> epoch ms，作为未读 cutoff。 */
+  const lastHumanMessageAt = new Map()
+  /** 会话最近一次完成事件时间：id -> epoch ms（turn/end、job/settled）。 */
+  const lastFinishedAt = new Map()
+  /** 会话最近一次「完成或待决到达」时间：id -> epoch ms。 */
+  const lastUnreadAt = new Map()
 
   let revision = 0
   let lastSnapshotDigest = null
@@ -504,6 +512,24 @@ export function createBridge(options) {
       if (hasLivePending(id) || agentStatus.get(id) === 'running') continue
       sessions.delete(id)
       titles.delete(id)
+      // 这里不清水位：会话可能仍由 sessions.list 持续提供。真正的清理在 buildSnapshot 里按
+      // “既不在事件缓存、也不在可见 sessions.list”判定，避免误删仍可见会话的未读水位。
+    }
+  }
+
+  /**
+   * 会话从缓存/可见列表消失后清掉它的时间表与 job 归属，避免泄漏与误计。
+   * @param {string} sessionId 会话 id。
+   * @returns {void}
+   */
+  function forgetSessionFacts(sessionId) {
+    lastHumanMessageAt.delete(sessionId)
+    lastFinishedAt.delete(sessionId)
+    lastUnreadAt.delete(sessionId)
+    sessionCreatedAt.delete(sessionId)
+    agentStatus.delete(sessionId)
+    for (const [jobId, owner] of jobSession) {
+      if (owner === sessionId) jobSession.delete(jobId)
     }
   }
 
@@ -515,7 +541,10 @@ export function createBridge(options) {
     if (eventJobs.size <= JOB_KEEP) return
     for (const [id, job] of eventJobs) {
       if (eventJobs.size <= JOB_KEEP) break
-      if (job.status !== 'running') eventJobs.delete(id)
+      if (job.status !== 'running') {
+        eventJobs.delete(id)
+        jobSession.delete(id) // 淘汰 job 时同时清归属，长寿命会话不积累历史 job。
+      }
     }
   }
 
@@ -537,8 +566,23 @@ export function createBridge(options) {
         if (typeof data?.title === 'string' && data.title.length > 0) titles.set(sessionId, data.title)
         return
       }
+      if (type === 'user/message') {
+        // 只有直接的 user 消息清未读；合成注入（文件变更、skill、cron、goal）不算用户回到会话。
+        if (data?.source?.kind === 'user') {
+          // cutoff 同样取 max：乱序到达的旧用户消息不能把 cutoff 往回拨。
+          lastHumanMessageAt.set(sessionId, Math.max(lastHumanMessageAt.get(sessionId) ?? Number.NEGATIVE_INFINITY, eventTime(event)))
+        }
+        return
+      }
+      if (type === 'turn/end') {
+        // forked/interrupted 是非 live 合成结束，不当作“完成”。
+        const reason = String(data?.reason ?? '')
+        if (reason !== 'forked' && reason !== 'interrupted') markFinished(sessionId, eventTime(event))
+        return
+      }
       if (type === 'approval/asked') {
         markPending(String(data?.id ?? ''), 'approval', sessionId)
+        markUnread(sessionId, eventTime(event))
         return
       }
       if (type === 'approval/decided') {
@@ -546,8 +590,10 @@ export function createBridge(options) {
         return
       }
       if (type === 'tool/call') {
-        if (data?.name === 'ask_user_question') markPending(String(data.callId ?? ''), 'question', sessionId)
-        else if (data?.name === 'exit_plan_mode') markPending(String(data.callId ?? ''), 'plan', sessionId)
+        if (data?.name === 'ask_user_question' || data?.name === 'exit_plan_mode') {
+          markPending(String(data.callId ?? ''), data?.name === 'ask_user_question' ? 'question' : 'plan', sessionId)
+          markUnread(sessionId, eventTime(event)) // 提问/计划待决同样计入未读。
+        }
         return
       }
       if (type === 'tool/result') {
@@ -557,13 +603,20 @@ export function createBridge(options) {
       }
       if (type === 'job/registered') {
         const id = String(data?.jobId ?? '')
-        if (id) eventJobs.set(id, { id, label: String(data?.label ?? ''), status: 'running' })
+        if (id) {
+          eventJobs.set(id, { id, label: String(data?.label ?? ''), status: 'running' })
+          jobSession.set(id, sessionId)
+        }
         pruneJobs()
         return
       }
       if (type === 'job/settled') {
         const id = String(data?.jobId ?? '')
-        if (id) eventJobs.set(id, { id, label: String(data?.label ?? ''), status: mapJobStatus(String(data?.status ?? '')) })
+        if (id) {
+          eventJobs.set(id, { id, label: String(data?.label ?? ''), status: mapJobStatus(String(data?.status ?? '')) })
+          jobSession.set(id, sessionId)
+        }
+        markFinished(sessionId, eventTime(event))
         pruneJobs()
       }
     } catch (error) {
@@ -597,6 +650,37 @@ export function createBridge(options) {
     if (status === 'running' || status === 'stopping') return 'running'
     if (status === 'completed') return 'done'
     return 'failed'
+  }
+
+  /**
+   * 取事件时间戳：优先事件自带 epoch ms，缺失时用当前时间。
+   * @param {any} event 会话事件。
+   * @returns {number} epoch ms。
+   */
+  function eventTime(event) {
+    return typeof event?.time === 'number' && Number.isFinite(event.time) ? event.time : now()
+  }
+
+  /**
+   * 记录一次“完成”：turn/end 或 job/settled 既算完成也算未读来源。
+   * @param {string} sessionId 会话 id。
+   * @param {number} at epoch ms。
+   * @returns {void}
+   */
+  function markFinished(sessionId, at) {
+    // 水位取 max：迟到事件不能把已经推进的水位往回拨，否则 completedUnread 会脱离 unread。
+    lastFinishedAt.set(sessionId, Math.max(lastFinishedAt.get(sessionId) ?? Number.NEGATIVE_INFINITY, at))
+    lastUnreadAt.set(sessionId, Math.max(lastUnreadAt.get(sessionId) ?? Number.NEGATIVE_INFINITY, at))
+  }
+
+  /**
+   * 记录一次待决到达：待决（审批/计划/提问）计入未读，直到下一次直接用户消息。
+   * @param {string} sessionId 会话 id。
+   * @param {number} at epoch ms。
+   * @returns {void}
+   */
+  function markUnread(sessionId, at) {
+    lastUnreadAt.set(sessionId, Math.max(lastUnreadAt.get(sessionId) ?? Number.NEGATIVE_INFINITY, at))
   }
 
   /**
@@ -670,11 +754,14 @@ export function createBridge(options) {
    */
   async function readSessions() {
     const known = new Map()
+    const sourceIds = new Set() // 成功读取的未截断源 ID：水位清理只认它。
     const sessionsService = readService(ctx, 'sessions')
-    const liveSessions = typeof sessionsService?.list === 'function' ? sessionsService.list() : []
+    const listOk = typeof sessionsService?.list === 'function'
+    const liveSessions = listOk ? sessionsService.list() : []
     for (const session of liveSessions) {
       const id = session?.header?.id ?? session?.id
       if (id) {
+        sourceIds.add(String(id))
         known.set(String(id), { session, agent: null })
         if (typeof session?.header?.createdAt === 'number') sessionCreatedAt.set(String(id), session.header.createdAt)
       }
@@ -686,6 +773,7 @@ export function createBridge(options) {
       if (!id) continue
       const existing = known.get(String(id)) ?? {}
       known.set(String(id), { ...existing, agent, session: agent?.session ?? existing.session })
+      sourceIds.add(String(id))
       if (typeof agent?.session?.header?.createdAt === 'number') sessionCreatedAt.set(String(id), agent.session.header.createdAt)
     }
     for (const [id, entry] of sessions) {
@@ -715,37 +803,40 @@ export function createBridge(options) {
     // 优先保留活待决，其次 running；其余按 id 稳定排序，最后按合同截到 64。
     const rank = row => (row.pending !== 'none' ? 0 : row.status === 'running' ? 1 : 2)
     rows.sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id))
-    return rows.slice(0, MAX_SESSIONS)
+    // 展示按合同截到 64；清理用的是上面的未截断 sourceIds，展示截断不影响水位去留。
+    return { rows: rows.slice(0, MAX_SESSIONS), sourceIds, listOk }
   }
 
   /**
    * 聚合 job 列表：事件兜底叠加 ctx.jobs 的实时行；只扫有限会话。
    * @param {string[]} sessionIds 需要查询的会话 id（已由调用方限制数量）。
-   * @returns {Promise<{ rows: Array<any>, failed: boolean }>} job 快照与读取失败标记。
+   * @returns {Promise<{ rows: Array<any>, failed: boolean, runningSessions: Set<string> }>} job 快照、读取失败标记与 running job 的会话归属。
    */
   async function readJobs(sessionIds) {
     const map = new Map()
+    const ownerOf = new Map() // jobId -> sessionId：本次读取确认的归属（含事件侧记录）。
     let failed = false
     for (const [id, job] of eventJobs) map.set(id, { ...job })
     const jobsService = readService(ctx, 'jobs')
     if (jobsService?.list) {
-      const collect = rows => {
+      const collect = (rows, ownerSession) => {
         if (!Array.isArray(rows)) return
         for (const row of rows) {
           if (!validId(row?.id)) continue
-          map.set(String(row.id), {
-            id: String(row.id),
-            label: String(row.label ?? ''),
-            status: mapJobStatus(String(row.status ?? '')),
-          })
+          const id = String(row.id)
+          const status = mapJobStatus(String(row.status ?? ''))
+          map.set(id, { id, label: String(row.label ?? ''), status })
+          // 归属只记事实；是否算 running 由最终 map 状态决定（后面的读取可以覆盖前面的状态）。
+          const owner = ownerSession ?? jobSession.get(id)
+          if (owner) ownerOf.set(id, String(owner))
         }
       }
       // 单个会话读取失败不应丢掉其它 job，但要如实标记“不可知/陈旧”。
-      const reads = [() => jobsService.list()]
-      for (const sessionId of sessionIds) reads.push(() => jobsService.list(sessionId))
-      for (const read of reads) {
+      const reads = [{ read: () => jobsService.list(), sessionId: undefined }]
+      for (const sessionId of sessionIds) reads.push({ read: () => jobsService.list(sessionId), sessionId })
+      for (const item of reads) {
         try {
-          collect(await read())
+          collect(await item.read(), item.sessionId)
         } catch (error) {
           failed = true
           logger.warn?.(`[${name}] jobs.list failed: ${String(error?.message ?? error)}`)
@@ -755,12 +846,66 @@ export function createBridge(options) {
       // 没有 job 服务时无法断言“没有任务”，按不可知处理。
       failed = true
     }
+    // 计数用「最终状态唯一 map」推导，不受展示截断影响：某 job 最终 done 就不会把会话算成 running。
+    const runningSessions = new Set()
+    for (const [id, job] of map) {
+      if (!validId(id) || job.status !== 'running') continue
+      const owner = ownerOf.get(id) ?? jobSession.get(id)
+      if (owner) runningSessions.add(String(owner))
+    }
     const rows = [...map.values()]
       .filter(job => validId(job.id))
       .map(job => ({ id: job.id, label: clampText(job.label, job.id), status: job.status }))
       .sort((a, b) => (a.status === 'running' ? 0 : 1) - (b.status === 'running' ? 0 : 1) || a.id.localeCompare(b.id))
-      .slice(0, MAX_JOBS)
-    return { rows, failed }
+      .slice(0, MAX_JOBS) // 展示另截 32 条，计数不受此影响。
+    return { rows, failed, runningSessions }
+  }
+
+  /**
+   * 计算 taskStats：任务单位是可见会话。
+   * - runCount：status=running 或含 running job 的会话数（按会话去重）。
+   * - unreadCount：最近一次直接用户消息之后发生过完成或待决到达的会话数（bridge-defined 未读代理）。
+   * - completedUnreadCount：其中最近一次完成为 turn/end 或 job/settled 的会话数，是 unread 的子集。
+   * - unionCount：running 与 unread 的会话并集。
+   * 会话来源缺失时省略该字段（不造 0）；数据陈旧时 completeness=partial 让插件降级。
+   * @param {{ sessionRows: Array<any>, runningSessions: Set<string>, stale: boolean, sessionsAvailable: boolean }} input 快照中间结果。
+   * @returns {any} taskStats；会话来源缺失时返回 undefined。
+   */
+  function readTaskStats({ sessionRows, runningSessions, stale, sessionsAvailable }) {
+    if (!sessionsAvailable) return undefined
+    const sampledAt = new Date(now()).toISOString()
+    let runCount = 0
+    let unreadCount = 0
+    let completedUnreadCount = 0
+    const union = new Set()
+    for (const row of sessionRows) {
+      const id = String(row.id)
+      const cutoff = lastHumanMessageAt.get(id) ?? sessionCreatedAt.get(id) ?? 0
+      const running = row.status === 'running' || runningSessions.has(id)
+      const lastUnread = lastUnreadAt.get(id)
+      const lastFinished = lastFinishedAt.get(id)
+      // 完成也算未读来源：unread 取「完成或待决」两个水位的较大者，恒有 completedUnread ⊆ unread。
+      const lastActivity = Math.max(lastUnread ?? Number.NEGATIVE_INFINITY, lastFinished ?? Number.NEGATIVE_INFINITY)
+      const unread = lastActivity > cutoff
+      const completedUnread = lastFinished !== undefined && lastFinished > cutoff
+      if (running) {
+        runCount += 1
+        union.add(id)
+      }
+      if (unread) {
+        unreadCount += 1
+        union.add(id)
+      }
+      if (completedUnread) completedUnreadCount += 1
+    }
+    return {
+      runCount,
+      unreadCount,
+      completedUnreadCount,
+      unionCount: union.size,
+      completeness: stale ? 'partial' : 'complete',
+      sampledAt,
+    }
   }
 
   /**
@@ -772,8 +917,17 @@ export function createBridge(options) {
     const balance = await readBalance()
     let sessionRows = []
     let jobRows = []
+    let runningSessions = new Set()
+    let sessionsAvailable = false
+    let sourceIds = new Set() // 成功读取的未截断会话 id：清理水位的权威集合。
+    let listOk = false
     try {
-      sessionRows = await readSessions()
+      const sessionsService = readService(ctx, 'sessions')
+      sessionsAvailable = typeof sessionsService?.list === 'function'
+      const result = await readSessions()
+      sessionRows = result.rows
+      sourceIds = result.sourceIds
+      listOk = result.listOk
     } catch (error) {
       stale = true
       logger.warn?.(`[${name}] session aggregation failed: ${String(error?.message ?? error)}`)
@@ -791,6 +945,7 @@ export function createBridge(options) {
         .map(row => row.id)
       const jobResult = await readJobs(jobSessionIds)
       jobRows = jobResult.rows
+      runningSessions = jobResult.runningSessions
       if (jobResult.failed) stale = true
     } catch (error) {
       stale = true
@@ -803,7 +958,31 @@ export function createBridge(options) {
       .sort((a, b) => a.since.localeCompare(b.since))
       // 优先保留活的待决（全部都是未决），按时间保留最近 32 条。
       .slice(-MAX_PENDING)
-    const digest = sha256Hex(JSON.stringify({ stale, balance, sessions: sessionRows, jobs: jobRows, pending: pendingRows }))
+    // 会话已经彻底消失（既不在可见列表、也不在事件缓存）时清掉它的时间表与 job 归属；
+    // 会话来源不可用时不做清理，避免服务抖动把水位全清掉。
+    // 只有「会话来源可用且 sessions.list 读取成功」时才清理，且权威集合是未截断 sourceIds ∪ 事件缓存；
+    // 展示截断（≤64）与 list 抛错都不得删水位。
+    if (sessionsAvailable && listOk) {
+      const known = new Set([...sourceIds, ...sessions.keys()])
+      for (const id of [...lastHumanMessageAt.keys(), ...lastFinishedAt.keys(), ...lastUnreadAt.keys(), ...sessionCreatedAt.keys()]) {
+        if (!known.has(id)) forgetSessionFacts(id)
+      }
+      for (const [jobId, owner] of [...jobSession]) {
+        if (!known.has(String(owner))) jobSession.delete(jobId)
+      }
+    }
+    const taskStats = readTaskStats({ sessionRows, runningSessions, stale, sessionsAvailable })
+    // digest 必须排除 sampledAt：否则每轮采样都会推进 revision，客户端会以为数据一直在变。
+    const digestStats = taskStats
+      ? {
+          runCount: taskStats.runCount,
+          unreadCount: taskStats.unreadCount,
+          completedUnreadCount: taskStats.completedUnreadCount,
+          unionCount: taskStats.unionCount,
+          completeness: taskStats.completeness,
+        }
+      : null
+    const digest = sha256Hex(JSON.stringify({ stale, balance, sessions: sessionRows, jobs: jobRows, pending: pendingRows, taskStats: digestStats }))
     if (digest !== lastSnapshotDigest) {
       lastSnapshotDigest = digest
       revision += 1
@@ -819,6 +998,7 @@ export function createBridge(options) {
       sessions: sessionRows,
       jobs: jobRows,
       pending: pendingRows,
+      ...(taskStats ? { taskStats } : {}),
     }
   }
 

@@ -35,7 +35,15 @@ DSH Host 只读桥插件。它在 `127.0.0.1` 上暴露只读快照服务，供 
   "balance": { "status": "ready|logged-out|unauthorized|error", "wallets": [{ "currency": "CNY", "amount": "12.34" }] },
   "sessions": [{ "id": "…", "title": "…", "status": "running|idle|waiting", "pending": "approval|question|plan|none" }],
   "jobs": [{ "id": "…", "label": "…", "status": "running|done|failed" }],
-  "pending": [{ "id": "…", "kind": "approval|question|plan", "sessionId": "…", "since": "…" }]
+  "pending": [{ "id": "…", "kind": "approval|question|plan", "sessionId": "…", "since": "…" }],
+  "taskStats": {
+    "runCount": 1,
+    "unreadCount": 2,
+    "completedUnreadCount": 1,
+    "unionCount": 2,
+    "completeness": "complete|partial",
+    "sampledAt": "2026-11-19T09:30:00.000Z"
+  }
 }
 ```
 
@@ -49,6 +57,17 @@ DSH Host 只读桥插件。它在 `127.0.0.1` 上暴露只读快照服务，供 
 - 会话/job 缓存有界（会话保留 256、job 保留 128，超出回收已结束对象）；job 枚举只扫活跃/最近 16 个会话。
 - 部分失败如实表达：会话/job 读取失败时 `stale=true`，不把“不可知”伪装成“没有任务”；余额失败为 `balance.status=error`。
 - 本轮不实现 AgentTeams 任务板（M5），只保留会话与 job 状态。
+- `taskStats` 可选：任务单位是**可见会话**（最多 64 条）。
+  - `runCount`：`status=running` 或含 running job 的会话数（按会话去重，一个会话多个 job 只计一次）。
+  - `unreadCount`：自该会话最近一次**直接用户消息**（`user/message` 且 `source.kind=user`）以来发生过 `turn/end`、`job/settled` 或待决到达（`approval/asked`、`ask_user_question`、`exit_plan_mode`）的会话数；这是 bridge-defined 未读代理，不是 DSH 的已读状态。`forked`/`interrupted` 的 `turn/end` 不算完成。
+  - `completedUnreadCount`：上述会话中最近一次完成（`turn/end` 或 `job/settled`）晚于 cutoff 的会话数，是 `unreadCount` 的子集。
+  - `unionCount`：running 与 unread 的会话并集，恒有 `completedUnread ≤ unread ≤ union ≤ run + unread`。
+  - job 归属按**全部可见会话**（≤ 64）逐会话查询，不只看前若干个；某会话多个 running job 只计一次。
+  - 三个水位（cutoff / 未读 / 完成）都取 max：乱序或迟到的旧事件不会把水位往回拨，`completedUnread` 恒为 `unread` 的子集。
+  - 水位只在会话「既不在事件缓存、也不在 `sessions.list`」时清理，且只以**成功读取的未截断源 ID**为权威：展示截断（≤64）与 `sessions.list` 抛错都不删水位。
+  - `running` 集合按「最终 job 状态唯一 map」重建（`job/registered` 之后会话读到 done 不会把会话加回 running），也不受展示截断（jobs ≤32）影响：计数用完整源，展示才截断。
+  - `completeness`：会话来源正常且未陈旧为 `complete`；会话/job 读取失败等陈旧情况为 `partial`，消费方应忽略计数并降级。
+  - 没有任何会话来源时**省略** `taskStats`，不用全 0 冒充“没有任务”；`sampledAt` 不参与 digest，不会每轮推进 `revision`。
 
 ## 受信入口（DSH 设置页）
 

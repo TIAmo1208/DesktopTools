@@ -584,7 +584,7 @@ async function main() {
   check('标题无控制字符', boundedSnapshot.body?.sessions?.every(row => !/[\u0000-\u001f\u007f-\u009f]/.test(row.title)))
   check('job 名称截断 ≤ 256', boundedSnapshot.body?.jobs?.every(row => row.label.length <= 256))
   check('活待决优先保留', boundedSnapshot.body?.pending?.some(item => item.id === 'ap-39'))
-  check('job 扫描有界 17 次', jobCalls === 17)
+  check('job 扫描覆盖全部可见会话（1 次全局 + 最多 64 次按会话）', jobCalls === 65)
   await boundBridge.stop()
 
   const brokenJobs = makeFakeCtx()
@@ -727,6 +727,293 @@ async function main() {
     applyRefused = true
   }
   check('apply disposer 关闭服务', applyRefused)
+
+  // 29. taskStats：任务单位=可见会话；running job 计入 runCount，直接用户消息清未读，待决计入未读。
+  const 启动 = async ctx => {
+    const bridge = createBridge({ ctx, config: { port: 0 } })
+    await bridge.start()
+    const base = `http://127.0.0.1:${bridge.currentPort()}`
+    const pair = await pairRequest(base, bridge.currentPairingCode())
+    return { bridge, base, auth: { authorization: `Bearer ${pair.body.token}` } }
+  }
+  const 契约 = stats =>
+    Number.isSafeInteger(stats?.runCount) && stats.runCount >= 0
+    && Number.isSafeInteger(stats?.unreadCount) && stats.unreadCount >= 0
+    && Number.isSafeInteger(stats?.completedUnreadCount) && stats.completedUnreadCount >= 0
+    && Number.isSafeInteger(stats?.unionCount) && stats.unionCount >= 0
+    && stats.completedUnreadCount <= stats.unreadCount
+    && stats.unreadCount <= stats.unionCount
+    && stats.unionCount <= stats.runCount + stats.unreadCount
+
+  const 基础 = await 启动(makeFakeCtx().ctx)
+  const 基础快照 = await request(基础.base, '/snapshot', { headers: 基础.auth })
+  const 基础统计 = 基础快照.body?.taskStats
+  console.log(`[29] taskStats: ${JSON.stringify(基础统计)}`)
+  check('快照产出 taskStats', 基础统计 !== undefined && 基础统计 !== null)
+  check('taskStats 计数满足插件契约', 契约(基础统计) === true)
+  check('running job 的会话计入 runCount', 基础统计?.runCount === 1)
+  check('无用户消息且无完成事件时未读为 0', 基础统计?.unreadCount === 0 && 基础统计?.completedUnreadCount === 0)
+  check('taskStats completeness=complete', 基础统计?.completeness === 'complete')
+  check('sampledAt 为 ISO 字符串', typeof 基础统计?.sampledAt === 'string' && !Number.isNaN(Date.parse(基础统计.sampledAt)))
+  const 采样差 = Math.abs(Date.parse(基础统计?.sampledAt ?? '') - Date.parse(基础快照.body?.fetchedAt ?? ''))
+  check('sampledAt 与 fetchedAt 相差 ≤ 30s', Number.isFinite(采样差) && 采样差 <= 30000)
+
+  // 直接用户消息清未读；turn/end 计入完成未读；再来一条用户消息又清掉。
+  基础.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'user/message', time: 1000, data: { source: { kind: 'user' } } })
+  基础.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'turn/end', time: 2000, data: { reason: 'completed' } })
+  const 完成后 = (await request(基础.base, '/snapshot', { headers: 基础.auth })).body?.taskStats
+  console.log(`[29] after turn/end: ${JSON.stringify(完成后)}`)
+  check('turn/end 计入未读', 完成后?.unreadCount === 1)
+  check('turn/end 计入完成未读', 完成后?.completedUnreadCount === 1)
+  check('union 覆盖未读会话', 完成后?.unionCount === 1)
+  基础.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'user/message', time: 3000, data: { source: { kind: 'user' } } })
+  const 已读后 = (await request(基础.base, '/snapshot', { headers: 基础.auth })).body?.taskStats
+  console.log(`[29] after user message: ${JSON.stringify(已读后)}`)
+  check('直接用户消息清未读', 已读后?.unreadCount === 0 && 已读后?.completedUnreadCount === 0)
+  // 合成注入不算用户回到会话：不清未读。
+  基础.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'turn/end', time: 4000, data: { reason: 'completed' } })
+  基础.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'user/message', time: 5000, data: { source: { kind: 'cron' } } })
+  const 合成后 = (await request(基础.base, '/snapshot', { headers: 基础.auth })).body?.taskStats
+  check('合成注入不清未读', 合成后?.unreadCount === 1)
+  // 待决到达计入未读（无完成事件）。
+  基础.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'user/message', time: 6000, data: { source: { kind: 'user' } } })
+  基础.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'approval/asked', time: 7000, data: { id: 'ap-9', toolName: 'bash', callId: 'call-9' } })
+  const 待决后 = (await request(基础.base, '/snapshot', { headers: 基础.auth })).body?.taskStats
+  console.log(`[29] after approval: ${JSON.stringify(待决后)}`)
+  check('待决计入未读', 待决后?.unreadCount === 1)
+  check('待决不计入完成未读', 待决后?.completedUnreadCount === 0)
+  check('待决场景仍满足契约', 契约(待决后) === true)
+  await 基础.bridge.stop()
+
+  // 无会话来源：省略 taskStats，不造 0 冒充“没有任务”。
+  const 无源 = makeFakeCtx()
+  delete 无源.ctx.sessions
+  const 无源桥 = await 启动(无源.ctx)
+  const 无源快照 = (await request(无源桥.base, '/snapshot', { headers: 无源桥.auth })).body
+  console.log(`[29] no sessions source -> taskStats=${JSON.stringify(无源快照?.taskStats)}`)
+  check('无会话来源时省略 taskStats', 无源快照?.taskStats === undefined)
+  await 无源桥.bridge.stop()
+
+  // 空会话列表：真实的全 0，completeness 仍是 complete。
+  const 空会话 = makeFakeCtx()
+  空会话.ctx.sessions.list = () => []
+  空会话.ctx.agents.list = () => []
+  空会话.ctx.jobs.list = () => []
+  const 空桥 = await 启动(空会话.ctx)
+  const 空统计 = (await request(空桥.base, '/snapshot', { headers: 空桥.auth })).body?.taskStats
+  console.log(`[29] empty sessions: ${JSON.stringify(空统计)}`)
+  check('无会话时四项计数为 0', 空统计?.runCount === 0 && 空统计?.unreadCount === 0 && 空统计?.completedUnreadCount === 0 && 空统计?.unionCount === 0)
+  check('空会话仍标 complete', 空统计?.completeness === 'complete')
+  await 空桥.bridge.stop()
+
+  // 陈旧：job 读取失败 → stale，completeness=partial（插件据此降级）。
+  const 陈旧 = makeFakeCtx()
+  陈旧.ctx.jobs.list = () => {
+    throw new Error('jobs-down')
+  }
+  const 陈旧桥 = await 启动(陈旧.ctx)
+  const 陈旧快照 = (await request(陈旧桥.base, '/snapshot', { headers: 陈旧桥.auth })).body
+  console.log(`[29] stale -> taskStats=${JSON.stringify(陈旧快照?.taskStats)}`)
+  check('数据陈旧时 taskStats 标 partial', 陈旧快照?.taskStats?.completeness === 'partial')
+  check('陈旧但仍满足计数契约', 契约(陈旧快照?.taskStats) === true)
+  await 陈旧桥.bridge.stop()
+
+  // 30. taskStats 边界：17 会话扫描、多 job 去重、迟到水位取 max、revision 稳定。
+  const 多会话 = makeFakeCtx()
+  // 前 16 个 idle 会话按 id 排序在前；第 17 个用 "zz-late" 保证落在扫描末尾。
+  多会话.ctx.sessions.list = () => [
+    ...Array.from({ length: 16 }, (_, index) => ({ header: { id: `s${String(index + 1).padStart(2, '0')}` } })),
+    { header: { id: 'zz-late' } },
+  ]
+  多会话.ctx.agents.list = () => []
+  多会话.ctx.jobs.list = sessionId => {
+    if (sessionId === undefined) return []
+    if (sessionId === 's01') return [
+      { id: 'job-a', label: 'a', status: 'running' },
+      { id: 'job-b', label: 'b', status: 'running' },
+    ]
+    if (sessionId === 'zz-late') return [{ id: 'job-17', label: 'late', status: 'running' }]
+    return []
+  }
+  const 多桥 = await 启动(多会话.ctx)
+  const 多统计 = (await request(多桥.base, '/snapshot', { headers: 多桥.auth })).body?.taskStats
+  console.log(`[30] 17 sessions: ${JSON.stringify(多统计)}`)
+  check('第 17 个会话的 running job 计入 runCount', 多统计?.runCount === 2)
+  check('第 17 个会话计入 unionCount', 多统计?.unionCount === 2)
+  check('同一会话多个 running job 只计一次', 多统计?.runCount === 2 && 契约(多统计) === true)
+  // revision 稳定：没有变化时连续两次快照 revision 不变（sampledAt 不进 digest）。
+  const 稳定一 = (await request(多桥.base, '/snapshot', { headers: 多桥.auth })).body
+  await new Promise(resolve => setTimeout(resolve, 10)) // 让两次采样至少跨 1ms（ISO 时间戳精度）。
+  const 稳定二 = (await request(多桥.base, '/snapshot', { headers: 多桥.auth })).body
+  console.log(`[30] revision ${稳定一?.revision} -> ${稳定二?.revision}；sampledAt ${稳定一?.taskStats?.sampledAt} -> ${稳定二?.taskStats?.sampledAt}`)
+  check('sampledAt 不进 digest：无变化 revision 不变', 稳定一?.revision === 稳定二?.revision)
+  check('两次采样时间确实不同（真实比较）', typeof 稳定一?.taskStats?.sampledAt === 'string' && typeof 稳定二?.taskStats?.sampledAt === 'string' && 稳定一.taskStats.sampledAt !== 稳定二.taskStats.sampledAt)
+  await 多桥.bridge.stop()
+
+  // 迟到水位：user t100 → turn/end t200 → 迟到 approval t90，必须 completedUnread=1 且 unread=1。
+  const 迟到 = makeFakeCtx()
+  迟到.ctx.sessions.list = () => [{ header: { id: 's1', createdAt: 1 } }]
+  迟到.ctx.agents.list = () => []
+  迟到.ctx.jobs.list = () => []
+  const 迟到桥 = await 启动(迟到.ctx)
+  迟到桥.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'user/message', time: 100, data: { source: { kind: 'user' } } })
+  迟到桥.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'turn/end', time: 200, data: { reason: 'completed' } })
+  迟到桥.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'approval/asked', time: 90, data: { id: 'ap-late', toolName: 'bash', callId: 'call-late' } })
+  const 迟到统计 = (await request(迟到桥.base, '/snapshot', { headers: 迟到桥.auth })).body?.taskStats
+  console.log(`[30] late approval: ${JSON.stringify(迟到统计)}`)
+  check('迟到审批不回拨水位', 迟到统计?.unreadCount === 1)
+  check('迟到审批下 completedUnread 仍 ⊆ unread', 迟到统计?.completedUnreadCount === 1 && 契约(迟到统计) === true)
+  // 早于 cutoff 的完成事件不得产生完成未读。
+  迟到桥.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'user/message', time: 300, data: { source: { kind: 'user' } } })
+  迟到桥.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'job/settled', time: 250, data: { jobId: 'job-late', status: 'completed' } })
+  const 早完成统计 = (await request(迟到桥.base, '/snapshot', { headers: 迟到桥.auth })).body?.taskStats
+  console.log(`[30] early finish: ${JSON.stringify(早完成统计)}`)
+  check('早于 cutoff 的完成事件不产生完成未读', 早完成统计?.completedUnreadCount === 0 && 早完成统计?.unreadCount === 0)
+  await 迟到桥.bridge.stop()
+
+  // 有界缓存淘汰：填 300 个会话让最早的被淘汰，快照仍有界且计数契约不变。
+  // （时间表与 job 归属的清理在 forgetSessionFacts 里，属内部状态；这里验证淘汰后行为正确。）
+  const 淘汰 = makeFakeCtx()
+  淘汰.ctx.sessions.list = () => []
+  淘汰.ctx.agents.list = () => []
+  淘汰.ctx.jobs.list = () => []
+  const 淘汰桥 = await 启动(淘汰.ctx)
+  for (let index = 0; index < 300; index += 1) {
+    淘汰桥.bridge.handleSessionEvent(
+      { header: { id: `e${String(index).padStart(3, '0')}` } },
+      { type: 'session/title', data: { title: `T${index}` } },
+    )
+  }
+  const 淘汰快照 = (await request(淘汰桥.base, '/snapshot', { headers: 淘汰桥.auth })).body
+  console.log(`[30] evicted cache: sessions=${淘汰快照?.sessions?.length} taskStats=${JSON.stringify(淘汰快照?.taskStats)}`)
+  check('缓存淘汰后快照仍有界', Array.isArray(淘汰快照?.sessions) && 淘汰快照.sessions.length <= 64)
+  check('缓存淘汰后 taskStats 仍满足契约', 契约(淘汰快照?.taskStats) === true)
+  check('缓存淘汰后计数不误报运行', 淘汰快照?.taskStats?.runCount === 0)
+  await 淘汰桥.bridge.stop()
+
+  // 31. 反例：sessions.list 仍提供的会话不被 pruneSessions 清水位；job 由 running 转 completed 后 runCount 归零。
+  const churn = makeFakeCtx()
+  churn.ctx.sessions.list = () => [{ header: { id: 'a-live', createdAt: 1 } }]
+  churn.ctx.agents.list = () => []
+  churn.ctx.jobs.list = () => []
+  const churnBridge = await 启动(churn.ctx)
+  churnBridge.bridge.handleSessionEvent({ header: { id: 'a-live' } }, { type: 'user/message', time: 100, data: { source: { kind: 'user' } } })
+  churnBridge.bridge.handleSessionEvent({ header: { id: 'a-live' } }, { type: 'turn/end', time: 200, data: { reason: 'completed' } })
+  const churn前 = (await request(churnBridge.base, '/snapshot', { headers: churnBridge.auth })).body?.taskStats
+  check('a-live 初始完成未读=1', churn前?.unreadCount === 1 && churn前?.completedUnreadCount === 1)
+  // 300 个其他会话发标题，推动事件缓存超过 SESSION_KEEP 触发 pruneSessions。
+  for (let index = 0; index < 300; index += 1) {
+    churnBridge.bridge.handleSessionEvent(
+      { header: { id: `z${String(index).padStart(3, '0')}` } },
+      { type: 'session/title', data: { title: `Z${index}` } },
+    )
+  }
+  const churn后 = (await request(churnBridge.base, '/snapshot', { headers: churnBridge.auth })).body?.taskStats
+  console.log(`[31] after churn: ${JSON.stringify(churn后)}`)
+  check('300 会话 churn 后 a-live 仍可见', (await request(churnBridge.base, '/snapshot', { headers: churnBridge.auth })).body?.sessions?.some(row => row.id === 'a-live') === true)
+  check('churn 不误删 sessions.list 仍提供会话的水位', churn后?.completedUnreadCount === 1 && churn后?.unreadCount === 1)
+  check('churn 后 completeness 仍 complete', churn后?.completeness === 'complete')
+  await churnBridge.bridge.stop()
+
+  // job 状态转换：全局读 running，会话读 completed → 最终 done，runCount 必须归零。
+  const 转换 = makeFakeCtx()
+  转换.ctx.sessions.list = () => [{ header: { id: 's1', createdAt: 1 } }]
+  转换.ctx.agents.list = () => []
+  转换.ctx.jobs.list = sessionId => sessionId === undefined
+    ? [{ id: 'job-J', label: 'J', status: 'running' }]
+    : [{ id: 'job-J', label: 'J', status: 'completed' }]
+  const 转换桥 = await 启动(转换.ctx)
+  const 转换快照 = (await request(转换桥.base, '/snapshot', { headers: 转换桥.auth })).body
+  console.log(`[31] running->completed: taskStats=${JSON.stringify(转换快照?.taskStats)} jobs=${JSON.stringify(转换快照?.jobs)}`)
+  check('会话读到 completed 后 job 显示 done', 转换快照?.jobs?.some(row => row.id === 'job-J' && row.status === 'done') === true)
+  check('running→completed 后 runCount 归零', 转换快照?.taskStats?.runCount === 0)
+  check('转换后 unionCount 归零', 转换快照?.taskStats?.unionCount === 0)
+  await 转换桥.bridge.stop()
+
+  // 32. 反例：33 会话计数不截断、registered 后 done 不加回、zz-live 挤出再入榜、list 抛错不清水位。
+  const 多 = makeFakeCtx()
+  多.ctx.sessions.list = () => Array.from({ length: 33 }, (_, index) => ({ header: { id: `c${String(index).padStart(2, '0')}`, createdAt: index } }))
+  多.ctx.agents.list = () => []
+  多.ctx.jobs.list = sessionId => {
+    if (sessionId === undefined) return []
+    return [{ id: `job-${sessionId}`, label: sessionId, status: 'running' }]
+  }
+  const 多桥2 = await 启动(多.ctx)
+  const 多快照 = (await request(多桥2.base, '/snapshot', { headers: 多桥2.auth })).body
+  console.log(`[32] 33 sessions: run=${多快照?.taskStats?.runCount} jobs=${多快照?.jobs?.length}`)
+  check('33 会话各 1 running → runCount=33（计数不截断）', 多快照?.taskStats?.runCount === 33)
+  check('unionCount=33', 多快照?.taskStats?.unionCount === 33)
+  check('展示仍按 32 截断', 多快照?.jobs?.length <= 32)
+  check('33 会话仍满足契约', 契约(多快照?.taskStats) === true)
+  await 多桥2.bridge.stop()
+
+  // registered 后会话读 done：旧事件不得把 done 加回 running。
+  const 加回 = makeFakeCtx()
+  加回.ctx.sessions.list = () => [{ header: { id: 's1', createdAt: 1 } }]
+  加回.ctx.agents.list = () => []
+  加回.ctx.jobs.list = sessionId => sessionId === undefined
+    ? []
+    : [{ id: 'job-J', label: 'J', status: 'completed' }]
+  const 加回桥 = await 启动(加回.ctx)
+  加回桥.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'job/registered', data: { jobId: 'job-J', label: 'J' } })
+  const 加回快照 = (await request(加回桥.base, '/snapshot', { headers: 加回桥.auth })).body
+  console.log(`[32] registered->done: taskStats=${JSON.stringify(加回快照?.taskStats)} jobs=${JSON.stringify(加回快照?.jobs)}`)
+  check('registered 后最终 done 的 job 显示 done', 加回快照?.jobs?.some(row => row.id === 'job-J' && row.status === 'done') === true)
+  check('done 不被旧 eventJobs 加回 running', 加回快照?.taskStats?.runCount === 0 && 加回快照?.taskStats?.unionCount === 0)
+  await 加回桥.bridge.stop()
+
+  // zz-live：先未读 1，300 标题 churn 把它挤出事件缓存与展示 64，重新入榜后水位仍在。
+  const 挤出 = makeFakeCtx()
+  const 挤出源 = Array.from({ length: 70 }, (_, index) => ({ header: { id: `d${String(index).padStart(2, '0')}`, createdAt: index } }))
+  挤出源.push({ header: { id: 'zz-live', createdAt: 999 } })
+  挤出.ctx.sessions.list = () => 挤出源
+  挤出.ctx.agents.list = () => []
+  挤出.ctx.jobs.list = () => []
+  const 挤出桥 = await 启动(挤出.ctx)
+  挤出桥.bridge.handleSessionEvent({ header: { id: 'zz-live' } }, { type: 'user/message', time: 100, data: { source: { kind: 'user' } } })
+  挤出桥.bridge.handleSessionEvent({ header: { id: 'zz-live' } }, { type: 'turn/end', time: 200, data: { reason: 'completed' } })
+  const 挤出前 = (await request(挤出桥.base, '/snapshot', { headers: 挤出桥.auth })).body
+  // 计数跟随「可见会话」（展示 ≤64）：zz-live 排在第 65 位时不计入，但水位必须保留下来。
+  check('zz-live 在展示外时不计入未读（计数跟随可见会话）', 挤出前?.taskStats?.unreadCount === 0)
+  check('zz-live 初始不在展示 64 内', (挤出前?.sessions ?? []).every(row => row.id !== 'zz-live'))
+  for (let index = 0; index < 300; index += 1) {
+    挤出桥.bridge.handleSessionEvent({ header: { id: `y${String(index).padStart(3, '0')}` } }, { type: 'session/title', data: { title: `Y${index}` } })
+  }
+  const 挤出后 = (await request(挤出桥.base, '/snapshot', { headers: 挤出桥.auth })).body
+  console.log(`[32] zz-live after churn: ${JSON.stringify(挤出后?.taskStats)}`)
+  check('churn 后 zz-live 仍在展示外、水位不丢', 挤出后?.taskStats?.unreadCount === 0)
+  // 重新入榜：churn 后事件缓存仍占着展示名额，用一条活待决把 zz-live 顶回可见行，
+  // 若水位被误删，completedUnread 会是 0（approval 只写未读、不写完成）。
+  挤出桥.bridge.handleSessionEvent({ header: { id: 'zz-live' } }, { type: 'approval/asked', time: 900, data: { id: 'ap-zz', toolName: 'bash', callId: 'call-zz' } })
+  const 重入 = (await request(挤出桥.base, '/snapshot', { headers: 挤出桥.auth })).body
+  console.log(`[32] zz-live back: ${JSON.stringify(重入?.taskStats)}`)
+  check('zz-live 重新入榜仍可见', (重入?.sessions ?? []).some(row => row.id === 'zz-live') === true)
+  check('重新入榜后完成未读仍为 1（水位未被展示截断删除）', 重入?.taskStats?.completedUnreadCount === 1)
+  check('重新入榜后未读=1', 重入?.taskStats?.unreadCount === 1)
+  await 挤出桥.bridge.stop()
+
+  // sessions.list 抛错：不得清水位；恢复后仍未读=1。
+  const 抛错 = makeFakeCtx()
+  let 抛错中 = false
+  抛错.ctx.sessions.list = () => {
+    if (抛错中) throw new Error('sessions-down')
+    return [{ header: { id: 's1', createdAt: 1 } }]
+  }
+  抛错.ctx.agents.list = () => []
+  抛错.ctx.jobs.list = () => []
+  const 抛错桥 = await 启动(抛错.ctx)
+  抛错桥.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'user/message', time: 100, data: { source: { kind: 'user' } } })
+  抛错桥.bridge.handleSessionEvent({ header: { id: 's1' } }, { type: 'turn/end', time: 200, data: { reason: 'completed' } })
+  const 抛错前 = (await request(抛错桥.base, '/snapshot', { headers: 抛错桥.auth })).body?.taskStats
+  check('抛错前未读=1', 抛错前?.unreadCount === 1)
+  抛错中 = true
+  const 抛错快照 = (await request(抛错桥.base, '/snapshot', { headers: 抛错桥.auth })).body
+  check('list 抛错时快照标 stale', 抛错快照?.stale === true)
+  抛错中 = false
+  const 抛错后 = (await request(抛错桥.base, '/snapshot', { headers: 抛错桥.auth })).body?.taskStats
+  console.log(`[32] list error then recover: ${JSON.stringify(抛错后)}`)
+  check('list 抛错不得清水位（恢复后仍未读=1）', 抛错后?.unreadCount === 1 && 抛错后?.completedUnreadCount === 1)
+  await 抛错桥.bridge.stop()
 
   console.log(`\n通过 ${passed} 项，失败 ${failed} 项`)
   if (failed > 0) process.exitCode = 1
