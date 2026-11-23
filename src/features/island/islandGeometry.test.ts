@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { islandCardMaskPath, islandContentOffset, islandCornerRadius, islandSeamMask, islandFilletPatches, islandGeometry, islandWindowKey, moveIslandCard, visibleIslandRect } from "./islandGeometry.ts";
+import { islandCardMaskPath, islandContentOffset, islandCornerRadius, islandSeamMask, islandFilletPatches, islandGeometry, islandWindowKey, moveIslandCard, visibleIslandRect, ISLAND_EXPANDED_COLUMN_WIDTH } from "./islandGeometry.ts";
 import { parseIslandStateRequest } from "../../contracts/island.ts";
 import { readFileSync } from "node:fs";
 
@@ -278,4 +278,26 @@ test("展开滚动条槽：极端偏移只夹紧内容起点，窗口仍在工�
     const b = islandGeometry("expanded", [{ ...card }], 12, work, "top", 0);
     assert.deepEqual(a.windowBox, b.windowBox);
     assert.deepEqual(a.cards[0]!.rect, b.cards[0]!.rect);
+});
+
+test("anchorStart：自然宽切换锚定左缘，宽度向右扩展；展开态不锚定", () => {
+    const work = { left: 0, top: 0, width: 1920, height: 1080 };
+    const 卡 = (width) => [{ left: 0, top: 0, width, height: 40 }];
+    const 居中 = islandGeometry("collapsed", 卡(320), 22, work, "top", 0, "capsule");
+    assert.equal(居中.windowBox.left, 800, `居中胶囊 left 应为 800`);
+    const 锚定 = islandGeometry("collapsed", 卡(320), 22, work, "top", 0, "capsule", { anchorStart: 100 });
+    assert.equal(锚定.windowBox.left, 100);
+    // 消息切换到自然宽更小的内容：左缘不变，宽度向右扩展/收缩。
+    const 变窄 = islandGeometry("collapsed", 卡(280), 22, work, "top", 0, "capsule", { anchorStart: 100 });
+    assert.equal(变窄.windowBox.left, 100);
+    assert.equal(变窄.windowBox.width, 280);
+    assert.equal(锚定.windowBox.width, 320);
+    // 越界时夹在工作区内。
+    const 越界 = islandGeometry("collapsed", 卡(320), 22, work, "top", 0, "capsule", { anchorStart: 5000 });
+    assert.equal(越界.windowBox.left, 1920 - 越界.windowBox.width);
+    // 展开态固定列（不锚定）：列偏移与窗口盒不随锚点变化。
+    const 展开 = islandGeometry("expanded", 卡(320), 12, work, "top", 0, "capsule", { anchorStart: 100 });
+    const 展开对照 = islandGeometry("expanded", 卡(320), 12, work, "top", 0, "capsule");
+    assert.equal(展开.windowBox.left, 展开对照.windowBox.left);
+    assert.equal(ISLAND_EXPANDED_COLUMN_WIDTH, 360);
 });

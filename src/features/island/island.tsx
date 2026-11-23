@@ -37,6 +37,7 @@ import {
     islandWindowKey,
     islandContentOffset,
     islandExpandedColumn,
+    ISLAND_EXPANDED_COLUMN_WIDTH,
 } from "./islandGeometry";
 import {
     ISLAND_HOVER_DELAY_MS,
@@ -1744,6 +1745,19 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         }
         foldOrigins.current.clear();
     }, [collapsedCards, mode, animationsEnabled]);
+    // 展开态消息卡固定列宽：切换 1/全部只改高度，列偏移与窗口盒不随文字宽变化（否则窗口先变宽再居中，卡片左右抖）。
+    useLayoutEffect(() => {
+        const card = root.current?.querySelector<HTMLElement>(`[data-island-card-id="${ISLAND_MESSAGE_CARD_ID}"]`);
+        if (!card) return;
+        if (mode === "expanded") {
+            card.style.inlineSize = `${ISLAND_EXPANDED_COLUMN_WIDTH}px`;
+            remeasure.current(true);
+        } else {
+            card.style.removeProperty("inline-size");
+        }
+        return () => { card.style.removeProperty("inline-size"); };
+    }, [mode]);
+
     useLayoutEffect(() => () => {
         foldOrigins.current.clear();
         for (const animation of foldAnimations.current.values()) animation.cancel();
@@ -1922,7 +1936,12 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                     const pending = pendingOffset.current;
                     // 默认空边按顶部居中；拖动返回的显式偏移必须按有效边 top 计算，不能在中点丢掉。
                     const geometryEdge = pending !== undefined && edge === "" ? "top" : edge;
-                    let request = islandGeometry(mode, measured, radius, work, geometryEdge, pending ?? preferences.islandOffset, preferences.islandForm);
+                    // 自然宽切换（胶囊/悬停换消息、relay 逐帧收放）在过渡期间把窗口左缘锚定在上一帧，
+                    // 宽度向右扩展，避免“先按新宽居中、再随原生 margin 回执跳回”的横向抖动；稳定态仍按居中。
+                    const 过渡锚定 = mode !== "expanded" && (transitionMasked.current || nativeSwap.pending > 0)
+                        ? currentGeometry.current?.windowBox.left
+                        : undefined;
+                    let request = islandGeometry(mode, measured, radius, work, geometryEdge, pending ?? preferences.islandOffset, preferences.islandForm, { anchorStart: 过渡锚定 });
                     if (mode === "collapsed") {
                         capsuleInline.current = measured[0]?.width ?? 0;
                         const circles = Array.from(root.current.querySelectorAll<HTMLElement>(".island-anchor-row .island-anchor"));

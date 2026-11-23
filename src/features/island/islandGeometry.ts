@@ -9,6 +9,7 @@ export const islandGeometry = (
     edge: "" | "top" | "bottom" | "left" | "right",
     offset: number,
     form: "capsule" | "notch" = "capsule",
+    options: { anchorStart?: number } = {},
 ): IslandStateRequest => {
     if (!measured.length) throw new Error("岛缺少实测卡片");
     const gutter = state === "expanded" ? ISLAND_SCROLLBAR_GUTTER : 0; // 展开态在卡片外留一条滚动条槽。
@@ -33,7 +34,13 @@ export const islandGeometry = (
     const alongOffset = Math.min(Math.max(offset, -半幅), maxOffset); // 空边按顶部同样应用持久偏移，不再强制居中。
     // 内容按自身宽度居中，窗口向槽一侧长出去；极端偏移夹住内容起点，保证窗口仍在工作区内。
     const alongStart = Math.min(Math.max(半幅 + alongOffset, 0), Math.max(0, alongSpan - alongSize - alongGutter)); // 极端偏移只夹紧内容起点，窗口始终留在工作区内。
-    const left = edge === "right" ? work.left + work.width - width - margin : work.left + (horizontalEdge ? margin : alongStart);
+    const centeredLeft = edge === "right" ? work.left + work.width - width - margin : work.left + (horizontalEdge ? margin : alongStart);
+    // 自然宽切换（胶囊/悬停消息切换、relay 逐帧收放）：把窗口左缘锚定在上一帧，宽度向右扩展，
+    // 避免“先按新宽居中、再随原生 margin 回执跳回”的横向抖动。展开态不锚定（列已固定）。
+    const anchoredLeft = options.anchorStart !== undefined && state !== "expanded"
+        ? Math.min(Math.max(options.anchorStart, work.left), work.left + work.width - width)
+        : undefined;
+    const left = anchoredLeft ?? centeredLeft;
     const top = state === "expanded" ? work.top : edge === "bottom" ? work.top + work.height - height - margin : work.top + (horizontalEdge ? alongStart : margin);
     // 刘海的窗口在沿边方向各向外扩 12px，本体向内让出同样的距离；被让出的角部是新增透明像素。
     const growLeft = horizontalEdge ? 0 : notch; // 上下贴边时在水平方向让出圆弧区。
@@ -78,6 +85,9 @@ export const islandWindowKey = ({ state, windowBox, viewport }: IslandStateReque
 
 /** 展开态卡片外侧的滚动条槽：4 DIP 间距加 12 DIP 轨道。 */
 export const ISLAND_SCROLLBAR_GUTTER = 16;
+
+/** 展开内容列的固定列宽：切换消息 1/全部只改高度，列偏移与窗口盒不随文字宽变化。 */
+export const ISLAND_EXPANDED_COLUMN_WIDTH = 360;
 
 /** 固定页面视口带宽：覆盖最大窗口宽度（展开卡 360 + 滚动条槽 16 + 刘海 24）并留余量。 */
 export const ISLAND_VIEWPORT_WIDTH = 420;
