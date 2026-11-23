@@ -262,6 +262,8 @@ fn foreca_city_saves_without_detail_link_and_keeps_forecast()
     let now = chrono::Utc::now().timestamp_millis(); // 构造该城市已落盘的预报缓存。
     state.write_cached_forecast(&serde_json::json!({ "city": city, "sourceKey": "foreca-configuration", "moduleFetchedAt": { "current": now, "hourly": now, "daily": now }, "current": { "marker": "foreca" }, "hourly": {}, "daily": {} })).unwrap();
     let forecast = state.forecast(Source::Foreca, city.clone()).unwrap(); // 真实入口读取该来源缓存。
+    // 同步读取必须带来源标识，与事件广播一致；否则前端按 source+city 过滤会丢弃它。
+    assert_eq!(forecast["source"], serde_json::json!("foreca"));
     assert_eq!(forecast["current"]["marker"], "foreca");
     assert_eq!(forecast["city"]["id"], city.id);
     assert!(state.save_city(Source::Qweather, city.clone()).is_err()); // 和风仍要求匹配标识的详情链接。
