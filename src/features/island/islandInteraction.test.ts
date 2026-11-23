@@ -257,6 +257,13 @@ test("展开态透明带命中：只有并集减目标内容盒的额外带退�
         // 未完成提交或未溢出时同一点不再归滚动条。
         const hidden = islandScrollGeometry(islandFrame("expanded", window), islandFrame("expanded", card), edge, { ...metrics, settled: false });
         assert.equal(hidden.visible, false, `${label} 未提交前不出条`);
+        // 条显隐只影响轨道与滑块：内容列与滚动条槽的位置/尺寸不变，卡片坐标与槽显隐无关。
+        assert.deepEqual(hidden.column, layout.column, `${label} 条显隐不得改变内容列`);
+        assert.deepEqual(hidden.gutter, layout.gutter, `${label} 条显隐不得改变滚动条槽`);
+        const noOverflow = islandScrollGeometry(islandFrame("expanded", window), islandFrame("expanded", card), edge, { ...metrics, scrollHeight: card.height });
+        assert.equal(noOverflow.visible, false, `${label} 无溢出不出条`);
+        assert.deepEqual(noOverflow.column, layout.column, `${label} 无溢出时内容列相同`);
+        assert.deepEqual(noOverflow.gutter, layout.gutter, `${label} 无溢出时槽位相同`);
         // 滚动条槽在卡片外，整条槽（间距 + 轨道）都不触发退回；未出条时槽仍是展示区，不把指针判成退回。
         assert.ok(layout.gutter && islandPointInRect(trackPoint, layout.gutter), `${label} 轨道必须落在滚动条槽内`);
         assert.equal(islandHitRegion("expanded", trackPoint, hidden, contour), "scrollbar", `${label} 未出条时槽仍不触发退回`);

@@ -76,8 +76,8 @@ const work = { left: 0, top: 40, width: 1920, height: 1040 }; // 顶部任务栏
 const card = { left: 0, top: 0, width: 320, height: 240 };
 test("四边展开统一覆盖工作区高度，水平落位与滚动槽遵循原规则", () => {
     for (const [edge, left, measuredLeft] of [
-        ["top", 892, 0],
-        ["bottom", 892, 0],
+        ["top", 900, 0],
+        ["bottom", 900, 0],
         ["left", 6, 0],
         ["right", 1578, 16],
     ] as const) {
@@ -95,7 +95,9 @@ test("三态尺寸变化时贴边侧固定，沿边以中心对称扩展", () =>
     const collapsed = islandGeometry("collapsed", [{ ...card, width: 44, height: 44 }], 22, work, "top", 0);
     const expanded = islandGeometry("expanded", [card], 12, work, "top", 0);
     const center = (rect: { left: number; width: number }) => rect.left + rect.width / 2;
-    assert.equal(center(collapsed.windowBox), center(expanded.windowBox)); // 展开窗口含滚动条槽整体沿边居中，槽不会把窗口推出工作区。
+    // 卡片内容按自身宽度沿边居中；滚动条槽只让窗口向一侧长出去，不参与居中。
+    assert.equal(center(collapsed.windowBox), expanded.windowBox.left + expanded.cards[0]!.rect.width / 2);
+    assert.equal(expanded.windowBox.width, expanded.cards[0]!.rect.width + 16); // 窗口仍比内容宽一条槽。
     assert.equal(collapsed.windowBox.top, work.top + 6); // 胶囊仍离开边缘 6 DIP。
     assert.equal(expanded.windowBox.top, work.top);
     assert.equal(expanded.windowBox.height, work.height);
@@ -119,7 +121,7 @@ test("展开窗口键仅随实际列宽、工作区或三态改变，不随内�
     const before = islandGeometry("expanded", [card, { ...card, top: 248 }], 12, primary, "top", 0);
     const folded = islandGeometry("expanded", [{ ...card, height: 44 }, { ...card, top: 52 }], 12, primary, "top", 0);
     const scrolled = islandGeometry("expanded", [{ ...card, top: -120 }, { ...card, top: 128 }], 12, primary, "top", 0);
-    assert.deepEqual(before.windowBox, { left: 1112, top: 0, width: 336, height: 1400 });
+    assert.deepEqual(before.windowBox, { left: 1120, top: 0, width: 336, height: 1400 });
     assert.notDeepEqual(folded.cards, before.cards);
     assert.equal(islandWindowKey(folded), islandWindowKey(before));
     assert.equal(islandWindowKey(scrolled), islandWindowKey(before));
@@ -174,7 +176,7 @@ test("刘海窗口沿贴边方向外扩 12 DIP，卡片本体保持贴边并向�
 test("刘海展开态不再外扩窗口，卡片仍按岛圆角绘制", () => {
     const size = { left: 0, top: 0, width: 320, height: 240 };
     const expanded = islandGeometry("expanded", [size], 12, work, "top", 0, "notch");
-    assert.deepEqual(expanded.windowBox, { left: 792, top: 40, width: 336, height: work.height });
+    assert.deepEqual(expanded.windowBox, { left: 800, top: 40, width: 336, height: work.height });
     assert.deepEqual(expanded.cards[0]!.rect, { left: 0, top: 0, width: 320, height: 240 });
     assert.equal(islandCornerRadius(12, "notch", "top", 12), "12px"); // 展开态贴边角等于岛圆角，四角一致。
 });
@@ -242,7 +244,7 @@ test("展开首帧内容偏移按贴边与偏移落在目标列，不是 (0,0)",
 
 test("展开根铺满工作区，卡片列按贴边偏移定位且首帧不在 0,0", () => {
     const cases = [
-        ["left", 100, 6], ["right", 100, 1594], ["top", 100, 892], ["bottom", 100, 892], ["top", 0, 792],
+        ["left", 100, 6], ["right", 100, 1594], ["top", 100, 900], ["bottom", 100, 900], ["top", 0, 800],
     ] as const;
     for (const [edge, offset, expected] of cases) {
         const request = islandGeometry("expanded", [{ ...card, left: 0 }], 12, work, edge, offset);
@@ -259,4 +261,21 @@ test("展开根铺满工作区，卡片列按贴边偏移定位且首帧不在 0
     const css = readFileSync(new URL("./island.css", import.meta.url), "utf8");
     assert.match(css, /padding-inline-start: var\(--island-expanded-column, 0px\);/);
     assert.match(css, /padding-inline-start: calc\(var\(--island-expanded-column, 0px\) \+ 16px\);/);
+});
+
+test("展开滚动条槽：极端偏移只夹紧内容起点，窗口仍在工作区内", () => {
+    for (const edge of ["top", "bottom"] as const) {
+        const pushed = islandGeometry("expanded", [card], 12, work, edge, 1e6);
+        assert.equal(pushed.windowBox.left, work.left + work.width - card.width - 16, `${edge} 正偏移夹紧后内容贴工作区右缘、窗口补槽`);
+        assert.ok(pushed.windowBox.left + pushed.windowBox.width <= work.left + work.width + 0.001, `${edge} 窗口不得越出工作区`);
+        assert.equal(pushed.cards[0]!.rect.left, 0); // 卡片仍在内容列原点，槽不计入卡片坐标。
+        const pulled = islandGeometry("expanded", [card], 12, work, edge, -1e6);
+        assert.equal(pulled.windowBox.left, work.left, `${edge} 负偏移夹紧到工作区左缘`);
+        assert.equal(pulled.cards[0]!.rect.left, 0);
+    }
+    // 同内容宽下窗口盒与卡片坐标恒定：滚动条显隐不参与几何。
+    const a = islandGeometry("expanded", [card], 12, work, "top", 0);
+    const b = islandGeometry("expanded", [{ ...card }], 12, work, "top", 0);
+    assert.deepEqual(a.windowBox, b.windowBox);
+    assert.deepEqual(a.cards[0]!.rect, b.cards[0]!.rect);
 });

@@ -36,6 +36,7 @@ import {
     visibleIslandRect,
     islandWindowKey,
     islandContentOffset,
+    islandExpandedColumn,
 } from "./islandGeometry";
 import {
     ISLAND_HOVER_DELAY_MS,
@@ -51,7 +52,7 @@ import {
     ISLAND_MARGIN_DELAY_MS, ISLAND_SCROLLBAR_FADE_MS, islandExpandedDwellStep,
     type IslandExpandedDwell, type IslandMarginState, islandExpandedDwellBlocked,
 } from "./islandInteraction";
-import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, ISLAND_EXPAND_STAGGER_MS, ISLAND_EXPAND_MOTION_MS, ISLAND_HOVER_DETAIL_EXIT_MS, ISLAND_HOVER_DETAIL_ENTER_MS, islandAttachedCornerAt, beginIslandMask, holdsIslandMask, releaseIslandMask, unmaskIslandTransition, islandHoverTravel, islandUnionFrame, beginIslandNativeSwap, canReleaseIslandMask, finishIslandNativeSwap, type IslandMaskLease, type IslandNativeSwap } from "./islandMotion";
+import { ISLAND_MOTION_MS, ISLAND_FRAME_MS, ISLAND_EXPAND_STAGGER_MS, ISLAND_EXPAND_MOTION_MS, ISLAND_HOVER_DETAIL_EXIT_MS, ISLAND_HOVER_DETAIL_ENTER_MS, islandAttachedCornerAt, beginIslandMask, holdsIslandMask, releaseIslandMask, unmaskIslandTransition, islandHoverTravel, islandUnionFrame, beginIslandNativeSwap, canReleaseIslandMask, finishIslandNativeSwap, islandGeometryCommitDecision, islandViewportChanged, awaitIslandViewport, ISLAND_VIEWPORT_WAIT_MS, islandGeometryKey, islandFailedGeometryGate, islandWakingFrame, islandFrameOrTimeout, islandRenderGate, revokeIslandReservation, ISLAND_NO_FRAME_TIMEOUT_MS, deferIslandMaskRelease, takeIslandMaskReleases, canResyncIslandGeometry, islandRetrySubmit, resetIslandGeometryBaseline, type IslandMaskLease, type IslandNativeSwap, type IslandGeometrySeat, type IslandSubmitReservation, type IslandDeferredRelease } from "./islandMotion";
 import { ISLAND_MESSAGE_LIMIT, ISLAND_MESSAGE_TIMING, ISLAND_NOTIFICATION_ANCHOR_ID, islandCapsuleGlyph, islandDismissNotification, islandHoldMessages, islandKeepNotifications, islandLocalNotificationArrival, islandMergeNotifications, islandMessageArrival, islandMessageFocusOrder, islandMessagePanelView, islandMessageTime, islandNotificationAnchor, islandNotificationContentDeadline, islandNotificationCountLabel, islandNotificationDeadline, islandNotificationTone, islandNotificationVisual, type IslandCapsuleGlyph, type IslandLocalNotification, type IslandMessageTiming, type IslandNotification } from "./islandMessages";
 import { createIslandContentResizeObserver, islandHoverBody, islandHoverInlineSize, ISLAND_NOTICE_LAYER, islandCollectArrival, islandDisplayAnchors, islandMusicAnchorVisible, islandWeatherNotice, ISLAND_ANCHOR_GAP, ISLAND_ANCHOR_GROW_MS, ISLAND_ANCHOR_SHRINK_MS, ISLAND_ANCHOR_SIZE, ISLAND_ANCHOR_SLOTS, ISLAND_MESSAGE_HANDOFF_MS, ISLAND_STATUS_SPECS, islandAnchorGlyph, islandAnchorId, observeIslandPluginLayout, islandAnchorValue, islandArrive, islandCapsuleFace, islandClockLabel, islandDropFace, islandHoverEnter, islandHoverInitialSelection, islandHoverSelect, islandHoverSessionWidth, islandHoverStep, islandLayerRank, islandStatusProgress, islandStatusSpec, islandAnchorKind, type IslandAnchor, type IslandAnchorArrival, type IslandDropTarget, type IslandFunctionKind, type IslandStatus, type IslandStatusSpec } from "./islandContent";
 import { ISLAND_LYRIC_OFFSETS, islandCapsuleLineLimit, islandLyricView, islandMusicTickDelay, islandPlaybackStatus, islandScrollAnimationName, islandScrollDistance, islandScrollKey, islandScrollPlan, islandScrollPlayState } from "./islandLyrics";
@@ -71,8 +72,37 @@ import "./island.css";
 const ISLAND_ANCHOR_EASING = "ease-out"; // 胶囊与 hover 接力共用的退缓。
 // 原生物理状态必须跨 effect 共享：A 在途时 B 不能用自己私有的计数提前揭开遮蔽。
 const nativeSwap: IslandNativeSwap = { pending: 0, appliedToken: null, appliedGeometry: undefined };
-const deferredMaskReleases = new Set<number>(); // pending 未清空时挂起的解除 token 续延。
+const deferredMaskReleases = new Map<number, IslandDeferredRelease>(); // pending 未清空时挂起的解除：连 keepOwner/alreadySynced 一起保留，旧回包不重画。
 const maskFailTimers = new Map<number, ReturnType<typeof setTimeout>>(); // native 失败时 800ms 兜底解除。
+
+/** 临时诊断：记录展开/收起时显示层坐标、尺寸与视口；设置 window.__ISLAND_TRACE__ 后写入 __ISLAND_TRACE_LOG__。 */
+/** gated 诊断是否开启；构造 detail 之前先问一次，关闭时不为诊断做任何布局读取。 */
+const islandTracing = (): boolean => typeof window !== "undefined" && (window as unknown as { __ISLAND_TRACE__?: boolean }).__ISLAND_TRACE__ === true;
+
+/** 惰性诊断：trace 关闭时完全不构造 detail（不读 getBoundingClientRect）。 */
+const islandTraceLazy = (stage: string, detail: () => Record<string, unknown>) => {
+    if (!islandTracing()) return;
+    islandTrace(stage, detail());
+};
+
+const islandTrace = (stage: string, detail: Record<string, unknown>) => {
+    if (typeof window === "undefined") return;
+    const target = window as unknown as { __ISLAND_TRACE__?: boolean; __ISLAND_TRACE_LOG__?: Array<Record<string, unknown>> };
+    if (!islandTracing()) return;
+    const root = document.querySelector<HTMLElement>(".island");
+    const rect = root?.getBoundingClientRect();
+    target.__ISLAND_TRACE_LOG__ ??= [];
+    target.__ISLAND_TRACE_LOG__.push({
+        t: Math.round(performance.now()),
+        stage,
+        inner: [window.innerWidth, window.innerHeight],
+        doc: [document.documentElement.clientWidth, document.documentElement.clientHeight],
+        root: rect ? { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height), margin: root?.style.margin, visibility: root?.style.visibility } : null,
+        ...detail,
+    });
+    if (target.__ISLAND_TRACE_LOG__.length > 400) target.__ISLAND_TRACE_LOG__.splice(0, 200);
+};
+if (typeof window !== "undefined") window.addEventListener("resize", () => islandTrace("viewport-resize", {}));
 let islandNativeFailClosed = false; // 原生补偿失败后的 fail-closed 标记，下一次状态变化重新提交。
 const PAINTED_STYLE_PROPERTIES = [
     "position",
@@ -1060,7 +1090,12 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     const dragging = useRef(false); // 原生移动循环期间不切 hover。
 
     const geometryKey = useRef(""); // 同一实测结果不重复 IPC。
+    const seatBaseline = useRef<IslandGeometrySeat | undefined>(undefined); // 最近一次几何提交的贴边身份基准，随提交前移而非随 effect 固化。
     const currentGeometry = useRef<IslandStateRequest | undefined>(undefined); // 最近实际完成的原生区域。
+    const hadPaintedFrame = useRef(false); // 是否已经绘制过画面：首次挂载为 false，换边清几何后仍为 true。
+    const maskPainted = useRef(false); // 本次「可见→隐藏」是否已经画到屏幕上：同一遮蔽周期内不重复等，避免重测互相推迟。
+    const pendingSubmit = useRef<IslandSubmitReservation | undefined>(undefined); // 本任务预留但尚未首发的几何提交。
+    const failedGeometry = useRef(""); // 上一条重试耗尽、从未落地的目标几何键：同一几何不再重发，等外部变化或几何改变。
     const collapsedBox = useRef<IslandStateRequest | undefined>(undefined); // 最近胶囊态区域，hover 窗口与它取并集避免指针离开。
     const skipMotionOnce = useRef(false); // 拖动后的首次测量跳过动画，避免跨边时先放大到并集再收缩。
     const finishMotion = useRef<() => Promise<void>>(async () => undefined); // 拖动前先结束形变，防止动画帧移动原生拖动中的窗口。
@@ -1082,13 +1117,15 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     const targetGeometry = useRef<IslandStateRequest | undefined>(undefined); // 展开自然目标，不等同于保留union。
     const inputReady = useRef(false); // 原生拖动后等新几何提交，避免用旧窗口坐标判定。
     const maskLease = useRef<IslandMaskLease>({ seq: 0, owner: undefined, masked: false }); // 换视口遮蔽租约。
-    /** 新任务领取遮蔽租约并使旧 token 失效；返回本任务 token。 */
-    const beginMask = (): number => {
+    /** 新任务领取遮蔽租约并使旧 token 失效；hide 为假时只占租约，不改可见性。 */
+    const beginMask = (hide = true): number => {
         const token = beginIslandMask(maskLease.current);
-        transitionMasked.current = true;
+        transitionMasked.current = hide;
+        if (!hide) maskLease.current.masked = false; // 没有真正遮蔽，唯一结算入口按未遮蔽直接释放租约。
         inputReady.current = false;
         const element = root.current;
-        if (element) {
+        if (element && hide) {
+            if (element.style.visibility !== "hidden") maskPainted.current = false; // 只有真正从可见变隐藏才需要重新等一次绘制。 // 只有真正从可见变隐藏才需要重新等一次绘制。
             element.style.visibility = "hidden"; // 连同首卡面与所有坐标内容一起遮蔽。
             element.style.pointerEvents = "none";
         }
@@ -1103,6 +1140,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         if (element) {
             element.style.removeProperty("visibility");
             element.style.removeProperty("pointer-events");
+            islandTrace("unmask", { token });
         }
         inputReady.current = true;
         remeasure.current(true);
@@ -1117,6 +1155,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         if (element) {
             element.style.removeProperty("visibility");
             element.style.removeProperty("pointer-events");
+            islandTrace("unmask", { token });
         }
         inputReady.current = true;
         remeasure.current(true);
@@ -1128,6 +1167,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     const marginState = useRef<IslandMarginState>({ latch: "open" });
     const lastMarginInput = useRef<Parameters<typeof islandMarginStep>[1] | undefined>(undefined); // hover 只保留最后一次完整轮廓判定。
     const expandedDwell = useRef<IslandExpandedDwell>("idle"); // 展开只记录是否离开过内容，列内移动不重新计时。
+    const pendingEscape = useRef(false); // 遮蔽期间按下的 Esc 不丢：解除遮蔽后立即收起，保留既有交互语义。
     const expandedGrace = useRef<ReturnType<typeof beginIslandExpandedGrace> | undefined>(undefined); // 触发展开的那一次交互先不吃空白回退。
     const expandedDwellTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const expandedDwellPoint = useRef<{ x: number; y: number } | undefined>(undefined);
@@ -1771,8 +1811,15 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         geometryResizeAt.current = performance.now(); // 切态/重测刚开始，忽略窗口尺寸变化产生的假 leave。
         let failClosedResubmit = islandNativeFailClosed; // 仅在本次外部状态变化后的首个测量允许绕过一次去重。
         let frame = 0;
+        let frameForce = false; // 已排队重测是否为强制；绘制写入的根尺寸会触发普通重测，不能把强制重测降级成按旧尺寸跳过。
         let motionFrame = 0;
+        let maskFrame = 0; // 首次原生提交前的隐藏帧等待句柄；cleanup 时取消（等待另有超时兜底）。
+        let wakeMaskFrame: (() => void) | undefined; // 隐藏帧等待的唤醒句柄：cleanup/接管时用，避免空等超时。
+        let 隐藏帧门: { done: Promise<"frame" | "timeout" | "wake">; wake: () => void } | undefined; // 共享隐藏帧门：等帧期间的重测共用同一个门，避免互相推迟提交。
+        let maskFrameWaiting = false; // 等隐藏帧期间：新的重测先挂起，避免在等帧窗口里被接管。
+        let pendingMaskMeasure = false; // 等帧期间被挂起的重测，收口后再补跑一次。
         let wakeMotion: (() => void) | undefined;
+        let wakeReveal: (() => void) | undefined; // 揭幕等待的唤醒器：cleanup/finishMotion 取消帧时用它收口。
         let animating = false;
         let committing = false;
         let needsMeasure = false;
@@ -1790,6 +1837,18 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             }
             savedStyles.clear();
         };
+        /**
+         * 按属性名清掉 paint 留在根、卡片与卡片内容上的内联几何。
+         * 保存集合是 effect 实例私有的：上一实例卸载时写入的重同步帧只有按名字清理才收得回来，否则会永久压住自然布局。
+         */
+        const clearPaintedStyles = () => {
+            savedStyles.clear(); // 属性已按名字统一清掉，旧集合不再需要。
+            const element = root.current;
+            if (!element) return;
+            for (const target of [element, ...element.querySelectorAll<HTMLElement>(".island-card, .island-card__content")]) {
+                for (const property of PAINTED_STYLE_PROPERTIES) target.style.removeProperty(property);
+            }
+        };
         const nextEdge = edge;
         const nextForm = preferences.islandForm ?? "capsule";
         if (edgeKey.current !== nextEdge || formKey.current !== nextForm) {
@@ -1799,6 +1858,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             collapsedBox.current = undefined;
             geometryKey.current = "";
             currentGeometry.current = undefined;
+            seatBaseline.current = undefined; // 换边/换形态后旧贴边身份不再对应已提交几何。
             targetGeometry.current = undefined; inputReady.current = false; layoutSettled.current = false;
             inputGeometryKey.current = ""; stopHoverTimer(); marginState.current = { latch: "open" };
             cancelCollapseWait(); endScrollbarDrag(); setScrollbarVisible(false, true);
@@ -1821,7 +1881,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                 if (mode === painted.state && Math.abs(box.width - painted.width) < 0.6 && Math.abs(box.height - painted.height) < 0.6) return;
             }
             cancelAnimationFrame(frame);
-            restoreStyles(); // 动画被打断或切态竞争时清掉上一轮内联尺寸，测量必须基于真实文档流。
+            clearPaintedStyles(); // 动画被打断、切态竞争或上一实例留下的内联尺寸都要按属性名清掉，测量必须基于真实文档流。
             {
                 if (!active || !root.current || dragging.current) return;
                 // 展开只解除旧宽度测自然内容；固定高度保持不变，避免测量时滚动位置回退。
@@ -1880,7 +1940,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                         collapsedBox.current = request;
                     }
                     const expanded = request.state === "expanded";
-                    const key = expanded ? islandWindowKey(request) : JSON.stringify(request);
+                    const key = islandGeometryKey(request);
                     const element = root.current;
                     const cards = Array.from(element.querySelectorAll<HTMLElement>(".island-card"));
                     const from = currentGeometry.current;
@@ -1968,14 +2028,32 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                         paintSurface(attached, value, moving);
                     };
                     // 固定视口偏移只定位根节点；展开态不写回卡片内联几何，但仍需要正确 margin。
+                    /**
+                     * 等视口条件：inner 尺寸与目标视口一致后再等一帧；等待受剩余超时约束，
+                     * 隐藏页 rAF 不触发时也会到点收口。返回是否在超时前匹配。
+                     */
+                    const awaitViewport = (viewport: IslandStateRequest["viewport"]) => awaitIslandViewport({
+                        viewport,
+                        inner: () => ({ width: window.innerWidth, height: window.innerHeight }),
+                        wait: (remaining) => new Promise<void>((resolve) => {
+                            const timer = setTimeout(resolve, Math.max(16, remaining));
+                            requestAnimationFrame(() => {
+                                clearTimeout(timer);
+                                resolve();
+                            });
+                        }),
+                        timeoutMs: ISLAND_VIEWPORT_WAIT_MS,
+                    });
+
                     const applyViewportMargin = (value: IslandStateRequest) => {
                         const offset = value.state === "expanded" ? { x: 0, y: 0 } : islandContentOffset(value); // 展开根铺满工作区，列偏移交给卡片。
                         element.style.marginInlineStart = `${offset.x}px`;
                         element.style.marginBlockStart = `${offset.y}px`;
+                        islandTrace("margin", { state: value.state, offset, windowBox: value.windowBox, viewport: value.viewport, el: { cls: element.className, marginInlineStart: element.style.marginInlineStart, marginBlockStart: element.style.marginBlockStart } });
                     };
                     const paint = (value: IslandStateRequest, elapsed: number, start?: number, staggerMs = 0) => {
                         const expandedPaint = value.state === "expanded";
-                        const columnX = expandedPaint ? value.windowBox.left - value.viewport.left : 0; // 展开卡片列在满工作区根内的左边距。
+                        const columnX = expandedPaint ? islandExpandedColumn(value) : 0; // 展开卡片列在满工作区根内的左边距。
                         paintedGeometry.current = expandedPaint
                             ? { state: value.state, width: work.width, height: work.height }
                             : { state: value.state, width: value.windowBox.width, height: value.windowBox.height };
@@ -1991,16 +2069,18 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                             maxInlineSize: "none",
                             overflow: "clip",
                         });
+                        islandTraceLazy("paint", () => ({ state: value.state, expanded: expandedPaint, windowBox: value.windowBox, viewport: value.viewport, el: (() => { const rect = element.getBoundingClientRect(); return { cls: element.className, marginInlineStart: element.style.marginInlineStart, inlineSize: element.style.inlineSize, blockSize: element.style.blockSize, column: element.style.getPropertyValue("--island-expanded-column"), rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) } }; })() }));
                         // 贴边侧角从最近实际绘制的带符号圆角过渡到目标态，连续切态不会先跳回普通圆角再长出补面。
                         const end = islandAttachedCorner(request.state, form, request.cards[0]?.radius ?? 0);
                         const attached = elapsed >= ISLAND_MOTION_MS ? end : islandAttachedCornerAt(start ?? end, request, elapsed, form);
-                        // 内容与形变同步淡入并去模糊：起点透明 5px，终点完全清晰；终帧与静态态清空内联值。
+                        // 内容只在展开相位 2 的其他卡上淡入；当前卡与收起等其它切态内容始终可见，避免 1→0→1 的整卡闪淡。
                         cards.forEach((card, index) => {
                             const shape = value.cards[index];
                             if (!shape) return;
                             // 展开相位 2：其他卡延迟 staggerMs 起步，内容与卡片本身同步淡入并去模糊。
-                            const localElapsed = staggerMs > 0 && index > 0 ? Math.max(0, elapsed - staggerMs) : elapsed;
-                            const reveal = localElapsed >= ISLAND_MOTION_MS ? 1 : Math.min(1, Math.max(0, localElapsed / ISLAND_MOTION_MS));
+                            const 相位淡入 = staggerMs > 0 && index > 0; // 只有展开相位 2 的其他卡参与淡入。
+                            const localElapsed = 相位淡入 ? Math.max(0, elapsed - staggerMs) : elapsed;
+                            const reveal = 相位淡入 && localElapsed < ISLAND_MOTION_MS ? Math.min(1, Math.max(0, localElapsed / ISLAND_MOTION_MS)) : 1;
                             saveStyle(card);
                             Object.assign(card.style, {
                                 position: "absolute",
@@ -2028,6 +2108,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                             }
                         });
                         paintAttached(attached, value, elapsed < ISLAND_MOTION_MS);
+                        hadPaintedFrame.current = true; // 已经有画面可闪，后续换视口的提交必须等隐藏帧。
                     };
                     // 展开态不写回内联几何，必须单独收回上一帧的补面与描边抑制，否则会残留贴边弧面。
                     const clearFillets = () => {
@@ -2035,6 +2116,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                         attachedCorner.current = undefined; // 展开态没有贴边负圆角，下一次从目标态重新推导。
                         if (surface.current) surface.current.style.display = "none";
                     };
+                    // 重试耗尽后同一目标几何不再重发：等外部状态变化的 fail-closed 重提或几何本身改变。
+                    if (islandFailedGeometryGate({ failedKey: failedGeometry.current, key, resubmit: failClosedResubmit })) return;
                     const deduped = key === geometryKey.current && (!expanded || (from && islandWindowKey(from) === key));
                     if (deduped && !failClosedResubmit) {
                         // 展开同盒只更新页面本地可见卡片、透明列与滚动条；不把内部布局变更送回原生。
@@ -2054,12 +2137,17 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                         return;
                     }
                     if (failClosedResubmit) failClosedResubmit = false; // 一次外部变化只强制重提一次，防自激。
-                    geometryKey.current = key;
+                    // 几何键留到隐藏帧等待之后再登记（见 commit）：等帧期间被替换时不留可被继任去重的键。
                     geometryResizeAt.current = performance.now(); // 原生窗口即将换尺寸，300ms 内 leave 视为假离开。
                     committing = true;
                     lastCompactFrame = now;
+                    const reseat = skipMotionOnce.current; // 拖动落点后的首次提交：父窗口已移位，必须整层遮蔽一次再回锚。
                     skipMotionOnce.current = false;
-                    const maskToken = beginMask(); // 换视口前先领取租约并遮蔽。
+                    // 同视口只改窗口盒（如胶囊加宽）时不遮蔽：整层隐藏会把新消息交接动画一起藏掉。
+                    const commitDecision = islandGeometryCommitDecision(from, request, seatBaseline.current, { edge: nextEdge, form: nextForm }, reseat);
+                    islandTrace("geometry-commit", { state: request.state, mask: transitionMasked.current || commitDecision.mask, reseat, fromWindow: from?.windowBox, fromViewport: from?.viewport, nextWindow: request.windowBox, nextViewport: request.viewport, seat: commitDecision.seat });
+                    seatBaseline.current = commitDecision.seat; // 基准随本次提交前移，同一 effect 内后续窗口盒变化不再遮蔽。
+                    const maskToken = beginMask(transitionMasked.current || commitDecision.mask); // 换视口前先领取租约；不需要遮蔽时只占租约。
                     cancelExpandedReturn(true);
                     if (animate) {
                         animating = true;
@@ -2074,38 +2162,89 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                         });
                         paint(from, 0, attachedCorner.current ?? islandAttachedCorner(from.state, form, from.cards[0]?.radius ?? 0)); // 过渡期保持旧坐标系：根与卡片都用旧原点。
                     }
-                    resyncPaint = (value) => paint(value, 0); // 当前绘制闭包供唯一解除入口重同步。
+                    resyncPaint = (value) => { if (!active || !root.current) return; paint(value, 0); }; // 当前绘制闭包供唯一解除入口重同步；卸载/替换后不再画。
                     /** native 全部回包后，统一交给 settleMaskRelease 结算挂起的遮蔽。 */
                     const drainMaskReleases = (freshApplied: boolean, failed = false) => {
                         if (nativeSwap.pending > 0) return;
-                        for (const token of deferredMaskReleases) {
-                            deferredMaskReleases.delete(token);
-                            settleMaskRelease(token, { resynced: freshApplied, failed }); // 成功重同步，失败/补偿失败走 800ms 兜底。
+                        for (const release of takeIslandMaskReleases(deferredMaskReleases)) {
+                            // 保留挂起时的 keepOwner/alreadySynced：被替换或已卸载的实例只结算租约，不再重画。
+                            settleMaskRelease(release.token, { keepOwner: release.keepOwner, alreadySynced: release.alreadySynced, resynced: freshApplied, failed });
                         }
                     };
                     let commitFailed = false; // 本任务最后一次原生提交是否补偿失败。
+                    let 隐藏帧已等 = false; // 本任务首次原生提交前是否已经等过「隐藏帧提交」。
+
                     const commit = async (value: IslandStateRequest): Promise<boolean> => {
                         if (!ownsMask(maskToken)) { settleMaskRelease(maskToken); return false; } // 新任务接管后旧任务不再提交坐标。
+                        // 带遮蔽的视口切换：先把 visibility:hidden 真正提交一帧，再换窗口原点；
+                        // 否则合成器仍持有旧的可见胶囊帧，窗口移到 (0,0) 后可能把它画在左上角。
+                        if (!隐藏帧已等) {
+                            隐藏帧已等 = true;
+                            // 已有画面（换边/形态/切态）且窗口原点会变时必须等隐藏帧；首次挂载没有旧内容可闪，不推迟首次提交。
+                            // 换边/形态变化时 currentGeometry 已被清空，from 为空；若只按 hadPaintedFrame 判定，
+                            // 这里会在提交前 await，把租约暴露给等帧期间的重测（先 beginMask 抢租约、再因同键去重跳过），
+                            // 提交会挂死。因此保持 from 条件：只覆盖主路径的展开/收起，换边保护留待重做提交骨架后再启用。
+                            if (from && hadPaintedFrame.current && transitionMasked.current && islandViewportChanged(from, request) && !maskPainted.current) {
+                                隐藏帧门 ??= islandRenderGate({
+                                    count: 1, // 一帧 + 帧后宏任务 = 一次完整绘制机会（rAF 在绘制前执行，单独 rAF 不能证明已上屏）。
+                                    timeoutMs: ISLAND_NO_FRAME_TIMEOUT_MS, // 两次机会共享同一个总超时。
+                                    requestFrame: (callback) => {
+                                        maskFrame = requestAnimationFrame(callback);
+                                        return maskFrame;
+                                    },
+                                    cancelFrame: (handle) => cancelAnimationFrame(Number(handle)),
+                                    setTimer: (callback) => setTimeout(callback, ISLAND_NO_FRAME_TIMEOUT_MS),
+                                    clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+                                });
+                                const 门 = 隐藏帧门;
+                                wakeMaskFrame = 门.wake;
+                                void 门.done.finally(() => { if (隐藏帧门 === 门) 隐藏帧门 = undefined; }); // 门收口即释放，下一轮换视口重新建门。
+                                maskFrameWaiting = true;
+                                let 收口: "frame" | "timeout" | "wake";
+                                try {
+                                    收口 = await 门.done;
+                                } finally {
+                                    maskFrameWaiting = false;
+                                }
+                                pendingMaskMeasure = false; // 挂起的重测交给提交后的 ResizeObserver 重测，避免在登记键之前抢租约。
+                                wakeMaskFrame = undefined;
+                                if (收口 === "frame") await new Promise<void>((resolve) => setTimeout(resolve, 0)); // 等这一帧画完（rAF 之后的宏任务）。
+                                if (!active || !ownsMask(maskToken)) {
+                                    // 等待期间被接管/卸载：本次提交作废。清掉去重键并重测一次，
+                                    // 否则接管者会因同一几何键被去重跳过，窗口停在旧几何上。
+                                    if (active && geometryKey.current === key) { geometryKey.current = ""; measure(true); }
+                                    return false;
+                                }
+                                islandTrace("mask-frame", { settled: 收口 }); // 区分 timeout 收口与真实 frame 收口。
+                                maskPainted.current = true; // owner/active 校验通过后才记：wake/接管路径不得替继任者记成已绘制。
+                            }
+                        }
+                        // 隐藏帧已到/已上屏：现在才登记几何键与预留。等帧期间被替换时不留可被继任去重的键。
+                        if (!pendingSubmit.current || pendingSubmit.current.token !== maskToken) {
+                            geometryKey.current = key;
+                            pendingSubmit.current = { key, token: maskToken, submitted: false, submittedFinal: false };
+                        }
                         let response = false;
                         commitFailed = false; // 每次提交先清上一次失败标记，成功路径不能沿用旧失败。
+                        if (pendingSubmit.current && pendingSubmit.current.token === maskToken) {
+                            pendingSubmit.current.submitted = true; // 已发过渡帧（并集等中间帧）。
+                            if (value === request) pendingSubmit.current.submittedFinal = true; // 只有真正发出最终目标才算收口：cleanup 据此决定是否撤销。
+                        }
                         beginIslandNativeSwap(nativeSwap);
                         try {
                             try {
+                                islandTrace("native-request", { state: value.state, windowBox: value.windowBox, viewport: value.viewport });
                                 await setIslandState(value);
                                 response = true;
+                                islandTrace("native-ack", { state: value.state });
                             } catch (error) {
                                 // 原生失败会清几何并隐藏窗口；当前租约持有者有界补偿重提交。
                                 if (ownsMask(maskToken)) {
-                                    for (let attempt = 0; attempt < 2 && !response; attempt += 1) {
-                                        await new Promise<void>((resolve) => setTimeout(resolve, 100));
-                                        if (!ownsMask(maskToken)) break;
-                                        try {
-                                            await setIslandState(value);
-                                            response = true;
-                                        } catch {
-                                            // 继续下一次有界重试。
-                                        }
-                                    }
+                                    response = await islandRetrySubmit({
+                                        submit: () => setIslandState(value),
+                                        wait: (milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)),
+                                        current: () => ownsMask(maskToken),
+                                    });
                                 }
                                 if (!response && ownsMask(maskToken)) {
                                     islandNativeFailClosed = true;
@@ -2118,6 +2257,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                             if (response) {
                                 nativeSwap.appliedGeometry = value; // 成功回包保留实际几何供重同步。
                                 islandNativeFailClosed = false;
+                                failedGeometry.current = ""; // 失败门随成功提交清除。
                                 commitFailed = false;
                             }
                             drainMaskReleases(response, !response); // reject 也一定会 drain。
@@ -2126,7 +2266,18 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                             settleMaskRelease(maskToken, { resynced: response, failed: !response }); // 回包作废也走唯一结算入口。
                             return false;
                         }
-                        if (!response) { commitFailed = true; return false; }
+                        if (!response) {
+                            // 重试耗尽不进外层异常分支：这里显式清空几何与贴边基准，恢复提交按「没有可比坐标」重新遮蔽。
+                            if (ownsMask(maskToken)) {
+                                const baseline = resetIslandGeometryBaseline();
+                                currentGeometry.current = baseline.geometry;
+                                seatBaseline.current = baseline.seat;
+                                geometryKey.current = baseline.key;
+                            }
+                                failedGeometry.current = islandGeometryKey(request); // 始终记外层最终目标：动画中间帧的并集 key 不能当失败门。
+                            commitFailed = true;
+                            return false;
+                        }
                         currentGeometry.current = value; // 只在持有当前显示租约时写共享几何。
                         if (!dragging.current) inputReady.current = true;
                         return true;
@@ -2153,10 +2304,27 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                     if (!(await commit(unionFirst))) return; // 回包作废时直接丢弃，不绘制旧/新坐标。
                                     if (!active || !ownsMask(maskToken)) return; // 旧回包不得绘制或解除新遮蔽。
                                     paint(unionFirst, 0, startAttached, staggerMs);
+                                    // 只有换了固定视口带（页面原点变化）才需要等新帧提交；同视口的窗口盒变化沿用旧节奏，不为一次形变多压两帧。
+                                    if (islandViewportChanged(startGeometry, request)) {
+                                        // 等页面真正落到目标视口（inner 与目标 viewport 一致）再解除遮蔽：双 rAF 覆盖不了 WebView 换视口的偶发滞后。
+                                        const 已到位 = await awaitViewport(request.viewport);
+                                        if (!active || !ownsMask(maskToken)) return; // 等待期间卸载或被接管：交给新任务结算。
+                                        islandTrace("frame-barrier", { where: "union", matched: 已到位 });
+                                    }
+                                    islandTrace("mask-release-union", {});
                                     settleMaskRelease(maskToken, { keepOwner: true, alreadySynced: true }); // 回包并同步目标布局后显示，保留所有权给动画。
-                                    await new Promise<void>((resolve) => {
-                                        motionFrame = requestAnimationFrame(() => resolve());
-                                    });
+                                    // 揭幕后的首个帧等待可被 cleanup/finishMotion 唤醒：取消帧不能让 submission 挂死。
+                                    const reveal = islandWakingFrame(
+                                        (callback) => {
+                                            motionFrame = requestAnimationFrame(callback);
+                                            return motionFrame;
+                                        },
+                                        // 无帧时由计时器推进：隐藏页不派发帧也不会把 submission 卡在揭幕等待上。
+                                        { timeoutMs: ISLAND_NO_FRAME_TIMEOUT_MS, setTimer: (callback) => setTimeout(callback, ISLAND_NO_FRAME_TIMEOUT_MS), clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>) },
+                                    );
+                                    wakeReveal = reveal.wake; // cleanup/finishMotion 取消帧时用它收口。
+                                    await reveal.done;
+                                    wakeReveal = undefined;
                                     if (!active) return;
                                     const started = performance.now();
                                     let last = -Infinity;
@@ -2164,7 +2332,13 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                     while (active && !forceFinish) {
                                         const elapsed = await new Promise<number>((resolve) => {
                                             wakeMotion = () => resolve(motionTotal);
+                                            // 无帧兜底：到点按动画结束收口，避免隐藏页把 submission 挂在下一帧上。
+                                            const 无帧计时 = setTimeout(() => {
+                                                wakeMotion = undefined;
+                                                resolve(motionTotal);
+                                            }, ISLAND_NO_FRAME_TIMEOUT_MS);
                                             motionFrame = requestAnimationFrame((now) => {
+                                                clearTimeout(无帧计时);
                                                 wakeMotion = undefined;
                                                 resolve(now - started);
                                             });
@@ -2175,7 +2349,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                         const value = islandUnionFrame(startGeometry, request, elapsed, edge, work, staggerMs);
                                         const frameKey = JSON.stringify(value);
                                         if (frameKey !== previousKey) {
-                                            if (!(await commit(value))) break;
+                                            if (!(await commit(value))) return; // 中间帧重试耗尽：直接进 finally，不再提交最终目标绕开失败门。
                                             if (!active || !ownsMask(maskToken)) break;
                                             paint(value, elapsed, startAttached, staggerMs);
                                             previousKey = frameKey;
@@ -2203,6 +2377,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                                 width: work.width,
                                                 height: work.height,
                                             };
+                                            // 终帧恢复相对流之前先按最终列写一次左边距：上一帧可能是并集列，不能让它带进终帧。
+                                            element.style.setProperty("--island-expanded-column", `${islandExpandedColumn(request)}px`);
                                             restoreStyles(); // 先回到自然文档流，再显示目标布局。
                                             applyViewportMargin(request);
                                             element.style.setProperty("--island-expanded-inline", `${work.width}px`);
@@ -2218,11 +2394,18 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                         if (!(await commit(request))) return;
                                     }
                                     recovering.current = false;
+                                    // 终态要揭幕且换了视口：等页面真正落到目标视口再交还 finally 结算（无动效展开、紧凑态跨视口都走这里）。
+                                    if (transitionMasked.current && islandViewportChanged(from, request)) {
+                                        const 已到位 = await awaitViewport(request.viewport);
+                                        if (!active) return;
+                                        islandTrace("frame-barrier", { where: "final", matched: 已到位 });
+                                    }
                                     settled = true;
                                 } // 有界动画结束必须补最终态，不受去重键影响。
                             } catch (error) {
                                 if (ownsMask(maskToken)) {
                                     currentGeometry.current = undefined; // 只有当前租约持有者能清共享几何。
+                                    seatBaseline.current = undefined; // 基准与几何成对失效，失败后按首次提交保守遮蔽。
                                     geometryKey.current = "";
                                 }
                                 console.warn("岛状态提交失败", error);
@@ -2260,6 +2443,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                         forceFinish = true;
                         cancelAnimationFrame(motionFrame);
                         wakeMotion?.();
+                        wakeReveal?.();
+                        wakeReveal = undefined;
                         await finish;
                     };
                 } catch (error) {
@@ -2270,8 +2455,14 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             }
         };
         const measure = (force = false) => {
+            if (maskFrameWaiting) { pendingMaskMeasure = true; frameForce ||= force; return; } // 等隐藏帧期间的重测先挂起，收口后补跑。
             cancelAnimationFrame(frame);
-            frame = requestAnimationFrame(() => measureNow(force));
+            frameForce ||= force; // 后到的普通重测（RO 自触发）不能把强制重测降级，否则仍按绘制尺寸跳过。
+            frame = requestAnimationFrame(() => {
+                const nextForce = frameForce;
+                frameForce = false;
+                measureNow(nextForce);
+            });
         };
         remeasure.current = measure; // 供消息集合变化等无 DOM 尺寸变化的内容更新主动调用。
         let resyncPaint: ((value: IslandStateRequest) => void) | undefined; // 由当前 measureNow 的 paint 提供，用于解除前重同步。
@@ -2279,7 +2470,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         const settleMaskRelease = (token: number, options: { keepOwner?: boolean; resynced?: boolean; alreadySynced?: boolean; failed?: boolean } = {}) => {
             const { keepOwner = false, resynced = false, alreadySynced = false, failed = false } = options;
             if (!ownsMask(token)) return;
-            if (nativeSwap.pending > 0) { deferredMaskReleases.add(token); return; } // 等回包后再结算。
+            if (nativeSwap.pending > 0) { deferIslandMaskRelease(deferredMaskReleases, token, { keepOwner, alreadySynced }); return; } // 等回包后再结算，语义随 token 保留。
             if (!transitionMasked.current) {
                 if (!keepOwner) releaseMask(token, true);
                 return;
@@ -2296,14 +2487,24 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             }
             const timer = maskFailTimers.get(token);
             if (timer !== undefined) { clearTimeout(timer); maskFailTimers.delete(token); }
-            if (!alreadySynced) {
+            if (!alreadySynced && active) {
                 restoreStyles(); // 先还样式，再由重绘写入实际几何，restore 不会覆盖新帧。
-                if (actual && resyncPaint) resyncPaint(actual);
+                // 被替换或已卸载的实例只结算租约：旧闭包不得再用固定尺寸/透明度写回新实例的 DOM。
+                if (canResyncIslandGeometry({ active, applied: actual !== undefined, alreadySynced }) && actual && resyncPaint) resyncPaint(actual);
             }
-            requestAnimationFrame(() => {
-                if (!ownsMask(token)) return;
-                if (keepOwner) unmaskTransition(token, true);
-                else releaseMask(token, true);
+            // 解除遮蔽：帧到或超时任一先到都只执行一次；隐藏页不派发帧时也能释放租约、结束提交。
+            islandFrameOrTimeout({
+                act: () => {
+                    if (!ownsMask(token)) return;
+                    if (keepOwner) unmaskTransition(token, true);
+                    else releaseMask(token, true);
+                    if (pendingEscape.current) { pendingEscape.current = false; changeMode("collapsed", false); } // 遮蔽延长后补收期间按下的 Esc。
+                },
+                requestFrame: (callback) => requestAnimationFrame(callback),
+                cancelFrame: (handle) => cancelAnimationFrame(Number(handle)),
+                setTimer: (callback) => setTimeout(callback, ISLAND_NO_FRAME_TIMEOUT_MS),
+                clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+                timeoutMs: ISLAND_NO_FRAME_TIMEOUT_MS,
             });
         };
         const observer = new ResizeObserver(() => measure(false));
@@ -2321,13 +2522,26 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         return () => {
             active = false;
             remeasure.current = () => {}; // 卸载后不再调度测量帧。
+            restoreStyles(); // 卸载前先撤掉本实例写入的内联几何：下一实例的保存集合不认识它们，重同步帧会永久压住自然布局。
             element.removeEventListener("scroll", handleScroll);
             observer.disconnect();
             contentObserver.disconnect();
             cancelAnimationFrame(frame);
             cancelAnimationFrame(motionFrame);
             wakeMotion?.();
-            if (maskLease.current.owner !== undefined) settleMaskRelease(maskLease.current.owner, { resynced: nativeSwap.appliedToken !== null }); // 唯一入口：pending 挂续延，失败 800ms 兜底。
+            wakeReveal?.();
+            wakeReveal = undefined;
+            // 撤销本实例「已预留但尚未首发」的几何：否则继任 effect 会因同 key 去重跳过，而本任务已 inactive，
+            // 原生收起/展开请求两边都不会发出。首发之后不再撤销。
+            const 撤销键 = revokeIslandReservation(pendingSubmit.current, maskLease.current.owner ?? -1, geometryKey.current);
+            if (撤销键 !== undefined) {
+                geometryKey.current = "";
+                pendingSubmit.current = undefined;
+            }
+            wakeMaskFrame?.(); // 先唤醒等待方，避免取消后空等 300ms 超时。
+            wakeMaskFrame = undefined;
+            cancelAnimationFrame(maskFrame); // 隐藏帧等待句柄（等待已唤醒收口，帧只作兜底取消）。
+            if (maskLease.current.owner !== undefined) settleMaskRelease(maskLease.current.owner, { resynced: nativeSwap.appliedToken !== null, alreadySynced: true }); // 唯一入口：本实例已还原样式，不再重同步重绘；pending 挂续延，失败 800ms 兜底。
         };
     }, [mode, snapshot, preferences, work, edge, animationsEnabled, dragRevision]);
     useEffect(() => {
@@ -2926,7 +3140,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             tabIndex={mode === "expanded" ? 0 : -1}
             aria-label="浮岛，单击展开，退出键收起"
             onKeyDown={(event) => {
-                if (transitionMasked.current) return; // 遮蔽期间整层不可交互。
+                islandTrace("keydown", { key: event.key, root: event.target === event.currentTarget, masked: transitionMasked.current, busy: interactionBusy(), drop: dropActiveRef.current, prevented: event.defaultPrevented }); // gated 诊断：复验切态期间按键被哪道闸门拦下。
+                if (transitionMasked.current) { if (event.key === "Escape") pendingEscape.current = true; return; } // 遮蔽期间整层不可交互；Esc 记下来，解除后补收。
                 if (event.defaultPrevented || interactionBusy() || dropActiveRef.current) return;
                 stopHoverTimer();
                 if (event.key === "Escape") {

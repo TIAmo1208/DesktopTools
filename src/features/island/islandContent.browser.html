@@ -50,6 +50,26 @@
 
             // 夹具必须先于产品模块的副作用安装，否则桥与订阅会拿到未替换的运行时。
             const 夹具 = 创建夹具();
+
+            // 断言页没有真原生窗口：用夹具提交的视口尺寸模拟 WebView 的 inner 尺寸（滞后两帧生效），
+            // 让「视口条件等待」像真机一样先等到尺寸切换再解除遮蔽；真机换视口滞后的超时分支由单测覆盖。
+            {
+                let 模拟 = { width: 0, height: 0 };
+                const 原始push = 夹具.提交.push.bind(夹具.提交);
+                夹具.提交.push = (值) => {
+                    const 结果 = 原始push(值);
+                    if (值?.viewport) {
+                        const 目标 = 值.viewport;
+                        setTimeout(() => {
+                            模拟 = { width: Math.round(目标.width), height: Math.round(目标.height) };
+                        }, 80); // 模拟更明显的 WebView 换视口滞后（约 5 帧），让「等一帧」与「等视口条件」能被区分。
+                    }
+                    return 结果;
+                };
+                Object.defineProperty(window, "innerWidth", { configurable: true, get: () => 模拟.width || 420 });
+                Object.defineProperty(window, "innerHeight", { configurable: true, get: () => 模拟.height || 1040 });
+                window.__ISLAND_INNER_SIM__ = () => 模拟;
+            }
             // 本页只验证内容层：清空岛快照里的常驻实例，避免真实音乐/天气卡抢占锚点可见位与前台排序。
             // 快照形状仍是生产读取路径（get_island_snapshot）给出的同一份数据。
             const 原生 = window.__DESKTOP_TOOLS_NATIVE__;
@@ -214,10 +234,222 @@
             const 长英文 = "abcdefghijklmnopqrstuvwxyzabcdefghijklmn"; // 40 个字符，触发 36 字符截断。
 
             let 阶段 = "启动"; // 失败结论带上阶段，便于定位断言。
+            let 遮蔽证据 = ""; // 遮蔽判定的 DOM 证据摘要：写进最终结论，中途失败也保留。
+            let 滚动槽证据 = ""; // 滚动条槽与卡片中心的实测摘要：写进最终结论，中途失败也保留。
             const 运行 = async () => {
                 await 直到(() => 岛(), "岛根节点挂载");
                 await 直到(() => 夹具.提交.length > 0, "岛完成首次原生几何提交", 8000);
                 await 稳定("collapsed");
+                阶段 = "遮蔽只在换视口与切态时发生：同视口窗口盒变化不写 hidden";
+                // DOM 级证据：直接观察岛根内联 visibility 的写入序列；遮蔽会跨帧保持，微任务回调能读到 hidden。
+                const 可见性写入 = [];
+                const 观察可见性 = () => {
+                    const 目标 = 岛();
+                    const 观察器 = new MutationObserver(() => 可见性写入.push(目标.style.visibility || "visible"));
+                    观察器.observe(目标, { attributes: true, attributeFilter: ["style"] });
+                    return () => 观察器.disconnect();
+                };
+                const 原贴边 = 夹具.偏好.islandEdge;
+                const 原形态 = 夹具.偏好.islandForm;
+                const 断言基线 = 失败.length; // 成功句只在整段遮蔽断言都没有新增失败时生成。
+                const 断开可见性观察 = 观察可见性();
+                try {
+                    // 同视口：新消息让胶囊变宽，窗口盒变化但视口带不变，不得整层隐藏。
+                    可见性写入.length = 0;
+                    const 宽变基线 = 夹具.提交.at(-1);
+                    const 宽变前 = 夹具.提交.length;
+                    夹具.pushMessages([消息(960, "info", "同视口宽变不遮蔽的正文", "断言来源")]);
+                    await 直到(() => 夹具.提交.length > 宽变前, "新消息提交新窗口盒", 8000);
+                    await 稳定("collapsed");
+                    const 宽变提交 = 夹具.提交.at(-1);
+                    断言(JSON.stringify(宽变提交.windowBox) !== JSON.stringify(宽变基线.windowBox), "新消息必须改变窗口盒，否则同视口宽变用例没有覆盖到目标");
+                    断言(JSON.stringify(宽变提交.viewport) === JSON.stringify(宽变基线.viewport), "同视口宽变：视口带不得变化");
+                    断言(!可见性写入.includes("hidden"), `同视口窗口盒变化不得把 .island 写成 visibility:hidden，实际写入序列 ${可见性写入.join("|") || "无"}`);
+                    断言(岛().style.visibility !== "hidden", "同视口窗口盒变化后岛必须保持可见");
+
+                    // 换视口：贴边变化会改固定视口带，必须整层遮蔽一次。
+                    可见性写入.length = 0;
+                    const 换边前 = 夹具.提交.length;
+                    夹具.pushPreferences({ islandEdge: 原贴边 === "left" ? "right" : "left" });
+                    await 直到(() => 夹具.提交.length > 换边前, "换贴边提交新几何", 8000);
+                    await 稳定("collapsed");
+                    const 换边提交 = 夹具.提交.at(-1);
+                    断言(JSON.stringify(换边提交.viewport) !== JSON.stringify(宽变基线.viewport), "换贴边用例必须真的换了固定视口带");
+                    断言(可见性写入.includes("hidden"), `换视口必须整层遮蔽一次，实际写入序列 ${可见性写入.join("|") || "无"}`);
+                    断言(岛().style.visibility !== "hidden", "换视口的遮蔽必须在回包与重绘后解除");
+                    夹具.pushPreferences({ islandEdge: 原贴边 });
+                    await 稳定("collapsed");
+                    // 换边是换视口带：等遮蔽解除（隐藏帧等待会多隔一帧），否则随后的宽变会落进这次遮蔽。
+                    await 直到(() => 岛().style.visibility !== "hidden", "换边恢复后遮蔽解除", 5000);
+
+                    // 换边落定（基准已前移）后同一视口再变宽：不得再次整层遮蔽。
+                    可见性写入.length = 0;
+                    const 换边后基线 = 夹具.提交.at(-1);
+                    const 换边后前 = 夹具.提交.length;
+                    夹具.pushMessages([消息(961, "info", "换边落定后再变宽的正文", "断言来源")]);
+                    await 直到(() => 夹具.提交.length > 换边后前, "换边后新消息提交新窗口盒", 8000);
+                    await 稳定("collapsed");
+                    const 换边后宽变 = 夹具.提交.at(-1);
+                    断言(JSON.stringify(换边后宽变.windowBox) !== JSON.stringify(换边后基线.windowBox), "换边后宽变用例必须真的改变窗口盒");
+                    断言(JSON.stringify(换边后宽变.viewport) === JSON.stringify(换边后基线.viewport), "换边后宽变仍在同一视口");
+                    断言(!可见性写入.includes("hidden"), `换边落定后胶囊再变宽不得整层遮蔽，实际写入序列 ${可见性写入.join("|") || "无"}`);
+
+                    // 切态：展开与收起都要遮蔽，结束后仍然可见；展开还要等一帧提交后才解除遮蔽。
+                    window.__ISLAND_TRACE__ = true; // gated 诊断：只在本段打开，用来核对 paint 与 unmask 之间的帧屏障。
+                    window.__ISLAND_TRACE_LOG__ = [];
+                    可见性写入.length = 0;
+                    await 单击卡片();
+                    await 稳定("expanded");
+                    const 轨迹 = window.__ISLAND_TRACE_LOG__ ?? [];
+                    window.__ISLAND_TRACE__ = false;
+                    const 提交下标 = 轨迹.map((项) => 项.stage).lastIndexOf("geometry-commit");
+                    const 屏障下标 = 轨迹.findIndex((项, 索引) => 索引 > 提交下标 && 项.stage === "frame-barrier");
+                    const 解除下标 = 轨迹.findIndex((项, 索引) => 索引 > 屏障下标 && 项.stage === "unmask");
+                    断言(提交下标 >= 0 && 屏障下标 > 提交下标 && 解除下标 > 屏障下标, `展开必须先提交目标布局、再等一帧才解除遮蔽（commit=${提交下标} barrier=${屏障下标} unmask=${解除下标}）`);
+                    断言(可见性写入.includes("hidden"), `展开切态必须整层遮蔽一次，实际写入序列 ${可见性写入.join("|") || "无"}`);
+                    可见性写入.length = 0;
+                    按键("Escape");
+                    await 稳定("collapsed");
+                    断言(可见性写入.includes("hidden"), `收起切态必须整层遮蔽一次，实际写入序列 ${可见性写入.join("|") || "无"}`);
+                    断言(岛().style.visibility !== "hidden", "收起完成后岛必须可见");
+                    if (失败.length === 断言基线) 遮蔽证据 = "同视口宽变与换边落定后宽变零 hidden；换贴边与展开/收起各写 hidden 且收起后可见，展开先等视口切到位再解除";
+                } finally {
+                    window.__ISLAND_TRACE__ = false;
+                    断开可见性观察();
+                    夹具.pushMessages([]);
+                    夹具.pushPreferences({ islandEdge: 原贴边, islandForm: 原形态 });
+                }
+                await 稳定("collapsed");
+
+                // ---- 展开卡片中心与滚动条槽：槽只扩窗口，不移动卡片 ----
+                阶段 = "展开卡片中心与胶囊中心一致：滚动条槽显隐不移动卡片（top 与 right）";
+                {
+                    const 原贴边 = 夹具.偏好.islandEdge;
+                    const 提交 = () => 夹具.提交.at(-1);
+                    const 页面左 = (值) => 值.windowBox.left - 值.viewport.left;
+                    // 贴边就位：右贴边的窗口右缘贴工作区右边（1920），其它贴边居中（右缘更靠左）。
+                    const 贴边就位 = (边) => {
+                        const 值 = 提交();
+                        if (!值 || 值.state !== "collapsed") return false;
+                        const 右缘 = 值.windowBox.left + 值.windowBox.width;
+                        return 边 === "right" ? Math.abs(右缘 - 1920) <= 1 : 右缘 <= 1919;
+                    }; // 页面坐标：窗口盒相对各自固定视口的落位。
+                    const 卡片盒 = () => 岛().querySelector(".island-card").getBoundingClientRect();
+                    const 出条 = async (期望, 说明) => 直到(() => (岛().querySelector(".island__scrollbar")?.dataset.visible === "true") === 期望, 说明, 4000).then(() => true).catch(() => false);
+                    try {
+                        for (const 边 of ["top", "right"]) {
+                            夹具.pushPreferences({ islandEdge: 边 });
+                            await 稳定("collapsed");
+                            // 换贴边是换视口带：等几何真的落到该贴边且遮蔽解除，否则会读到上一贴边的提交。
+                            try {
+                                await 直到(() => 贴边就位(边) && 岛().style.visibility !== "hidden", `${边}：换贴边提交落地并解除遮蔽`, 5000);
+                            } catch (错误) {
+                                const 尾 = 夹具.提交.slice(-3).map((项) => `${项.state}@${JSON.stringify(项.windowBox)}/${JSON.stringify(项.viewport)}`);
+                                断言(false, `${边}：换贴边提交落地并解除遮蔽超时；最近提交 ${尾.join(" ; ")}；可见性 ${岛().style.visibility}；轨迹 ${(window.__ISLAND_TRACE_LOG__ ?? []).slice(-8).map((项) => 项.stage).join("|")}`);
+                            }
+                            await 直到(() => 提交()?.state === "collapsed", `${边}：胶囊提交就位`, 5000);
+                            const 胶囊 = 提交();
+                            // 工作区坐标系：windowBox 都是绝对坐标；上下贴边比水平中心（沿边方向），左右贴边比贴边侧对齐。
+                            const 胶囊中心 = 胶囊.windowBox.left + 胶囊.windowBox.width / 2;
+                            // 用键盘展开：右贴边胶囊在 1040 高工作区里竖直居中，页面 fixture 的 520 高视口点不到它。
+                            按键("Enter");
+                            try {
+                                await 稳定("expanded");
+                            } catch (error) {
+                                const 值 = 提交();
+                                断言(false, `${边} 贴边：${error instanceof Error ? error.message : String(error)}（当前态 ${岛().dataset.state} / 提交 ${值?.state} ${JSON.stringify(值?.windowBox)}）`);
+                                continue;
+                            }
+                            await 直到(() => 提交()?.state === "expanded", `${边}：展开提交就位`, 5000);
+                            const 展开 = 提交();
+                            // 窗口 = 卡片内容 + 16 DIP 槽；贴右边时槽在卡片左侧，卡片始终贴边。
+                            const 槽起始 = 边 === "right" ? 16 : 0;
+                            const 内容宽 = 展开.cards[0].rect.width;
+                            const 内容高 = 展开.cards[0].rect.height;
+                            断言(展开.windowBox.width === 内容宽 + 16, `${边} 贴边：窗口盒必须比卡片内容宽一条 16 DIP 槽，实际 ${展开.windowBox.width}/${内容宽}`);
+                            if (边 === "right") {
+                                // 右贴边时卡片贴右缘、槽在左：比右缘对齐；展开列占满工作区高度，竖直方向没有中心可比。
+                                断言(展开.windowBox.left + 展开.windowBox.width === 胶囊.windowBox.left + 胶囊.windowBox.width, `right 贴边：窗口右缘必须与胶囊右缘对齐，实际 ${展开.windowBox.left + 展开.windowBox.width}/${胶囊.windowBox.left + 胶囊.windowBox.width}`);
+                            } else {
+                                // 上下贴边沿水平方向居中：比卡片水平中心。
+                                const 展开中 = 展开.windowBox.left + 内容宽 / 2;
+                                const 中心差 = Math.abs(展开中 - 胶囊中心);
+                                断言(中心差 <= 1, `${边} 贴边：展开卡片中心必须与胶囊中心一致，实际差 ${中心差.toFixed(2)} DIP（胶囊 ${胶囊中心.toFixed(1)} / 展开 ${展开中.toFixed(1)}）`);
+                                滚动槽证据 = `${滚动槽证据}${边} 中心差 ${中心差.toFixed(2)} DIP；`;
+                            }
+                            // 终帧列：展开分支在恢复相对流之前写最终列，不能沿用上一帧并集列。
+                            const 终帧列 = Number.parseFloat(岛().style.getPropertyValue("--island-expanded-column") || "0");
+                            断言(Math.abs(终帧列 - 页面左(展开)) <= 1, `${边} 贴边：终帧列偏移必须等于最终请求（实际 ${终帧列.toFixed(1)} / ${页面左(展开).toFixed(1)}）`);
+                            const 无溢出盒 = 卡片盒();
+                            断言(Math.abs(无溢出盒.width - 内容宽) <= 1, `${边} 贴边：卡片宽应等于内容宽，实际 ${无溢出盒.width.toFixed(1)}/${内容宽}`);
+                            const 根左 = 岛().getBoundingClientRect().left;
+                            断言(Math.abs(无溢出盒.left - 根左 - (页面左(展开) + 槽起始)) <= 1, `${边} 贴边：卡片左边缘必须落在列偏移处，实际 ${(无溢出盒.left - 根左).toFixed(1)}/${(页面左(展开) + 槽起始).toFixed(1)}`);
+                            // 内容变高触发出条：卡片 x / 宽必须不变（槽提前预留，不随显隐切换）。
+                            const 样式 = document.createElement("style");
+                            样式.textContent = '.island[data-state="expanded"] .island-card{block-size:1200px}';
+                            document.head.append(样式);
+                            const 已出条 = await 出条(true, `${边} 贴边：卡片变高后出现滚动条`);
+                            断言(已出条, `${边} 贴边：内容溢出后必须出现滚动条`);
+                            const 有溢出盒 = 卡片盒();
+                            断言(Math.abs(有溢出盒.left - 无溢出盒.left) <= 0.5 && Math.abs(有溢出盒.width - 无溢出盒.width) <= 0.5, `${边} 贴边：滚动条显隐不得改变卡片 x/宽（${无溢出盒.left.toFixed(1)}/${无溢出盒.width.toFixed(1)} → ${有溢出盒.left.toFixed(1)}/${有溢出盒.width.toFixed(1)}）`);
+                            滚动槽证据 = `${滚动槽证据}${边}: 窗口 ${展开.windowBox.width}=内容 ${内容宽}+16、卡片 ${无溢出盒.width.toFixed(1)} 宽 / 出条后 ${有溢出盒.width.toFixed(1)}；`.replace(/\s+/g, " ");
+                            样式.remove();
+                            await 出条(false, `${边} 贴边：撤掉高卡片后条收起`);
+                            await 稳定("expanded");
+                            按键("Escape");
+                            await 稳定("collapsed");
+                        }
+                    } finally {
+                        夹具.pushPreferences({ islandEdge: 原贴边 });
+                    }
+                    await 稳定("collapsed");
+                }
+
+                // ---- 收起不淡出内容：全过程 opacity ≥ 0.99，结束后内联值清空 ----
+                阶段 = "收起不淡出：内容 opacity 全过程 ≥0.99，结束后内联 opacity/filter 清空";
+                {
+                    await 稳定("collapsed");
+                    await 直到(() => 岛().style.visibility !== "hidden", "收起用例：初始遮蔽解除", 5000);
+                    按键("Enter");
+                    await 稳定("expanded");
+                    const 内容 = 岛().querySelector(".island-card__content");
+                    断言(Boolean(内容), "展开态必须有卡片内容节点");
+                    if (内容) {
+                        const 采样 = [];
+                        let 采样中 = true;
+                        const 记录 = () => {
+                            采样.push(Number.parseFloat(getComputedStyle(内容).opacity));
+                            if (采样中) requestAnimationFrame(记录);
+                        };
+                        requestAnimationFrame(记录);
+                        按键("Escape");
+                        await 稳定("collapsed");
+                        await 等待(320); // 动画时长（240ms）之后再看内联值是否清空。
+                        采样中 = false;
+                        采样.push(Number.parseFloat(getComputedStyle(内容).opacity));
+                        const 最低 = Math.min(...采样);
+                        断言(最低 >= 0.99, `收起全过程内容 opacity 不得下降（最低 ${最低.toFixed(2)}，采样 ${采样.length} 次）`);
+                        断言(!内容.style.opacity && !内容.style.filter, `收起结束后内联 opacity/filter 必须为空，实际 "${内容.style.opacity}"/"${内容.style.filter}"`);
+                    }
+                }
+
+                // ---- 并集动画期间取消：submission 必须收口 ----
+                阶段 = "并集动画期间取消：submission 收口，展开后立刻 Esc 仍能收起";
+                {
+                    await 稳定("collapsed");
+                    await 直到(() => 岛().style.visibility !== "hidden", "取消用例：遮蔽解除", 5000);
+                    按键("Enter");
+                    await 直到(() => 当前态() === "expanded", "取消用例：进入展开", 4000);
+                    await 等待(30); // 并集动画进行中。
+                    按键("Escape");
+                    try {
+                        await 稳定("collapsed");
+                    } catch (error) {
+                        断言(false, `动画期间取消后必须仍能收起：${error instanceof Error ? error.message : String(error)}`);
+                    }
+                    断言(当前态() === "collapsed", "动画期间取消后必须回到胶囊");
+                    断言(岛().style.visibility !== "hidden", "取消收口后必须解除遮蔽");
+                }
 
                 // ---- 一、零锚点空态与胶囊只读语义 ----
 
@@ -1227,16 +1459,16 @@
                 }
                 report(
                     失败.length
-                        ? `FAIL\n- ${失败.join("\n- ")}`
+                        ? `FAIL\n- ${失败.join("\n- ")}${遮蔽证据 ? `\n（遮蔽 DOM 证据：${遮蔽证据}）` : ""}${滚动槽证据 ? `\n（滚动槽实测：${滚动槽证据}）` : ""}`
                         : 跳过.length
                           ? `SKIP：系统开启减少动效，跳过 ${跳过.join("、")}；其余三卡折叠/展开、几何、键盘、通知开关与隐藏合并通过`
-                          : `PASS 浮岛内容层：三卡折叠/展开 ${内部提交数} 次窗口提交；${各边位置.join("；")}；几何、键盘、通知开关；无演示轮转`,
+                          : `PASS 浮岛内容层：三卡折叠/展开 ${内部提交数} 次窗口提交；${各边位置.join("；")}；${遮蔽证据}；几何、键盘、通知开关；无演示轮转`,
                 );
             };
 
             渲染();
             运行().catch((错误) => {
-                report(`FAIL\n- ${阶段}：${错误 instanceof Error ? 错误.message : String(错误)}${失败.length ? `\n- ${失败.join("\n- ")}` : ""}`);
+                report(`FAIL\n- ${阶段}：${错误 instanceof Error ? 错误.message : String(错误)}${失败.length ? `\n- ${失败.join("\n- ")}` : ""}${遮蔽证据 ? `\n（遮蔽 DOM 证据：${遮蔽证据}）` : ""}${滚动槽证据 ? `\n（滚动槽实测：${滚动槽证据}）` : ""}`);
             });
         </script>
     </body>

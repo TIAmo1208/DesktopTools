@@ -15,6 +15,7 @@ export const islandGeometry = (
     const gutterStart = edge === "right" ? gutter : 0; // 贴右边时槽在卡片左侧，保持卡片贴边。
     const gutterEnd = gutter - gutterStart;
     const contentWidth = Math.ceil(Math.max(...measured.map((rect) => rect.left + rect.width))); // 卡片右边界即内容宽，含贴右边时的起始槽。
+    const columnWidth = contentWidth - gutterStart; // 纯卡片内容宽：贴右边时扣掉起始槽，沿边居中只看它，卡片坐标与槽显隐无关。
     const width = contentWidth + gutterEnd; // 窗口在内容之外补上滚动条槽。
     const height = state === "expanded" ? work.height : Math.ceil(Math.max(...measured.map((rect) => rect.top + rect.height)));
     if (width > work.width || height > work.height) throw new Error("岛内容超过主屏工作区");
@@ -25,10 +26,13 @@ export const islandGeometry = (
     const margin = form === "notch" ? 0 : 6; // 胶囊离工作区边 6px，刘海贴边。
     const notch = form === "notch" && state !== "expanded" ? 12 : 0; // 外凸负圆角只在常态与 hover 生效；展开态不额外扩大窗口。
     const alongSpan = horizontalEdge ? work.height : work.width; // 沿边方向的工作区尺寸。
-    const alongSize = (horizontalEdge ? height : width) + notch * 2; // 沿边居中按窗口宽计算，滚动条槽也留在工作区内。
-    const maxOffset = Math.max(0, (alongSpan - alongSize) / 2); // 以居中为 0 的可偏移半幅。
-    const alongOffset = Math.min(Math.max(offset, -maxOffset), maxOffset); // 空边按顶部同样应用持久偏移，不再强制居中。
-    const alongStart = Math.max(0, alongSpan - alongSize) / 2 + alongOffset; // 居中后再应用持久偏移；尺寸变化时两侧对称扩展。
+    const alongSize = (horizontalEdge ? height : columnWidth) + notch * 2; // 沿边居中按卡片内容宽计算，滚动条槽不参与居中。
+    const alongGutter = horizontalEdge ? 0 : gutter; // 槽只在上/下贴边时占用沿边方向。
+    const 半幅 = Math.max(0, (alongSpan - alongSize) / 2); // 内容在沿边方向的居中半幅；偏移以居中为 0。
+    const maxOffset = Math.max(0, 半幅 - alongGutter); // 槽占着沿边方向的末端，那一侧可移动范围相应减少。
+    const alongOffset = Math.min(Math.max(offset, -半幅), maxOffset); // 空边按顶部同样应用持久偏移，不再强制居中。
+    // 内容按自身宽度居中，窗口向槽一侧长出去；极端偏移夹住内容起点，保证窗口仍在工作区内。
+    const alongStart = Math.min(Math.max(半幅 + alongOffset, 0), Math.max(0, alongSpan - alongSize - alongGutter)); // 极端偏移只夹紧内容起点，窗口始终留在工作区内。
     const left = edge === "right" ? work.left + work.width - width - margin : work.left + (horizontalEdge ? margin : alongStart);
     const top = state === "expanded" ? work.top : edge === "bottom" ? work.top + work.height - height - margin : work.top + (horizontalEdge ? alongStart : margin);
     // 刘海的窗口在沿边方向各向外扩 12px，本体向内让出同样的距离；被让出的角部是新增透明像素。
@@ -67,6 +71,9 @@ export const islandContentOffset = ({ windowBox, viewport }: Pick<IslandStateReq
 });
 
 /** 展开态只在窗口盒或固定视口变化时提交，不把列表内部卡片变化当成新窗口。 */
+/** 展开卡片列在满工作区根内的左边距；逐帧绘制与终帧恢复共用同一算式，避免最后一帧跳列。 */
+export const islandExpandedColumn = ({ windowBox, viewport }: Pick<IslandStateRequest, "windowBox" | "viewport">): number => windowBox.left - viewport.left;
+
 export const islandWindowKey = ({ state, windowBox, viewport }: IslandStateRequest): string => JSON.stringify([state, windowBox, viewport]);
 
 /** 展开态卡片外侧的滚动条槽：4 DIP 间距加 12 DIP 轨道。 */
