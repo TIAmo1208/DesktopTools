@@ -46,8 +46,8 @@ test("注入桥按映射读取投影，并把事件载荷交给订阅者", async
 
 test("三态表面不透明度与可插值属性已登记", () => {
     const css = readFileSync(new URL("./island.css", import.meta.url), "utf8");
-    assert.match(css, /@property --island-surface-alpha \{[^}]*syntax: "<percentage>"/); // 过渡依赖注册属性。
-    for (const [state, alpha] of [["collapsed", "60%"], ["hover", "75%"], ["expanded", "90%"]] as const) {
+    assert.match(css, /@property --island-surface-alpha \{[^}]*syntax: "<percentage>"/); // 注册属性保留百分比语义。
+    for (const [state, alpha] of [["collapsed", "70%"], ["hover", "84%"], ["expanded", "90%"]] as const) {
         const selector = state === "collapsed" ? ".island" : `.island[data-state="${state}"]`;
         assert.match(css, new RegExp(`${selector.replace(/[.[\]]/g, "\\$&")} \\{\\s*--island-surface-alpha: ${alpha};`));
     }

@@ -67,18 +67,17 @@ html[data-island="true"] #root {
 .island[data-form="notch"][data-fillets="true"][data-edge="right"] {
     padding-block: var(--island-notch);
 }
-/* 三态表面不透明度：常态最透，hover 居中，展开最实；正文、图标与描边不受影响。
-   注册成可插值属性，过渡只作用于透明度本身；补面层与卡片背景的显隐切换保持瞬时，不叠加出错误表面。 */
+/* 三态表面不透明度：常态 70%、hover 84%、展开 90%；只影响卡面和补面，切态不做透明度过渡。 */
 @property --island-surface-alpha {
     syntax: "<percentage>";
     inherits: true;
-    initial-value: 60%;
+    initial-value: 70%;
 }
 .island {
-    --island-surface-alpha: 60%;
+    --island-surface-alpha: 70%;
 }
 .island[data-state="hover"] {
-    --island-surface-alpha: 75%;
+    --island-surface-alpha: 84%;
 }
 .island[data-state="expanded"] {
     --island-surface-alpha: 90%;
