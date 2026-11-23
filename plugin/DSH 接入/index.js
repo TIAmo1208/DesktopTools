@@ -100,17 +100,21 @@ export function normalizePairingCode(value) {
  * @param {unknown} value 快照 JSON 文本或对象。
  * @returns {any} 归一快照。
  */
+/** 钱包形状：币种与金额都是字符串才算有效；解析与视图共用同一判据。 */
+const isWalletLike = (wallet) => Boolean(wallet) && typeof wallet.currency === "string" && typeof wallet.amount === "string";
+
 export function parseSnapshotPayload(value) {
     const data = typeof value === "string" ? JSON.parse(value) : value;
     if (data === null || typeof data !== "object") throw new Error("快照不是对象");
     if (data.protocolVersion !== 1) throw new Error(`不支持的桥协议版本：${String(data.protocolVersion)}`);
     if (typeof data.bridgeId !== "string" || !data.bridgeId) throw new Error("快照缺少 bridgeId");
     if (typeof data.bridgeInstanceId !== "string" || !data.bridgeInstanceId) throw new Error("快照缺少 bridgeInstanceId");
-    const wallets = Array.isArray(data.balance?.wallets)
-        ? data.balance.wallets
-            .filter(wallet => wallet && typeof wallet.currency === "string" && typeof wallet.amount === "string")
-            .map(wallet => ({ currency: wallet.currency, amount: wallet.amount }))
-        : [];
+    // 余额：wallets 只放有效项给其它卡用；firstWallet 保留快照原始首项（含 null/未知/非法），视图只按它决定显示或隐藏。
+    const rawWallets = Array.isArray(data.balance?.wallets) ? data.balance.wallets : [];
+    const wallets = rawWallets
+        .filter(wallet => isWalletLike(wallet))
+        .map(wallet => ({ currency: wallet.currency, amount: wallet.amount }));
+    const firstWallet = rawWallets.length === 0 ? undefined : isWalletLike(rawWallets[0]) ? { currency: rawWallets[0].currency, amount: rawWallets[0].amount } : null;
     const balanceStatus = ["ready", "logged-out", "unauthorized", "error"].includes(data.balance?.status)
         ? data.balance.status
         : "error";
@@ -156,7 +160,7 @@ export function parseSnapshotPayload(value) {
         revision: Number.isSafeInteger(data.revision) ? data.revision : 0,
         fetchedAt: typeof data.fetchedAt === "string" ? data.fetchedAt : "",
         stale: data.stale === true,
-        balance: { status: balanceStatus, wallets, reason: typeof data.balance?.reason === "string" ? data.balance.reason : "" },
+        balance: { status: balanceStatus, wallets, firstWallet, reason: typeof data.balance?.reason === "string" ? data.balance.reason : "" },
         sessions,
         jobs,
         pending,
@@ -293,6 +297,52 @@ export function formatAmountFixed(value) {
     if (!/^-?\d+(?:\.\d+)?$/.test(compact)) return compact;
     const [whole, fraction = ""] = compact.split(".");
     return `${whole}.${(fraction + "00").slice(0, 2)}`;
+}
+
+/** 明确带符号的币种；未列出的币种在 hover 里隐藏整条余额行，不回退货币代码。 */
+const CURRENCY_SYMBOLS = Object.freeze({ CNY: "￥", USD: "$", EUR: "€", GBP: "£", JPY: "¥" });
+
+/**
+ * 取币种符号：大小写与空白归一后匹配；未知币种返回空串。
+ * @param {unknown} currency 币种。
+ * @returns {string} 符号。
+ */
+export function currencySymbol(currency) {
+    return CURRENCY_SYMBOLS[String(currency ?? "").trim().toUpperCase()] ?? "";
+}
+
+/**
+ * hover 余额金额：原币种符号加固定两位小数；无符号币种或非数字金额返回空串，由调用方隐藏整行。
+ * @param {{ currency: string, amount: string } | undefined} wallet 钱包。
+ * @returns {string} 金额文本。
+ */
+export function walletSymbolAmount(wallet) {
+    const symbol = currencySymbol(wallet?.currency);
+    const amount = formatAmountFixed(wallet?.amount);
+    if (!symbol || !/^-?\d+(?:\.\d+)?$/.test(amount)) return "";
+    return amount.startsWith("-") ? `-${symbol}${amount.slice(1)}` : `${symbol}${amount}`;
+}
+
+/**
+ * hover 余额行：多钱包只取快照顺序的第一个，不求和、不改选下一个；首个钱包没有符号时整行隐藏。
+ * @param {any} balance 快照余额。
+ * @returns {{ value: string } | { reason: string } | undefined} 余额行。
+ */
+export function hoverBalance(balance) {
+    const status = balance?.status ?? "error";
+    if (status === "ready") {
+        // 只按快照原始首项决定显示/隐藏：解析阶段把原始首项存进 firstWallet（null 表示首项非法），不回退第二项。
+        const hasFirst = Boolean(balance) && typeof balance === "object" && "firstWallet" in balance;
+        const wallet = hasFirst ? balance.firstWallet : Array.isArray(balance?.wallets) ? balance.wallets[0] : undefined;
+        if (hasFirst && wallet === null) return undefined; // 原始首项非法或缺失：整行隐藏，不换下一项。
+        if (!wallet) return { reason: "无可用余额" };
+        const value = walletSymbolAmount(wallet);
+        return value ? { value } : undefined;
+    }
+    // 已知原因分开写，便于用户判断下一步；未知原因不臆造。
+    if (status === "logged-out") return { reason: "账号未登录" };
+    if (status === "unauthorized") return { reason: "平台未授权余额读取" };
+    return { reason: "余额读取失败" };
 }
 
 /**
@@ -538,22 +588,27 @@ export function islandSummaryArguments(view) {
 
 /**
  * hover 纯展示视图：只读当前快照，不发起请求、不持有定时器。
+ * 未配对、未连接、授权失败、数据陈旧等整卡状态用 status 取代任务区与余额；
+ * 明细由任务区、可选缺失说明、可选进度与余额行组成，未知一律写「—」，不写 0、不造比例。
  * @param {any} state 实例状态。
  * @param {number} [now] 当前毫秒。
- * @returns {{ main: string, sub?: string, progress?: { completed: number, total: number, percent: number, label: string }, balance?: string } | null} 视图。
+ * @returns {{ status: { word: string, hint: string } }
+ *   | { task: { label?: string, value: string }, counts: Array<{ label: string, value: string }>, note?: string,
+ *       progress?: { completed: number, total: number, percent: number, fraction: string, label: string },
+ *       balance?: { value: string } | { reason: string } }} 视图。
  */
 export function islandHoverView(state, now = Date.now()) {
     const status = state.status;
-    if (status === "unpaired") return { main: "未配对", sub: "在设置 → 插件 → DSH 接入完成配对" };
-    if (status === "loading") return { main: "正在读取 DSH", sub: "" };
-    if (status === "identity-changed" || status === "unauthorized") return { main: "未授权", sub: "请重新配对" };
-    if (status === "logged-out") return { main: "账号未登录", sub: "在 DSH 登录 DeepSeek 账号" };
-    if (status === "unreachable") return { main: "未连接", sub: "请确认 DSH 桌面桥正在运行" };
-    if (status === "error") return { main: "读取失败", sub: "请稍后重试" };
+    if (status === "unpaired") return { status: { word: "未配对", hint: "在设置 → 插件 → DSH 接入完成配对" } };
+    if (status === "loading") return { status: { word: "正在读取 DSH", hint: "" } };
+    if (status === "identity-changed" || status === "unauthorized") return { status: { word: "未授权", hint: "请重新配对" } };
+    if (status === "logged-out") return { status: { word: "账号未登录", hint: "在 DSH 登录 DeepSeek 账号" } };
+    if (status === "unreachable") return { status: { word: "未连接", hint: "请确认 DSH 桌面桥正在运行" } };
+    if (status === "error") return { status: { word: "读取失败", hint: "请稍后重试" } };
     const snapshot = state.snapshot;
-    if (status !== "ready" || !snapshot) return { main: "正在读取 DSH", sub: "" };
+    if (status !== "ready" || !snapshot) return { status: { word: "正在读取 DSH", hint: "" } };
     if (!isSnapshotFresh(snapshot, now)) {
-        return { main: "数据陈旧", sub: updateTimeText(snapshot, "上次更新", now) };
+        return { status: { word: "数据陈旧", hint: updateTimeText(snapshot, "上次更新", now) } };
     }
     const stats = snapshot.taskStats ?? {};
     const fetchedAt = Date.parse(snapshot.fetchedAt);
@@ -581,18 +636,22 @@ export function islandHoverView(state, now = Date.now()) {
         && statsRun <= union
         && union <= statsRun + unread;
     const noTasks = coherent && statsRun === 0 && unread === 0 && completed === 0 && union === 0;
-    const main = noTasks
-        ? "暂无待关注任务"
+    // 任务区：有权威运行数就写运行任务，否则退回可见会话数；都不可验证时只写原因，不写 0。
+    const task = noTasks
+        ? { value: "暂无待关注任务" }
         : statsRun !== undefined
-            ? `运行任务 ${statsRun} 项`
+            ? { label: "运行任务", value: String(statsRun) }
             : visibleRunning !== undefined
-                ? visibleRunning === 0 ? "近期没有运行会话" : `可见会话中运行 ${visibleRunning} 项`
-                : "任务状态未知";
-    const sub = !statsUsable
-        ? "未读状态不可用"
-        : coherent
-            ? `未读 ${unread} 项 · 完成未读 ${completed} 项`
-            : "统计不完整";
+                ? visibleRunning === 0
+                    ? { value: "近期没有运行会话" }
+                    : { label: "可见会话中运行", value: String(visibleRunning) }
+                : { value: "任务状态未知" };
+    // 计数与进度共用同一份权威计数：不完整时两项都写「—」，不拿局部数字拼比例。
+    const counts = [
+        { label: "未读", value: coherent ? String(unread) : "—" },
+        { label: "完成未读", value: coherent ? String(completed) : "—" },
+    ];
+    const note = !statsUsable ? "未读状态不可用" : coherent ? "" : "统计不完整";
     let progress;
     if (coherent && completed > 0 && union > 0) {
         const percent = Math.max(0, Math.min(100, Math.round(completed / union * 100)));
@@ -600,21 +659,75 @@ export function islandHoverView(state, now = Date.now()) {
             completed,
             total: union,
             percent,
-            label: `待关注任务中完成未读比例，${completed} 项，共 ${union} 项，${percent}%`,
+            fraction: `${completed}/${union}`,
+            label: `待关注任务中完成未读比例，完成 ${completed} 项，共 ${union} 项，${percent}%`,
         };
     }
-    const wallets = validWallets(snapshot.balance);
-    const balance = wallets.length === 1
-        ? `余额 ${wallets[0].currency} ${formatAmountFixed(wallets[0].amount)}`
-        : wallets.length > 1
-            ? `多币种余额（${wallets.length}）`
-            : snapshot.balance?.status === "logged-out"
-                ? "账号未登录"
-                : snapshot.balance?.status === "unauthorized" || snapshot.balance?.status === "error"
-                    ? "余额不可用"
-                    : "无可用余额";
-    return { main, sub, progress, balance };
+    const balance = hoverBalance(snapshot.balance);
+    return {
+        task,
+        counts,
+        ...(note ? { note } : {}),
+        ...(progress ? { progress } : {}),
+        ...(balance ? { balance } : {}),
+    };
 }
+
+/** 按类名在插件渲染树里找节点：真实 DOM 走 querySelector，测试桩按 children 递归。 */
+const findHoverNode = (root, className) => {
+    if (!root) return undefined;
+    if (typeof root.querySelector === "function") return root.querySelector(`.${className}`) ?? undefined;
+    for (const child of root.children ?? []) {
+        if (String(child.className ?? "").split(/\s+/).includes(className)) return child;
+        const nested = findHoverNode(child, className);
+        if (nested) return nested;
+    }
+    return undefined;
+};
+
+/**
+ * 余额行收尾测量：金额（或原因）换行后仍宽于余额行可用宽度时整行撤下——标签与分隔线一并撤掉，
+ * 不把金额截成省略号；放得下就原样保留。宿主未完成布局（行宽为 0）时不改 DOM，等下次重绘再量。
+ * @param {HTMLElement} root hover 根节点，须已连到文档。
+ * @returns {boolean} 是否撤下余额行。
+ */
+export function fitHoverBalance(root) {
+    const row = findHoverNode(root, "plugin-dsh-status-hover__balance");
+    if (!row) return false;
+    // 隐藏态量不到宽度：每次先恢复再量，宽度回来后行能自己回来。
+    if (row.style.display === "none") {
+        row.hidden = false;
+        row.style.display = "";
+    }
+    const value = findHoverNode(row, "plugin-dsh-status-hover__balance-value") ?? findHoverNode(row, "plugin-dsh-status-hover__balance-reason");
+    if (!value) return false;
+    const amount = Number(value.scrollWidth ?? 0);
+    const available = Number(row.clientWidth ?? 0);
+    if (!(available > 0) || !(amount > available + 0.5)) return false; // 半个 DIP 容差：亚像素不误判成溢出。
+    row.hidden = true;
+    row.style.display = "none";
+    return true;
+}
+
+/**
+ * 监听容器宽度：挂载后宽度从 0 变有宽、232→256 等变化都要重测余额行，否则撤行后无法恢复。
+ * @param {HTMLElement} container 宿主容器。
+ * @param {() => void} onWidthChange 宽度变化回调。
+ * @returns {() => void} 停止监听。
+ */
+export function observeHoverWidth(container, onWidthChange) {
+    if (typeof ResizeObserver !== "function" || typeof container?.getBoundingClientRect !== "function") return () => {};
+    let width = -1; // 首次回调（含挂载时的初始尺寸）也算变化，先量一次。
+    const observer = new ResizeObserver(() => {
+        const next = Math.round(container.getBoundingClientRect().width);
+        if (next === width) return; // 高度变化或亚像素抖动不重测。
+        width = next;
+        onWidthChange();
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+}
+
 
 /**
  * hover 卡内容；与 renderTile 分离，只读状态并订阅现有轮询更新，不发请求。
@@ -625,36 +738,78 @@ export function islandHoverView(state, now = Date.now()) {
 export function renderIslandHover(container, context) {
     ensureStyle();
     const state = stateFor(context.instanceId);
+    let node;
     const paintHover = () => {
         const view = islandHoverView(state);
         container.replaceChildren();
-        if (!view) return;
-        const root = element("div", "plugin-dsh-status-hover");
-        root.setAttribute("role", "group");
-        root.setAttribute("aria-label", "DSH 任务概览");
-        root.title = view.main;
-        root.append(element("div", "plugin-dsh-status-hover__main", view.main));
-        if (view.sub) root.append(element("div", "plugin-dsh-status-hover__sub", view.sub));
-        if (view.progress) {
-            const progress = element("div", "plugin-dsh-status-hover__progress");
-            progress.setAttribute("role", "progressbar");
-            progress.setAttribute("aria-label", view.progress.label);
-            progress.setAttribute("aria-valuemin", "0");
-            progress.setAttribute("aria-valuemax", "100");
-            progress.setAttribute("aria-valuenow", String(view.progress.percent));
-            progress.setAttribute("aria-valuetext", view.progress.label);
-            const track = element("div", "plugin-dsh-status-hover__track");
-            const fill = element("div", "plugin-dsh-status-hover__fill");
-            fill.style.width = `${view.progress.percent}%`;
-            track.append(fill);
-            progress.append(track, element("span", "plugin-dsh-status-hover__progress-value", `${view.progress.percent}%`));
-            root.append(progress);
-        }
-        if (view.balance) root.append(element("div", "plugin-dsh-status-hover__balance", view.balance));
-        container.append(root);
+        node = islandHoverNode(view);
+        container.append(node);
+        fitHoverBalance(node); // 连到文档后再量：金额换行仍放不下时整行撤下，不显示不完整金额。
     };
     paintHover();
-    return subscribeState(state, paintHover);
+    const unsubscribe = subscribeState(state, paintHover);
+    const stopWidth = observeHoverWidth(container, () => {
+        if (node) fitHoverBalance(node); // 容器从 0 有宽或 232→256：重测，撤掉的行能恢复。
+    });
+    return () => {
+        unsubscribe();
+        stopWidth();
+    };
+}
+
+/**
+ * hover 视图转 DOM：只读、无点击与聚焦目标，读屏顺序为任务区 → 计数 → 进度 → 余额。
+ * @param {any} view islandHoverView 的结果。
+ * @returns {HTMLElement} 根节点。
+ */
+export function islandHoverNode(view) {
+    const root = element("div", "plugin-dsh-status-hover");
+    root.setAttribute("role", "group");
+    root.setAttribute("aria-label", "DSH 任务概览");
+    if (view.status) {
+        root.title = view.status.hint ? `${view.status.word} ${view.status.hint}` : view.status.word;
+        root.append(element("div", "plugin-dsh-status-hover__state", view.status.word));
+        if (view.status.hint) root.append(element("div", "plugin-dsh-status-hover__hint", view.status.hint));
+        return root;
+    }
+    const task = element("div", "plugin-dsh-status-hover__task");
+    const main = element("div", "plugin-dsh-status-hover__task-main");
+    if (view.task.label) main.append(element("div", "plugin-dsh-status-hover__task-label", view.task.label));
+    // 纯数字主值按 26px/600 渲染，短语（暂无待关注任务、任务状态未知等）留在正文档位。
+    const numeric = /^\d+$/.test(view.task.value);
+    main.append(element("div", `plugin-dsh-status-hover__task-value${numeric ? " plugin-dsh-status-hover__task-value--numeric" : ""}`, view.task.value));
+    task.append(main);
+    const counts = element("div", "plugin-dsh-status-hover__counts");
+    for (const count of view.counts) counts.append(element("div", "plugin-dsh-status-hover__count", `${count.label} ${count.value}`));
+    if (view.note) counts.append(element("div", "plugin-dsh-status-hover__note", view.note));
+    task.append(counts);
+    root.append(task);
+    root.title = view.task.label ? `${view.task.label} ${view.task.value}` : view.task.value;
+    if (view.progress) {
+        // 可见主值是分数；百分比只进读屏数值属性，两者同源，不各算一遍。
+        const progress = element("div", "plugin-dsh-status-hover__progress");
+        progress.setAttribute("role", "progressbar");
+        progress.setAttribute("aria-label", "完成未读进度"); // 名称只说明是什么，具体数值交给 valuetext，避免同一长句读两遍。
+        progress.setAttribute("aria-valuemin", "0");
+        progress.setAttribute("aria-valuemax", "100");
+        progress.setAttribute("aria-valuenow", String(view.progress.percent));
+        progress.setAttribute("aria-valuetext", view.progress.label);
+        const track = element("div", "plugin-dsh-status-hover__track");
+        const fill = element("div", "plugin-dsh-status-hover__fill");
+        fill.style.width = `${view.progress.percent}%`;
+        track.append(fill);
+        progress.append(track, element("span", "plugin-dsh-status-hover__fraction", view.progress.fraction));
+        root.append(progress);
+    }
+    if (view.balance) {
+        const balance = element("div", "plugin-dsh-status-hover__balance");
+        balance.append(element("span", "plugin-dsh-status-hover__balance-label", "余额"));
+        balance.append(view.balance.value !== undefined
+            ? element("span", "plugin-dsh-status-hover__balance-value", view.balance.value)
+            : element("span", "plugin-dsh-status-hover__balance-reason", view.balance.reason));
+        root.append(balance);
+    }
+    return root;
 }
 
 /**

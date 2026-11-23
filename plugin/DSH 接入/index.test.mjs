@@ -16,8 +16,13 @@ import {
     formatAmountFixed,
     ISLAND_OPEN_URI,
     islandAnchorView,
+    hoverBalance,
+    fitHoverBalance,
+    observeHoverWidth,
+    islandHoverNode,
     islandHoverView,
     islandSummaryArguments,
+    currencySymbol,
     isSnapshotFresh,
     isSnapshotTimedFresh,
     mountNeedsBaseline,
@@ -38,6 +43,7 @@ import {
     statusLabel,
     subscribeState,
     textScrollPlan,
+    walletSymbolAmount,
     updateTimeText,
     walletLines,
     walletText,
@@ -370,146 +376,178 @@ test("锚点六档优先级：错误、陈旧、待决、余额、余额不可�
     assert.equal(islandAnchorView({ status: "ready", snapshot: base }, at, { paused: true }).visible, false);
 });
 
-test("hover 只读视图：运行/未读/进度/余额与缺失降级", () => {
+/** 最小 DOM 桩：只实现 islandHoverNode 用到的节点接口，用来断言真实生成的节点结构与属性。 */
+const 创建元素桩 = () => ({
+    tagName: "",
+    className: "",
+    title: "",
+    textContent: "",
+    attributes: {},
+    children: [],
+    style: {},
+    setAttribute(name, value) {
+        this.attributes[name] = String(value);
+    },
+    append(...nodes) {
+        for (const node of nodes) this.children.push(node);
+    },
+    appendChild(node) {
+        this.children.push(node);
+        return node;
+    },
+});
+
+/** 安装临时 document 桩渲染一次，结束后恢复全局，避免影响其他用例。 */
+const 渲染节点 = view => {
+    const 原document = globalThis.document;
+    globalThis.document = {
+        createElement(tag) {
+            const node = 创建元素桩();
+            node.tagName = tag.toUpperCase();
+            return node;
+        },
+    };
+    try {
+        return islandHoverNode(view);
+    } finally {
+        if (原document === undefined) delete globalThis.document;
+        else globalThis.document = 原document;
+    }
+};
+
+/** 深度优先遍历生成的节点树。 */
+const 遍历节点 = (node, visit) => {
+    visit(node);
+    for (const child of node.children) 遍历节点(child, visit);
+};
+
+/** 按类名找第一个节点（修饰类按空格拆分匹配）。 */
+const 含类 = (node, className) => {
+    let found;
+    遍历节点(node, 项 => {
+        if (String(项.className).split(/\s+/).includes(className)) found = 项;
+    });
+    return found;
+};
+
+/** 按深度优先顺序收集命中的类名，用来断言读屏顺序。 */
+const 类名顺序 = (node, 关注) => {
+    const 顺序 = [];
+    遍历节点(node, 项 => {
+        for (const name of String(项.className).split(/\s+/)) if (关注.includes(name)) 顺序.push(name);
+    });
+    return 顺序;
+};
+
+test("hover 只读视图：任务区、分数进度、余额与缺失降级", () => {
     const base = snapshot();
     const at = Date.parse(base.fetchedAt) + 1000;
     const running = { ...base, sessions: [{ ...base.sessions[0], status: "running" }] };
     const taskStats = overrides => ({
-        runCount: 1,
-        unreadCount: 3,
-        completedUnreadCount: 1,
-        unionCount: 4,
+        runCount: 3,
+        unreadCount: 12,
+        completedUnreadCount: 4,
+        unionCount: 14,
         completeness: "complete",
         sampledAt: base.fetchedAt,
         ...overrides,
     });
-    const noUnread = islandHoverView({ status: "ready", snapshot: running }, at);
-    assert.equal(noUnread.main, "可见会话中运行 1 项");
-    assert.equal(noUnread.sub, "未读状态不可用");
-    assert.equal(noUnread.progress, undefined);
-    assert.equal(noUnread.balance, "余额 CNY 12.34");
-    assert.equal(islandHoverView({ status: "ready", snapshot: { ...running, pending: [] } }, at).balance, "余额 CNY 12.34");
+    const view = (patch = {}) => islandHoverView({ status: "ready", snapshot: { ...running, ...patch } }, at);
 
-    const full = islandHoverView({
-        status: "ready",
-        snapshot: { ...running, taskStats: taskStats({ runCount: 2 }) },
-    }, at);
-    assert.equal(full.main, "运行任务 2 项");
-    assert.equal(full.sub, "未读 3 项 · 完成未读 1 项");
+    // 正常态：运行数是主值，未读/完成未读进右列，进度只给分数，余额固定两位。
+    const full = view({ taskStats: taskStats() });
+    assert.deepEqual(full.task, { label: "运行任务", value: "3" });
+    assert.deepEqual(full.counts, [{ label: "未读", value: "12" }, { label: "完成未读", value: "4" }]);
+    assert.equal(full.note, undefined);
     assert.deepEqual(full.progress, {
-        completed: 1,
-        total: 4,
-        percent: 25,
-        label: "待关注任务中完成未读比例，1 项，共 4 项，25%",
+        completed: 4,
+        total: 14,
+        percent: 29,
+        fraction: "4/14",
+        label: "待关注任务中完成未读比例，完成 4 项，共 14 项，29%",
     });
+    assert.deepEqual(full.balance, { value: "￥12.34" });
+    assert.equal(full.status, undefined);
 
-    const missingCompleted = islandHoverView({
-        status: "ready",
-        snapshot: { ...running, taskStats: taskStats({ completedUnreadCount: undefined }) },
-    }, at);
+    // 无 taskStats：运行数退回可见会话数，计数未知写「—」，说明写未读状态不可用。
+    const noStats = view();
+    assert.deepEqual(noStats.task, { label: "可见会话中运行", value: "1" });
+    assert.deepEqual(noStats.counts, [{ label: "未读", value: "—" }, { label: "完成未读", value: "—" }]);
+    assert.equal(noStats.note, "未读状态不可用");
+    assert.equal(noStats.progress, undefined);
+    assert.deepEqual(noStats.balance, { value: "￥12.34" });
+
+    // 统计不完整：保留可验证运行数，计数撤成「—」，不画比例，余额照常。
+    const missingCompleted = view({ taskStats: taskStats({ completedUnreadCount: undefined }) });
+    assert.deepEqual(missingCompleted.task, { label: "运行任务", value: "3" });
+    assert.deepEqual(missingCompleted.counts, [{ label: "未读", value: "—" }, { label: "完成未读", value: "—" }]);
+    assert.equal(missingCompleted.note, "统计不完整");
     assert.equal(missingCompleted.progress, undefined);
-    assert.equal(missingCompleted.sub, "统计不完整");
-    const missingUnread = islandHoverView({
-        status: "ready",
-        snapshot: { ...running, taskStats: taskStats({ unreadCount: undefined, completedUnreadCount: 1 }) },
-    }, at);
-    assert.equal(missingUnread.progress, undefined);
-    assert.equal(missingUnread.sub, "统计不完整");
-    const noUnion = islandHoverView({
-        status: "ready",
-        snapshot: { ...running, taskStats: taskStats({ unionCount: undefined }) },
-    }, at);
-    assert.equal(noUnion.main, "运行任务 1 项");
-    assert.equal(noUnion.sub, "统计不完整");
-    assert.equal(noUnion.progress, undefined);
-
-    const missingUnionWithBadCompleted = islandHoverView({
-        status: "ready",
-        snapshot: { ...running, taskStats: taskStats({ runCount: 0, unreadCount: 0, completedUnreadCount: 1, unionCount: undefined }) },
-    }, at);
-    assert.notEqual(missingUnionWithBadCompleted.main, "暂无待关注任务");
-    assert.equal(missingUnionWithBadCompleted.sub, "统计不完整");
-    assert.equal(missingUnionWithBadCompleted.progress, undefined);
-
-    const missingRunCount = islandHoverView({
-        status: "ready",
-        snapshot: {
-            ...running,
-            sessions: [{ ...running.sessions[0], status: "running" }, { ...running.sessions[0], id: "s2", status: "running" }],
-            taskStats: taskStats({ runCount: undefined, unreadCount: 1, completedUnreadCount: 1, unionCount: 2 }),
-        },
-    }, at);
-    assert.equal(missingRunCount.main, "可见会话中运行 2 项");
-    assert.equal(missingRunCount.sub, "统计不完整");
-    assert.equal(missingRunCount.progress, undefined);
-
-    const completedZero = islandHoverView({
-        status: "ready",
-        snapshot: { ...running, taskStats: taskStats({ runCount: 3, unreadCount: 2, completedUnreadCount: 0, unionCount: 5 }) },
-    }, at);
-    assert.equal(completedZero.main, "运行任务 3 项");
+    assert.deepEqual(missingCompleted.balance, { value: "￥12.34" });
+    assert.equal(view({ taskStats: taskStats({ unreadCount: 1, completedUnreadCount: 2 }) }).note, "统计不完整");
+    assert.equal(view({ taskStats: taskStats({ unionCount: 2, runCount: 3 }) }).note, "统计不完整");
+    // 缺 runCount 时只用可见会话数，不当作任务数。
+    const missingRun = view({ taskStats: taskStats({ runCount: undefined, unreadCount: 1, completedUnreadCount: 1, unionCount: 2 }) });
+    assert.deepEqual(missingRun.task, { label: "可见会话中运行", value: "1" });
+    assert.equal(missingRun.note, "统计不完整");
+    // completeness 非 complete 或采样超出两轮：整份统计不可用。
+    assert.equal(view({ taskStats: taskStats({ completeness: "partial" }) }).note, "未读状态不可用");
+    assert.equal(view({ taskStats: taskStats({ completeness: undefined }) }).note, "未读状态不可用");
+    assert.equal(view({ taskStats: taskStats({ sampledAt: new Date(Date.parse(base.fetchedAt) - 90000).toISOString() }) }).note, "未读状态不可用");
+    // 完成未读为 0 不画比例；四项权威全 0 才是无待关注任务。
+    const completedZero = view({ taskStats: taskStats({ completedUnreadCount: 0 }) });
     assert.equal(completedZero.progress, undefined);
-
-    const partial = islandHoverView({
-        status: "ready",
-        snapshot: { ...running, taskStats: taskStats({ completeness: "partial" }) },
-    }, at);
-    assert.equal(partial.main, "可见会话中运行 1 项");
-    assert.equal(partial.sub, "未读状态不可用");
-    assert.equal(partial.progress, undefined);
-
-    const missingCompleteness = islandHoverView({
-        status: "ready",
-        snapshot: { ...running, taskStats: taskStats({ completeness: undefined }) },
-    }, at);
-    assert.equal(missingCompleteness.progress, undefined);
-    const staleStats = islandHoverView({
-        status: "ready",
-        snapshot: { ...running, taskStats: taskStats({ sampledAt: new Date(Date.parse(base.fetchedAt) - 90000).toISOString() }) },
-    }, at);
-    assert.equal(staleStats.progress, undefined);
-    const badCompleted = islandHoverView({
-        status: "ready",
-        snapshot: { ...running, taskStats: taskStats({ unreadCount: 1, completedUnreadCount: 2 }) },
-    }, at);
-    assert.equal(badCompleted.main, "运行任务 1 项");
-    assert.equal(badCompleted.sub, "统计不完整");
-    assert.equal(badCompleted.progress, undefined);
-    const badUnion = islandHoverView({
-        status: "ready",
-        snapshot: { ...running, taskStats: taskStats({ runCount: 3, unionCount: 2 }) },
-    }, at);
-    assert.equal(badUnion.main, "运行任务 3 项");
-    assert.equal(badUnion.sub, "统计不完整");
-    assert.equal(badUnion.progress, undefined);
-
+    assert.deepEqual(completedZero.counts, [{ label: "未读", value: "12" }, { label: "完成未读", value: "0" }]);
     const noTasks = islandHoverView({
         status: "ready",
-        snapshot: {
-            ...running,
-            sessions: [],
-            pending: [],
-            taskStats: taskStats({ runCount: 0, unreadCount: 0, completedUnreadCount: 0, unionCount: 0 }),
-        },
+        snapshot: { ...running, sessions: [], pending: [], taskStats: taskStats({ runCount: 0, unreadCount: 0, completedUnreadCount: 0, unionCount: 0 }) },
     }, at);
-    assert.equal(noTasks.main, "暂无待关注任务");
-    assert.equal(noTasks.sub, "未读 0 项 · 完成未读 0 项");
+    assert.deepEqual(noTasks.task, { value: "暂无待关注任务" });
+    assert.deepEqual(noTasks.counts, [{ label: "未读", value: "0" }, { label: "完成未读", value: "0" }]);
     assert.equal(noTasks.progress, undefined);
-    assert.equal(islandHoverView({
-        status: "ready",
-        snapshot: { ...running, pending: [], balance: { status: "ready", wallets: [] } },
-    }, at).balance, "无可用余额");
-    assert.equal(islandHoverView({ status: "unpaired", snapshot: null }, at).main, "未配对");
-    assert.equal(islandHoverView({ status: "unreachable", snapshot: null }, at).main, "未连接");
-    assert.equal(islandHoverView({ status: "ready", snapshot: { ...running, sessions: undefined, hasSessions: false, pending: [] } }, at).main, "任务状态未知");
-    assert.equal(islandHoverView({
-        status: "ready",
-        snapshot: { ...running, fetchedAt: "2026-11-20T00:00:00.000Z" },
-    }, at).main, "数据陈旧");
-    assert.equal(islandHoverView({
-        status: "ready",
-        snapshot: { ...running, pending: [], balance: { status: "ready", wallets: [{ currency: "CNY", amount: "12.3" }] } },
-    }, at).balance, "余额 CNY 12.30");
+    // 会话范围未知或已知没有运行：只写原因，不写 0。
+    assert.deepEqual(view({ sessions: undefined, hasSessions: false }).task, { value: "任务状态未知" });
+    assert.deepEqual(islandHoverView({ status: "ready", snapshot: { ...running, sessions: [{ ...base.sessions[0], status: "idle" }] } }, at).task, { value: "近期没有运行会话" });
+
+    // 数据陈旧与整卡状态：只写状态与下一步，不沿用历史读数。
+    const stale = view({ fetchedAt: "2026-11-20T00:00:00.000Z" });
+    assert.deepEqual({ word: stale.status.word }, { word: "数据陈旧" });
+    assert.match(stale.status.hint, /^(上次更新 |更新时间未知)/);
+    assert.equal(stale.task, undefined);
+    assert.equal(stale.counts, undefined);
+    assert.equal(stale.balance, undefined);
+    assert.equal(view({ stale: true }).status.word, "数据陈旧");
+    const 状态表 = [
+        [{ status: "unpaired", snapshot: null }, "未配对", "在设置 → 插件 → DSH 接入完成配对"],
+        [{ status: "unreachable", snapshot: null }, "未连接", "请确认 DSH 桌面桥正在运行"],
+        [{ status: "unauthorized", snapshot: base }, "未授权", "请重新配对"],
+        [{ status: "identity-changed", snapshot: base }, "未授权", "请重新配对"],
+        [{ status: "logged-out", snapshot: null }, "账号未登录", "在 DSH 登录 DeepSeek 账号"],
+        [{ status: "error", snapshot: null }, "读取失败", "请稍后重试"],
+        [{ status: "loading", snapshot: null }, "正在读取 DSH", ""],
+        [{ status: "ready", snapshot: null }, "正在读取 DSH", ""],
+    ];
+    for (const [state, word, hint] of 状态表) assert.deepEqual(islandHoverView(state, at), { status: { word, hint } });
+
+    // 余额：多币种只取快照顺序第一个，不求和；无符号币种隐藏整行且不改选下一个。
+    assert.deepEqual(view({ balance: { status: "ready", wallets: [{ currency: "CNY", amount: "12.3456" }, { currency: "USD", amount: "3.00" }] } }).balance, { value: "￥12.35" });
+    assert.deepEqual(view({ balance: { status: "ready", wallets: [{ currency: "USD", amount: "3" }] } }).balance, { value: "$3.00" });
+    assert.equal(view({ balance: { status: "ready", wallets: [{ currency: "XYZ", amount: "9.9" }, { currency: "CNY", amount: "1" }] } }).balance, undefined);
+    // 首项不可用时不看第二项：不把 USD 4 显示成 $4.00，也不回退到下一个钱包。
+    assert.equal(view({ balance: { status: "ready", wallets: [{ currency: "XYZ", amount: "9.9" }, { currency: "USD", amount: "4" }] } }).balance, undefined);
+    assert.equal(view({ balance: { status: "ready", wallets: [{ currency: "CNY", amount: "" }, { currency: "USD", amount: "4" }] } }).balance, undefined);
+    assert.equal(view({ balance: { status: "ready", wallets: [{ currency: "CNY", amount: "abc" }, { currency: "USD", amount: "4" }] } }).balance, undefined);
+    assert.deepEqual(view({ balance: { status: "ready", wallets: "nope" } }).balance, { reason: "无可用余额" });
+    // 已知原因分开写：未登录 / 未授权 / 读取失败 / 无可用余额。
+    assert.deepEqual(view({ balance: { status: "logged-out", wallets: [] } }).balance, { reason: "账号未登录" });
+    assert.deepEqual(view({ balance: { status: "unauthorized", wallets: [] } }).balance, { reason: "平台未授权余额读取" });
+    assert.deepEqual(view({ balance: { status: "error", wallets: [] } }).balance, { reason: "余额读取失败" });
+    assert.deepEqual(view({ balance: { status: "mystery", wallets: [] } }).balance, { reason: "余额读取失败" });
+    assert.deepEqual(view({ balance: { status: "ready", wallets: [] } }).balance, { reason: "无可用余额" });
+    // 余额不可用时任务区与可证进度照常。
+    const 余额不可用 = view({ balance: { status: "unauthorized", wallets: [] }, taskStats: taskStats() });
+    assert.deepEqual(余额不可用.task, { label: "运行任务", value: "3" });
+    assert.equal(余额不可用.progress.fraction, "4/14");
 
     let notified = 0;
     const unsubscribe = subscribeState(running, () => { notified += 1; });
@@ -518,32 +556,126 @@ test("hover 只读视图：运行/未读/进度/余额与缺失降级", () => {
     unsubscribe();
     notifyState(running);
     assert.equal(notified, 1);
+});
 
-    assert.equal(islandHoverView({
+test("hover 余额：币种符号映射与首钱包规则", () => {
+    assert.equal(currencySymbol("cny"), "￥");
+    assert.equal(currencySymbol(" USD "), "$");
+    assert.equal(currencySymbol("XYZ"), "");
+    assert.equal(currencySymbol(undefined), "");
+    assert.equal(walletSymbolAmount({ currency: "CNY", amount: "12.3" }), "￥12.30");
+    assert.equal(walletSymbolAmount({ currency: "CNY", amount: "-12.345" }), "-￥12.35");
+    assert.equal(walletSymbolAmount({ currency: "XYZ", amount: "12.3" }), "");
+    assert.equal(walletSymbolAmount({ currency: "CNY", amount: "待定" }), "");
+    assert.deepEqual(hoverBalance({ status: "ready", wallets: [{ currency: "USD", amount: "3" }, { currency: "CNY", amount: "1" }] }), { value: "$3.00" });
+    assert.equal(hoverBalance({ status: "ready", wallets: [{ currency: "XYZ", amount: "1" }, { currency: "CNY", amount: "2" }] }), undefined);
+    assert.deepEqual(hoverBalance({ status: "ready", wallets: [] }), { reason: "无可用余额" });
+    assert.deepEqual(hoverBalance({ status: "logged-out", wallets: [] }), { reason: "账号未登录" });
+    // 已知原因分开写，未知状态按读取失败；不臆造新原因。
+    assert.deepEqual(hoverBalance({ status: "unauthorized", wallets: [] }), { reason: "平台未授权余额读取" });
+    assert.deepEqual(hoverBalance({ status: "error", wallets: [] }), { reason: "余额读取失败" });
+    assert.deepEqual(hoverBalance(undefined), { reason: "余额读取失败" });
+    // 首项失效不跳项：第二项 USD 4 不得被显示成 $4.00。
+    assert.equal(hoverBalance({ status: "ready", wallets: [{ currency: "XYZ", amount: "9.9" }, { currency: "USD", amount: "4" }] }), undefined);
+    assert.equal(hoverBalance({ status: "ready", wallets: [{ currency: "USD", amount: "" }, { currency: "CNY", amount: "4" }] }), undefined);
+});
+
+test("hover DOM：任务区/计数/进度/余额的真实结构与读屏数值", () => {
+    const base = snapshot();
+    const at = Date.parse(base.fetchedAt) + 1000;
+    const view = islandHoverView({
         status: "ready",
-        snapshot: { ...running, pending: [], balance: { status: "ready", wallets: [{ currency: "CNY", amount: "12.3456" }, { currency: "USD", amount: "3.00" }] } },
-    }, at).balance, "多币种余额（2）");
-    assert.equal(islandHoverView({ status: "ready", snapshot: { ...base, stale: true } }, at).main, "数据陈旧");
-    assert.equal(islandHoverView({ status: "unauthorized", snapshot: base }, at).main, "未授权");
-    assert.equal(islandHoverView({ status: "ready", snapshot: { ...running, balance: { status: "ready", wallets: [] } } }, at).balance, "无可用余额");
+        snapshot: {
+            ...base,
+            sessions: [{ ...base.sessions[0], status: "running" }],
+            taskStats: { runCount: 3, unreadCount: 12, completedUnreadCount: 4, unionCount: 14, completeness: "complete", sampledAt: base.fetchedAt },
+            balance: { status: "ready", wallets: [{ currency: "CNY", amount: "12.3" }] },
+        },
+    }, at);
+    const 根 = 渲染节点(view);
+    assert.equal(根.attributes.role, "group");
+    assert.equal(根.attributes["aria-label"], "DSH 任务概览");
+    assert.equal(含类(根, "plugin-dsh-status-hover__task-label").textContent, "运行任务");
+    const 主值 = 含类(根, "plugin-dsh-status-hover__task-value");
+    assert.equal(主值.textContent, "3");
+    assert.match(主值.className, /__task-value--numeric/);
+    assert.deepEqual(含类(根, "plugin-dsh-status-hover__counts").children.map(节点 => 节点.textContent), ["未读 12", "完成未读 4"]);
+    const 进度 = 含类(根, "plugin-dsh-status-hover__progress");
+    assert.equal(进度.attributes.role, "progressbar");
+    assert.equal(进度.attributes["aria-valuemin"], "0");
+    assert.equal(进度.attributes["aria-valuemax"], "100");
+    assert.equal(进度.attributes["aria-valuenow"], "29");
+    assert.equal(进度.attributes["aria-label"], "完成未读进度");
+    assert.match(进度.attributes["aria-valuetext"], /完成 4 项，共 14 项，29%/);
+    assert.equal(含类(根, "plugin-dsh-status-hover__fraction").textContent, "4/14");
+    assert.equal(含类(根, "plugin-dsh-status-hover__fill").style.width, "29%");
+    assert.equal(含类(根, "plugin-dsh-status-hover__balance-label").textContent, "余额");
+    assert.equal(含类(根, "plugin-dsh-status-hover__balance-value").textContent, "￥12.30");
+    // 读屏顺序：任务区 → 计数 → 进度 → 余额。
+    assert.deepEqual(类名顺序(根, ["plugin-dsh-status-hover__task", "plugin-dsh-status-hover__counts", "plugin-dsh-status-hover__progress", "plugin-dsh-status-hover__balance"]), [
+        "plugin-dsh-status-hover__task",
+        "plugin-dsh-status-hover__counts",
+        "plugin-dsh-status-hover__progress",
+        "plugin-dsh-status-hover__balance",
+    ]);
 
+    // 只读：不得出现可点击/可聚焦节点，也不得出现 button/link/status 角色与内联事件。
+    const 全部 = [];
+    遍历节点(根, 节点 => 全部.push(节点));
+    for (const 节点 of 全部) {
+        assert.ok(!["BUTTON", "A", "INPUT", "SELECT", "TEXTAREA"].includes(节点.tagName), `不得出现可交互元素 ${节点.tagName}`);
+        assert.equal(节点.attributes.tabindex, undefined);
+        assert.equal(节点.attributes.href, undefined);
+        assert.equal(节点.onclick, undefined);
+        assert.ok(!["button", "link", "status"].includes(节点.attributes.role), `不得出现 role=${节点.attributes.role}`);
+    }
+
+    // 整卡状态只写状态词与下一步；余额行按需缺席。
+    const 陈旧 = 渲染节点({ status: { word: "数据陈旧", hint: "上次更新 14:32" } });
+    assert.equal(陈旧.children[0].textContent, "数据陈旧");
+    assert.equal(陈旧.children[1].textContent, "上次更新 14:32");
+    assert.equal(含类(陈旧, "plugin-dsh-status-hover__balance"), undefined);
+    const 无符号 = islandHoverView({
+        status: "ready",
+        snapshot: { ...base, balance: { status: "ready", wallets: [{ currency: "XYZ", amount: "9.9" }, { currency: "CNY", amount: "1" }] } },
+    }, at);
+    const 无符号根 = 渲染节点(无符号);
+    assert.equal(含类(无符号根, "plugin-dsh-status-hover__balance"), undefined);
+    assert.equal(含类(无符号根, "plugin-dsh-status-hover__task-value").className, "plugin-dsh-status-hover__task-value");
+    assert.equal(含类(无符号根, "plugin-dsh-status-hover__note").textContent, "未读状态不可用");
+});
+
+test("hover 只读实现约束：无定时器与点击目标，256 宽、4px 轨与既有令牌", () => {
     const source = readFileSync(new URL("./index.js", import.meta.url), "utf8");
-    const hover = source.slice(source.indexOf("export function renderIslandHover"), source.indexOf("/**\n * 状态文案"));
+    const hover = source.slice(source.indexOf("export function renderIslandHover"), source.indexOf("export function subscribeState"));
+    assert.ok(hover.length > 0);
     assert.doesNotMatch(hover, /setTimeout|setInterval|fetch\(|requestLoopback|registerLoopback/);
     assert.doesNotMatch(hover, /role="button"|tabIndex|<button/);
     assert.doesNotMatch(hover, /role="status"/);
     assert.doesNotMatch(hover, /\p{Extended_Pictographic}/u);
-    assert.match(hover, /return subscribeState\(state, paintHover\)/);
+    assert.match(hover, /const unsubscribe = subscribeState\(state, paintHover\)/);
+    assert.match(hover, /const stopWidth = observeHoverWidth\(container, \(\) => \{/); // 容器宽度变化后重测余额行。
+    assert.match(hover, /return \(\) => \{\s*unsubscribe\(\);\s*stopWidth\(\);\s*\}/); // 订阅与宽度观察一起清理。
     assert.match(hover, /aria-valuetext/);
     assert.match(source, /const collapsed = context\.collapsed === true;/);
     assert.doesNotMatch(source, /aria-busy/);
+
     const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
     const hoverCss = css.slice(css.indexOf(".plugin-dsh-status-hover"), css.indexOf(".plugin-dsh-status__collapsed-text"));
-    assert.match(hoverCss, /text-overflow:\s*ellipsis/);
     assert.match(hoverCss, /max-width:\s*256px/);
     assert.match(hoverCss, /height:\s*4px/);
+    assert.match(hoverCss, /font-size:\s*26px/);
+    assert.match(hoverCss, /font-weight:\s*600/);
     assert.match(hoverCss, /color:\s*var\(--fence-text\)/);
-    assert.doesNotMatch(hoverCss, /--fence-muted/);
+    assert.match(hoverCss, /color:\s*var\(--fence-muted\)/);
+    assert.match(hoverCss, /border-block-start:\s*1px solid var\(--fence-border\)/);
+    assert.match(hoverCss, /\.plugin-dsh-status-hover__balance \{[^}]*flex-wrap:\s*wrap/); // 金额放不下先换到余额区下一行。
+    const 金额规则 = hoverCss.slice(hoverCss.indexOf(".plugin-dsh-status-hover__balance-value,"), hoverCss.indexOf(".plugin-dsh-status-hover__balance-value {"));
+    assert.doesNotMatch(金额规则, /text-overflow|overflow:\s*hidden|white-space:\s*nowrap/); // 不把金额截成省略号，溢出交给 fitHoverBalance 撤行。
+    assert.doesNotMatch(hoverCss, /#(?:[0-9a-fA-F]{3,8})\b/); // 不写死颜色
+    assert.doesNotMatch(hoverCss, /rgba?\(/);
+    assert.doesNotMatch(hoverCss, /overflow(?:-[xy])?:\s*(?:auto|scroll)/); // 卡内不滚动
+    assert.doesNotMatch(hoverCss, /--fence-(?!text|muted|border)[a-z-]+/); // 只消费既有三枚令牌
 });
 
 test("同一端点+路径共享在途请求，挂载切换不重复发", async () => {
@@ -847,4 +979,126 @@ test("打开地址与上下文约束", () => {
     assert.match(manifest, /icon = icon\.svg/);
     const icon = readFileSync(new URL("./icon.svg", import.meta.url), "utf8");
     assert.match(icon, /viewBox="0 0 24 24"/);
+});
+
+test("hover 余额行：232 宽长金额换行后仍溢出则整行撤下，不截断", () => {
+    const 视图 = { task: { label: "运行任务", value: "3" }, counts: [{ label: "未读", value: "12" }, { label: "完成未读", value: "4" }], balance: { value: "￥1234567890.12" } };
+    const 根 = 渲染节点(视图);
+    const 行 = 含类(根, "plugin-dsh-status-hover__balance");
+    const 金额 = 含类(行, "plugin-dsh-status-hover__balance-value");
+    // 宿主还没完成布局（可用宽度为 0）时不改 DOM，等下次重绘再量。
+    assert.equal(fitHoverBalance(根), false);
+    assert.equal(行.style.display, undefined);
+    // 232 DIP 下换到余额区独立一行仍放不下：整行撤下，标签与分隔线一起撤掉。
+    行.clientWidth = 232;
+    金额.scrollWidth = 240;
+    assert.equal(fitHoverBalance(根), true);
+    assert.equal(行.style.display, "none");
+    assert.equal(行.hidden, true);
+    // 放得下（含半 DIP 容差）保持原样。
+    const 放得下根 = 渲染节点(视图);
+    const 放得下行 = 含类(放得下根, "plugin-dsh-status-hover__balance");
+    放得下行.clientWidth = 232;
+    含类(放得下行, "plugin-dsh-status-hover__balance-value").scrollWidth = 96;
+    assert.equal(fitHoverBalance(放得下根), false);
+    assert.equal(放得下行.style.display, undefined);
+    // 原因行同样按可用宽度判断。
+    const 原因根 = 渲染节点({ ...视图, balance: { reason: "平台未授权余额读取" } });
+    const 原因行 = 含类(原因根, "plugin-dsh-status-hover__balance");
+    原因行.clientWidth = 96;
+    含类(原因行, "plugin-dsh-status-hover__balance-reason").scrollWidth = 120;
+    assert.equal(fitHoverBalance(原因根), true);
+    // 首钱包不可用（没有余额行）时无副作用。
+    assert.equal(fitHoverBalance(渲染节点({ ...视图, balance: undefined })), false);
+    // 渲染入口必须在挂载到文档之后再测量。
+    const source = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+    assert.match(source, /container\.append\(node\);\s*fitHoverBalance\(node\);/);
+});
+
+test("hover 原始首项：解析保留快照首项，视图不回退第二个钱包", () => {
+    const 解析 = (wallets) => parseSnapshotPayload({ ...snapshot(), balance: { status: "ready", wallets } });
+    const 视图 = (解析结果) => islandHoverView({ status: "ready", snapshot: 解析结果 }, Date.parse(解析结果.fetchedAt) + 1000);
+    // [null, CNY 19]：原始首项是 null，整行隐藏（旧实现过滤后会把第二项显示成 ￥19.00）。
+    const 空首项 = 解析([null, { currency: "CNY", amount: "19" }]);
+    assert.equal(空首项.balance.firstWallet, null);
+    assert.deepEqual(空首项.balance.wallets, [{ currency: "CNY", amount: "19" }]); // 其它卡的有效钱包列表保持原样。
+    assert.equal(walletText(空首项.balance), "CNY 19");
+    assert.equal(视图(空首项).balance, undefined);
+    // 首项金额不是字符串（17）：隐藏，不换下一项。
+    const 数字首项 = 解析([{ currency: "CNY", amount: 17 }, { currency: "CNY", amount: "19" }]);
+    assert.equal(数字首项.balance.firstWallet, null);
+    assert.equal(视图(数字首项).balance, undefined);
+    // 首项币种未知：隐藏，不回退第二项。
+    const 未知币种 = 解析([{ currency: "XYZ", amount: "1" }, { currency: "CNY", amount: "19" }]);
+    assert.deepEqual(未知币种.balance.firstWallet, { currency: "XYZ", amount: "1" });
+    assert.equal(视图(未知币种).balance, undefined);
+    // 首项金额非法：隐藏。
+    assert.equal(视图(解析([{ currency: "CNY", amount: "abc" }, { currency: "USD", amount: "4" }])).balance, undefined);
+    // 首项有效：只显示首项金额。
+    assert.deepEqual(视图(解析([{ currency: "CNY", amount: "17" }, { currency: "USD", amount: "4" }])).balance, { value: "￥17.00" });
+    // 空钱包与「首项非法」区分：前者写无可用余额。
+    assert.deepEqual(视图(解析([])).balance, { reason: "无可用余额" });
+    // 非 ready 状态不受首项影响。
+    const 未授权 = parseSnapshotPayload({ ...snapshot(), balance: { status: "unauthorized", wallets: [null] } });
+    assert.deepEqual(视图(未授权).balance, { reason: "平台未授权余额读取" });
+    // 直接构造的余额（没有 firstWallet）仍按 wallets[0] 判定，兼容旧调用。
+    assert.deepEqual(hoverBalance({ status: "ready", wallets: [{ currency: "CNY", amount: "1" }, { currency: "USD", amount: "2" }] }), { value: "￥1.00" });
+});
+
+test("hover 余额行：容器宽度变化后重测，撤行可恢复（0→232、232→256）", () => {
+    const 观察器 = [];
+    const 原ResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+        constructor(回调) {
+            this.回调 = 回调;
+            this.已断开 = false;
+            观察器.push(this);
+        }
+        observe() {}
+        disconnect() {
+            this.已断开 = true;
+        }
+    };
+    try {
+        const 根 = 渲染节点({ task: { label: "运行任务", value: "3" }, counts: [{ label: "未读", value: "12" }, { label: "完成未读", value: "4" }], balance: { value: "￥1234567890.12" } });
+        const 行 = 含类(根, "plugin-dsh-status-hover__balance");
+        const 金额 = 含类(行, "plugin-dsh-status-hover__balance-value");
+        金额.scrollWidth = 240;
+        let 宽 = 0;
+        const 容器 = { children: [], replaceChildren() { this.children = []; }, append(node) { this.children.push(node); }, getBoundingClientRect: () => ({ left: 0, top: 0, width: 宽, height: 0 }) };
+        容器.append(根);
+        let 重测 = 0;
+        const 停止 = observeHoverWidth(容器, () => {
+            重测 += 1;
+            行.clientWidth = 宽; // 模拟布局：行可用宽度随容器变化。
+            fitHoverBalance(根);
+        });
+        assert.equal(观察器.length, 1);
+        // 挂载时 0 宽：量不到就不撤行。
+        assert.equal(fitHoverBalance(根), false);
+        // 0 → 232：金额 240 放不下，撤行。
+        宽 = 232;
+        观察器[0].回调();
+        assert.equal(重测, 1);
+        assert.equal(行.style.display, "none");
+        // 同宽重复回调（高度抖动）不重复重测。
+        观察器[0].回调();
+        assert.equal(重测, 1);
+        // 232 → 256：放得下，行恢复。
+        宽 = 256;
+        观察器[0].回调();
+        assert.equal(重测, 2);
+        assert.equal(行.style.display, "");
+        assert.equal(Boolean(行.hidden), false);
+        停止();
+        assert.equal(观察器[0].已断开, true); // 卸载时断开观察器。
+        // 没有 ResizeObserver 的宿主不报错，返回空清理函数。
+        delete globalThis.ResizeObserver;
+        const 空清理 = observeHoverWidth({ getBoundingClientRect: () => ({ width: 200 }) }, () => {});
+        assert.equal(typeof 空清理, "function");
+        空清理();
+    } finally {
+        if (原ResizeObserver === undefined) delete globalThis.ResizeObserver;
+        else globalThis.ResizeObserver = 原ResizeObserver;
+    }
 });

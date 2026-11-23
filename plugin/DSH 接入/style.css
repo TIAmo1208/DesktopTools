@@ -31,7 +31,7 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    row-gap: 6px;
     width: 100%;
     max-width: 256px;
     min-width: 0;
@@ -39,71 +39,169 @@
     color: var(--fence-text);
     font-size: 12px;
     line-height: 16px;
+    font-variant-numeric: tabular-nums;
 }
 
-.plugin-dsh-status-hover__main {
+/* 任务区：左列「标签 + 运行数」，右列未读/完成未读与缺失说明，两列同为次要色。 */
+.plugin-dsh-status-hover__task {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 8px;
+    min-width: 0;
+}
+
+.plugin-dsh-status-hover__task-main {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+.plugin-dsh-status-hover__task-label {
+    color: color-mix(in srgb, var(--fence-text) 82%, transparent);
+    font-size: 12px;
+    line-height: 15px;
+}
+
+.plugin-dsh-status-hover__task-value {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--fence-text);
-    font-size: 13px;
+    font-size: 12px;
+    line-height: 16px;
+}
+
+/* 运行数是唯一主值：26 / 600；其余短语留正文档位，不放大。 */
+.plugin-dsh-status-hover__task-value--numeric {
+    font-size: 26px;
     font-weight: 600;
-    line-height: 18px;
-    font-variant-numeric: tabular-nums;
+    line-height: 32px;
 }
 
-.plugin-dsh-status-hover__sub,
-.plugin-dsh-status-hover__balance,
-.plugin-dsh-status-hover__progress-value {
+.plugin-dsh-status-hover__counts {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    row-gap: 4px;
     min-width: 0;
+    text-align: end;
+}
+
+.plugin-dsh-status-hover__count,
+.plugin-dsh-status-hover__note {
+    min-width: 0;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--fence-text);
-    font-variant-numeric: tabular-nums;
+    color: color-mix(in srgb, var(--fence-text) 82%, transparent);
 }
 
+.plugin-dsh-status-hover__count {
+    font-size: 12px;
+    line-height: 15px;
+}
+
+/* 缺失说明占 11 号位：统计不完整 / 未读状态不可用，不画比例。 */
+.plugin-dsh-status-hover__note {
+    font-size: 11px;
+    line-height: 14px;
+}
+
+/* 进度行：4px 灰调轨 + 正文色填充，可见主值只有分数，百分比只进读屏。 */
 .plugin-dsh-status-hover__progress {
     display: flex;
-    flex-direction: row;
     align-items: center;
-    gap: 8px;
+    column-gap: 8px;
     min-width: 0;
     min-height: 16px;
-    margin-top: 4px;
 }
 
 .plugin-dsh-status-hover__track {
-    /* 透明轨 + 正文色描边，填充改用正文色：填充对轨内面浅色约 4.54:1、深色约 5.79:1（合成预算），
-       不再用 --fence-active 对 --fence-border 的 1.25–1.58:1。45% 描边对外轮廓仅约 1.94/2.49，
-       只作轨道轮廓、不承担对比度；4px 轨在 16px 行内垂直居中，右侧留 8px。 */
     flex: 1 1 auto;
-    min-width: 40px;
-    max-width: 160px;
+    min-width: 24px;
     height: 4px;
-    margin-block: 2px;
     overflow: hidden;
-    border: 1px solid color-mix(in srgb, var(--fence-text) 45%, transparent);
     border-radius: 2px;
+    /* 1px 内描边用 inset 环，不占内容高度：填充仍是完整 4px，与定稿同高。 */
+    box-shadow: inset 0 0 0 1px var(--fence-border);
     background: transparent;
-    box-sizing: border-box;
-    align-self: center;
 }
 
 .plugin-dsh-status-hover__fill {
     height: 100%;
+    border-radius: 2px;
     background: var(--fence-text);
 }
 
-.plugin-dsh-status-hover__progress-value {
+.plugin-dsh-status-hover__fraction {
     flex: none;
-    width: 40px;
-    text-align: right;
+    color: color-mix(in srgb, var(--fence-text) 82%, transparent);
+    font-size: 11px;
+    line-height: 14px;
+    text-align: end;
+    white-space: nowrap;
 }
 
-.plugin-dsh-status-hover__sub + .plugin-dsh-status-hover__balance {
-    margin-top: 4px;
+/* 余额行：分隔线上的独立一行，标签次要色、金额正文色 600；不可用时只在金额位写原因。 */
+.plugin-dsh-status-hover__balance {
+    display: flex;
+    flex-wrap: wrap; /* 窄宽时金额先换到余额区自己的下一行，不挤掉标签。 */
+    align-items: baseline;
+    justify-content: space-between;
+    column-gap: 8px;
+    min-width: 0;
+    margin-block-start: 2px;
+    padding-block-start: 8px;
+    border-block-start: 1px solid var(--fence-border);
+}
+
+.plugin-dsh-status-hover__balance-label {
+    flex: none;
+    color: var(--fence-muted);
+    font-size: 12px;
+    line-height: 15px;
+}
+
+.plugin-dsh-status-hover__balance-value,
+.plugin-dsh-status-hover__balance-reason {
+    flex: none; /* 不压缩：放不下就换到余额区自己的下一行，不挤掉「余额」标签。 */
+    max-width: 100%;
+    margin-inline-start: auto; /* 换行后仍靠右。 */
+    min-width: 0;
+    /* 不截断：换行后仍放不下时由 fitHoverBalance 撤掉整行，不显示带省略号的不完整金额。 */
+    font-size: 12px;
+    line-height: 15px;
+    text-align: end;
+}
+
+.plugin-dsh-status-hover__balance-value {
+    color: var(--fence-text);
+    font-weight: 600;
+}
+
+.plugin-dsh-status-hover__balance-reason {
+    color: var(--fence-muted);
+}
+
+/* 整卡状态：状态词 + 下一步说明，历史读数一律撤下。 */
+.plugin-dsh-status-hover__state {
+    color: var(--fence-text);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 17px;
+}
+
+.plugin-dsh-status-hover__hint {
+    margin-block-start: 5px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--fence-muted);
+    font-size: 12px;
+    line-height: 15px;
 }
 
 .plugin-dsh-status__collapsed-text {
