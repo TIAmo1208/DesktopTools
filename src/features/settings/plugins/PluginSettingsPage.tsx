@@ -49,7 +49,8 @@ import {
     pluginDirectoryShown,
     pluginIslandCardActive,
     pluginRows,
-    pluginSettingsAuthorized,
+    pluginSettingsInstanceHint,
+    pluginShowsSettingsEntries,
     pluginShowsAddTile,
     requestPluginScript,
     taskMenuPlacement,
@@ -213,8 +214,9 @@ export const PluginSettingsPage = ({
         const workspaceInstanceId = registrations?.find((item) => item.componentId === selected.id && item.status === "ready")?.instanceId ?? ""; // 工作区已就绪的实例。
         const islandActive = pluginIslandCardActive(selected.id, selected.island, preferences); // 浮岛卡是否已启用并占用 island.<pluginId>。
         const capabilityInstanceId = pluginCapabilityInstanceId(workspaceInstanceId, selected.id, islandActive); // 两处都没有时为空串，设置条目不渲染。
-        const settingsAuthorized = pluginSettingsAuthorized(capabilityInstanceId, pluginDisabled); // 需要实例授权的设置条目。
         const hasEntries = Boolean(entries && entries.length > 0); // 脚本已注册且至少一条设置。
+        const showsEntries = pluginShowsSettingsEntries(hasEntries, pluginDisabled); // 条目只看注册内容与停用状态（t109）。
+        const instanceHint = pluginSettingsInstanceHint(capabilityInstanceId, hasEntries, pluginDisabled); // 无实例时提示先存本地。
         const loopbackCredential = pluginLoopbackCredential(selected.id); // 插件声明的共享 token 配对入口。
         const typeStatus = pluginTypeStatus(components, selected.id, selected.tileTypes, selected.maxTiles); // 每个类型各自的额度。
         const tileRoom = pluginTileRoom(selected.maxTiles, usedTiles); // 没有声明类型时按整体额度判断。
@@ -289,9 +291,9 @@ export const PluginSettingsPage = ({
                         ) : null}
                     </p>
                     {selected.description ? <SettingsAbout text={selected.description} /> : null}
-                    {!pluginDisabled && hasEntries && !settingsAuthorized ? (
+                    {instanceHint ? (
                         <p className="plugin-settings__status" role="status">
-                            先在工作区添加该格子，或在设置 → 浮岛启用该卡。
+                            设置先保存在本地，添加该格子或启用浮岛卡后自动应用。
                         </p>
                     ) : null}
                     {loopbackCredential ? <PluginLoopbackPairing pluginId={selected.id} metadata={loopbackCredential} disabled={disabled || pluginDisabled} /> : null}
@@ -311,11 +313,11 @@ export const PluginSettingsPage = ({
                         </div>
                     ) : pluginDisabled ? (
                         <p className="plugin-settings__status">插件已停用，启用后显示设置条目。</p>
-                    ) : entries && entries.length > 0 ? (
-                        settingsAuthorized ? (
+                    ) : showsEntries ? (
+                        (
                             <div className="settings__group plugin-settings__entries">
                                 <h3 className="settings__group-title">设置条目</h3>
-                                {entries.map((entry) => (
+                                {(entries ?? []).map((entry) => (
                                     <PluginEntryBlock
                                         key={entry.id}
                                         pluginId={selected.id}
@@ -326,7 +328,7 @@ export const PluginSettingsPage = ({
                                     />
                                 ))}
                             </div>
-                        ) : null
+                        )
                     ) : shape ? (
                         <p className="plugin-settings__empty">{shape}</p>
                     ) : (

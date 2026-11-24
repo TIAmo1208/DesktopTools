@@ -105,8 +105,11 @@ export const pluginIslandCardActive = (
 export const pluginCapabilityInstanceId = (workspaceInstanceId: string, pluginId: string, islandActive: boolean): string =>
     workspaceInstanceId || (islandActive ? `island.${pluginId}` : "");
 
-/** 需要实例授权的设置条目：没有可用实例或插件停用时都不渲染。 */
-export const pluginSettingsAuthorized = (instanceId: string, pluginDisabled: boolean): boolean => Boolean(instanceId) && !pluginDisabled;
+/** 设置条目只随插件停用与否决定是否渲染；不再要求先有实例（t109）。 */
+export const pluginShowsSettingsEntries = (hasEntries: boolean, pluginDisabled: boolean): boolean => hasEntries && !pluginDisabled;
+
+/** 无实例时仍需可读的提示：设置先落在插件身份下，实例上线后自动应用。 */
+export const pluginSettingsInstanceHint = (instanceId: string, hasEntries: boolean, pluginDisabled: boolean): boolean => !instanceId && pluginShowsSettingsEntries(hasEntries, pluginDisabled);
 
 /** 「添加到桌面」只在清单允许创建且不是主题时出现；没有可创建类型就不渲染。 */
 export const pluginShowsAddTile = (creatable: boolean, role?: ComponentManifest["role"]): boolean => creatable === true && role !== "theme";

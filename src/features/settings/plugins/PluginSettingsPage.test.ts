@@ -451,13 +451,17 @@ test("没有可用实例时不暴露需要授权的设置条目", () => {
     assert.equal(model.pluginCapabilityInstanceId("", "plugin.dsh", true), "island.plugin.dsh");
     assert.equal(model.pluginCapabilityInstanceId("tile-1", "plugin.dsh", true), "tile-1"); // 工作区实例优先。
 
-    assert.equal(model.pluginSettingsAuthorized("", false), false);
-    assert.equal(model.pluginSettingsAuthorized("island.plugin.dsh", false), true);
-    assert.equal(model.pluginSettingsAuthorized("island.plugin.dsh", true), false); // 停用后不运行作者内容。
+    // 设置条目不再依赖实例（t109）：只看有没有注册内容与是否停用。
+    assert.equal(model.pluginShowsSettingsEntries(false, false), false); // 没有条目就不渲染内容区。
+    assert.equal(model.pluginShowsSettingsEntries(true, false), true); // 无实例也渲染，作者只读/本地保存即可用。
+    assert.equal(model.pluginShowsSettingsEntries(true, true), false); // 停用后不运行作者内容。
+    assert.equal(model.pluginSettingsInstanceHint("", true, false), true); // 无实例且有条目时给出「先存本地」提示。
+    assert.equal(model.pluginSettingsInstanceHint("tile-1", true, false), false);
+    assert.equal(model.pluginSettingsInstanceHint("island.plugin.dsh", true, false), false);
 
-    assert.match(source, /先在工作区添加该格子，或在设置 → 浮岛启用该卡。/); // 内容区顶部的可读提示。
-    assert.match(source, /!pluginDisabled && hasEntries && !settingsAuthorized/); // 只对真正有设置条目的插件提示。
-    assert.match(source, /settingsAuthorized \? \(/); // 没有实例时条目不渲染。
+    assert.match(source, /设置先保存在本地，添加该格子或启用浮岛卡后自动应用。/); // 无实例时的非阻断提示。
+    assert.match(source, /pluginShowsSettingsEntries\(hasEntries, pluginDisabled\)/); // 内容区只看条目与停用状态。
+    assert.doesNotMatch(source, /settingsAuthorized \? \(/); // 不再按实例门槛挡条目。
 });
 
 test("设置条目直接排在二级页内容区，不再用下拉展开包裹", () => {
