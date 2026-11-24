@@ -144,7 +144,9 @@
             const report = (text) => {
                 if (!结果.textContent.startsWith("FAIL")) {
                     const 收集实测 = 结果.dataset.collectLayout;
-                    结果.textContent = 收集实测 ? `${text}\n收集箱外卡→内容宽/列数/缩略图宽：${收集实测}` : text;
+                    const 天气实测 = 结果.dataset.weatherLayout;
+                    结果.textContent = text + (收集实测 ? `\n收集箱外卡→内容宽/列数/缩略图宽：${收集实测}` : "")
+                        + (天气实测 ? `\n天气卡：${天气实测}` : "");
                 }
                 document.body.dataset.phase = 结果.textContent.startsWith("FAIL") ? "fail" : "pass";
             };
@@ -1524,7 +1526,107 @@
                 }
             };
 
-            验证收集箱宽度().then(() => {
+            // 独立挂载真实天气卡，复用投影与快照字段，不改变主浮岛夹具的状态。
+            const 验证天气预报 = async () => {
+                阶段 = "天气卡三态预报";
+                const [{ IslandWeather, useIslandWeather }, { islandWeatherProjection }] = await Promise.all([import("./IslandWeather.tsx"), import("./islandWeatherModel.ts")]);
+                const 卡 = document.createElement("article");
+                卡.className = "island-card fence-workspace";
+                卡.style.cssText = "position:fixed;inset-inline-start:-10000px;box-sizing:border-box;inline-size:400px";
+                const 内容 = document.createElement("div");
+                内容.className = "island-card__content";
+                卡.append(内容);
+                document.body.append(卡);
+                const 样本根 = createRoot(内容);
+                const 绑定 = { state: "ready", source: "qweather", city: 城市 };
+                const 天况 = { text: "晴", code: "100" };
+                const 现在 = Date.now();
+                const 时刻 = (偏移) => new Date(现在 + 偏移).toISOString();
+                const 完整预报 = {
+                    source: "qweather", city: 城市, current: { temperature: { value: 23 }, condition: 天况 },
+                    hourly: { hours: Array.from({ length: 10 }, (_, i) => ({ forecastTime: 时刻((i - 1) * 3_600_000), temperature: { value: 20 + i }, condition: 天况 })).reverse() },
+                    daily: { days: Array.from({ length: 10 }, (_, i) => ({ forecastStartTime: 时刻((i - 1) * 86_400_000), temperatureMax: { value: 28 }, temperatureMin: { value: 19 }, daytime: { condition: 天况 } })).reverse() },
+                };
+                const 画 = (mode, forecast, failure) => 样本根.render(React.createElement(IslandWeather, { mode, weather: { ...islandWeatherProjection(绑定, forecast, failure, 现在), binding: 绑定, outlookFacts: forecast, failure } }));
+                const 小时 = () => [...内容.querySelectorAll(".island-weather__hour")];
+                const 日期 = () => [...内容.querySelectorAll(".island-weather__day")];
+                const 数据 = [];
+                const 原请求 = 原生.invoke;
+                let 请求数 = 0;
+                原生.invoke = (...参数) => { 请求数++; return 原请求(...参数); };
+                try {
+                    for (const [模式, 外宽, 日数] of [["collapsed", 168, 0], ["hover", 232, 0], ["expanded", 400, 7]]) {
+                        卡.style.inlineSize = `${外宽}px`;
+                        画(模式, 完整预报);
+                        await 直到(() => 内容.querySelector(`.island-weather--${模式}`), `天气 ${模式} 卡渲染`);
+                        断言(内容.querySelector(".island-weather__main").textContent.includes("23°") && 小时().length === 6 && 日期().length === 日数, `天气 ${模式} 必须有当前、6 小时及 ${日数} 日`);
+                        断言(小时().every((项) => /^\d\d:\d\d$/.test(项.querySelector("time")?.textContent ?? "") && 项.querySelector('[role="img"][aria-label="晴"] svg') && /\d°$/.test(项.textContent)), `天气 ${模式} 小时格包含时间、图标与温度`);
+                        断言(小时()[0]?.querySelector("time")?.dateTime === 时刻(3_600_000) && 小时()[0]?.textContent.endsWith("22°"), "小时预报按时间排序，剔除当前及过去时段");
+                        断言(日期().every((项) => /^\d{4}-\d{2}-\d{2}$/.test(项.querySelector("time")?.dateTime ?? "") && 项.textContent.includes("晴") && 项.textContent.includes("28° / 19°")), "日预报每行含本地日期、天气和最高/最低温");
+                        断言(内容.scrollWidth === 内容.clientWidth, `天气 ${模式} ${外宽} DIP 无横向溢出`);
+                        数据.push(`${模式} ${内容.clientWidth} DIP ${小时().length}小时/${日期().length}日`);
+                    }
+                    const { current } = 完整预报;
+                    画("expanded", { source: "qweather", city: 城市, current });
+                    await 直到(() => !小时().length && !日期().length, "缺失小时及日预报只保留当前天气");
+                    画("expanded", { ...完整预报, moduleErrors: { hourly: "小时失败" } });
+                    await 直到(() => !小时().length && 日期().length === 7, "仅隐藏失败的小时预报");
+                    画("expanded", { ...完整预报, moduleErrors: { daily: "日预报失败" } });
+                    await 直到(() => 小时().length === 6 && !日期().length, "仅隐藏失败的日预报");
+                    画("expanded", { ...完整预报, current: { ...current, temperature: { value: 24 } } }, "服务失败");
+                    await 直到(() => 内容.querySelector(".island-weather__main")?.textContent.includes("24°"), "整份预报失败后的降级已重新渲染");
+                    断言(!小时().length && !日期().length && !内容.textContent.includes("失败") && 请求数 === 0, "失败隐藏预报区块，不显示错误、不新增请求");
+                    结果.dataset.weatherLayout = `${数据.join("；")}；缺数及模块失败隐藏，组件请求 ${请求数}`;
+
+                    阶段 = "天气读取与订阅竞态";
+                    const 竞态断言基线 = 失败.length;
+                    const 旧偏好 = { islandWeatherSource: 夹具.偏好.islandWeatherSource, islandWeatherCityId: 夹具.偏好.islandWeatherCityId };
+                    const 天气卡 = () => {
+                        const weather = useIslandWeather("island.official.weather", "fixture-monitor");
+                        return React.createElement("div", { "data-weather-failure": weather.failure }, React.createElement(IslandWeather, { mode: "expanded", weather }));
+                    };
+                    夹具.pushPreferences({ islandWeatherSource: "qweather", islandWeatherCityId: 城市.id });
+                    try {
+                        for (const 晚失败 of [false, true]) {
+                            const 读 = Promise.withResolvers();
+                            let 读取数 = 0, 订阅数 = 0;
+                            原生.invoke = (命令, 载荷) => {
+                                if (命令 === "list_weather_sources") return Promise.resolve([{ source: "qweather", cities: [城市] }]);
+                                if (命令 === "subscribe_weather") { 订阅数++; return Promise.resolve(1); }
+                                if (命令 === "get_weather_forecast") { 读取数++; return 读.promise; }
+                                return 原请求(命令, 载荷);
+                            };
+                            样本根.render(React.createElement(PreferencesProvider, null, React.createElement(天气卡, { key: String(晚失败) })));
+                            await 直到(() => 订阅数 === 1 && 读取数 === 1, "旧读取与活动订阅均已发起");
+                            const 拒绝 = () => 读.reject(new Error("夹具初读失败"));
+                            if (!晚失败) {
+                                拒绝();
+                                await 直到(() => 内容.firstElementChild?.dataset.weatherFailure === "夹具初读失败", "初读失败已落入真实 hook");
+                                断言(!小时().length && !日期().length, "无预报快照时不显示小时与日预报");
+                            }
+                            夹具.pushWeatherForecast(完整预报);
+                            await 直到(() => 内容.querySelector(".island-weather__main")?.textContent.includes("23°"), "同源同城订阅推送已完成渲染");
+                            if (晚失败) {
+                                断言(小时().length === 6 && 日期().length === 7, "迟到失败前订阅已经显示完整预报");
+                                拒绝();
+                                await 等待(80); // 让宿主桥的拒绝和随后 React 提交都能落地。
+                            }
+                            断言(!内容.firstElementChild?.dataset.weatherFailure && 小时().length === 6 && 日期().length === 7,
+                                晚失败 ? "旧读迟到失败不得盖住订阅的 6 小时/7 日" : "初读失败后，订阅成功恢复 6 小时/7 日");
+                            断言(读取数 === 1 && 订阅数 === 1, "恢复与拒绝迟到结果不发额外请求");
+                        }
+                    } finally {
+                        夹具.pushPreferences(旧偏好);
+                    }
+                    if (失败.length === 竞态断言基线) 结果.dataset.weatherLayout += "；竞态两例均保留 6 小时/7 日，各 1 次读取、1 次订阅";
+                } finally {
+                    原生.invoke = 原请求;
+                    样本根.unmount();
+                    卡.remove();
+                }
+            };
+
+            验证收集箱宽度().then(验证天气预报).then(() => {
                 阶段 = "启动";
                 渲染();
                 return 运行();

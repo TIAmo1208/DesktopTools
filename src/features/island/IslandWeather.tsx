@@ -4,8 +4,7 @@ import { settingsErrorMessage } from "../../bridge/settings";
 import type { WeatherSourceStatus } from "../../contracts/weather";
 import { usePreferences } from "../../app/preferences/PreferencesProvider";
 import { WeatherGlyph } from "../../shared/WeatherGlyph";
-import { islandWeatherBinding, islandWeatherProjection, islandWeatherSourceName, type IslandWeatherForecast } from "./islandWeatherModel";
-import type { WeatherOutlookFacts } from "./islandWeatherOutlook";
+import { islandWeatherBinding, islandWeatherCardForecast, islandWeatherProjection, islandWeatherSourceName, type IslandWeatherForecast } from "./islandWeatherModel";
 import "./islandWeather.css";
 
 type IslandWeatherMode = "collapsed" | "hover" | "expanded"; // 与浮岛三态一致。
@@ -15,7 +14,7 @@ export const useIslandWeather = (instanceId: string | undefined, monitorId?: str
     const { preferences } = usePreferences();
     const [sources, setSources] = useState<WeatherSourceStatus[]>();
     const [failure, setFailure] = useState<string>();
-    const [forecast, setForecast] = useState<IslandWeatherForecast & WeatherOutlookFacts>();
+    const [forecast, setForecast] = useState<IslandWeatherForecast>();
     const [configurationEpoch, setConfigurationEpoch] = useState(0); // 来源凭据或城市列表变化后重建订阅与读取。
     const source = preferences?.islandWeatherSource ?? "";
     const cityId = preferences?.islandWeatherCityId ?? "";
@@ -80,7 +79,7 @@ export const useIslandWeather = (instanceId: string | undefined, monitorId?: str
         setFailure(undefined);
         if (!islandEnabled || !instanceId || !readySource || !readyCityId) return;
         let active = true; // 换来源、换城市或卸载后拒绝旧响应。
-        let revision = 0; // 隐藏恢复和配置变化共用同一代次。
+        let revision = 0; // 主动读取与同源同城推送共用代次，迟到读取结果不得覆盖新事实。
         let stop: (() => void) | undefined; // 活动订阅退订入口。
         let pending = false; // 登记完成前只允许一份订阅。
         const config = { source: readySource, cityId: readyCityId } as const;
@@ -91,7 +90,10 @@ export const useIslandWeather = (instanceId: string | undefined, monitorId?: str
                 pending = true;
                 void listenWeatherForecast(instanceId, monitorId, config, (value) => {
                     const next = value as IslandWeatherForecast;
-                    if (active && next?.source === config.source && next?.city?.id === config.cityId) setForecast(next);
+                    if (!active || next?.source !== config.source || next?.city?.id !== config.cityId) return;
+                    revision++;
+                    setForecast(next);
+                    setFailure(undefined);
                 })
                     .then((unlisten) => {
                         if (!active) {
@@ -140,10 +142,11 @@ export const useIslandWeather = (instanceId: string | undefined, monitorId?: str
     };
 };
 
-/** 展开卡保留当天详情与来源，紧凑态只消费投影中的锚点摘要。 */
+/** 卡内折叠保留当前与小时预报；展开增加日预报。锚点投影不读取这两个区块。 */
 export const IslandWeather = ({ mode, weather }: { mode: IslandWeatherMode; weather: ReturnType<typeof useIslandWeather> }) => {
-    const { binding, summary, detail, failure, unit } = weather;
+    const { binding, summary, detail, failure, unit, outlookFacts } = weather;
     if (binding?.state !== "ready" || !summary) return <p className="island-weather__status">{unit.primary}</p>;
+    const { hours, days } = islandWeatherCardForecast(failure ? undefined : outlookFacts, binding.city);
     return (
         <div className={`island-weather island-weather--${mode}`} aria-label={`${binding.city.name}天气`}>
             <div className="island-weather__main">
@@ -151,12 +154,30 @@ export const IslandWeather = ({ mode, weather }: { mode: IslandWeatherMode; weat
                 <strong>{summary.temperature}</strong>
                 <span>{summary.condition}</span>
             </div>
-            {mode !== "collapsed" && <small className="island-weather__detail">{detail}</small>}
-            {mode === "expanded" && (
-                <small className="island-weather__source">
-                    {failure ?? islandWeatherSourceName(binding.source)}
-                </small>
+            {mode !== "collapsed" && <small className="island-weather__detail">{failure || outlookFacts?.moduleErrors?.daily ? binding.city.name : detail}</small>}
+            {hours.length > 0 && (
+                <ul className="island-weather__hours" aria-label="未来小时预报" role="list">
+                    {hours.map((hour, index) => (
+                        <li className="island-weather__hour" key={`${hour.dateTime}:${index}`}>
+                            <time dateTime={hour.dateTime}>{hour.time}</time>
+                            <span role="img" aria-label={hour.condition}><WeatherGlyph className="island-weather__hour-glyph" code={hour.code} /></span>
+                            <span>{hour.temperature}</span>
+                        </li>
+                    ))}
+                </ul>
             )}
+            {mode === "expanded" && days.length > 0 && (
+                <ul className="island-weather__days" aria-label="未来七天预报" role="list">
+                    {days.map((day, index) => (
+                        <li className="island-weather__day" key={`${day.dateTime}:${index}`}>
+                            <time dateTime={day.dateTime}>{day.date}</time>
+                            <span className="island-weather__day-condition">{day.condition}</span>
+                            <span className="island-weather__day-range" aria-label={`最高 ${day.high}，最低 ${day.low}`}>{day.high} / {day.low}</span>
+                        </li>
+                    ))}
+                </ul>
+            )}
+            {mode === "expanded" && <small className="island-weather__source">{islandWeatherSourceName(binding.source)}</small>}
         </div>
     );
 };

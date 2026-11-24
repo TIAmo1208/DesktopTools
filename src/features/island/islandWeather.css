@@ -51,11 +51,10 @@
     opacity: 0.78;
 }
 
-/* 胶囊与 hover 的固定内容盒只容纳当前天气和一行详情。 */
+/* 卡内紧凑档保留小时预报，自然高度由内容决定。 */
 .island-weather--collapsed,
 .island-weather--hover {
-    justify-content: center;
-    block-size: 100%;
+    gap: 4px;
 }
 
 .island-weather--collapsed .island-weather__glyph {
@@ -64,19 +63,82 @@
 }
 
 .island-weather--hover .island-weather__glyph,
-.island[data-state="expanded"] .island-weather__glyph {
+.island-weather--expanded .island-weather__glyph {
     inline-size: 28px;
     block-size: 28px;
 }
 
 .island-weather--hover .island-weather__main strong,
-.island[data-state="expanded"] .island-weather__main strong {
+.island-weather--expanded .island-weather__main strong {
     font-size: 20px;
 }
 
 .island-weather--hover .island-weather__main span,
-.island[data-state="expanded"] .island-weather__main span {
+.island-weather--expanded .island-weather__main span {
     font-size: 13px;
+}
+
+/* 预报块使用同一文字与分隔令牌，不增加独立滚动区。 */
+.island-weather__hours,
+.island-weather__days {
+    display: grid;
+    gap: 4px;
+    min-inline-size: 0;
+    margin: 0;
+    padding: 4px 0 0;
+    border-block-start: 1px solid var(--fence-border);
+    list-style: none;
+    line-height: 16px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 小时格子可自动折到下一行，超窄时也不会撑宽卡片。 */
+.island-weather__hours {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 44px), 1fr));
+}
+
+.island-weather__hour {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    text-align: center;
+}
+
+.island-weather__hours time,
+.island-weather__days time {
+    color: color-mix(in srgb, var(--fence-text) 82%, transparent);
+}
+
+.island-weather__hour-glyph {
+    display: block;
+    inline-size: 16px;
+    block-size: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+}
+
+/* 日预报最多七行；窄宽优先保留日期和温度，长天况在自己的列内省略。 */
+.island-weather__day {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
+    align-items: center;
+    gap: 8px;
+    min-block-size: 22px;
+}
+
+.island-weather__hour > *,
+.island-weather__day > * {
+    max-inline-size: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.island-weather__day-range {
+    text-align: end;
 }
 
 .island-weather--expanded {

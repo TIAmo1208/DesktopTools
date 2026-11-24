@@ -1,11 +1,11 @@
 import type { IslandContentUnit } from "./islandContent.ts";
 import { WEATHER_SOURCES, type WeatherCity, type WeatherSource, type WeatherSourceStatus } from "../../contracts/weather.ts";
+import type { WeatherOutlookFacts } from "./islandWeatherOutlook.ts";
 
-/** 浮岛天气卡读取的最小预报字段；完整模块仍由桌面天气格子呈现。 */
-export interface IslandWeatherForecast {
+/** 浮岛天气卡从同一预报快照读取当前、小时和日预报。 */
+export interface IslandWeatherForecast extends WeatherOutlookFacts {
     source?: WeatherSource; // 事件载荷来源，用于区分同名城市。
     city?: { id?: string; name?: string; tz?: string }; // 当前预报位置。
-    current?: { temperature?: { value?: number }; condition?: { text?: string; code?: string } };
     daily?: {
         days?: {
             forecastStartTime?: string;
@@ -15,6 +15,7 @@ export interface IslandWeatherForecast {
         }[];
     };
     moduleFetchedAt?: Record<string, number>; // 当前天气的获取时刻。
+    moduleErrors?: Record<string, string>; // 有失败的预报模块不渲染对应区块。
 }
 
 /** 浮岛天气绑定结果；缺失态只给一句可执行说明，不在浮岛内放设置入口。 */
@@ -64,6 +65,47 @@ export const islandWeatherSummary = (forecast: IslandWeatherForecast | undefined
         high: temperature(today?.temperatureMax?.value),
         low: temperature(today?.temperatureMin?.value),
         code: current?.condition?.code,
+    };
+};
+
+/** 小时、日预报只展示有日期、天况和有限温度的未来条目，不为缺失模块补值。 */
+export const islandWeatherCardForecast = (forecast: IslandWeatherForecast | undefined, city: WeatherCity, nowMs = Date.now()) => {
+    if (!forecast) return { hours: [], days: [] };
+    const timeZone = city.tz || undefined;
+    let clock: Intl.DateTimeFormat;
+    let date: Intl.DateTimeFormat;
+    let calendar: Intl.DateTimeFormat;
+    try {
+        clock = new Intl.DateTimeFormat("zh-CN", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+        date = new Intl.DateTimeFormat("zh-CN", { timeZone, month: "numeric", day: "numeric" });
+        calendar = new Intl.DateTimeFormat("sv-SE", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+    } catch {
+        return { hours: [], days: [] };
+    }
+    const hours = [];
+    const days = [];
+    for (const hour of forecast.moduleErrors?.hourly ? [] : forecast.hourly?.hours ?? []) {
+        const start = Date.parse(hour.forecastTime ?? "");
+        const value = hour.temperature?.value;
+        const condition = hour.condition?.text?.trim();
+        const code = hour.condition?.code;
+        if (!Number.isFinite(start) || start <= nowMs || !Number.isFinite(value) || !condition || !code?.trim()) continue;
+        hours.push({ start, dateTime: new Date(start).toISOString(), time: clock.format(start), temperature: temperature(value), condition, code });
+    }
+    const today = calendar.format(nowMs);
+    for (const day of forecast.moduleErrors?.daily ? [] : forecast.daily?.days ?? []) {
+        const start = Date.parse(day.forecastStartTime ?? "");
+        const high = day.temperatureMax?.value;
+        const low = day.temperatureMin?.value;
+        const condition = day.daytime?.condition?.text?.trim();
+        if (!Number.isFinite(start) || !Number.isFinite(high) || !Number.isFinite(low) || !condition) continue;
+        const dateTime = calendar.format(start);
+        if (dateTime < today) continue;
+        days.push({ start, dateTime, date: date.format(start), condition, high: temperature(high), low: temperature(low) });
+    }
+    return {
+        hours: hours.sort((a, b) => a.start - b.start).slice(0, 6),
+        days: days.sort((a, b) => a.start - b.start).slice(0, 7),
     };
 };
 
