@@ -168,7 +168,7 @@ export const IslandCollectBox = ({ mode, collapsed = false, collapsedCount = 3, 
         window.addEventListener("blur", cleanup);
     };
 
-    // 加载与空态也占展开卡内容宽，首次实测就得到最终宽度，展开动画结束后不再二次调宽。
+    // 加载与空态和展开列表共用同一个自适应内容宽。
     const status = (text: string) =>
         mode === "expanded" ? (
             <div className="island-collect island-collect--expanded">
@@ -179,7 +179,7 @@ export const IslandCollectBox = ({ mode, collapsed = false, collapsedCount = 3, 
         );
     if (!ready && !items.length) return status(failure ?? "正在读取收集箱");
     if (failure && !items.length) return status(failure);
-    // 展开态下卡内收起只列最近几条，仍保持 300 DIP 内容宽与三列混排；其余状态沿用三态上限。
+    // 卡内收起只改变条数，与展开列表共用自适应网格。
     const rows = islandCollectItems(items, mode === "expanded" ? (collapsed ? collapsedCount : islandCollectLimit(mode)) : islandCollectLimit(mode));
     if (mode === "collapsed") {
         const first = rows[0];

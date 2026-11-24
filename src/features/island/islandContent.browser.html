@@ -142,7 +142,10 @@
             const 跳过 = []; // 当前环境无法验证的动效项。
             // 失败先写出的结论不被迟到的成功覆盖。
             const report = (text) => {
-                if (!结果.textContent.startsWith("FAIL")) 结果.textContent = text;
+                if (!结果.textContent.startsWith("FAIL")) {
+                    const 收集实测 = 结果.dataset.collectLayout;
+                    结果.textContent = 收集实测 ? `${text}\n收集箱外卡→内容宽/列数/缩略图宽：${收集实测}` : text;
+                }
                 document.body.dataset.phase = 结果.textContent.startsWith("FAIL") ? "fail" : "pass";
             };
             const 断言 = (条件, 说明) => {
@@ -1469,8 +1472,63 @@
                 );
             };
 
-            渲染();
-            运行().catch((错误) => {
+            // 先隔离挂载真实收集箱；只缩放外卡，不触碰浮岛窗口几何或内容层场景。
+            const 验证收集箱宽度 = async () => {
+                阶段 = "收集箱内容宽度";
+                const [{ IslandCollectBox }, { writeIslandCollectCache }] = await Promise.all([import("./IslandCollectBox.tsx"), import("./islandCollect.ts")]);
+                const 宽度样本 = document.createElement("article");
+                宽度样本.className = "island island-card";
+                宽度样本.style.cssText = "position:fixed;inset-inline-start:-10000px;box-sizing:border-box;inline-size:400px";
+                const 内容 = document.createElement("div");
+                内容.className = "island-card__content";
+                宽度样本.append(内容);
+                document.body.append(宽度样本);
+                const 样本根 = createRoot(内容);
+                const 长名 = "LongCollectionFilename".repeat(12);
+                const 底项 = { createdUnixMs: 1, pinned: false, available: false, path: null, content: "" };
+                收集列表 = [
+                    { ...底项, name: `${长名}.md`, displayName: 长名, kind: "file" },
+                    ...Array.from({ length: 4 }, (_, i) => ({ ...底项, name: `image-${i}.md`, displayName: `image-${i}`, kind: "image" })),
+                ];
+                功能图标场景 = true;
+                try {
+                    样本根.render(React.createElement(IslandCollectBox, { mode: "expanded" }));
+                    await 直到(() => 内容.querySelectorAll(".island-collect__item").length === 5, "真实收集箱加载一条长文件名和四张图片");
+                    const 网格 = 内容.querySelector(".island-collect__list");
+                    const 标题 = 内容.querySelector(".island-collect__title");
+                    const 缩略图 = 内容.querySelector(".island-collect__item--image");
+                    const 数据 = [];
+                    for (const [外宽, 列数, 格宽] of [[400, 4, 89], [240, 2, 102], [112, 1, 80]]) {
+                        宽度样本.style.inlineSize = `${外宽}px`;
+                        const 实际列数 = getComputedStyle(网格).gridTemplateColumns.split(" ").length;
+                        const { width, height } = 缩略图.getBoundingClientRect();
+                        断言(网格.clientWidth === 外宽 - 32 && 实际列数 === 列数 && 近似(width, 格宽) && 近似(width / height, 1.5, 0.01), `收集箱 ${外宽} DIP 外卡应填满内容区并排 ${列数} 列，实测 ${网格.clientWidth} DIP / ${实际列数} 列 / ${width} DIP`);
+                        断言(内容.scrollWidth === 内容.clientWidth && 网格.scrollWidth === 网格.clientWidth && 标题.scrollWidth > 标题.clientWidth && getComputedStyle(标题).textOverflow === "ellipsis", `收集箱 ${外宽} DIP 长标题仅在自身省略、内容和网格不横溢`);
+                        数据.push(`${外宽}→${网格.clientWidth} DIP/${实际列数}列/${width} DIP`);
+                    }
+                    for (const [模式, 宽度, 行数] of [["hover", 136, 2], ["collapsed", 28, 1]]) {
+                        宽度样本.style.inlineSize = `${宽度 + 32}px`;
+                        宽度样本.dataset.vertical = String(模式 === "collapsed");
+                        样本根.render(React.createElement(IslandCollectBox, { mode: 模式 }));
+                        await 直到(() => 内容.querySelectorAll(".island-collect__line").length === 行数, `${模式} 保留摘要条数`);
+                        断言(!内容.querySelector(".island-collect__list") && 内容.scrollWidth === 内容.clientWidth, `收集箱 ${模式} 摘要无横溢、无网格`);
+                        if (模式 === "collapsed") 断言(getComputedStyle(内容.querySelector(".island-collect__line")).display === "none" && getComputedStyle(内容.firstElementChild, "::after").content === '"5"', "竖向窄胶囊用计数替代标题");
+                    }
+                    结果.dataset.collectLayout = 数据.join("；");
+                } finally {
+                    样本根.unmount();
+                    宽度样本.remove();
+                    收集列表 = [];
+                    功能图标场景 = false;
+                    writeIslandCollectCache(收集列表);
+                }
+            };
+
+            验证收集箱宽度().then(() => {
+                阶段 = "启动";
+                渲染();
+                return 运行();
+            }).catch((错误) => {
                 report(`FAIL\n- ${阶段}：${错误 instanceof Error ? 错误.message : String(错误)}${失败.length ? `\n- ${失败.join("\n- ")}` : ""}${遮蔽证据 ? `\n（遮蔽 DOM 证据：${遮蔽证据}）` : ""}${滚动槽证据 ? `\n（滚动槽实测：${滚动槽证据}）` : ""}`);
             });
         </script>

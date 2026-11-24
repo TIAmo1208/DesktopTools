@@ -8,7 +8,8 @@
 
 .island-collect__line,
 .island-collect__title,
-.island-collect__summary {
+.island-collect__summary,
+.island-collect__status {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -72,14 +73,15 @@
     font-size: 11px;
 }
 
-/* 展开态加宽到 300 DIP，三列图片与整行文本混排，显示更多内容。 */
+/* 展开内容填满宿主内容盒，加载/空态也不另设固定宽度。 */
 .island-collect--expanded {
-    inline-size: 300px;
+    inline-size: 100%;
 }
 
+/* 88 DIP 是常规图片列下限；不足一列时用可用宽度，避免撑破窄盒。 */
 .island-collect__list {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 88px), 1fr));
     gap: 4px;
     min-inline-size: 0;
 }
