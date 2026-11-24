@@ -67,11 +67,10 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
     const fromTheme = themeActive ? <span className="appearance-settings__from-theme">由主题设置</span> : null; // 行标签上的来源提示。
 
     return (
-        <fieldset className="appearance-settings" disabled={unavailable} aria-label="外观偏好">
-            <section className="appearance-settings__group" aria-labelledby="global-theme-title">
-                <h2 className="appearance-settings__heading" id="global-theme-title">
-                    外观主题包
-                </h2>
+        <fieldset className="appearance-settings settings__groups" disabled={unavailable} aria-label="外观偏好">
+            <section className="settings__groups" aria-labelledby="global-theme-title">
+                <div className="settings__group">
+                    <h2 className="settings__group-title" id="global-theme-title">主题</h2>
                 <div className="appearance-settings__row">
                     <span className="appearance-settings__label appearance-settings__label--inline">
                         <label htmlFor="interface-theme-plugin">外观主题包</label>
@@ -99,7 +98,7 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                         ))}
                     </select>
                 </div>
-            </section>
+                </div>
             {(
                 [
                     ["desktop", "桌面网格主题"],
@@ -114,10 +113,10 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                     onPreferences(scope === "desktop" ? { desktopAppearance: { ...preferences.desktopAppearance, ...patch } } : patch);
                 };
                 return (
-                    <section className="appearance-settings__group" key={scope} aria-labelledby={`${scope}-appearance-title`}>
-                        <h2 className="appearance-settings__heading" id={`${scope}-appearance-title`}>
+                    <div className="settings__group" role="group" key={scope} aria-labelledby={`${scope}-appearance-title`}>
+                        <h3 className="settings__subgroup-title appearance-settings__heading" id={`${scope}-appearance-title`}>
                             {title}
-                        </h2>
+                        </h3>
                         <div className="appearance-settings__row">
                             <label className="appearance-settings__label" htmlFor={`${scope}-theme`}>
                                 {short}：深浅模式
@@ -170,7 +169,7 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                                 />
                             </div>
                         </div>
-                    </section>
+                    </div>
                 );
             })}
             {themeActive && (
@@ -187,8 +186,9 @@ export const AppearanceSettings = ({ preferences, disabled, onPreferences, onThe
                     </button>
                 </div>
             )}
-            <section className="appearance-settings__group" aria-labelledby="shared-appearance-title">
-                <h2 className="appearance-settings__heading" id="shared-appearance-title">
+            </section>
+            <section className="settings__group" aria-labelledby="shared-appearance-title">
+                <h2 className="settings__group-title" id="shared-appearance-title">
                     通用外观
                 </h2>
                 <div className="appearance-settings__row">

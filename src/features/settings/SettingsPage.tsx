@@ -384,10 +384,10 @@ export const SettingsPage = () => {
                     </div>
                 )}
                 {page === "general" && (
-                    <div className="settings__rows">
+                    <div className="settings__rows settings__groups">
                         <section className="settings__group" aria-labelledby="general-startup-title">
                             <h2 className="settings__group-title" id="general-startup-title">
-                                启动与窗口
+                                启动与交互
                             </h2>
                             <div className="settings__row">
                             <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsPowerIcon }} />
@@ -407,11 +407,6 @@ export const SettingsPage = () => {
                                 }}
                             />
                         </div>
-                        </section>
-                        <section className="settings__group" aria-labelledby="general-interaction-title">
-                            <h2 className="settings__group-title" id="general-interaction-title">
-                                交互
-                            </h2>
                             <div className="settings__row">
                             <span
                                 className="settings__icon settings__icon--svg"
@@ -504,7 +499,7 @@ export const SettingsPage = () => {
                     </div>
                 )}
                 {page === "appearance" && !gridDetail && (
-                    <div className="settings__rows">
+                    <div className="settings__rows settings__groups">
                         <AppearanceSettings
                             preferences={preferences}
                             disabled={busy}

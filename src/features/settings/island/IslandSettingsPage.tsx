@@ -261,10 +261,9 @@ export const IslandSettings = ({
     }
 
     return (
-        <section className="island-settings">
-            <div className="settings__rows">
-                <section className="settings__group" aria-labelledby="island-look-title">
-                <h2 className="settings__group-title" id="island-look-title">浮岛外观</h2>
+        <section className="island-settings settings__groups">
+            <div className="settings__rows settings__group" role="group" aria-labelledby="island-look-title">
+                <h2 className="settings__group-title" id="island-look-title">外观与显示</h2>
                 <div className="settings__row">
                     <label className="settings__row-title" htmlFor="island-enabled">显示浮岛</label>
                     <SettingsSwitch id="island-enabled" label="显示浮岛" checked={preferences?.islandEnabled ?? false} disabled={unavailable} onChange={(checked) => onPreferences({ islandEnabled: checked })} />
@@ -334,22 +333,16 @@ export const IslandSettings = ({
                         }}
                     />
                 </label>
-                </section>
-                <section className="settings__group" aria-labelledby="island-behavior-title">
-                    <h2 className="settings__group-title" id="island-behavior-title">行为</h2>
-                    <div className="settings__row">
-                        <label className="settings__row-title" htmlFor="island-hide-fullscreen">全屏时隐藏</label>
-                        <SettingsSwitch id="island-hide-fullscreen" label="全屏时隐藏" checked={preferences?.islandHideOnFullscreen ?? true} disabled={unavailable} onChange={(checked) => onPreferences({ islandHideOnFullscreen: checked })} />
-                    </div>
-                </section>
-                <section className="settings__group" aria-labelledby="island-anchor-entry-title">
-                    <h2 className="settings__group-title" id="island-anchor-entry-title">锚点显示</h2>
-                    <button className="settings__row settings__row--link" type="button" onClick={() => { recordReturnFocus('section[aria-labelledby="island-anchor-entry-title"] button[data-button="row-hit"]'); setAnchorPage(true); }} data-button="row-hit">
-                        <span className="settings__row-title">锚点显示</span>
-                        <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: chevronIcon }} />
-                    </button>
-                </section>
+                <div className="settings__row">
+                    <label className="settings__row-title" htmlFor="island-hide-fullscreen">全屏时隐藏</label>
+                    <SettingsSwitch id="island-hide-fullscreen" label="全屏时隐藏" checked={preferences?.islandHideOnFullscreen ?? true} disabled={unavailable} onChange={(checked) => onPreferences({ islandHideOnFullscreen: checked })} />
+                </div>
+                <button id="island-anchor-entry" className="settings__row settings__row--link" type="button" onClick={() => { recordReturnFocus('#island-anchor-entry'); setAnchorPage(true); }} data-button="row-hit">
+                    <span className="settings__row-title">锚点显示</span>
+                    <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: chevronIcon }} />
+                </button>
             </div>
+            <div className="settings__group" role="group" aria-labelledby="island-card-title">
             <h2 className="island-settings__label" id="island-card-title">卡片</h2>
             {preferences && !preferences.islandMessageCardInitialized && !preferences.islandCardOrder.includes(ISLAND_MESSAGE_CARD_ID) && preferences.islandCardOrder.length >= ISLAND_CARD_ORDER_LIMIT ? (
                 <p className="island-settings__hint">卡片顺序已满 {ISLAND_CARD_ORDER_LIMIT} 项，消息通知暂未加入；先停用一张卡再启用即可加入。</p>
@@ -407,6 +400,7 @@ export const IslandSettings = ({
                     })}
                 </ul>
             )}
+            </div>
             {menu && menuItems.length > 0 && <DesktopTileMenu items={menuItems} left={menu.left} top={menu.top} onClose={() => setMenu(undefined)} />}
         </section>
     );

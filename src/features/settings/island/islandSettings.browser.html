@@ -99,7 +99,7 @@
                     islandOffset: 0,
                     islandCardOrder: ["official.music-control", "plugin.sample"],
                 };
-                const 旧偏好 = { ...岛字段 }; // 不带 islandAnchorVisible，三枚开关应按逐项默认 true 渲染。
+                const 旧偏好 = { ...岛字段, interfaceAnimations: false, followSystemReducedMotion: false }; // 不带锚点显隐字段，关闭切页动画便于独立测量布局。
                 const 显式全开 = { music: true, message: true, plugin: true }; // 三项都给出布尔值，读取 .music 不会落到缺失。
                 const 全开偏好 = { ...岛字段, islandAnchorVisible: { ...显式全开 } };
                 // 频谱采集设备夹具：两个输出设备，一个标注系统默认，核对设备下拉的选项、后缀与禁用。
@@ -113,6 +113,8 @@
                     switch (命令) {
                         case "get_preferences":
                             return 旧偏好;
+                        case "get_settings":
+                            return { preferences: 旧偏好, autostart: false, version: "0.0.0", debugBuild: false };
                         case "get_component_runtime_snapshot":
                             return snapshot;
                         case "list_audio_output_devices":
@@ -124,17 +126,54 @@
                     }
                 });
 
+                if (new URLSearchParams(location.search).has("groups")) {
+                    const { SettingsPage } = await import("../SettingsPage.tsx");
+                    const { PreferencesProvider } = await import("../../../app/preferences/PreferencesProvider.tsx");
+                    const mount = document.getElementById("root");
+                    mount.style.cssText = "padding:0;max-width:none";
+                    createRoot(mount).render(React.createElement(PreferencesProvider, null, React.createElement(SettingsPage)));
+                    const 实测 = [];
+                    for (const [页面, 标题, 子标题] of [["常规", 2, 0], ["外观", 3, 2], ["浮岛", 2, 0]]) {
+                        const 分类 = await 直到(() => mount.querySelector(`button[aria-label="${页面}"]`), `发现 ${页面} 导航`);
+                        分类.click();
+                        const 正文 = await 直到(() => {
+                            const 节点 = mount.querySelector(".settings__content");
+                            return 节点?.querySelector("h1")?.textContent === 页面 && 节点.querySelector(".settings__groups") ? 节点 : null;
+                        }, `显示 ${页面} 分组`);
+                        const 容器 = 正文.querySelector(".settings__groups");
+                        断言(正文.querySelectorAll("h2").length === 标题 && 正文.querySelectorAll("h3").length === 子标题, `${页面} h2/h3 数量`, `${正文.querySelectorAll("h2").length}/${正文.querySelectorAll("h3").length}`);
+                        断言(getComputedStyle(容器).rowGap === "18px" && getComputedStyle(正文.querySelector(".settings__group")).rowGap === "4px", `${页面} 父组 gap 与组内行距`, `${getComputedStyle(容器).rowGap}/${getComputedStyle(正文.querySelector(".settings__group")).rowGap}`);
+                        const 样式 = [];
+                        for (const 主题 of ["dark", "light"]) {
+                            document.documentElement.dataset.theme = 主题;
+                            const 行 = 正文.querySelector(".settings__row, .appearance-settings__row");
+                            const row = getComputedStyle(行);
+                            断言(正文.scrollWidth <= 正文.clientWidth && [...正文.querySelectorAll(".settings__groups, .settings__group")].every((节点) => 节点.scrollWidth <= 节点.clientWidth), `${页面} ${主题} 不横溢`, `${正文.scrollWidth}/${正文.clientWidth}`);
+                            样式.push(`${主题} ${row.backgroundColor}/${row.color}`);
+                        }
+                        断言(样式[0].slice(5) !== 样式[1].slice(6), `${页面} 深浅主题确实不同`, 样式.join("；"));
+                        实测.push(`${页面} ${标题}h2/${子标题}h3，18/4px，正文 ${正文.clientWidth}px，${样式.join("；")}`);
+                    }
+                    const 入口 = mount.querySelector("#island-anchor-entry");
+                    入口.focus();
+                    入口.click();
+                    const 返回 = await 直到(() => mount.querySelector('.island-settings--detail [aria-label="返回浮岛"]'), "进入锚点显示二级页");
+                    返回.click();
+                    await 直到(() => document.activeElement?.id === "island-anchor-entry", "退出后焦点回到重分组后的入口");
+                    document.getElementById("result").textContent = `PASS 设置分组（视口 ${innerWidth}px，锚点入口复焦）\n${实测.join("\n")}`;
+                } else {
                 const 补丁 = []; // onPreferences 收到的偏好补丁。
                 const 根 = createRoot(document.getElementById("root"));
                 const 渲染 = (偏好) => 根.render(React.createElement(IslandSettings, { preferences: { ...偏好 }, disabled: false, onPreferences: (值) => 补丁.push(值) }));
                 渲染(旧偏好);
 
-                // 一、一级页分组标题的共享式样：三个组标题 13px/600，首组上距归零；「卡片」小节标题保留 12px/600 无外边距的文档例外。
-                await 直到(() => document.querySelectorAll("#root h2.settings__group-title").length === 3, "浮岛一级页渲染出三个共享分组标题");
-                const 岛组标题 = [...document.querySelectorAll("#root h2.settings__group-title")];
-                断言(岛组标题.length === 3, "浮岛一级页三个共享分组标题", String(岛组标题.length));
-                断言(岛组标题.every((标题) => getComputedStyle(标题).fontSize === "13px" && getComputedStyle(标题).fontWeight === "600"), "浮岛组标题统一 13px/600", 岛组标题.map((标题) => getComputedStyle(标题).fontSize).join(","));
-                断言(getComputedStyle(岛组标题[0]).marginTop === "0px" && getComputedStyle(岛组标题[1]).marginTop === "18px", "首组标题贴上、其后组距 18px", `${getComputedStyle(岛组标题[0]).marginTop}/${getComputedStyle(岛组标题[1]).marginTop}`);
+                // 一、一级页只保留两个组标题：外观与显示、卡片；组间距来自容器，设置行仍为 4px。
+                const 岛分组 = await 直到(() => document.querySelector("#root .island-settings.settings__groups"), "浮岛一级页渲染出父分组");
+                const 岛组标题 = [...岛分组.querySelectorAll("h2")];
+                断言(岛组标题.map((标题) => 标题.textContent).join("/") === "外观与显示/卡片", "浮岛一级页仅保留两个 h2", 岛组标题.map((标题) => 标题.textContent).join("/"));
+                const 岛组样式 = getComputedStyle(岛分组);
+                const 岛一级行距 = getComputedStyle(岛分组.firstElementChild).rowGap;
+                断言(岛组样式.rowGap === "18px" && 岛一级行距 === "4px" && getComputedStyle(岛组标题[0]).marginTop === "0px", "父组间距 18、组内行距 4、无标题上外边距", `${岛组样式.rowGap}/${岛一级行距}/${getComputedStyle(岛组标题[0]).marginTop}`);
                 const 卡片标题 = document.querySelector("#root .island-settings__label");
                 断言(卡片标题 !== null && ["0px", "0px", "12px", "600"].every((值, 序) => ["marginTop", "marginBottom", "fontSize", "fontWeight"].map((属性) => getComputedStyle(卡片标题)[属性])[序] === 值), "卡片小节标题保持 12px/600、无外边距例外", ["marginTop", "marginBottom", "fontSize", "fontWeight"].map((属性) => getComputedStyle(卡片标题)[属性]).join("/"));
 
@@ -277,7 +316,7 @@
                 返回.click();
                 await 直到(() => document.querySelector("#root .island-settings__list"), "从锚点显示返回卡片列表");
                 // 返回一级页后焦点应回到进入前的锚点显示入口，不再落到 body。
-                const 锚点回到 = await 直到(() => document.querySelector('#root section[aria-labelledby="island-anchor-entry-title"] button[data-button="row-hit"]'), "返回后锚点显示入口重新挂载");
+                const 锚点回到 = await 直到(() => document.querySelector("#root #island-anchor-entry"), "返回后锚点显示入口重新挂载");
                 断言(document.activeElement === 锚点回到, "返回浮岛后焦点回到锚点显示入口", `${document.activeElement?.tagName ?? "body"}:${document.activeElement?.textContent?.slice(0, 8) ?? ""}`);
 
                 // 三、官方卡详情没有卸载入口，保留上浮岛开关；列表菜单仍提供停用项。
@@ -306,6 +345,7 @@
                 插件详情.querySelector(".island-settings__back").click();
                 await 直到(() => document.querySelector(".island-settings__list"), "回到主页列表");
                 document.getElementById("result").textContent = `PASS\n- ${通过.join("\n- ")}`;
+                }
             } catch (错误) {
                 document.getElementById("result").textContent = `FAIL\n- ${错误?.message ?? 错误}`;
             }

@@ -114,9 +114,10 @@ test("一级分组标题走共享式样、功能行距交给容器 gap、二级�
     assert.match(卡片标签?.body ?? "", /margin:\s*0;/);
     assert.match(卡片标签?.body ?? "", /font-size:\s*12px/);
     assert.match(卡片标签?.body ?? "", /font-weight:\s*600/);
-    for (const id of ["island-look-title", "island-behavior-title", "island-anchor-entry-title"]) {
-        assert.match(岛页, new RegExp(`<h2 className="settings__group-title" id="${id}"`));
-    }
+    assert.match(岛页, /<section className="island-settings settings__groups">/);
+    assert.match(岛页, /<h2 className="settings__group-title" id="island-look-title">外观与显示<\/h2>/);
+    assert.doesNotMatch(岛页, /island-behavior-title|island-anchor-entry-title/);
+    assert.match(岛页, /recordReturnFocus\('#island-anchor-entry'\)/);
     // 功能格子页：格子标题走共享类且挂在分组容器里；页内没有泛型 h2 覆盖，二级页标题的 18px 规则仅限 detail-title。
     assert.match(功能页, /className="feature-settings__list settings__group"/);
     assert.equal(功能样式.find(({ selector }) => selector === ".feature-settings h2"), undefined);
