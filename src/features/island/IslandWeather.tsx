@@ -149,23 +149,27 @@ export const IslandWeather = ({ mode, weather }: { mode: IslandWeatherMode; weat
     const { hours, days } = islandWeatherCardForecast(failure ? undefined : outlookFacts, binding.city);
     return (
         <div className={`island-weather island-weather--${mode}`} aria-label={`${binding.city.name}天气`}>
-            <div className="island-weather__main">
-                <WeatherGlyph className="island-weather__glyph" code={summary.code} />
-                <strong>{summary.temperature}</strong>
-                <span>{summary.condition}</span>
+            <div className="island-weather__overview">
+                <div className="island-weather__summary">
+                    <div className="island-weather__main">
+                        <WeatherGlyph className="island-weather__glyph" code={summary.code} />
+                        <strong>{summary.temperature}</strong>
+                        <span>{summary.condition}</span>
+                    </div>
+                    <small className="island-weather__detail">{mode === "collapsed" || failure || outlookFacts?.moduleErrors?.daily ? binding.city.name : detail}</small>
+                </div>
+                {hours.length > 0 && (
+                    <ul className="island-weather__hours" aria-label="未来小时预报" role="list">
+                        {hours.map((hour, index) => (
+                            <li className="island-weather__hour" key={`${hour.dateTime}:${index}`}>
+                                <time dateTime={hour.dateTime}>{hour.time}</time>
+                                <span role="img" aria-label={hour.condition}><WeatherGlyph className="island-weather__hour-glyph" code={hour.code} /></span>
+                                <span>{hour.temperature}</span>
+                            </li>
+                        ))}
+                    </ul>
+                )}
             </div>
-            {mode !== "collapsed" && <small className="island-weather__detail">{failure || outlookFacts?.moduleErrors?.daily ? binding.city.name : detail}</small>}
-            {hours.length > 0 && (
-                <ul className="island-weather__hours" aria-label="未来小时预报" role="list">
-                    {hours.map((hour, index) => (
-                        <li className="island-weather__hour" key={`${hour.dateTime}:${index}`}>
-                            <time dateTime={hour.dateTime}>{hour.time}</time>
-                            <span role="img" aria-label={hour.condition}><WeatherGlyph className="island-weather__hour-glyph" code={hour.code} /></span>
-                            <span>{hour.temperature}</span>
-                        </li>
-                    ))}
-                </ul>
-            )}
             {mode === "expanded" && days.length > 0 && (
                 <ul className="island-weather__days" aria-label="未来七天预报" role="list">
                     {days.map((day, index) => (

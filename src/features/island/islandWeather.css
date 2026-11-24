@@ -7,15 +7,31 @@
     font-size: 11px;
 }
 
-.island-weather__main {
+/* 当前天气和小时预报优先并排；可用宽度不足两栏时，预报自然换到下一行。 */
+.island-weather__overview {
     display: flex;
+    flex-wrap: wrap;
+    align-items: start;
+    gap: 6px 8px;
+}
+
+.island-weather__summary {
+    display: grid;
+    flex: 1 1 78px;
+    min-inline-size: 0;
+    gap: 2px;
+}
+
+.island-weather__main {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
-    gap: 8px;
+    gap: 2px 6px;
     min-inline-size: 0;
 }
 
 .island-weather__glyph {
-    flex: none;
+    grid-row: span 2;
     inline-size: 16px;
     block-size: 16px;
     fill: none;
@@ -92,9 +108,12 @@
     font-variant-numeric: tabular-nums;
 }
 
-/* 小时格子可自动折到下一行，超窄时也不会撑宽卡片。 */
+/* 小时预报在右栏自动换行，不牺牲时间、图标与温度的排布。 */
 .island-weather__hours {
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 44px), 1fr));
+    flex: 4 1 106px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 34px), 1fr));
+    padding: 0;
+    border-block-start: 0;
 }
 
 .island-weather__hour {

@@ -145,8 +145,10 @@
                 if (!结果.textContent.startsWith("FAIL")) {
                     const 收集实测 = 结果.dataset.collectLayout;
                     const 天气实测 = 结果.dataset.weatherLayout;
+                    const 卡头实测 = 结果.dataset.toolbarLayout;
                     结果.textContent = text + (收集实测 ? `\n收集箱外卡→内容宽/列数/缩略图宽：${收集实测}` : "")
-                        + (天气实测 ? `\n天气卡：${天气实测}` : "");
+                        + (天气实测 ? `\n天气卡：${天气实测}` : "")
+                        + (卡头实测 ? `\n展开卡头：${卡头实测}` : "");
                 }
                 document.body.dataset.phase = 结果.textContent.startsWith("FAIL") ? "fail" : "pass";
             };
@@ -1168,6 +1170,16 @@
                 断言(卡片们[0].getBoundingClientRect().top === 岛().getBoundingClientRect().top, "展开卡片从工作区顶部顺序排布");
                 断言(夹具.提交.length - 展开前 === 1, "关闭动效时入态只提交一次全高窗口");
                 const 三卡 = ["音乐控制", "收集箱", "天气"].map((名称) => 岛().querySelector(`.island-card[aria-label="${名称}"]`));
+                const 卡头卡片 = 卡片们.filter((节点) => 节点.querySelector(".island-card__toolbar"));
+                const 卡头尺寸 = 卡头卡片.map((节点) => {
+                    const 工具轨 = 节点.querySelector(".island-card__toolbar");
+                    const 句柄 = 工具轨.querySelector(".island-card__handle").getBoundingClientRect();
+                    const 收起 = 工具轨.querySelector(".island-card__toggle").getBoundingClientRect();
+                    return [工具轨.getBoundingClientRect().height, 句柄.width, 句柄.height, 收起.width, 收起.height, getComputedStyle(工具轨).marginBlockEnd];
+                });
+                断言(三卡.every((节点) => 卡头卡片.includes(节点)), "音乐、天气、收集箱均使用共用展开卡头");
+                断言(卡头尺寸.every((尺寸) => 尺寸.join() === "28,56,28,28,28,8px"), "各卡头 28 DIP，保留 56×28 句柄、28×28 收起命中和 8 DIP 下方外距");
+                结果.dataset.toolbarLayout = `${卡头尺寸.length} 张，工具轨 ${卡头尺寸.map(([高]) => 高).join("/")} DIP；句柄 56×28、收起 28×28`;
                 const 内部操作前 = 夹具.提交.length;
                 for (const 节点 of 三卡) {
                     const 开关 = 节点.querySelector(".island-card__toggle");
@@ -1563,8 +1575,14 @@
                         断言(小时().every((项) => /^\d\d:\d\d$/.test(项.querySelector("time")?.textContent ?? "") && 项.querySelector('[role="img"][aria-label="晴"] svg') && /\d°$/.test(项.textContent)), `天气 ${模式} 小时格包含时间、图标与温度`);
                         断言(小时()[0]?.querySelector("time")?.dateTime === 时刻(3_600_000) && 小时()[0]?.textContent.endsWith("22°"), "小时预报按时间排序，剔除当前及过去时段");
                         断言(日期().every((项) => /^\d{4}-\d{2}-\d{2}$/.test(项.querySelector("time")?.dateTime ?? "") && 项.textContent.includes("晴") && 项.textContent.includes("28° / 19°")), "日预报每行含本地日期、天气和最高/最低温");
-                        断言(内容.scrollWidth === 内容.clientWidth, `天气 ${模式} ${外宽} DIP 无横向溢出`);
-                        数据.push(`${模式} ${内容.clientWidth} DIP ${小时().length}小时/${日期().length}日`);
+                        const 摘要 = 内容.querySelector(".island-weather__summary");
+                        const 摘要框 = 摘要.getBoundingClientRect();
+                        const 小时框 = 内容.querySelector(".island-weather__hours").getBoundingClientRect();
+                        const 右栏 = 小时框.left >= 摘要框.right && 近似(小时框.top, 摘要框.top);
+                        const 换行 = 近似(小时框.left, 摘要框.left) && 小时框.top >= 摘要框.bottom;
+                        断言(模式 === "collapsed" ? 换行 : 右栏, `天气 ${模式} 内容 ${内容.clientWidth} DIP：窄档小时预报在下，其他档在摘要右侧`);
+                        断言(摘要.textContent.includes(城市.name) && 内容.scrollWidth === 内容.clientWidth, `天气 ${模式} 包含城市且无横向溢出`);
+                        数据.push(`${模式} ${内容.clientWidth} DIP ${右栏 ? "右栏" : "下方"} ${小时().length}小时/${日期().length}日`);
                     }
                     const { current } = 完整预报;
                     画("expanded", { source: "qweather", city: 城市, current });

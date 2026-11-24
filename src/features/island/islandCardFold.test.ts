@@ -65,7 +65,7 @@ test("统一卡头：消息、官方与插件卡共用句柄、动作位和收�
     assert.match(source, /<IslandCardToolbar[\s\S]*ISLAND_MESSAGE_CARD_ID[\s\S]*?\/>/); // 消息卡也走卡头。
     assert.doesNotMatch(source, /island-message-panel__toggle/); // 不保留消息卡内部旧收起分支。
     const css = readFileSync(new URL("./island.css", import.meta.url), "utf8");
-    assert.match(css, /\.island-card__toolbar \{[\s\S]*?min-block-size: 32px;/);
+    assert.match(css, /\.island-card__toolbar \{[^}]*min-block-size: 28px;[^}]*margin-block-end: 8px;/);
     assert.match(css, /\.island-card__handle \{[\s\S]*?inline-size: 56px;[\s\S]*?block-size: 28px;/);
     assert.match(css, /\.island-card__handle span \{[\s\S]*?inline-size: 36px;[\s\S]*?block-size: 4px;/);
     assert.match(css, /\.island-card__action,[\s\S]*?block-size: 28px;/);

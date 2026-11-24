@@ -179,7 +179,7 @@ html[data-island="true"] #root {
     overflow: clip;
     text-overflow: ellipsis;
 }
-/* 展开卡统一卡头：固定 32 高工具轨，拖卡句柄在起始边，动作与收起在末边。 */
+/* 展开卡统一卡头：28 DIP 工具轨，居中拖卡句柄与末边动作保持原命中区。 */
 .island[data-state="expanded"] .island-card {
     flex-direction: column;
     align-items: stretch;
@@ -190,7 +190,7 @@ html[data-island="true"] #root {
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
-    min-block-size: 32px;
+    min-block-size: 28px;
     margin-block-end: 8px;
 }
 /* 长条句柄在卡头水平居中，命中区不参与右侧动作区的排布。 */
