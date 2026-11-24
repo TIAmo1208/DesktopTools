@@ -33,7 +33,6 @@
     flex-direction: column;
     row-gap: 6px;
     width: 100%;
-    max-width: 256px;
     min-width: 0;
     overflow: hidden;
     color: var(--fence-text);
@@ -45,8 +44,8 @@
 /* 任务区：左列「标签 + 运行数」，右列未读/完成未读与缺失说明，两列同为次要色。 */
 .plugin-dsh-status-hover__task {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    column-gap: 8px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 112px), 1fr));
+    gap: 4px 8px;
     min-width: 0;
 }
 
@@ -58,6 +57,9 @@
 }
 
 .plugin-dsh-status-hover__task-label {
+    overflow: clip;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     color: color-mix(in srgb, var(--fence-text) 82%, transparent);
     font-size: 12px;
     line-height: 15px;
@@ -113,15 +115,16 @@
 /* 进度行：4px 灰调轨 + 正文色填充，可见主值只有分数，百分比只进读屏。 */
 .plugin-dsh-status-hover__progress {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    column-gap: 8px;
+    gap: 4px 8px;
     min-width: 0;
     min-height: 16px;
 }
 
 .plugin-dsh-status-hover__track {
-    flex: 1 1 auto;
-    min-width: 24px;
+    flex: 1 1 24px;
+    min-width: min(100%, 24px);
     height: 4px;
     overflow: hidden;
     border-radius: 2px;
@@ -138,11 +141,13 @@
 
 .plugin-dsh-status-hover__fraction {
     flex: none;
+    max-width: 100%;
+    margin-inline-start: auto;
+    overflow-wrap: anywhere;
     color: color-mix(in srgb, var(--fence-text) 82%, transparent);
     font-size: 11px;
     line-height: 14px;
     text-align: end;
-    white-space: nowrap;
 }
 
 /* 余额行：分隔线上的独立一行，标签次要色、金额正文色 600；不可用时只在金额位写原因。 */

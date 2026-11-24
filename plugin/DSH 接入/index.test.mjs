@@ -646,7 +646,7 @@ test("hover DOM：任务区/计数/进度/余额的真实结构与读屏数值",
     assert.equal(含类(无符号根, "plugin-dsh-status-hover__note").textContent, "未读状态不可用");
 });
 
-test("hover 只读实现约束：无定时器与点击目标，256 宽、4px 轨与既有令牌", () => {
+test("hover 只读实现约束：跟随宿主宽度、4px 轨与既有令牌", () => {
     const source = readFileSync(new URL("./index.js", import.meta.url), "utf8");
     const hover = source.slice(source.indexOf("export function renderIslandHover"), source.indexOf("export function subscribeState"));
     assert.ok(hover.length > 0);
@@ -663,7 +663,10 @@ test("hover 只读实现约束：无定时器与点击目标，256 宽、4px 轨
 
     const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
     const hoverCss = css.slice(css.indexOf(".plugin-dsh-status-hover"), css.indexOf(".plugin-dsh-status__collapsed-text"));
-    assert.match(hoverCss, /max-width:\s*256px/);
+    assert.match(hoverCss, /\.plugin-dsh-status-hover \{[^}]*width:\s*100%/);
+    assert.doesNotMatch(hoverCss, /max-width:\s*256px/);
+    assert.match(hoverCss, /grid-template-columns:\s*repeat\(auto-fit, minmax\(min\(100%,/);
+    assert.match(hoverCss, /\.plugin-dsh-status-hover__progress \{[^}]*flex-wrap:\s*wrap/);
     assert.match(hoverCss, /height:\s*4px/);
     assert.match(hoverCss, /font-size:\s*26px/);
     assert.match(hoverCss, /font-weight:\s*600/);
