@@ -3248,7 +3248,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                     {face.visible.map((anchor) => {
                                         const active = capsuleActive?.id === anchor.id ? anchor : undefined;
                                         const musicAnchor = isMusic(anchor);
-                                        const lyric = musicAnchor && musicView.hasLine && anchor.unit?.primary === musicView.line;
+                                        // 有当前句就把胶囊切到歌词层：不再要求锚点投影正文逐字符相等，否则换句瞬间会闪回标题分支并重挂载，切词动画随之丢失（t108）。
+                                        const lyric = Boolean(musicAnchor && musicView.hasLine);
                                         const inserting = contentMotion && previousIds.length > 0 && !previousIds.includes(anchor.id) && !drop;
                                         const navigable = islandNavigationUri(anchor.uri) !== undefined && anchor.componentId !== undefined; // 声明了去向才可点。
                                         return <div className="island-anchor-item" key={anchor.id}>

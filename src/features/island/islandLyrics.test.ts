@@ -327,3 +327,14 @@ test("无词循环暂停/恢复不重建 span，进度滚动按冻结位置重�
     });
     assert.notEqual(progressKey(seek), progressKey(progress));
 });
+
+test("有当前句就渲染歌词层，换句不再闪回标题分支（t108）", () => {
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    // 换句瞬间锚点投影正文与歌词句可能不相等；若用文本相等做条件，会切回标题分支并重挂载歌词组件，切词交接动画随之丢失。
+    assert.match(source, /const lyric = Boolean\(musicAnchor && musicView\.hasLine\)/);
+    assert.doesNotMatch(source, /const lyric = musicAnchor && musicView\.hasLine && anchor\.unit\?\.primary === musicView\.line/);
+    // 交接动画仍在歌词组件里：进入/离开两层各 300ms。
+    assert.match(source, /const entering = incomingLayer\.current\?\.animate\(/);
+    assert.match(source, /const exiting = outgoingLayer\.current\?\.animate\(/);
+    assert.match(source, /data-motion=\{motion \? "on" : "off"\}/);
+});

@@ -541,6 +541,12 @@ fn fetch_lyrics(timeline: &Timeline, source: &str) -> Result<FetchedLyrics, Box<
     Ok(FetchedLyrics { lines: fetch_lrclib_lyrics(&client, timeline)?, duration_ms: None })
 }
 
+/// 网易云取词参数：只取 lv=1 时部分曲目返回空词（歌词在其它槽位），用 -1 取全部槽；仍只发一次请求。
+fn netease_lyric_params(id: i64) -> [(&'static str, String); 4]
+{
+    [("id", id.to_string()), ("lv", "-1".to_string()), ("kv", "-1".to_string()), ("tv", "-1".to_string())]
+}
+
 /// LRCLIB：按标题与艺人匹配；有时长取 ±2 秒内最接近者，无时长只接受唯一解析结构。
 fn fetch_lrclib_lyrics(client: &reqwest::blocking::Client, timeline: &Timeline) -> Result<Vec<LyricLine>, Box<dyn std::error::Error>>
 {
@@ -686,7 +692,7 @@ fn fetch_netease_lyrics(client: &reqwest::blocking::Client, timeline: &Timeline)
     // 同名同艺人常有多个版本，第一条可能无词；按搜索顺序取到第一条有同步词的为止，最多 5 条。
     for song in select_netease_songs(&songs, &timeline.title, &timeline.artist).into_iter().take(5)
     {
-        let response = client.get("https://music.163.com/api/song/lyric").header(reqwest::header::REFERER, "https://music.163.com/").query(&[("id", song.id.to_string()), ("lv", "1".to_string()), ("tv", "-1".to_string())]).send()?.error_for_status()?;
+        let response = client.get("https://music.163.com/api/song/lyric").header(reqwest::header::REFERER, "https://music.163.com/").query(&netease_lyric_params(song.id)).send()?.error_for_status()?;
         let lyric: NeteaseLyric = serde_json::from_str(&read_body(response)?)?;
         let lines = parse_lrc(&to_simplified(&lyric.lrc.map(|lrc| lrc.lyric).unwrap_or_default()));
         if !lines.is_empty()
@@ -937,5 +943,17 @@ mod netease_tests
         assert_eq!(effective_duration(0.0, Some(0.0)), 0.0);
         assert_eq!(effective_duration(0.0, None), 0.0);
         assert_eq!(effective_duration(0.0, Some(f64::NAN)), 0.0);
+    }
+
+    /// 网易云取词必须带 kv/tv=-1：只取 lv=1 时该曲目返回空词，真机表现为「有歌词却拿不到」。
+    #[test]
+    fn netease_lyric_params_request_all_slots()
+    {
+        let params = netease_lyric_params(3437710994);
+        let map: std::collections::BTreeMap<&str, String> = params.into_iter().collect();
+        assert_eq!(map.get("id").map(String::as_str), Some("3437710994"));
+        assert_eq!(map.get("lv").map(String::as_str), Some("-1"));
+        assert_eq!(map.get("kv").map(String::as_str), Some("-1"));
+        assert_eq!(map.get("tv").map(String::as_str), Some("-1"));
     }
 }
