@@ -44,13 +44,12 @@ test("注入桥按映射读取投影，并把事件载荷交给订阅者", async
     assert.equal(received.length, 2); // 退订后不再交付。
 });
 
-test("三态表面不透明度与可插值属性已登记", () => {
+test("浮岛胶囊、hover 与展开的表面不透明度为 98% / 94% / 90%", () => {
     const css = readFileSync(new URL("./island.css", import.meta.url), "utf8");
-    assert.match(css, /@property --island-surface-alpha \{[^}]*syntax: "<percentage>"/); // 注册属性保留百分比语义。
-    for (const [state, alpha] of [["collapsed", "84%"], ["hover", "84%"], ["expanded", "90%"]] as const) {
-        const selector = state === "collapsed" ? ".island" : `.island[data-state="${state}"]`;
-        assert.match(css, new RegExp(`${selector.replace(/[.[\]]/g, "\\$&")} \\{\\s*--island-surface-alpha: ${alpha};`));
-    }
+    assert.match(css, /@property --island-surface-alpha \{[^}]*syntax: "<percentage>";[^}]*initial-value: 98%;/);
+    assert.match(css, /\.island \{\s*--island-surface-alpha: 98%;/);
+    assert.match(css, /\.island\[data-state="hover"\] \{\s*--island-surface-alpha: 94%;/);
+    assert.match(css, /\.island\[data-state="expanded"\] \{\s*--island-surface-alpha: 90%;/);
 });
 
 test("常态胶囊歌词在锚点内容盒内限长并按贴边方向滚动", () => {
