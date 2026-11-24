@@ -12,8 +12,15 @@ export const islandMessageSlotIndex = (order: readonly string[], instanceIds: re
 };
 
 /** 卡内收起默认：收集箱用偏好默认，消息卡按规格默认收起到最近一条，其余默认展开。 */
-export const islandCardCollapseDefault = (componentId: string, collectDefault: boolean): boolean =>
-    componentId === "official.collect-box" ? collectDefault : componentId === ISLAND_MESSAGE_CARD_ID;
+export const islandCardCollapseDefault = (
+    componentId: string,
+    collectDefault: boolean,
+    defaultCollapsed: Readonly<Record<string, boolean>> = {},
+): boolean => {
+    // 统一优先级（t102/t103）：有逐卡「默认收起」键就以它为准；缺省时收集箱回退旧 collectDefault、消息卡回退收起、普通卡展开。
+    if (Object.prototype.hasOwnProperty.call(defaultCollapsed, componentId)) return defaultCollapsed[componentId] === true;
+    return componentId === "official.collect-box" ? collectDefault : componentId === ISLAND_MESSAGE_CARD_ID;
+};
 
 /**
  * 从已保存偏好读出某张卡的收起态：记忆开关打开时以用户显式写过的值为准，
@@ -24,4 +31,5 @@ export const islandCardRememberedCollapsed = (
     memory: Readonly<Record<string, boolean>>,
     componentId: string,
     collectDefault: boolean,
-): boolean => (memory[componentId] === false ? undefined : stored[componentId]) ?? islandCardCollapseDefault(componentId, collectDefault);
+    defaultCollapsed: Readonly<Record<string, boolean>> = {},
+): boolean => (memory[componentId] === false ? undefined : stored[componentId]) ?? islandCardCollapseDefault(componentId, collectDefault, defaultCollapsed);

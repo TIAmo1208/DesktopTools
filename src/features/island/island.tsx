@@ -1698,7 +1698,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     };
     // 卡内收起态：记忆开启时读偏好，关闭记忆时回落到该卡默认；收集箱默认收起，消息卡默认收起到最近一条，其余默认展开。
     const collapseMemory = preferences?.islandCardCollapseMemory ?? {};
-    const collapseDefault = (componentId: string) => islandCardCollapseDefault(componentId, preferences?.islandCollectCollapsedDefault ?? true);
+    const collapseDefault = (componentId: string) => islandCardCollapseDefault(componentId, preferences?.islandCollectCollapsedDefault ?? true, preferences?.islandCardDefaultCollapsed ?? {}); // 其它卡按逐卡「默认收起」（t101）。
     // 记忆开关只决定是否写偏好，运行期收起态始终可切换。
     const cardCollapsed = (componentId: string) => collapsedCards[componentId] ?? collapseDefault(componentId);
     useLayoutEffect(() => {

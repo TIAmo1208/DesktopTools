@@ -169,6 +169,7 @@ export interface ApplicationPreferences {
     islandWeatherCityId: string; // 浮岛天气卡选择的城市标识，空串表示尚未选择。
     islandCardCollapsed: Record<string, boolean>; // 处于收起态的岛卡；只在记忆开启的卡片上写入。
     islandCardCollapseMemory: Record<string, boolean>; // 逐卡「记忆收起状态」开关，缺失视为开启。
+    islandCardDefaultCollapsed: Record<string, boolean>; // 逐卡「默认收起」开关：没有记忆状态时以此为准，缺省不收起。
     islandCollectCollapsedCount: number; // 收集箱收起时显示的最近条目数。
     islandCollectCollapsedDefault: boolean; // 收集箱默认收起。
     islandRadius: number; // 岛展开卡圆角，独立于界面圆角。
@@ -291,6 +292,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
     const islandMessageCardInitialized = candidate.islandMessageCardInitialized === undefined ? false : candidate.islandMessageCardInitialized; // 缺省未初始化，避免把旧配置误当用户关闭。
     if (typeof islandMessageCardInitialized !== "boolean") throw new Error("消息通知卡初始化标记无效");
     const islandCardCollapseMemory = parseIslandCardFlags(candidate.islandCardCollapseMemory); // 缺失视为逐卡记忆开启。
+    const islandCardDefaultCollapsed = parseIslandCardFlags(candidate.islandCardDefaultCollapsed); // 缺失视为逐卡不默认收起。
     const islandCollectCollapsedCount = candidate.islandCollectCollapsedCount === undefined ? 3 : candidate.islandCollectCollapsedCount; // 收起时默认显示三条。
     if (typeof islandCollectCollapsedCount !== "number" || !Number.isInteger(islandCollectCollapsedCount) || islandCollectCollapsedCount < 1 || islandCollectCollapsedCount > 10)
         throw new Error("收集箱收起条数无效");
@@ -338,6 +340,7 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         islandWeatherCityId,
         islandCardCollapsed,
         islandCardCollapseMemory,
+        islandCardDefaultCollapsed,
         islandCollectCollapsedCount,
         islandCollectCollapsedDefault,
         disabledPlugins,

@@ -89,6 +89,22 @@ test("消息卡默认收起到最近一条，用户显式操作后按记忆恢�
     assert.equal(islandCardRememberedCollapsed({}, {}, "official.music-control", true), false); // 其它卡行为不变。
     assert.equal(islandCardRememberedCollapsed({ "official.music-control": true }, {}, "official.music-control", true), true);
     assert.equal(islandCardRememberedCollapsed({ "official.music-control": true }, { "official.music-control": false }, "official.music-control", true), false); // 记忆关闭回默认展开。
+
+    // 逐卡「默认收起」（t101）：缺省不收起；记忆优先；记忆关闭时按默认收起，且不读已存值。
+    const 默认收起 = { "official.music-control": true };
+    assert.equal(islandCardCollapseDefault("official.music-control", true), false); // 未配置默认收起 → 展开。
+    assert.equal(islandCardCollapseDefault("official.music-control", true, 默认收起), true);
+    assert.equal(islandCardCollapseDefault("official.collect-box", false, { "official.collect-box": true }), true); // 逐卡键优先：有该卡键就按它（t103）。
+    assert.equal(islandCardCollapseDefault("official.collect-box", false, 默认收起), false); // 该卡无逐卡键时回退旧 collectDefault。
+    assert.equal(islandCardCollapseDefault("official.collect-box", true, {}), true); // 无逐卡键时回退旧 collectDefault。
+    assert.equal(islandCardCollapseDefault("official.collect-box", false, {}), false);
+    assert.equal(islandCardCollapseDefault(ISLAND_MESSAGE_CARD_ID, false, { [ISLAND_MESSAGE_CARD_ID]: false }), false); // 消息卡也能被逐卡键覆盖。
+    assert.equal(islandCardCollapseDefault(ISLAND_MESSAGE_CARD_ID, false, {}), true); // 无逐卡键时消息卡仍默认收起。
+    assert.equal(islandCardCollapseDefault(ISLAND_MESSAGE_CARD_ID, true, {}), true); // 消息卡保持默认收起。
+    assert.equal(islandCardRememberedCollapsed({ "official.music-control": false }, {}, "official.music-control", true, 默认收起), false); // 记忆优先于默认收起。
+    assert.equal(islandCardRememberedCollapsed({}, {}, "official.music-control", true, 默认收起), true); // 无记忆 → 默认收起。
+    assert.equal(islandCardRememberedCollapsed({ "official.music-control": false }, { "official.music-control": false }, "official.music-control", true, 默认收起), true); // 记忆关闭 → 不读记忆，回默认收起。
+    assert.equal(islandCardRememberedCollapsed({ "official.music-control": true }, { "official.music-control": false }, "official.music-control", true, {}), false); // 记忆关闭 + 无默认收起 → 展开。
 });
 
 test("消息面板收起态由宿主统一记忆驱动，不再用局部 useState", () => {

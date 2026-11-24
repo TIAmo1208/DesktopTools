@@ -56,6 +56,16 @@ test("岛偏好默认值、整份保存往返与 Rust 一致的边界", () => {
     });
     assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify({ ...selected, fontSize: 14 }))), { ...selected, fontSize: 14 });
     // 上浮岛显示：缺字段为空映射，缺键按各自默认值读取；显式布尔往返，未知键与非布尔值拒绝。旧字段不迁移。
+    // 收起记忆与默认收起：都按逐卡映射解析，缺字段为空表（记忆缺失视为开启、默认收起缺失视为不收起，t98）。
+    assert.deepEqual(defaults.islandCardCollapseMemory, {});
+    assert.deepEqual(defaults.islandCardDefaultCollapsed, {});
+    const collapsed = parsePreferences({ ...defaults, islandCardDefaultCollapsed: { "official.collect-box": true }, islandCardCollapseMemory: { "official.music-control": false } });
+    assert.equal(collapsed.islandCardDefaultCollapsed["official.collect-box"], true);
+    assert.equal(collapsed.islandCardCollapseMemory["official.music-control"], false);
+    assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify(collapsed))).islandCardDefaultCollapsed, collapsed.islandCardDefaultCollapsed);
+    // 该映射按「保留合法布尔项」解析：非法类型/未知键被丢弃，不是抛错（与 collapseMemory 的既有口径一致）。
+    assert.deepEqual(parsePreferences({ ...defaults, islandCardDefaultCollapsed: null }).islandCardDefaultCollapsed, {});
+    assert.deepEqual(parsePreferences({ ...defaults, islandCardDefaultCollapsed: { "official.collect-box": "yes", unknown: true } }).islandCardDefaultCollapsed, {});
     assert.deepEqual(defaults.islandAnchorVisible, {});
     assert.deepEqual(defaults.islandPluginAnchorVisible, {}); // 逐插件卡映射缺省为空，全部显示。
     assert.equal(ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT, true);

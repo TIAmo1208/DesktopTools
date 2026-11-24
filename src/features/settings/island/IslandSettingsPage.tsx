@@ -13,6 +13,7 @@ import { DesktopTileMenu, type DesktopTileMenuItem } from "../../tiles/DesktopTi
 import { SettingsAbout } from "../ui";
 import { SettingsSwitch } from "../ui";
 import { islandAnchorPluginCards, islandCardAvailability, moveIslandCard, sortIslandCardManifests, sortIslandCardRows, updateIslandCardOrder } from "./islandSettings";
+import { islandCardCollapseDefault } from "../../island/islandMessageCard"; // 回显与实际初始收起共用同一规则（t105）。
 import { IslandWeatherSettings } from "./IslandWeatherSettings";
 import "./IslandSettingsPage.css";
 
@@ -204,20 +205,22 @@ export const IslandSettings = ({
                             }
                         />
                     </div>
+                    <div className="settings__row">
+                        <label className="settings__row-title" htmlFor={`island-default-collapsed-${detail.id}`}>
+                            默认收起
+                        </label>
+                        <SettingsSwitch
+                            id={`island-default-collapsed-${detail.id}`}
+                            label="默认收起"
+                            checked={islandCardCollapseDefault(detail.id, preferences?.islandCollectCollapsedDefault ?? true, preferences?.islandCardDefaultCollapsed ?? {})}
+                            disabled={unavailable || !preferences}
+                            onChange={(checked) =>
+                                onPreferences({ islandCardDefaultCollapsed: { ...(preferences?.islandCardDefaultCollapsed ?? {}), [detail.id]: checked } })
+                            }
+                        />
+                    </div>
                     {detail.id === "official.collect-box" ? (
                         <>
-                            <div className="settings__row">
-                                <label className="settings__row-title" htmlFor="island-collect-collapsed-default">
-                                    默认收起
-                                </label>
-                                <SettingsSwitch
-                                    id="island-collect-collapsed-default"
-                                    label="默认收起"
-                                    checked={preferences?.islandCollectCollapsedDefault ?? true}
-                                    disabled={unavailable || !preferences}
-                                    onChange={(checked) => onPreferences({ islandCollectCollapsedDefault: checked })}
-                                />
-                            </div>
                             <div className="settings__row">
                                 <span className="settings__row-title">收起时显示条数</span>
                                 <div className="island-settings__segmented" role="tablist" aria-label="收起时显示条数">

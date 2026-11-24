@@ -3,6 +3,8 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { parseComponentRuntimeSnapshot } from "../../../contracts/component.ts";
 
+import { islandCardCollapseDefault } from "../../island/islandMessageCard.ts"; // 设置页「默认收起」回显共用同一规则。
+import { ISLAND_MESSAGE_CARD_ID } from "../../../contracts/settings.ts";
 import { islandCardAvailability, moveIslandCard, normalizeIslandCardOrder, sortIslandCardManifests, updateIslandCardOrder } from "./islandSettings.ts";
 
 test("真实官方音乐清单进入岛设置列表，勾选才写入顺序", () => {
@@ -165,6 +167,30 @@ test("卡片列表把消息通知并入同一排序链，开关写展开显示�
     assert.match(page, /onPreferences\(\{ islandMessageCardVisible: checked \}\)/); // 写展开显示偏好。
     assert.match(page, /islandMessageCardInitialization\(preferences\)/); // 首次插入一次。
     assert.match(page, /card\.isMessage \?/); // 消息行没有卡片二级页。
+});
+
+test("设置页「默认收起」回显与实际初始收起一致：逐卡键优先，收集箱回退旧默认、消息卡收起、普通卡展开", () => {
+    // 与 IslandSettingsPage 的 checked 调用完全一致：islandCardCollapseDefault(id, collectDefault, map)。
+    const 回显 = (id: string, collectDefault: boolean, map: Record<string, boolean>) => islandCardCollapseDefault(id, collectDefault, map);
+    const 收集箱 = "official.collect-box";
+    const 消息卡 = ISLAND_MESSAGE_CARD_ID;
+    const 普通卡 = "official.music-control";
+    // 缺键：收集箱跟随旧 collectDefault，消息卡收起，普通卡展开。
+    assert.equal(回显(收集箱, true, {}), true);
+    assert.equal(回显(收集箱, false, {}), false);
+    assert.equal(回显(消息卡, false, {}), true);
+    assert.equal(回显(普通卡, true, {}), false);
+    // 显式 false：三张卡都回显关。
+    assert.equal(回显(收集箱, true, { [收集箱]: false }), false);
+    assert.equal(回显(消息卡, true, { [消息卡]: false }), false);
+    assert.equal(回显(普通卡, true, { [普通卡]: false }), false);
+    // 显式 true：三张卡都回显开（普通卡也能被打开）。
+    assert.equal(回显(收集箱, false, { [收集箱]: true }), true);
+    assert.equal(回显(消息卡, false, { [消息卡]: true }), true);
+    assert.equal(回显(普通卡, false, { [普通卡]: true }), true);
+    const page = readFileSync(new URL("./IslandSettingsPage.tsx", import.meta.url), "utf8");
+    assert.match(page, /checked=\{islandCardCollapseDefault\(detail\.id, preferences\?\.islandCollectCollapsedDefault/, "回显走岛侧规则，不再直接读原始 map");
+    assert.match(page, /onPreferences\(\{ islandCardDefaultCollapsed:/, "写入仍写逐卡 map");
 });
 
 test("消息槽满额时不静默挤掉既有卡，设置页给出满额说明", () => {

@@ -48,6 +48,23 @@ fn weather_visibility_defaults_and_persists()
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// 逐卡「默认收起」：显式 null 与混合非布尔值逐项丢弃，不整体失败（与前端 parseIslandCardFlags 一致，t103）。
+#[test]
+fn island_card_default_collapsed_drops_null_and_non_bool_entries()
+{
+    let null_field: ApplicationPreferences = serde_json::from_str(r#"{"islandCardDefaultCollapsed": null}"#).unwrap();
+    assert!(null_field.island_card_default_collapsed.is_empty(), "显式 null 按空表处理");
+    let mixed: ApplicationPreferences = serde_json::from_str(r#"{"islandCardDefaultCollapsed": {"official.collect-box": true, "official.music-control": "yes", "unknown": true, "plugin.demo": false}}"#).unwrap();
+    assert_eq!(mixed.island_card_default_collapsed.get("official.collect-box"), Some(&true));
+    assert_eq!(mixed.island_card_default_collapsed.get("plugin.demo"), Some(&false));
+    assert!(mixed.island_card_default_collapsed.get("official.music-control").is_none(), "非布尔项丢弃");
+    assert!(mixed.island_card_default_collapsed.get("unknown").is_none(), "未知前缀丢弃");
+    let roundtrip: ApplicationPreferences = serde_json::from_str(&serde_json::to_string(&mixed).unwrap()).unwrap();
+    assert_eq!(roundtrip.island_card_default_collapsed, mixed.island_card_default_collapsed, "往返保持");
+    let missing: ApplicationPreferences = serde_json::from_str("{}").unwrap();
+    assert!(missing.island_card_default_collapsed.is_empty(), "缺省为空表");
+}
+
 /// 已移除的天气来源偏好字段不参与反序列化，天气显隐仍按当前字段取值。
 #[test]
 fn retired_weather_source_preference_is_ignored()

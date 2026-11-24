@@ -140,6 +140,8 @@ pub struct ApplicationPreferences
     pub island_card_collapsed: std::collections::BTreeMap<String, bool>, // 当前处于收起态的岛卡；只在记忆开启的卡片上写入。
     #[serde(default, deserialize_with = "deserialize_island_card_collapse_memory")]
     pub island_card_collapse_memory: std::collections::BTreeMap<String, bool>, // 逐卡「记忆收起状态」开关，缺失视为开启。
+    #[serde(default, deserialize_with = "deserialize_island_card_default_collapsed")]
+    pub island_card_default_collapsed: std::collections::BTreeMap<String, bool>, // 逐卡「默认收起」开关：没有记忆状态时以此为准，缺省不收起。
     #[serde(default = "default_island_collect_collapsed_count")]
     pub island_collect_collapsed_count: u8, // 收集箱收起时显示的最近条目数。
     #[serde(default = "default_true")]
@@ -216,6 +218,7 @@ impl Default for ApplicationPreferences
             island_weather_city_id: String::new(),
             island_card_collapsed: std::collections::BTreeMap::new(),
             island_card_collapse_memory: std::collections::BTreeMap::new(),
+            island_card_default_collapsed: std::collections::BTreeMap::new(),
             island_collect_collapsed_count: default_island_collect_collapsed_count(),
             island_collect_collapsed_default: true,
             disabled_plugins: Vec::new(),
@@ -315,6 +318,26 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(normalize_island_card_flags(std::collections::BTreeMap::<String, bool>::deserialize(deserializer)?.into_iter()))
+}
+
+/// 默认收起：显式 null 或混合非布尔值都逐项丢弃，不整体失败（与前端 parseIslandCardFlags 口径一致，t103）。
+fn deserialize_island_card_default_collapsed<'de, D>(deserializer: D) -> Result<std::collections::BTreeMap<String, bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer).unwrap_or(serde_json::Value::Null); // 任意合法 JSON 都收，非法值下面逐项过滤。
+    let mut kept = std::collections::BTreeMap::new();
+    if let Some(object) = value.as_object()
+    {
+        for (key, flag) in object
+        {
+            if let Some(flag) = flag.as_bool()
+            {
+                kept.insert(key.clone(), flag);
+            } // 非布尔项丢弃，不连累其它卡片。
+        }
+    }
+    Ok(normalize_island_card_flags(kept.into_iter()))
 }
 
 /// 浮岛锚点显隐严格校验：键只接受 music、message、plugin，值必须为布尔；未知键与非布尔值直接报错，不静默丢弃。
