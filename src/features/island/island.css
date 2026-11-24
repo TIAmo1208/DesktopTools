@@ -300,6 +300,7 @@ html[data-island="true"] #root {
 .island[data-state="hover"] .island-card {
     --island-hover-padding: 12px;
     min-inline-size: min(360px, var(--island-hover-inline, 0px));
+    max-inline-size: var(--island-compact-max-width, 392px); /* 卡宽上限 392，窗口 416 与展开窗同宽（t123）。 */
     padding: var(--island-hover-padding);
     border-radius: 16px;
 }
@@ -576,7 +577,20 @@ button.island-anchor:active {
     padding-inline: var(--island-hover-padding);
 }
 
-.island-anchor-detail__lines { flex: 1 1 auto; min-inline-size: 0; }
+/* 各类详情的正文用剩余宽度，不用内在文本宽度挤走同排的状态位。测宽样本仍量自然宽。 */
+:is(.island-anchor-detail, .island-hover-width__sample) > :is(.island-anchor-detail__lines, .island-plugin-hover, .island-notification-list, .island-music-hover) {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+}
+.island-anchor-detail > :is(.island-anchor-detail__lines, .island-plugin-hover, .island-notification-list, .island-music-hover) {
+    flex-basis: 0;
+}
+
+/* hover 的自绘挂载盒只跟随详情正文；展开插件卡的最小尺寸不适用于它。 */
+.island-anchor-detail .island-plugin-hover > [data-plugin-container] {
+    min-inline-size: 0;
+    min-block-size: 0;
+}
 /* 导航失败提示占用详情整行，排在内容行之后，不挤走身份与详情。 */
 .island-anchor-detail { flex-wrap: wrap; }
 .island-anchor-detail > .island-navigation-feedback { flex-basis: 100%; order: 10; }
@@ -589,10 +603,6 @@ button.island-anchor:active {
     line-height: 14px;
     opacity: 0.78;
 }
-
-/* 插件自绘与通知列表都可缩到可用内容宽，列表仍由最长一行参与测宽。 */
-.island-plugin-hover,
-.island-notification-list { flex: 1 1 auto; min-inline-size: 0; }
 
 /* 消息共享文本、时间和关闭三轨；至少一行需要图标时才启用固定 16px 前轨。 */
 .island-notification-list {
@@ -706,11 +716,6 @@ button.island-anchor:active {
     gap: 12px;
     min-inline-size: 0;
 }
-/* Penpot 07 UI 三态：hover 正文用横排媒体、三行信息、右侧操作；整体仍由浮岛自然测宽。 */
-.island-music-hover {
-    flex: 1 1 auto;
-}
-
 /* 卡片的 12px 内边距仍由 hover 外壳提供；媒体图单独沿用设计稿的 48px 和 16px 圆角。 */
 .island-music-hover > .island-music-hover__artwork {
     flex: none;

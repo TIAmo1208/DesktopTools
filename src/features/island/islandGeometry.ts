@@ -31,18 +31,38 @@ export const islandGeometry = (
     const margin = form === "notch" ? 0 : 6; // 胶囊离工作区边 6px，刘海贴边。
     const notch = form === "notch" && state !== "expanded" ? 12 : 0; // 外凸负圆角只在常态与 hover 生效；展开态不额外扩大窗口。
     const alongSpan = horizontalEdge ? work.height : work.width; // 沿边方向的工作区尺寸。
-    const alongSize = (horizontalEdge ? height : columnWidth) + notch * 2; // 沿边居中按卡片内容宽计算，滚动条槽不参与居中。
+    // 沿边居中按实际窗口宽（列宽加刘海外扩 / 高度加刘海外扩），窄卡因此仍是窗中心对工作区中心（t130）。
+    const alongSize = horizontalEdge ? height + notch * 2 : columnWidth + notch * 2;
     const alongGutter = horizontalEdge ? 0 : gutter; // 槽只在上/下贴边时占用沿边方向。
-    const 半幅 = Math.max(0, (alongSpan - alongSize) / 2); // 内容在沿边方向的居中半幅；偏移以居中为 0。
+    const 半幅 = Math.max(0, (alongSpan - alongSize) / 2); // 窗口在沿边方向的居中半幅；偏移以居中为 0。
     const maxOffset = Math.max(0, 半幅 - alongGutter); // 槽占着沿边方向的末端，那一侧可移动范围相应减少。
     const alongOffset = Math.min(Math.max(offset, -半幅), maxOffset); // 空边按顶部同样应用持久偏移，不再强制居中。
-    // 内容按自身宽度居中，窗口向槽一侧长出去；极端偏移夹住内容起点，保证窗口仍在工作区内。
-    const alongStart = Math.min(Math.max(半幅 + alongOffset, 0), Math.max(0, alongSpan - alongSize - alongGutter)); // 极端偏移只夹紧内容起点，窗口始终留在工作区内。
+    const 窗沿宽 = alongSize; // 沿边方向的窗口尺寸：左右贴边是高度，上下贴边是列宽加刘海外扩。
+    const 夹到工作区 = (起点: number, 宽: number) => Math.min(Math.max(起点, 0), Math.max(0, alongSpan - 宽 - alongGutter));
+    // 展开态仍按展开列宽居中、窗口含右侧槽；其余态先按实际窗口宽自然居中，再夹进展开窗区间（t130）。
+    const 展开gutter = horizontalEdge ? 0 : ISLAND_SCROLLBAR_GUTTER; // 展开窗在沿边方向永远带着滚动条槽。
+    const 展开半幅 = Math.max(0, (alongSpan - ISLAND_EXPANDED_COLUMN_WIDTH) / 2);
+    const 展开偏移 = Math.min(Math.max(offset, -展开半幅), Math.max(0, 展开半幅 - 展开gutter));
+    // 左右贴边时展开窗覆盖整条工作区高，区间直接是 0..工作区高，不用列宽求出的 590 当起点（t132）。
+    const 展开起点 = horizontalEdge ? 0 : Math.min(Math.max(展开半幅 + 展开偏移, 0), Math.max(0, alongSpan - ISLAND_EXPANDED_COLUMN_WIDTH - 展开gutter));
+    const 展开沿宽 = horizontalEdge ? alongSpan : ISLAND_EXPANDED_COLUMN_WIDTH + ISLAND_SCROLLBAR_GUTTER; // 上下贴边时展开窗宽 416，左右贴边时覆盖整条工作区高。
+    const 自然起点 = 夹到工作区(半幅 + alongOffset, 窗沿宽);
+    const alongStart = state === "expanded"
+        ? 展开起点
+        : Math.min(Math.max(自然起点, 展开起点), Math.max(展开起点, 展开起点 + 展开沿宽 - 窗沿宽));
     const centeredLeft = edge === "right" ? work.left + work.width - width - margin : work.left + (horizontalEdge ? margin : alongStart);
     // 自然宽切换（胶囊/悬停消息切换、relay 逐帧收放）：把窗口左缘锚定在上一帧，宽度向右扩展，
     // 避免“先按新宽居中、再随原生 margin 回执跳回”的横向抖动。展开态不锚定（列已固定）。
+    // 旧锚点只在展开窗允许区间内生效：先按最终窗尺寸求出该区间的左右界，再夹 anchorStart，旧胶囊位置不得把窗推出（t132）。
+    // hover 才受展开窗区间约束；常态胶囊保留原来的整段工作区锚定语义。上界按最终整窗宽（含刘海外扩）计。
+    const 窗整体宽 = width + (horizontalEdge ? 0 : notch * 2);
+    // 横向侧贴的展开列盒 X 区间：右侧贴边时列盒右缘离工作区右缘还有一个 margin（胶囊 6），旧锚必须按它夹（t134）。
+    const 展开列盒左 = edge === "right" ? work.left + work.width - (ISLAND_EXPANDED_COLUMN_WIDTH + ISLAND_SCROLLBAR_GUTTER) - margin : work.left + margin;
+    const 展开列盒右 = 展开列盒左 + ISLAND_EXPANDED_COLUMN_WIDTH + ISLAND_SCROLLBAR_GUTTER;
+    const 锚点下界 = state === "hover" ? (horizontalEdge ? 展开列盒左 : work.left + 展开起点) : work.left;
+    const 锚点上界 = Math.max(锚点下界, state === "hover" ? (horizontalEdge ? 展开列盒右 : work.left + 展开起点 + 展开沿宽) - 窗整体宽 : work.left + work.width - width);
     const anchoredLeft = options.anchorStart !== undefined && state !== "expanded"
-        ? Math.min(Math.max(options.anchorStart, work.left), work.left + work.width - width)
+        ? Math.min(Math.max(options.anchorStart, 锚点下界), 锚点上界)
         : undefined;
     const left = anchoredLeft ?? centeredLeft;
     const top = state === "expanded" ? work.top : edge === "bottom" ? work.top + work.height - height - margin : work.top + (horizontalEdge ? alongStart : margin);
@@ -97,7 +117,8 @@ export const ISLAND_EXPANDED_COLUMN_WIDTH = 400;
 export const ISLAND_VIEWPORT_WIDTH = 440;
 
 /** 紧凑态（胶囊/hover）窗口宽度上限：沿用原 420 视口带的可见宽度，带宽扩到 440 只用于容纳展开列。 */
-export const ISLAND_COMPACT_MAX_WIDTH = 420;
+export const ISLAND_COMPACT_GAP = 12; // hover 卡片左右各留的缺口（与展开窗的槽同宽，窗口宽 = 卡宽 + 2×缺口）。
+export const ISLAND_COMPACT_MAX_WIDTH = ISLAND_EXPANDED_COLUMN_WIDTH + ISLAND_SCROLLBAR_GUTTER - ISLAND_COMPACT_GAP * 2; // hover 卡宽上限 392 = 展开窗 416 − 两端缺口 24，窗口与展开窗同宽，边缘点击稳定落进展开窗（t119/t123）。
 
 /**
  * 固定页面原点：视口按“最大 440 宽窗口”使用与窗口相同的边/偏移落位并同样夹紧，

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { islandCardMaskPath, islandContentOffset, islandCornerRadius, islandSeamMask, islandFilletPatches, islandGeometry, islandWindowKey, moveIslandCard, visibleIslandRect, ISLAND_EXPANDED_COLUMN_WIDTH } from "./islandGeometry.ts";
+import { islandCardMaskPath, islandContentOffset, islandCornerRadius, islandSeamMask, islandFilletPatches, islandGeometry, islandWindowKey, moveIslandCard, visibleIslandRect, ISLAND_COMPACT_MAX_WIDTH, ISLAND_EXPANDED_COLUMN_WIDTH, ISLAND_SCROLLBAR_GUTTER } from "./islandGeometry.ts";
 import { parseIslandStateRequest } from "../../contracts/island.ts";
 import { readFileSync } from "node:fs";
 
@@ -300,4 +300,119 @@ test("anchorStart：自然宽切换锚定左缘，宽度向右扩展；展开态
     const 展开对照 = islandGeometry("expanded", 卡(320), 12, work, "top", 0, "capsule");
     assert.equal(展开.windowBox.left, 展开对照.windowBox.left);
     assert.equal(ISLAND_EXPANDED_COLUMN_WIDTH, 400);
+});
+
+test("hover 卡宽上限 392、窗口不超过展开窗 416，切换选中不变（t119/t123）", () => {
+    assert.equal(ISLAND_COMPACT_MAX_WIDTH, ISLAND_EXPANDED_COLUMN_WIDTH + ISLAND_SCROLLBAR_GUTTER - 24, "hover 卡宽上限 = 展开窗 416 − 两端缺口 24");
+    assert.equal(ISLAND_COMPACT_MAX_WIDTH, 392);
+    assert.ok(ISLAND_COMPACT_MAX_WIDTH + 24 <= ISLAND_EXPANDED_COLUMN_WIDTH + 16, "hover 窗口（卡宽 + 两端缺口）不得超过展开窗口 416");
+    const work = { left: 0, top: 0, width: 1920, height: 1080 };
+    // 极端长内容也只能取到上限：卡片与窗口盒都不超过展开窗。
+    const 超长 = islandGeometry("hover", [{ left: 0, top: 0, width: ISLAND_COMPACT_MAX_WIDTH, height: 72 }], 16, work, "top", 0, "capsule");
+    assert.ok(超长.cards[0]!.rect.width <= ISLAND_COMPACT_MAX_WIDTH + 0.01, "hover 卡片不得超过 392");
+    assert.ok(超长.windowBox.width <= ISLAND_EXPANDED_COLUMN_WIDTH + 16 + 0.01, `hover 窗口不得超过展开窗 416，实际 ${超长.windowBox.width}`);
+    const 展开 = islandGeometry("expanded", [{ left: 0, top: 0, width: ISLAND_COMPACT_MAX_WIDTH, height: 72 }], 12, work, "top", 0, "capsule");
+    assert.equal(展开.cards[0]!.rect.width, ISLAND_EXPANDED_COLUMN_WIDTH, "展开仍固定 400");
+    // hover 窗口左右缘不越过展开窗口：边缘点击落点仍在展开窗内。
+    assert.ok(超长.windowBox.left >= 展开.windowBox.left - 0.01, `hover 左缘 ${超长.windowBox.left} 不应越过展开左缘 ${展开.windowBox.left}`);
+    assert.ok(超长.windowBox.left + 超长.windowBox.width <= 展开.windowBox.left + 展开.windowBox.width + 0.01, "hover 右缘不应越过展开右缘");
+});
+
+test("hover 窗盒在四种贴边与两种形态下都被展开窗盒包含（t126）", () => {
+    const work = { left: 0, top: 0, width: 1920, height: 1080 };
+    const 卡 = [{ left: 0, top: 0, width: ISLAND_COMPACT_MAX_WIDTH, height: 72 }];
+    for (const form of ["capsule", "notch"] as const) {
+        for (const edge of ["top", "bottom", "left", "right"] as const) {
+            for (const offset of [0, 120, -120]) {
+                const hover = islandGeometry("hover", 卡, 16, work, edge, offset, form);
+                const expanded = islandGeometry("expanded", 卡, 12, work, edge, offset, form);
+                const h = hover.windowBox;
+                const e = expanded.windowBox;
+                assert.ok(h.left >= e.left - 0.01, `${form}/${edge}/${offset}: hover 左缘 ${h.left} 越出展开窗左缘 ${e.left}`);
+                assert.ok(h.left + h.width <= e.left + e.width + 0.01, `${form}/${edge}/${offset}: hover 右缘 ${h.left + h.width} 越出展开窗右缘 ${e.left + e.width}`);
+                assert.ok(h.top >= e.top - 0.01 && h.top + h.height <= e.top + e.height + 0.01, `${form}/${edge}/${offset}: hover 上下越出展开窗`);
+                // 可点击卡体仍在展开窗内，且上下贴边时左右各留 12 DIP 缺口。
+                const 卡体 = hover.cards[0]!.rect; // 卡体坐标相对窗口原点。
+                assert.ok(卡体.left >= -0.01 && 卡体.left + 卡体.width <= h.width + 0.01, `${form}/${edge}/${offset}: 卡体越出 hover 窗`);
+                if (form === "notch" && (edge === "top" || edge === "bottom")) assert.ok(Math.abs(卡体.left - 12) <= 0.5, `${form}/${edge}/${offset}: 刘海卡片应左右各让出 12 DIP 圆弧区，实际 ${卡体.left}`);
+            }
+        }
+    }
+});
+
+test("极限偏移（±760）与工作区边缘下 hover 窗仍被展开窗包含（t128）", () => {
+    const work = { left: 0, top: 0, width: 1920, height: 1080 };
+    const 卡 = [{ left: 0, top: 0, width: ISLAND_COMPACT_MAX_WIDTH, height: 72 }];
+    for (const form of ["capsule", "notch"] as const) {
+        for (const edge of ["top", "bottom", "left", "right"] as const) {
+            for (const offset of [0, 120, -120, 760, -760]) {
+                const hover = islandGeometry("hover", 卡, 16, work, edge, offset, form);
+                const expanded = islandGeometry("expanded", 卡, 12, work, edge, offset, form);
+                const h = hover.windowBox;
+                const e = expanded.windowBox;
+                // 窗口按实际宽度夹紧：既不越出工作区，也不越出展开窗（左右与上下四端）。
+                assert.ok(h.left >= work.left - 0.01 && h.left + h.width <= work.left + work.width + 0.01, `${form}/${edge}/${offset}: hover 越出工作区 [${h.left},${h.left + h.width}]`);
+                assert.ok(h.left >= e.left - 0.01 && h.left + h.width <= e.left + e.width + 0.01, `${form}/${edge}/${offset}: hover [${h.left},${h.left + h.width}] 未被展开窗 [${e.left},${e.left + e.width}] 包含`);
+                assert.ok(h.top >= e.top - 0.01 && h.top + h.height <= e.top + e.height + 0.01, `${form}/${edge}/${offset}: hover 上下越出展开窗`);
+            }
+        }
+    }
+    // 窄卡仍按自身宽度自然居中，不被上限夹紧。
+    const 窄 = islandGeometry("hover", [{ left: 0, top: 0, width: 200, height: 72 }], 16, work, "top", 0, "capsule");
+    assert.equal(窄.windowBox.width, 200);
+    assert.ok(Math.abs(窄.windowBox.left + 窄.windowBox.width / 2 - 960) < 1, "窄卡 hover 应居中");
+});
+
+test("刘海 hover 窄卡按实际窗宽居中、并夹在展开盒区间内（t130）", () => {
+    const work = { left: 0, top: 0, width: 1920, height: 1080 };
+    for (const edge of ["top", "bottom"] as const) {
+        for (const width of [200, 280]) {
+            const hover = islandGeometry("hover", [{ left: 0, top: 0, width, height: 72 }], 16, work, edge, 0, "notch");
+            const expanded = islandGeometry("expanded", [{ left: 0, top: 0, width, height: 72 }], 12, work, edge, 0, "notch");
+            const h = hover.windowBox;
+            const 卡 = hover.cards[0]!.rect;
+            // 窗口 = 卡宽 + 两端各 12；卡片中心与窗口中心都要落在工作区中心。
+            assert.equal(h.width, width + 24, `${edge}/${width}: 刘海窗宽应为卡宽 + 24`);
+            assert.ok(Math.abs(h.left + h.width / 2 - 960) < 1, `${edge}/${width}: 窗中心应在工作区中心，实际 ${h.left + h.width / 2}`);
+            assert.ok(Math.abs((卡.left + 卡.width / 2) - h.width / 2) < 1, `${edge}/${width}: 卡片应在窗口内居中`);
+            assert.ok(h.left >= expanded.windowBox.left - 0.01 && h.left + h.width <= expanded.windowBox.left + expanded.windowBox.width + 0.01, `${edge}/${width}: 窄卡窗应落在展开盒内`);
+        }
+    }
+    // 392 宽仍与展开窗端点对齐（t126 不回归）。
+    const 宽 = islandGeometry("hover", [{ left: 0, top: 0, width: ISLAND_COMPACT_MAX_WIDTH, height: 72 }], 16, work, "top", 0, "notch");
+    assert.deepEqual(宽.windowBox, { left: 760, top: 0, width: 416, height: 72 });
+});
+
+test("侧贴高卡与旧锚点 anchorStart 都按最终窗尺寸限界（t132）", () => {
+    const work = { left: 0, top: 0, width: 1920, height: 1080 };
+    // 1) 侧贴高卡：沿边是高度，展开窗覆盖整段工作区，夹紧不能用 400 列宽求出的 590。
+    for (const edge of ["left", "right"] as const) {
+        for (const offset of [250, -250]) {
+            const hover = islandGeometry("hover", [{ left: 0, top: 0, width: 200, height: 780 }], 16, work, edge, offset, "capsule");
+            const expanded = islandGeometry("expanded", [{ left: 0, top: 0, width: 200, height: 780 }], 12, work, edge, offset, "capsule");
+            const h = hover.windowBox;
+            assert.equal(h.height, 780);
+            assert.ok(h.top >= -0.01 && h.top + h.height <= 1080 + 0.01, `${edge}/${offset}: 高卡窗越出工作区 top=${h.top}`);
+            assert.ok(h.top >= expanded.windowBox.top - 0.01 && h.top + h.height <= expanded.windowBox.top + expanded.windowBox.height + 0.01, `${edge}/${offset}: 高卡窗未被展开窗包含`);
+        }
+    }
+    // 2) 旧锚点（200 宽胶囊 left=848）不得把 392 hover 窗推出展开盒。
+    const 锚定 = islandGeometry("hover", [{ left: 0, top: 0, width: ISLAND_COMPACT_MAX_WIDTH, height: 72 }], 16, work, "top", 0, "notch", { anchorStart: 848 });
+    const 展开 = islandGeometry("expanded", [{ left: 0, top: 0, width: ISLAND_COMPACT_MAX_WIDTH, height: 72 }], 12, work, "top", 0, "notch");
+    assert.deepEqual(锚定.windowBox, { left: 760, top: 0, width: 416, height: 72 }, `旧锚点应被夹回展开盒，实际 ${JSON.stringify(锚定.windowBox)}`);
+    assert.ok(锚定.windowBox.left >= 展开.windowBox.left && 锚定.windowBox.left + 锚定.windowBox.width <= 展开.windowBox.left + 展开.windowBox.width);
+});
+
+test("横向侧贴的旧 anchorStart 按展开列盒 X 边界夹紧（t134）", () => {
+    const work = { left: 0, top: 0, width: 1920, height: 1080 };
+    const 卡 = [{ left: 0, top: 0, width: ISLAND_COMPACT_MAX_WIDTH, height: 72 }];
+    for (const [edge, anchor] of [["right", 1714], ["left", 0], ["left", 1900]] as const) {
+        const hover = islandGeometry("hover", 卡, 16, work, edge, 0, "capsule", { anchorStart: anchor });
+        const expanded = islandGeometry("expanded", 卡, 12, work, edge, 0, "capsule");
+        const h = hover.windowBox;
+        const e = expanded.windowBox;
+        assert.ok(h.left >= e.left - 0.01 && h.left + h.width <= e.left + e.width + 0.01, `${edge}/anchor${anchor}: hover [${h.left},${h.left + h.width}] 越出展开盒 [${e.left},${e.left + e.width}]`);
+        // 右贴边时右缘必须落在展开盒右缘内（工作区右缘还要让出胶囊 6 DIP）。
+        if (edge === "right") assert.ok(h.left + h.width <= work.width - 6 + 0.01, `右贴 hover 右缘 ${h.left + h.width} 越出 1914`);
+    }
 });

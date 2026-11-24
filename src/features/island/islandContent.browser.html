@@ -750,6 +750,87 @@
                     断言(!条目(`event:${来源}`)?.querySelector(".island-anchor__value"), `非法附加项 ${非法} 不得渲染`);
                 }
 
+                // ---- 六（续）、hover 长文本慢速滚动：仅溢出时建动画，短文本与关动效都不滚 ----
+                阶段 = "六（续）、hover 长文本慢速滚动";
+                {
+                    按键("Escape");
+                    await 稳定("collapsed");
+                    const 长文 = "很长的一条锚点详情正文用来触发盒内往返滚动".repeat(3);
+                    渲染({ contentFacts: [事实("滚动-长", "pending", 长文, "12:30")] });
+                    await 直到(() => 胶囊锚点().length === 1, "单锚点胶囊");
+                    悬停();
+                    await 稳定("hover");
+                    const 轨道 = () => document.querySelector(".island-anchor-detail .scrolling-text[data-overflow='true'] .scrolling-text__track");
+                    await 直到(() => Boolean(轨道()), "长文本应标记为溢出", 4000);
+                    const 滚动动画 = 轨道().getAnimations().map((动画) => ({ 时长: 动画.effect.getTiming().duration, 次数: 动画.effect.getTiming().iterations }));
+                    断言(滚动动画.length >= 1, `长文本溢出应有滚动动画，实际 ${滚动动画.length} 条`);
+                    断言(滚动动画.every((动画) => Number(动画.时长) > 0 && 动画.次数 === Infinity), `滚动动画应为无限循环且时长大于 0：${JSON.stringify(滚动动画)}`);
+                    // 同一会话里换成短文本：不再溢出，动画被取消。
+                    渲染({ contentFacts: [事实("滚动-短", "pending", "短", "12:30")] });
+                    await 直到(() => 详情文本().includes("短"), "换成短文本");
+                    await 稳定("hover");
+                    const 短框 = document.querySelector(".island-anchor-detail .scrolling-text");
+                    断言(短框?.getAttribute("data-overflow") === "false", "短文本不应标记溢出");
+                    断言(!短框.querySelector(".scrolling-text__track").getAnimations().length, "短文本不应有滚动动画");
+                    // 关掉界面动效：长文本也不得滚动（与减少动效同一口径）。
+                    渲染({ contentFacts: [事实("滚动-长2", "pending", 长文, "12:30")] });
+                    await 直到(() => 详情文本().includes("很长"), "换回长文本");
+                    const 原动效 = 夹具.偏好.interfaceAnimations;
+                    夹具.pushPreferences({ interfaceAnimations: false });
+                    await 稳定("hover");
+                    const 关动效轨道 = document.querySelector(".island-anchor-detail .scrolling-text__track");
+                    断言(关动效轨道 && !关动效轨道.getAnimations().length, "关动效（含 reduced-motion）时长文本不得滚动");
+                    夹具.pushPreferences({ interfaceAnimations: 原动效 });
+                    按键("Escape");
+                    try { await 稳定("collapsed"); } catch {}
+                }
+
+                // ---- 六（续二）、hover 宽度上限与左右边缘点击进入展开不回退 ----
+                阶段 = "六（续二）、hover 宽度上限与边缘点击不回退";
+                {
+                    渲染({ contentFacts: [事实("边缘-长", "pending", 长中文, "12:30")] });
+                    await 稳定("collapsed");
+                    for (const 边 of ["左", "右"]) {
+                        悬停();
+                        await 稳定("hover");
+                        // 每次点击前重新取当前 hover 终态盒与卡片框，左右缘分开采样（t128）。
+                        const 边缘卡 = 卡片().getBoundingClientRect();
+                        const hover窗 = { ...夹具.提交.at(-1).windowBox };
+                        断言(边缘卡.width <= 392.6, `${边}：hover 卡片不得超过 392（窗口 416 与展开窗同宽），实际 ${边缘卡.width}`);
+                        断言(hover窗.width <= 416.6, `${边}：hover 窗口不得超过展开窗口 416，实际 ${hover窗.width}`);
+                        断言(hover窗.width + 0.01 >= 边缘卡.width, `${边}：hover 窗口必须覆盖卡片（含两端缺口）`);
+                        const x = 边 === "左" ? 边缘卡.left + 2 : 边缘卡.right - 2;
+                        const y = 边缘卡.top + 24;
+                        const 原set = 岛().setPointerCapture;
+                        const 原has = 岛().hasPointerCapture;
+                        const 原release = 岛().releasePointerCapture;
+                        岛().setPointerCapture = () => {};
+                        岛().hasPointerCapture = () => false;
+                        岛().releasePointerCapture = () => {};
+                        try {
+                            const 点 = { clientX: x, clientY: y, screenX: x, screenY: y };
+                            岛().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse", pointerId: 9, button: 0, buttons: 1, ...点 }));
+                            岛().dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "mouse", pointerId: 9, button: 0, ...点 }));
+                        } finally {
+                            岛().setPointerCapture = 原set;
+                            岛().hasPointerCapture = 原has;
+                            岛().releasePointerCapture = 原release;
+                        }
+                        await 稳定("expanded");
+                        await 等待(420); // 越过进入展开后的透明边距宽限，取终态而不是过渡 union。
+                        断言(当前态() === "expanded", `${边}边缘点击进入展开后不得回退胶囊`);
+                        const 展开卡宽 = 卡片().getBoundingClientRect().width;
+                        断言(近似(展开卡宽, 400, 0.6), `展开卡片仍应固定 400，实际 ${展开卡宽}`);
+                        const 展开窗 = 夹具.提交.at(-1).windowBox;
+                        断言(夹具.提交.at(-1).state === "expanded", `${边}：最后一次提交应是展开终态`);
+                        断言(hover窗.left >= 展开窗.left - 0.6 && hover窗.left + hover窗.width <= 展开窗.left + 展开窗.width + 0.6, `${边}：hover 窗盒必须被展开窗盒包含：hover [${hover窗.left},${hover窗.left + hover窗.width}]，展开 [${展开窗.left},${展开窗.left + 展开窗.width}]`);
+                        按键("Escape");
+                        await 稳定("collapsed");
+                    }
+                    按键("Escape");
+                    try { await 稳定("collapsed"); } catch {}
+                }
+
                 // ---- 七、边界：只剩锚点、拖放接收与回退 ----
 
                 阶段 = "七、边界：只剩锚点、拖放接收与回退";
@@ -1644,11 +1725,62 @@
                 }
             };
 
-            验证收集箱宽度().then(验证天气预报).then(() => {
+            // 单独测量共享宿主外壳与插件真实 DOM，不触发浮岛切态或 DSH 轮询。
+            const 验证插件详情宽度 = async () => {
+                阶段 = "DSH 锚点详情宽度";
+                const 插件路径 = encodeURI("/plugin/DSH 接入/");
+                const { islandHoverNode, fitHoverBalance } = await import(/* @vite-ignore */ `${插件路径}index.js`);
+                const 样式 = Object.assign(document.createElement("link"), { rel: "stylesheet", href: `${插件路径}style.css` });
+                await new Promise((完成, 失败) => {
+                    样式.onload = 完成;
+                    样式.onerror = () => 失败(new Error("插件样式加载失败"));
+                    document.head.append(样式);
+                });
+                const 卡 = document.createElement("article");
+                卡.className = "island-card island-card--anchors fence-workspace";
+                卡.style.cssText = "position:fixed;inset-inline-start:-10000px;box-sizing:border-box;padding:12px";
+                卡.innerHTML = '<div class="island-card__content"><div class="island-anchor-detail"><span class="island-anchor island-anchor--detail"></span><div class="island-plugin-hover"><div data-plugin-container="island.plugin.dsh-fixture"></div></div></div></div>';
+                document.body.append(卡);
+                const 文案 = "待关注任务状态".repeat(20);
+                const 内容 = islandHoverNode({ task: { label: "运行任务", value: 文案 }, counts: [{ label: "未读", value: "12" }, { label: "完成未读", value: "4" }], progress: { percent: 29, fraction: "4/14", label: "完成进度" }, balance: { value: "￥12345678901234.00" } });
+                卡.querySelector("[data-plugin-container]").append(内容);
+                const 子级 = (项) => 内容.querySelector(`.plugin-dsh-status-hover__${项}`);
+                const 主题原值 = document.documentElement.dataset.desktopTheme;
+                const 实测 = [];
+                try {
+                    for (const 主题 of ["dark", "light"]) {
+                        document.documentElement.dataset.desktopTheme = 主题;
+                        for (const [外宽, 列数] of [[180, 1], [320, 2], [400, 2]]) {
+                            卡.style.inlineSize = `${外宽}px`;
+                            fitHoverBalance(内容);
+                            const 宿主 = 卡.querySelector(".island-plugin-hover");
+                            const 状态位 = 卡.querySelector(".island-anchor--detail").getBoundingClientRect();
+                            const 根框 = 内容.getBoundingClientRect();
+                            const 值 = 子级("task-value");
+                            const 余额 = 子级("balance");
+                            const 金额 = 子级("balance-value");
+                            const 換行 = 金额.getBoundingClientRect().top > 子级("balance-label").getBoundingClientRect().top + 1;
+                            断言(近似(根框.width, 外宽 - 52) && 近似(宿主.clientWidth, 根框.width) && 近似(根框.left - 状态位.right, 8), `DSH ${外宽} DIP：详情分配余宽并与 20 DIP 状态位同排`);
+                            断言(getComputedStyle(子级("task")).gridTemplateColumns.split(" ").length === 列数, `DSH ${外宽} DIP：任务列数 ${列数}`);
+                            断言(值.scrollWidth > 值.clientWidth && getComputedStyle(值).textOverflow === "ellipsis" && 值.textContent === 文案, `DSH ${外宽} DIP：长值省略且不改正文`);
+                            断言(!余额.hidden && 換行 === (列数 === 1) && 金额.scrollWidth === 金额.clientWidth, `DSH ${外宽} DIP：长金额按宽度完整换行`);
+                            断言([内容, 宿主, 子级("task"), 子级("counts"), 子级("progress"), 余额].every((节点) => 节点.scrollWidth === 节点.clientWidth), `DSH ${外宽} DIP：各行不横溢`);
+                            实测.push(`${主题} ${外宽}→${根框.width} DIP/${列数}列/金额${換行 ? "换行" : "同排"}/${getComputedStyle(内容).color}`);
+                        }
+                    }
+                } finally {
+                    document.documentElement.dataset.desktopTheme = 主题原值;
+                    卡.remove();
+                    样式.remove();
+                }
+                report(失败.length ? `FAIL\n- ${失败.join("\n- ")}\n${实测.join("；")}` : `PASS DSH 锚点详情：${实测.join("；")}`);
+            };
+
+            (new URLSearchParams(location.search).has("dshHoverLayout") ? 验证插件详情宽度() : 验证收集箱宽度().then(验证天气预报).then(() => {
                 阶段 = "启动";
                 渲染();
                 return 运行();
-            }).catch((错误) => {
+            })).catch((错误) => {
                 report(`FAIL\n- ${阶段}：${错误 instanceof Error ? 错误.message : String(错误)}${失败.length ? `\n- ${失败.join("\n- ")}` : ""}${遮蔽证据 ? `\n（遮蔽 DOM 证据：${遮蔽证据}）` : ""}${滚动槽证据 ? `\n（滚动槽实测：${滚动槽证据}）` : ""}`);
             });
         </script>

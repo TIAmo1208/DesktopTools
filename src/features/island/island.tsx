@@ -1906,8 +1906,9 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                 const expandedInline = element.style.getPropertyValue("--island-expanded-inline");
                 if (mode === "expanded") element.style.removeProperty("--island-expanded-inline");
                 if (samples) {
-                    // hover 宽度跟随当前内容宽（不保留历史峰值）：内容变短允许收窄，上限交给视口带宽（t83/t88）。
+                    // hover 宽度取全部锚点详情的最大自然宽，并夹到视口带上限：整个 hover 会话宽度恒定，长内容不撑宽（t116）。
                     const naturalInline = islandHoverInlineSize(Array.from(samples.children, (sample) => sample.getBoundingClientRect().width), capsuleInline.current);
+                    // 宽度 = 当前锚点集合的最大自然宽（夹上限）：切换选中不变，集合本身变化时重算，允许加宽或收窄（t123）。
                     hoverSessionInline.current = Math.min(naturalInline, ISLAND_COMPACT_MAX_WIDTH);
                     setHoverInline(hoverSessionInline.current);
                 }
@@ -1931,10 +1932,6 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                 if (mode === "expanded" && expandedInline) element.style.setProperty("--island-expanded-inline", expandedInline);
                 if (!measured.length) return;
                 // 顶栏也可能撑宽卡片；插件自绘只在选中时挂载，只有真实卡片能测到它的宽度。
-                if (hoverCard) {
-                    hoverSessionInline.current = Math.min(measured[0].width, ISLAND_COMPACT_MAX_WIDTH); // 同上：跟随实测，不保留峰值。
-                    setHoverInline(hoverSessionInline.current);
-                }
                 try {
                     const radius = mode === "collapsed" ? 22 : mode === "hover" ? 16 : preferences.islandRadius;
                     const pending = pendingOffset.current;
@@ -3161,7 +3158,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             id="island-scroll-content"
             className="island"
             style={{ maxBlockSize: work?.height, "--island-work-block": work ? `${work.height}px` : undefined, "--island-anchor-size": `${ISLAND_ANCHOR_SIZE}px`, "--island-capsule-line-max": `${islandCapsuleLineLimit(vertical, media?.playback === "playing")}px`,
-            "--island-expanded-column-width": `${ISLAND_EXPANDED_COLUMN_WIDTH}px`, "--island-anchor-gap": `${ISLAND_ANCHOR_GAP}px`, "--island-anchor-grow": `${ISLAND_ANCHOR_GROW_MS}ms`, "--island-anchor-shrink": `${ISLAND_ANCHOR_SHRINK_MS}ms`, "--island-anchor-easing": ISLAND_ANCHOR_EASING } as CSSProperties}
+            "--island-expanded-column-width": `${ISLAND_EXPANDED_COLUMN_WIDTH}px`,
+            "--island-compact-max-width": `${ISLAND_COMPACT_MAX_WIDTH}px` as string, "--island-anchor-gap": `${ISLAND_ANCHOR_GAP}px`, "--island-anchor-grow": `${ISLAND_ANCHOR_GROW_MS}ms`, "--island-anchor-shrink": `${ISLAND_ANCHOR_SHRINK_MS}ms`, "--island-anchor-easing": ISLAND_ANCHOR_EASING } as CSSProperties}
             data-island-page="true"
             data-dragging={dragActive ? "true" : undefined}
             data-form={preferences?.islandForm ?? "capsule"}
