@@ -3,7 +3,7 @@ import type { IslandRect, IslandStateRequest } from "../../contracts/island.ts";
 /** 依实测卡片形成一次提交；透明间隙也命中，不填充可见表面。 */
 export const islandGeometry = (
     state: IslandStateRequest["state"],
-    measured: IslandRect[],
+    measuredInput: IslandRect[],
     radius: number,
     work: IslandRect,
     edge: "" | "top" | "bottom" | "left" | "right",
@@ -11,7 +11,11 @@ export const islandGeometry = (
     form: "capsule" | "notch" = "capsule",
     options: { anchorStart?: number } = {},
 ): IslandStateRequest => {
+    let measured = measuredInput; // 展开态在下面统一改写列宽。
     if (!measured.length) throw new Error("岛缺少实测卡片");
+    // 展开态列宽由页面固定：首帧、动画帧、重测与重同步都从这一处取值，
+    // 否则内容自然宽会随写入宽度重排，出现 280→288→314→342 的分次长大与末帧回退（t69–t73）。
+    if (state === "expanded") measured = measured.map((rect) => ({ ...rect, width: ISLAND_EXPANDED_COLUMN_WIDTH }));
     const gutter = state === "expanded" ? ISLAND_SCROLLBAR_GUTTER : 0; // 展开态在卡片外留一条滚动条槽。
     const gutterStart = edge === "right" ? gutter : 0; // 贴右边时槽在卡片左侧，保持卡片贴边。
     const gutterEnd = gutter - gutterStart;
@@ -87,17 +91,20 @@ export const islandWindowKey = ({ state, windowBox, viewport }: IslandStateReque
 export const ISLAND_SCROLLBAR_GUTTER = 16;
 
 /** 展开内容列的固定列宽：切换消息 1/全部只改高度，列偏移与窗口盒不随文字宽变化。 */
-export const ISLAND_EXPANDED_COLUMN_WIDTH = 360;
+export const ISLAND_EXPANDED_COLUMN_WIDTH = 400;
 
-/** 固定页面视口带宽：覆盖最大窗口宽度（展开卡 360 + 滚动条槽 16 + 刘海 24）并留余量。 */
-export const ISLAND_VIEWPORT_WIDTH = 420;
+/** 固定页面视口带宽：覆盖最大窗口宽度（展开卡 400 + 滚动条槽 16 + 刘海 24）并留余量。 */
+export const ISLAND_VIEWPORT_WIDTH = 440;
+
+/** 紧凑态（胶囊/hover）窗口宽度上限：沿用原 420 视口带的可见宽度，带宽扩到 440 只用于容纳展开列。 */
+export const ISLAND_COMPACT_MAX_WIDTH = 420;
 
 /**
- * 固定页面原点：视口按“最大 420 宽窗口”使用与窗口相同的边/偏移落位并同样夹紧，
+ * 固定页面原点：视口按“最大 440 宽窗口”使用与窗口相同的边/偏移落位并同样夹紧，
  * 因此同一偏移下所有状态窗口（含较宽的展开与并集）都落在视口内；状态切换不移动视口。
  */
 export const islandViewport = (work: IslandRect, edge: string, offset: number, state: IslandStateRequest["state"] = "collapsed"): IslandRect => {
-    // 展开态页面铺满工作区，整片透明区都能收到指针事件；紧凑两态仍用 420 视口带。
+    // 展开态页面铺满工作区，整片透明区都能收到指针事件；紧凑两态仍用 440 视口带。
     if (state === "expanded") return { ...work };
     const horizontal = edge === "left" || edge === "right"; // 左右贴边时视口贴左右边，窗口沿竖直方向居中。
     if (horizontal)

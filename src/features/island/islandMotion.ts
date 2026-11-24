@@ -34,10 +34,10 @@ export const islandUnionFrame = (from: IslandStateRequest, to: IslandStateReques
     // 只在形变期间保留并集，终态精确落到目标盒；展开目标已覆盖整条工作区高度。
     if (elapsed >= total) return to;
     const union = islandUnionBox(from, to, work);
-    if (stagger > 0) return islandStaggeredFrame(from, to, elapsed, union, stagger); // 展开的两段编排。
+    if (stagger > 0) return islandStaggeredFrame(from, to, elapsed, union, stagger, edge); // 展开的两段编排。
     if (elapsed > 0 && (from.state === "expanded" || to.state === "expanded")) {
         // 全高盒只是宿主，不是内容尺寸；从真实卡片绝对位置插值，防止出展开时第一帧撑成整列。
-        return islandStaggeredFrame(from, to, elapsed, union, 0);
+        return islandStaggeredFrame(from, to, elapsed, union, 0, edge);
     }
     const frame = elapsed <= 0 ? from : islandMotionFrame(from, to, elapsed, edge, work); // 起点帧必须按 from 自己的贴边锚点取窗口，否则内容会错位到 to 那一侧。
     const dx = frame.windowBox.left - union.left;
@@ -53,7 +53,7 @@ export const islandUnionFrame = (from: IslandStateRequest, to: IslandStateReques
 };
 
 /** 展开两段帧：当前卡从入态矩形走向展开矩形，其他卡延迟后从当前卡展开矩形弹到各自位置。 */
-const islandStaggeredFrame = (from: IslandStateRequest, to: IslandStateRequest, elapsed: number, union: IslandRect, stagger: number): IslandStateRequest => {
+const islandStaggeredFrame = (from: IslandStateRequest, to: IslandStateRequest, elapsed: number, union: IslandRect, stagger: number, edge: string): IslandStateRequest => {
     // 目标矩形在 to 自己的窗口坐标里，先换算到并集坐标；并集可能比展开窗口更大。
     const dx = to.windowBox.left - union.left;
     const dy = to.windowBox.top - union.top;
@@ -74,7 +74,21 @@ const islandStaggeredFrame = (from: IslandStateRequest, to: IslandStateRequest, 
                 : anchor;
             // 宽度只用不回弹的进度：back 曲线越过 1 时会让卡宽先缩到目标以下再胀回，观感是展开前先向内收一下。
             const widthProgress = Math.min(1, progress);
-            const rect = clamp({ left: mix(start.left, card.rect.left, progress), top: mix(start.top, card.rect.top, progress), width: mix(start.width, card.rect.width, widthProgress), height: mix(start.height, card.rect.height, progress) });
+            // 中心固定在目标中心、宽度对称展开：分别插值 left 与 width 会让增宽过程中左缘来回找居中，
+            // 观感就是「先向右撑开、再调整居中」（t69–t77）。left 由目标中心减去当前半宽求出，左右同时展开。
+            const width = mix(start.width, card.rect.width, widthProgress);
+            // 锚定按贴边方向：左贴固定左缘、右贴固定右缘、上下贴中心。
+            // 上下贴时若源中心与目标中心不同（极限 offset），中心按进度连续插值，避免 0.01ms 就跳几十 DIP（t87/t88）。
+            const 源中心 = start.left + start.width / 2;
+            const 目标中心 = card.rect.left + card.rect.width / 2;
+            const 中心 = Math.abs(源中心 - 目标中心) <= 0.5 ? 目标中心 : mix(源中心, 目标中心, progress);
+            const 锚 = edge === "left"
+                ? start.left
+                : edge === "right"
+                  ? start.left + start.width - width
+                  : 中心 - width / 2;
+            const left = Math.min(Math.max(0, 锚), Math.max(0, union.width - width)); // 并集内夹紧，越界时优先保宽度。
+            const rect = clamp({ left, top: mix(start.top, card.rect.top, progress), width, height: mix(start.height, card.rect.height, progress) });
             return { rect, radius: Math.max(0, Math.min(mix(origin?.radius ?? card.radius, card.radius, progress), rect.width / 2, rect.height / 2)) };
         }
         const local = Math.min(1, Math.max(0, islandMotionProgress(elapsed - stagger)));

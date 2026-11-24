@@ -73,22 +73,22 @@ test("单路径补采样为理想轮廓与接缝带的交集，四边两形态�
 });
 
 const work = { left: 0, top: 40, width: 1920, height: 1040 }; // 顶部任务栏工作区。
-const card = { left: 0, top: 0, width: 320, height: 240 };
+const card = { left: 0, top: 0, width: 400, height: 240 };
 test("四边展开统一覆盖工作区高度，水平落位与滚动槽遵循原规则", () => {
     for (const [edge, left, measuredLeft] of [
-        ["top", 900, 0],
-        ["bottom", 900, 0],
+        ["top", 860, 0],
+        ["bottom", 860, 0],
         ["left", 6, 0],
-        ["right", 1578, 16],
+        ["right", 1498, 16],
     ] as const) {
         // 展开态窗口在卡片外侧多一条 16 DIP 滚动条槽；贴右边时槽在卡片左侧，实测卡片带 16 起始内缩。
         const request = islandGeometry("expanded", [{ ...card, left: measuredLeft }], 12, work, edge, 100);
-        assert.deepEqual(request.windowBox, { left, top: work.top, width: 336, height: work.height });
+        assert.deepEqual(request.windowBox, { left, top: work.top, width: 416, height: work.height });
         assert.deepEqual(parseIslandStateRequest(request), request);
     }
     assert.equal(islandGeometry("hover", [card], 16, work, "right", 2000).windowBox.top, 840);
-    assert.equal(islandGeometry("collapsed", [card], 22, work, "", 999).windowBox.left, 1600); // 空边按顶部应用偏移。
-    assert.equal(islandGeometry("collapsed", [card], 22, work, "", 0).windowBox.left, 800); // 空边偏移 0 仍居中。
+    assert.equal(islandGeometry("collapsed", [card], 22, work, "", 999).windowBox.left, 1520); // 空边按顶部应用偏移。
+    assert.equal(islandGeometry("collapsed", [card], 22, work, "", 0).windowBox.left, 760); // 空边偏移 0 仍居中。
 });
 
 test("三态尺寸变化时贴边侧固定，沿边以中心对称扩展", () => {
@@ -102,18 +102,18 @@ test("三态尺寸变化时贴边侧固定，沿边以中心对称扩展", () =>
     assert.equal(expanded.windowBox.top, work.top);
     assert.equal(expanded.windowBox.height, work.height);
     assert.deepEqual(expanded.viewport, work); // 展开页面视口铺满工作区，透明区可收到指针。
-    assert.equal(collapsed.viewport.width, 420); // 胶囊仍使用 420 视口带，几何不变。
+    assert.equal(collapsed.viewport.width, 440); // 胶囊仍使用 440 视口带，几何不变。
 });
 test("实测统一宽度、各自高度，间隙透明但仍归岛命中", () => {
     const request = islandGeometry("expanded", [card, { ...card, top: 248, height: 120 }], 12, work, "bottom", 0);
     assert.equal(request.windowBox.height, work.height);
-    assert.deepEqual(request.cards[2], { rect: { left: 0, top: 240, width: 320, height: 8 }, radius: 0 });
+    assert.deepEqual(request.cards[2], { rect: { left: 0, top: 240, width: 400, height: 8 }, radius: 0 });
     assert.deepEqual(parseIslandStateRequest(request), request);
     const tall = islandGeometry("expanded", [{ ...card, height: 2000 }, { ...card, top: 2008 }], 12, work, "bottom", 0);
     assert.deepEqual(tall.windowBox, request.windowBox);
     assert.deepEqual(tall.cards.map(({ rect }) => rect.height), [work.height]);
     assert.deepEqual(parseIslandStateRequest(tall), tall);
-    assert.throws(() => islandGeometry("expanded", [{ ...card, width: work.width }], 12, work, "top", 0), /超过主屏工作区/);
+    assert.throws(() => islandGeometry("expanded", [card], 12, { ...work, width: 400 }, "top", 0), /超过主屏工作区/); // 列宽固定 400 后，只能靠窄工作区触发。
     assert.throws(() => islandGeometry("hover", [{ ...card, height: work.height + 1 }], 16, work, "top", 0), /超过主屏工作区/);
 });
 test("展开窗口键仅随实际列宽、工作区或三态改变，不随内部卡片变化", () => {
@@ -121,11 +121,11 @@ test("展开窗口键仅随实际列宽、工作区或三态改变，不随内�
     const before = islandGeometry("expanded", [card, { ...card, top: 248 }], 12, primary, "top", 0);
     const folded = islandGeometry("expanded", [{ ...card, height: 44 }, { ...card, top: 52 }], 12, primary, "top", 0);
     const scrolled = islandGeometry("expanded", [{ ...card, top: -120 }, { ...card, top: 128 }], 12, primary, "top", 0);
-    assert.deepEqual(before.windowBox, { left: 1120, top: 0, width: 336, height: 1400 });
+    assert.deepEqual(before.windowBox, { left: 1080, top: 0, width: 416, height: 1400 });
     assert.notDeepEqual(folded.cards, before.cards);
     assert.equal(islandWindowKey(folded), islandWindowKey(before));
     assert.equal(islandWindowKey(scrolled), islandWindowKey(before));
-    const wider = islandGeometry("expanded", [{ ...card, width: 360 }], 12, primary, "top", 0);
+    const wider = islandGeometry("expanded", [card], 12, { ...primary, width: 2400 }, "top", 0); // 列宽固定后只有工作区变化能改窗口键。
     assert.notEqual(islandWindowKey(wider), islandWindowKey(before));
     assert.notEqual(islandWindowKey({ ...before, state: "hover" }), islandWindowKey(before));
 });
@@ -174,10 +174,10 @@ test("刘海窗口沿贴边方向外扩 12 DIP，卡片本体保持贴边并向�
 });
 
 test("刘海展开态不再外扩窗口，卡片仍按岛圆角绘制", () => {
-    const size = { left: 0, top: 0, width: 320, height: 240 };
+    const size = { left: 0, top: 0, width: 400, height: 240 };
     const expanded = islandGeometry("expanded", [size], 12, work, "top", 0, "notch");
-    assert.deepEqual(expanded.windowBox, { left: 800, top: 40, width: 336, height: work.height });
-    assert.deepEqual(expanded.cards[0]!.rect, { left: 0, top: 0, width: 320, height: 240 });
+    assert.deepEqual(expanded.windowBox, { left: 760, top: 40, width: 416, height: work.height });
+    assert.deepEqual(expanded.cards[0]!.rect, { left: 0, top: 0, width: 400, height: 240 });
     assert.equal(islandCornerRadius(12, "notch", "top", 12), "12px"); // 展开态贴边角等于岛圆角，四角一致。
 });
 
@@ -239,12 +239,12 @@ test("展开首帧内容偏移按贴边与偏移落在目标列，不是 (0,0)",
         assert.ok(content.x > 0, `${edge || "top"} 偏移 ${offset} 不应落在页面原点`);
         assert.deepEqual(request.viewport, work);
     }
-    assert.equal(islandContentOffset(islandGeometry("expanded", [card], 12, work, "right", 0) as never).x, 1594);
+    assert.equal(islandContentOffset(islandGeometry("expanded", [card], 12, work, "right", 0) as never).x, 1514);
 });
 
 test("展开根铺满工作区，卡片列按贴边偏移定位且首帧不在 0,0", () => {
     const cases = [
-        ["left", 100, 6], ["right", 100, 1594], ["top", 100, 900], ["bottom", 100, 900], ["top", 0, 800],
+        ["left", 100, 6], ["right", 100, 1514], ["top", 100, 860], ["bottom", 100, 860], ["top", 0, 760],
     ] as const;
     for (const [edge, offset, expected] of cases) {
         const request = islandGeometry("expanded", [{ ...card, left: 0 }], 12, work, edge, offset);
@@ -284,7 +284,7 @@ test("anchorStart：自然宽切换锚定左缘，宽度向右扩展；展开态
     const work = { left: 0, top: 0, width: 1920, height: 1080 };
     const 卡 = (width) => [{ left: 0, top: 0, width, height: 40 }];
     const 居中 = islandGeometry("collapsed", 卡(320), 22, work, "top", 0, "capsule");
-    assert.equal(居中.windowBox.left, 800, `居中胶囊 left 应为 800`);
+    assert.equal(居中.windowBox.left, 800, `居中胶囊 left 应为 780`);
     const 锚定 = islandGeometry("collapsed", 卡(320), 22, work, "top", 0, "capsule", { anchorStart: 100 });
     assert.equal(锚定.windowBox.left, 100);
     // 消息切换到自然宽更小的内容：左缘不变，宽度向右扩展/收缩。
@@ -299,5 +299,5 @@ test("anchorStart：自然宽切换锚定左缘，宽度向右扩展；展开态
     const 展开 = islandGeometry("expanded", 卡(320), 12, work, "top", 0, "capsule", { anchorStart: 100 });
     const 展开对照 = islandGeometry("expanded", 卡(320), 12, work, "top", 0, "capsule");
     assert.equal(展开.windowBox.left, 展开对照.windowBox.left);
-    assert.equal(ISLAND_EXPANDED_COLUMN_WIDTH, 360);
+    assert.equal(ISLAND_EXPANDED_COLUMN_WIDTH, 400);
 });

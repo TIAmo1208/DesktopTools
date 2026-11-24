@@ -38,6 +38,7 @@ import {
     islandContentOffset,
     islandExpandedColumn,
     ISLAND_EXPANDED_COLUMN_WIDTH,
+    ISLAND_COMPACT_MAX_WIDTH,
 } from "./islandGeometry";
 import {
     ISLAND_HOVER_DELAY_MS,
@@ -1747,15 +1748,17 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     }, [collapsedCards, mode, animationsEnabled]);
     // 展开态消息卡固定列宽：切换 1/全部只改高度，列偏移与窗口盒不随文字宽变化（否则窗口先变宽再居中，卡片左右抖）。
     useLayoutEffect(() => {
-        const card = root.current?.querySelector<HTMLElement>(`[data-island-card-id="${ISLAND_MESSAGE_CARD_ID}"]`);
-        if (!card) return;
+        // 展开态所有卡片都固定为列宽：只固定消息卡时，其余卡的 DOM 自然宽（约 332）会和几何层的 360 不一致，
+        // 绘制期写 360、落定后 CSS 自然流又回到 332（t69–t73 的末帧回退）。
+        const cards = Array.from(root.current?.querySelectorAll<HTMLElement>(".island-card") ?? []);
+        if (!cards.length) return;
         if (mode === "expanded") {
-            card.style.inlineSize = `${ISLAND_EXPANDED_COLUMN_WIDTH}px`;
+            for (const card of cards) card.style.inlineSize = `${ISLAND_EXPANDED_COLUMN_WIDTH}px`;
             remeasure.current(true);
         } else {
-            card.style.removeProperty("inline-size");
+            for (const card of cards) card.style.removeProperty("inline-size");
         }
-        return () => { card.style.removeProperty("inline-size"); };
+        return () => { for (const card of cards) card.style.removeProperty("inline-size"); };
     }, [mode]);
 
     useLayoutEffect(() => () => {
@@ -1903,8 +1906,9 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                 const expandedInline = element.style.getPropertyValue("--island-expanded-inline");
                 if (mode === "expanded") element.style.removeProperty("--island-expanded-inline");
                 if (samples) {
+                    // hover 宽度跟随当前内容宽（不保留历史峰值）：内容变短允许收窄，上限交给视口带宽（t83/t88）。
                     const naturalInline = islandHoverInlineSize(Array.from(samples.children, (sample) => sample.getBoundingClientRect().width), capsuleInline.current);
-                    hoverSessionInline.current = islandHoverSessionWidth(true, hoverSessionInline.current, naturalInline);
+                    hoverSessionInline.current = Math.min(naturalInline, ISLAND_COMPACT_MAX_WIDTH);
                     setHoverInline(hoverSessionInline.current);
                 }
                 const origin = element.getBoundingClientRect();
@@ -1928,7 +1932,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                 if (!measured.length) return;
                 // 顶栏也可能撑宽卡片；插件自绘只在选中时挂载，只有真实卡片能测到它的宽度。
                 if (hoverCard) {
-                    hoverSessionInline.current = islandHoverSessionWidth(true, hoverSessionInline.current, measured[0].width);
+                    hoverSessionInline.current = Math.min(measured[0].width, ISLAND_COMPACT_MAX_WIDTH); // 同上：跟随实测，不保留峰值。
                     setHoverInline(hoverSessionInline.current);
                 }
                 try {
@@ -2314,6 +2318,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                     // 先把原生窗口一次放大到两态并集，内容保持原位置；动画只在固定窗口内移动内容。
                                     const startAttached =
                                         attachedCorner.current ?? islandAttachedCorner(startGeometry.state, form, startGeometry.cards[0]?.radius ?? 0); // 从实际绘制值衔接连续切态。
+                                    // 过渡首帧与后续循环必须共用同一个起点：两者都用真实起点几何，
+                                    // 由 islandStaggeredFrame 统一做「中心固定 + 宽度补间」，0ms 不再跳到目标宽（t80）。
                                     const unionFirst = islandUnionFrame(startGeometry, request, 0, edge, work, staggerMs);
                                     if (staggerMs > 0)
                                         for (const card of cards.slice(1)) {
@@ -2515,6 +2521,26 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             islandFrameOrTimeout({
                 act: () => {
                     if (!ownsMask(token)) return;
+                    // 解除前核对已绘制的卡片矩形：与即将提交的几何不一致时按实际几何重画并再等一帧，
+                    // 否则会出现「可见首帧仍是旧宽」的中间态（t73/t74）。
+                    const 已绘制 = root.current?.querySelector<HTMLElement>(".island-card")?.getBoundingClientRect();
+                    // 目标是这一轮要显示的几何（targetGeometry），不是已应用的 native 回执：回执可能还是旧盒子。
+                    const 目标几何 = targetGeometry.current ?? actual;
+                    const 目标卡 = 目标几何?.cards[0]?.rect;
+                    const 一致 = !已绘制 || !目标卡 || (Math.abs(已绘制.width - 目标卡.width) < 1.5 && Math.abs(已绘制.height - 目标卡.height) < 1.5);
+                    if (!一致 && 目标几何 && resyncPaint && !alreadySynced)
+                    {
+                        resyncPaint(目标几何); // 只补一次，下一帧再结算，避免无限重画。
+                        islandFrameOrTimeout({
+                            act: () => settleMaskRelease(token, { keepOwner, resynced, alreadySynced: true }),
+                            requestFrame: (callback) => requestAnimationFrame(callback),
+                            cancelFrame: (handle) => cancelAnimationFrame(Number(handle)),
+                            setTimer: (callback) => setTimeout(callback, ISLAND_NO_FRAME_TIMEOUT_MS),
+                            clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+                            timeoutMs: ISLAND_NO_FRAME_TIMEOUT_MS,
+                        });
+                        return;
+                    }
                     if (keepOwner) unmaskTransition(token, true);
                     else releaseMask(token, true);
                     if (pendingEscape.current) { pendingEscape.current = false; changeMode("collapsed", false); } // 遮蔽延长后补收期间按下的 Esc。
@@ -3134,7 +3160,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             ref={root}
             id="island-scroll-content"
             className="island"
-            style={{ maxBlockSize: work?.height, "--island-work-block": work ? `${work.height}px` : undefined, "--island-anchor-size": `${ISLAND_ANCHOR_SIZE}px`, "--island-capsule-line-max": `${islandCapsuleLineLimit(vertical, media?.playback === "playing")}px`, "--island-anchor-gap": `${ISLAND_ANCHOR_GAP}px`, "--island-anchor-grow": `${ISLAND_ANCHOR_GROW_MS}ms`, "--island-anchor-shrink": `${ISLAND_ANCHOR_SHRINK_MS}ms`, "--island-anchor-easing": ISLAND_ANCHOR_EASING } as CSSProperties}
+            style={{ maxBlockSize: work?.height, "--island-work-block": work ? `${work.height}px` : undefined, "--island-anchor-size": `${ISLAND_ANCHOR_SIZE}px`, "--island-capsule-line-max": `${islandCapsuleLineLimit(vertical, media?.playback === "playing")}px`,
+            "--island-expanded-column-width": `${ISLAND_EXPANDED_COLUMN_WIDTH}px`, "--island-anchor-gap": `${ISLAND_ANCHOR_GAP}px`, "--island-anchor-grow": `${ISLAND_ANCHOR_GROW_MS}ms`, "--island-anchor-shrink": `${ISLAND_ANCHOR_SHRINK_MS}ms`, "--island-anchor-easing": ISLAND_ANCHOR_EASING } as CSSProperties}
             data-island-page="true"
             data-dragging={dragActive ? "true" : undefined}
             data-form={preferences?.islandForm ?? "capsule"}

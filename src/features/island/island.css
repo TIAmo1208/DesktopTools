@@ -15,7 +15,7 @@ html[data-island="true"] #root {
     display: grid;
     grid-auto-rows: max-content;
     inline-size: max-content;
-    max-inline-size: 360px;
+    max-inline-size: var(--island-expanded-column-width, 400px);
     gap: 8px;
     margin: 0;
     padding: 0;
@@ -50,6 +50,11 @@ html[data-island="true"] #root {
 .island[data-state="expanded"]:is([data-edge="left"], [data-edge="right"]) {
     align-content: safe center;
 }
+/* 展开态所有卡片统一固定列宽：内容变化只改高度，列偏移与窗口盒不随文字宽变化（t73/t74）。 */
+.island[data-state="expanded"] .island-card {
+    inline-size: var(--island-expanded-column-width, 400px);
+    max-inline-size: none;
+}
 /* 展开态滚动条在卡片外：贴右边时槽在左侧，其余在右侧；槽宽 16 与几何一致。 */
 .island[data-state="expanded"][data-scrollbar="end"] {
     padding-inline-end: 16px;
@@ -61,7 +66,7 @@ html[data-island="true"] #root {
 .island[data-form="notch"][data-fillets="true"][data-edge="top"],
 .island[data-form="notch"][data-fillets="true"][data-edge="bottom"] {
     padding-inline: var(--island-notch);
-    max-inline-size: calc(360px + var(--island-notch) * 2);
+    max-inline-size: calc(var(--island-expanded-column-width, 400px) + var(--island-notch) * 2);
 }
 .island[data-form="notch"][data-fillets="true"][data-edge="left"],
 .island[data-form="notch"][data-fillets="true"][data-edge="right"] {
@@ -108,7 +113,7 @@ html[data-island="true"] #root {
     align-items: stretch;
     gap: 8px;
     min-inline-size: 0;
-    max-inline-size: 360px;
+    max-inline-size: var(--island-expanded-column-width, 400px);
     padding: 16px;
     border: 0;
     border-radius: var(--island-radius, 12px);

@@ -224,6 +224,50 @@ test("贴边侧圆角在形变中从实际绘制值连续过渡，补面随进�
 });
 
 /** 展开两段：当前卡先完成，其他卡延迟从当前卡展开矩形弹出并落在各自位置。 */
+test("极限 offset：源/目标中心不同时中心按进度连续插值，0ms 不跳（t88）", () => {
+    // 顶部靠右、底部靠左各一组：源与目标中心相差数十 DIP，0ms 必须仍落在源中心。
+    const cases = [
+        { edge: "top" as const, offset: 400, from: [{ left: 0, top: 0, width: 280, height: 72 }], to: [{ left: 0, top: 0, width: 280, height: 72 }, { left: 0, top: 80, width: 360, height: 120 }] },
+        { edge: "bottom" as const, offset: -400, from: [{ left: 0, top: 0, width: 140, height: 72 }], to: [{ left: 0, top: 0, width: 140, height: 72 }, { left: 0, top: 80, width: 200, height: 120 }] },
+    ];
+    for (const { edge, offset, from: fromCards, to: toCards } of cases) {
+        const from = islandGeometry("hover", fromCards, 16, work, edge, offset);
+        const to = islandGeometry("expanded", toCards, 12, work, edge, offset);
+        for (const stagger of [0, ISLAND_EXPAND_STAGGER_MS]) {
+            const first = islandUnionFrame(from, to, 0, edge, work, stagger);
+            const 源偏 = from.windowBox.left - first.windowBox.left;
+            const 源中心 = from.cards[0]!.rect.left + 源偏 + from.cards[0]!.rect.width / 2;
+            const 首 = first.cards[0]!.rect;
+            assert.ok(Math.abs(首.left + 首.width / 2 - 源中心) <= 1.5, `${edge} offset ${offset} 0ms 中心应与源连续：${首.left + 首.width / 2} vs ${源中心}`);
+            const mid = islandUnionFrame(from, to, ISLAND_MOTION_MS / 2, edge, work, stagger);
+            const 目标偏 = to.windowBox.left - mid.windowBox.left;
+            const 目标中心 = to.cards[0]!.rect.left + 目标偏 + to.cards[0]!.rect.width / 2;
+            const 中 = mid.cards[0]!.rect;
+            const 段 = Math.abs(中.left + 中.width / 2 - 源中心) + Math.abs(中.left + 中.width / 2 - 目标中心);
+            assert.ok(段 <= Math.abs(源中心 - 目标中心) + 2, `${edge} 中点应在源与目标中心之间`);
+        }
+    }
+});
+
+test("过渡首帧按贴边锚定：左贴固定左缘、右贴固定右缘、上下贴固定中心（t84）", () => {
+    const single = [{ left: 0, top: 0, width: 280, height: 72 }];
+    const multi = [{ left: 0, top: 0, width: 280, height: 72 }, { left: 0, top: 80, width: 360, height: 120 }];
+    for (const edge of ["left", "right", "top"] as const) {
+        const from = islandGeometry("hover", single, 16, work, edge, 0);
+        const to = islandGeometry("expanded", multi, 12, work, edge, 0);
+        for (const stagger of [0, ISLAND_EXPAND_STAGGER_MS]) {
+            const first = islandUnionFrame(from, to, 0, edge, work, stagger);
+            const 源偏 = from.windowBox.left - first.windowBox.left; // 源窗口→并集窗口的左向偏移。
+            const 目标偏 = to.windowBox.left - first.windowBox.left; // 目标窗口→并集窗口的左向偏移。
+            const 源 = from.cards[0]!.rect;
+            const 首 = first.cards[0]!.rect;
+            if (edge === "left") assert.ok(Math.abs(首.left - (源.left + 源偏)) <= 1, `左贴首帧左缘应与源连续：${首.left} vs ${源.left + 源偏}`);
+            else if (edge === "right") assert.ok(Math.abs(首.left + 首.width - (源.left + 源.width + 源偏)) <= 1, `右贴首帧右缘应与源连续：${首.left + 首.width} vs ${源.left + 源.width + 源偏}`);
+            else assert.ok(Math.abs(首.left + 首.width / 2 - (to.cards[0]!.rect.left + 目标偏 + to.cards[0]!.rect.width / 2)) <= 1, "顶部首帧中心应在目标中心");
+        }
+    }
+});
+
 test("展开两段：其他卡延迟后从当前卡展开矩形弹出", () => {
     const from = islandGeometry("hover", [expanded[0]!], 16, work, "", 0);
     const to = islandGeometry("expanded", expanded, 12, work, "", 0);
@@ -271,7 +315,10 @@ test("展开两段的并集坐标换算与单卡退化", () => {
     assert.ok(dx > 0, "该用例必须产生非零并集偏移");
     assert.equal(start.windowBox.left, from.windowBox.left); // 并集向左扩到入态窗口。
     assert.equal(start.cards[1]!.rect.left, to.cards[0]!.rect.left + dx); // 锚点已换算到并集坐标。
-    assert.equal(start.cards[0]!.rect.left, from.cards[0]!.rect.left + (from.windowBox.left - start.windowBox.left));
+    // 首帧中心与源连续（源/目标中心不同则按进度插值，t88）：宽度仍用入态宽度。
+    const 源中心 = from.cards[0]!.rect.left + (from.windowBox.left - start.windowBox.left) + from.cards[0]!.rect.width / 2;
+    assert.equal(start.cards[0]!.rect.width, from.cards[0]!.rect.width);
+    assert.ok(Math.abs(start.cards[0]!.rect.left + start.cards[0]!.rect.width / 2 - 源中心) <= 1.5, "首帧中心应与源中心一致");
     const single: IslandStateRequest = { ...to, cards: [to.cards[0]!] };
     assert.deepEqual(islandUnionFrame(from, single, 120, "", work, ISLAND_EXPAND_STAGGER_MS), islandUnionFrame(from, single, 120, "", work)); // 单卡不启用两段。
 });

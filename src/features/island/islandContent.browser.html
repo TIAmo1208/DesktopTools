@@ -702,7 +702,7 @@
                 渲染({ contentFacts: [事实("宽度-1", "pending", "甲"), 事实("宽度-2", "pending", "乙"), 事实("宽度-3", "pending", "丙")] });
                 await 直到(() => 详情文本() === "丙", "当前详情与最宽锚点同时变短");
                 await 稳定("hover");
-                断言(近似(卡片().getBoundingClientRect().width, 峰值宽度, 0.1) && 夹具.提交.length === 变短前提交, "本次 hover 宽度保留峰值，原生也无缩窄提交");
+                断言(卡片().getBoundingClientRect().width < 峰值宽度 - 1 && 夹具.提交.at(-1).windowBox.width < 高度切换前.windowBox.width, `hover 宽度跟随当前内容宽：内容变短应随之收窄（${峰值宽度.toFixed(0)} → ${卡片().getBoundingClientRect().width.toFixed(0)}，窗口 ${高度切换前.windowBox.width} → ${夹具.提交.at(-1).windowBox.width}）`);
                 按键("Escape");
                 await 稳定("collapsed");
                 断言(卡片().getBoundingClientRect().width < 峰值宽度 - 20, "退出后胶囊恢复自然宽度");
@@ -1097,7 +1097,10 @@
                 通知行().find((行) => 行.querySelector(".island-anchor__text").textContent.startsWith("超宽通知")).querySelector("button").click();
                 await 直到(() => 通知行().length === 3 && 夹具.关闭记录.at(-1) === 长通知.id, "逐条关闭最宽的原生通知");
                 await 稳定("hover");
-                断言(夹具.提交.at(-1).windowBox.width === 通知峰值 && 夹具.提交.slice(通知提交起点).every((提交) => 提交.windowBox.width >= 通知峰值), "删掉最长通知只改高度，本次窗口宽度无回退提交");
+                // hover 宽度跟随当前内容宽：删条允许收窄，但不得小于当前内容宽（t83）。
+                const 删后窗宽 = 夹具.提交.at(-1).windowBox.width;
+                const 删后卡宽 = 卡片().getBoundingClientRect().width;
+                断言(删后窗宽 <= 通知峰值 && 删后窗宽 + 1 >= 删后卡宽, `删掉最长通知后窗口宽跟随内容宽（可收窄但不小于内容宽）：删前 ${通知峰值}、删后窗口 ${删后窗宽}、卡片 ${删后卡宽}`);
                 断言(通知行().some((节点) => 节点.textContent.includes("weather ·") && 节点.textContent.includes("雷阵雨")) && 通知行().some((节点) => 节点.textContent.includes("collect · 新收录")), "hover 通知保留原来源与正文");
                 const 本地保留关闭数 = 夹具.关闭记录.length;
                 const 本地收录 = 通知行().find((节点) => 节点.textContent.startsWith("collect ·"));
