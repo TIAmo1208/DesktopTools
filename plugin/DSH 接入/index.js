@@ -1863,11 +1863,21 @@ function renderPairingEntry(container, context) {
     input.type = "text";
     input.autocomplete = "off";
     input.placeholder = "ABCDE-FGHIJ-KLMNO-PQRST";
+    // 配对与取消配对都要宿主实例身份（凭据槽、回环通道）；没有实例时宿主不注入能力，禁止假报成功（t113）。
+    const 有实例 = typeof context.instanceId === "string" && context.instanceId.length > 0;
+    const 无实例提示 = element("p", "plugin-dsh-status-settings__hint", "需先添加该格子或启用浮岛卡后才能配对或取消配对。");
+    无实例提示.hidden = 有实例;
     const pair = element("button", "plugin-dsh-status-settings__button", "配对");
     pair.type = "button";
+    pair.disabled = !有实例;
     const cancel = element("button", "plugin-dsh-status-settings__button plugin-dsh-status-settings__button--secondary", "取消配对");
     cancel.type = "button";
+    cancel.disabled = !有实例;
     pair.addEventListener("click", () => {
+        if (!有实例) {
+            无实例提示.hidden = false;
+            return; // 无实例不执行配对，也不改本地状态。
+        }
         void (async () => {
             pair.disabled = true;
             status.textContent = "正在配对…";
@@ -1885,6 +1895,10 @@ function renderPairingEntry(container, context) {
         })();
     });
     cancel.addEventListener("click", () => {
+        if (!有实例) {
+            无实例提示.hidden = false;
+            return; // 无实例时绝不写 paired:false，也不显示「已取消配对」。
+        }
         void (async () => {
             try {
                 if (typeof context.clearCredential === "function") await context.clearCredential(TOKEN_SLOT);
@@ -1903,7 +1917,7 @@ function renderPairingEntry(container, context) {
             }
         })();
     });
-    root.append(input, pair, cancel, status);
+    root.append(input, pair, cancel, 无实例提示, status);
     container.append(root);
 }
 

@@ -47,6 +47,7 @@ import {
     updateTimeText,
     walletLines,
     walletText,
+    settingsEntries,
 } from "./index.js";
 
 /** 一份最小合法快照。 */
@@ -1101,4 +1102,135 @@ test("hover 余额行：容器宽度变化后重测，撤行可恢复（0→232�
         if (原ResizeObserver === undefined) delete globalThis.ResizeObserver;
         else globalThis.ResizeObserver = 原ResizeObserver;
     }
+});
+
+/** 带监听与 disabled 的元素桩，用来驱动设置条目的真实交互。 */
+const 创建交互桩 = () => ({
+    tagName: "",
+    className: "",
+    title: "",
+    textContent: "",
+    type: "",
+    value: "",
+    disabled: false,
+    hidden: false,
+    attributes: {},
+    children: [],
+    style: {},
+    dataset: {},
+    listeners: {},
+    setAttribute(name, value) {
+        this.attributes[name] = String(value);
+    },
+    append(...nodes) {
+        for (const node of nodes) this.children.push(node);
+    },
+    appendChild(node) {
+        this.children.push(node);
+        return node;
+    },
+    replaceChildren(...nodes) {
+        this.children = [...nodes];
+    },
+    addEventListener(name, handler) {
+        (this.listeners[name] ??= []).push(handler);
+    },
+    click() {
+        for (const handler of this.listeners.click ?? []) handler();
+    },
+});
+
+/** 深度优先找第一个满足条件的节点。 */
+const 找节点 = (node, 判定) => {
+    if (判定(node)) return node;
+    for (const child of node.children ?? []) {
+        const found = 找节点(child, 判定);
+        if (found) return found;
+    }
+    return undefined;
+};
+
+/** 安装 document 桩并渲染一次 DSH 配对条目。 */
+const 渲染配对条目 = context => {
+    const 原document = globalThis.document;
+    globalThis.document = {
+        head: 创建交互桩(),
+        querySelector: () => null, // 只测设置条目本身，样式表插入按「未插入」处理。
+        createElement(tag) {
+            const node = 创建交互桩();
+            node.tagName = tag.toUpperCase();
+            return node;
+        },
+    };
+    try {
+        const container = 创建交互桩();
+        settingsEntries.find(entry => entry.id === "dsh-pairing").render(container, context);
+        return container;
+    } finally {
+        if (原document === undefined) delete globalThis.document;
+        else globalThis.document = 原document;
+    }
+};
+
+test("无实例时配对/取消配对不可执行，也不写本地状态（t113）", async () => {
+    const 记录 = { 保存: [], 清凭据: 0 };
+    const 上下文 = {
+        instanceId: "", // 宿主没有可用的格子或浮岛实例。
+        settings: { baseUrl: "http://127.0.0.1:47832", paired: true, bridgeId: "bridge-stable" },
+        saveSettings: async value => {
+            记录.保存.push(value);
+        },
+        // 无实例时宿主不下发任何能力。
+    };
+    const container = 渲染配对条目(上下文);
+    const 按钮 = [];
+    找节点(container, node => {
+        if (node.tagName === "BUTTON") 按钮.push(node);
+        return false;
+    });
+    assert.equal(按钮.length, 2, "应有配对与取消配对两个按钮");
+    assert.ok(按钮.every(button => button.disabled === true), "无实例时两个按钮都禁用");
+    const 提示 = 找节点(container, node => String(node.className).includes("plugin-dsh-status-settings__hint"));
+    assert.ok(提示, "应有依赖说明");
+    assert.match(提示.textContent, /需先添加该格子或启用浮岛卡/);
+    assert.equal(提示.hidden, false, "无实例时说明可见");
+    按钮.forEach(button => button.click());
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(记录.保存.length, 0, "无实例点击不得写 paired:false 或任何设置");
+    const 状态 = 找节点(container, node => String(node.className).includes("plugin-dsh-status-settings__status"));
+    assert.equal(状态.textContent, "已配对", "状态文字保持服务端事实，不显示「已取消配对」");
+});
+
+test("有实例时取消配对仍清凭据、清回环并写 paired:false（t113 回归）", async () => {
+    const 记录 = { 保存: [], 清凭据: 0, 回环: [] };
+    const 上下文 = {
+        instanceId: "island.plugin.dsh-status",
+        settings: { baseUrl: "http://127.0.0.1:47832", paired: true, bridgeId: "bridge-stable" },
+        clearCredential: async () => {
+            记录.清凭据 += 1;
+        },
+        registerLoopbackChannel: async registration => {
+            记录.回环.push(registration);
+        },
+        saveSettings: async value => {
+            记录.保存.push(value);
+        },
+    };
+    const container = 渲染配对条目(上下文);
+    const 取消 = (() => {
+        let found;
+        找节点(container, node => {
+            if (node.tagName === "BUTTON" && node.textContent === "取消配对") found = node;
+            return false;
+        });
+        return found;
+    })();
+    assert.equal(取消.disabled, false, "有实例时可取消配对");
+    取消.click();
+    for (let i = 0; i < 20 && 记录.保存.length === 0; i += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(记录.清凭据, 1);
+    assert.ok(记录.回环.length >= 1, "应调用回环通道清理");
+    assert.equal(记录.保存.length, 1);
+    assert.equal(记录.保存[0].paired, false);
+    assert.equal(记录.保存[0].bridgeId, "");
 });
