@@ -133,7 +133,7 @@
                     mount.style.cssText = "padding:0;max-width:none";
                     createRoot(mount).render(React.createElement(PreferencesProvider, null, React.createElement(SettingsPage)));
                     const 实测 = [];
-                    for (const [页面, 标题, 子标题] of [["常规", 2, 0], ["外观", 3, 2], ["浮岛", 2, 0]]) {
+                    for (const [页面, 标题, 子标题] of [["常规", 2, 0], ["外观", 3, 2], ["性能", 0, 0], ["浮岛", 2, 0]]) {
                         const 分类 = await 直到(() => mount.querySelector(`button[aria-label="${页面}"]`), `发现 ${页面} 导航`);
                         分类.click();
                         const 正文 = await 直到(() => {
@@ -141,6 +141,10 @@
                             return 节点?.querySelector("h1")?.textContent === 页面 && 节点.querySelector(".settings__groups") ? 节点 : null;
                         }, `显示 ${页面} 分组`);
                         const 容器 = 正文.querySelector(".settings__groups");
+                        if (页面 === "性能") {
+                            const 分组 = [...容器.children];
+                            断言(分组.map((组) => `${组.tagName}/${组.getAttribute("aria-label")}/${组.querySelectorAll(".settings__row").length}`).join() === "DIV/刷新/2,DIV/动画/2", "性能四行由两个命名 div 包裹", 分组.map((组) => 组.textContent.trim()).join("/"));
+                        }
                         断言(正文.querySelectorAll("h2").length === 标题 && 正文.querySelectorAll("h3").length === 子标题, `${页面} h2/h3 数量`, `${正文.querySelectorAll("h2").length}/${正文.querySelectorAll("h3").length}`);
                         断言(getComputedStyle(容器).rowGap === "18px" && getComputedStyle(正文.querySelector(".settings__group")).rowGap === "4px", `${页面} 父组 gap 与组内行距`, `${getComputedStyle(容器).rowGap}/${getComputedStyle(正文.querySelector(".settings__group")).rowGap}`);
                         const 样式 = [];
@@ -160,7 +164,47 @@
                     const 返回 = await 直到(() => mount.querySelector('.island-settings--detail [aria-label="返回浮岛"]'), "进入锚点显示二级页");
                     返回.click();
                     await 直到(() => document.activeElement?.id === "island-anchor-entry", "退出后焦点回到重分组后的入口");
-                    document.getElementById("result").textContent = `PASS 设置分组（视口 ${innerWidth}px，锚点入口复焦）\n${实测.join("\n")}`;
+                    const 消息入口 = await 直到(() => mount.querySelector('[aria-label="打开消息通知卡片设置"]'), "消息通知出现卡片二级入口");
+                    消息入口.click();
+                    const 消息组 = await 直到(() => mount.querySelector('.island-settings--detail input[id="island-default-collapsed-official.island-messages"]')?.closest(".settings__rows"), "消息通知复用卡片折叠设置行");
+                    const 消息行 = [...消息组.children];
+                    断言(消息行.map((行) => 行.querySelector("label")?.textContent.trim()).join() === "记忆收起状态,默认收起", "消息设置精确显示两行", 消息组.textContent);
+                    const 控件右缘 = 消息行.map((行) => 行.querySelector(".settings-switch").getBoundingClientRect().right);
+                    断言(控件右缘[0] === 控件右缘[1] && 消息行[0].clientWidth === 消息行[1].clientWidth, "消息卡两行列宽和控件右缘对齐", 控件右缘.join());
+                    const 检查双主题 = (盒, 标签) => {
+                        for (const 主题 of ["dark", "light"]) {
+                            document.documentElement.dataset.theme = 主题;
+                            const 正文 = mount.querySelector(".settings__content");
+                            断言(盒.scrollWidth <= 盒.clientWidth && 正文.scrollWidth <= 正文.clientWidth, `${标签} ${主题} 不横溢`, `${盒.scrollWidth}/${盒.clientWidth}；正文 ${正文.scrollWidth}/${正文.clientWidth}`);
+                        }
+                    };
+                    检查双主题(消息组, "消息通知详情");
+                    实测.push(`消息通知 ${消息组.clientWidth}px，两行开关右缘 ${控件右缘.join("/")}px，1 个二级 h2`);
+
+                    mount.querySelector('button[aria-label="功能格子"]').click();
+                    const 音乐入口 = await 直到(() => mount.querySelector('[aria-label="音乐控制设置"]'), "发现音乐设置入口");
+                    音乐入口.click();
+                    const 音乐组 = await 直到(() => mount.querySelector('.settings__group[aria-label="频谱采集"]')?.parentElement, "音乐设置三组渲染完成");
+                    const 音乐分组 = [...音乐组.children];
+                    const 音乐行 = 音乐分组.map((组) => [...组.querySelectorAll(".feature-settings__row")].map((行) => 行.firstElementChild?.textContent.trim()));
+                    断言(音乐分组.every((组) => 组.tagName === "DIV" && getComputedStyle(组).rowGap === "4px") && getComputedStyle(音乐组).rowGap === "18px", "音乐三组组距/行距 18/4", getComputedStyle(音乐组).rowGap);
+                    断言(音乐行.map((行) => 行.join("/" )).join("；") === "显示媒体来源/显示歌词/显示实时频谱；音乐上浮岛显示；频谱采集设备/频谱段数/频谱帧率", "音乐设置按指定顺序分组", JSON.stringify(音乐行));
+                    检查双主题(音乐组, "音乐控制详情");
+                    实测.push(`音乐控制 ${音乐组.clientWidth}px，3/1/3 行、18/4px，1 个二级 h2`);
+
+                    const 验证偏好 = { ...旧偏好, islandMessageCardInitialized: true, islandCardCollapseMemory: { "official.music-control": false }, islandCardDefaultCollapsed: { "official.music-control": true } };
+                    const 保存补丁 = [];
+                    const 逐卡样本 = createRoot(document.getElementById("features"));
+                    逐卡样本.render(React.createElement(IslandSettings, { preferences: 验证偏好, disabled: false, onPreferences: (补丁) => 保存补丁.push(补丁) }));
+                    (await 直到(() => document.querySelector('#features [aria-label="打开消息通知卡片设置"]'), "逐卡写入样本加载")).click();
+                    const 默认 = await 直到(() => document.getElementById("island-default-collapsed-official.island-messages"), "逐卡默认开关加载");
+                    const 记忆 = document.getElementById("island-collapse-memory-official.island-messages");
+                    断言(默认.checked && 记忆.checked, "消息通知缺键时默认收起并记忆", `${默认.checked}/${记忆.checked}`);
+                    记忆.click();
+                    默认.click();
+                    断言(保存补丁.length === 2 && 保存补丁[0].islandCardCollapseMemory?.["official.island-messages"] === false && 保存补丁[0].islandCardCollapseMemory?.["official.music-control"] === false && 保存补丁[1].islandCardDefaultCollapsed?.["official.island-messages"] === false && 保存补丁[1].islandCardDefaultCollapsed?.["official.music-control"] === true, "消息两项各写同一逐卡字段，保留其他卡", JSON.stringify(保存补丁));
+                    逐卡样本.unmount();
+                    document.getElementById("result").textContent = `PASS 设置分组（视口 ${innerWidth}px，锚点入口复焦、消息逐卡写入）\n${实测.join("\n")}`;
                 } else {
                 const 补丁 = []; // onPreferences 收到的偏好补丁。
                 const 根 = createRoot(document.getElementById("root"));

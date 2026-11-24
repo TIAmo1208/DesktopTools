@@ -435,7 +435,7 @@ test("描述小字不留自身外边距，功能格子二级页行距由容器 g
     const 功能提示 = 清单(readFileSync(new URL("../features/FeatureSettings.css", import.meta.url), "utf8")).find(({ selector }) => selector === ".feature-settings__hint");
     assert.match(功能提示?.body ?? "", /margin:\s*0;/);
     const 功能页 = readFileSync(new URL("../features/FeatureSettings.tsx", import.meta.url), "utf8");
-    assert.ok((功能页.match(/<div className="settings__rows">/g) ?? []).length >= 4); // 时钟/音乐/收集/文件夹四个二级分支的行放进 gap 容器。
+    assert.ok((功能页.match(/<div className="settings__rows(?: settings__groups)?">/g) ?? []).length >= 4); // 四个二级分支仍用设置行容器，音乐额外使用分组。
 });
 
 test("没有可用实例时不暴露需要授权的设置条目", () => {

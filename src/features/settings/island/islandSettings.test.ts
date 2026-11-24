@@ -167,7 +167,9 @@ test("卡片列表把消息通知并入同一排序链，开关写展开显示�
     assert.match(page, /消息通知卡在展开态显示/); // 消息卡开关的可访问名。
     assert.match(page, /onPreferences\(\{ islandMessageCardVisible: checked \}\)/); // 写展开显示偏好。
     assert.match(page, /islandMessageCardInitialization\(preferences\)/); // 首次插入一次。
-    assert.match(page, /card\.isMessage \?/); // 消息行没有卡片二级页。
+    assert.match(page, /const detail = cardRows\.find\(\(card\) => card\.id === detailId\)/); // 合成消息行与清单卡共用二级页。
+    assert.match(page, /detail\?\.isMessage \? islandMessageCardEnabled\(preferences\)/); // 页头回显仍跟随展开显示偏好。
+    assert.match(page, /islandCardCollapseMemory: \{[^\n]*\[detail\.id\]: checked/); // 共用逐卡记忆开关。
 });
 
 test("设置页「默认收起」回显与实际初始收起一致：逐卡键优先，收集箱回退旧默认、消息卡收起、普通卡展开", () => {
