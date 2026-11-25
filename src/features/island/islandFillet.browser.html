@@ -824,11 +824,17 @@
                         }, 5000);
                         if (staticExpanded) {
                             const expandedFrom = commits.at(-1);
-                            root.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-                            const expanded = await until(() => {
-                                const value = snapshot();
-                                return value?.state === "expanded" ? value : null;
-                            }, 5000);
+                            // 换视口遮蔽期间整层不可交互，Enter 会被丢弃：等可见性遮蔽解除后再发键，仍在遮蔽就重试。
+                            let expanded;
+                            for (let 尝试 = 0; 尝试 < 3 && !expanded; 尝试++) {
+                                await until(() => document.querySelector("main.island").style.visibility !== "hidden", 3000);
+                                root.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+                                expanded = await until(() => {
+                                    const value = snapshot();
+                                    return value?.state === "expanded" ? value : null;
+                                }, 1200).catch(() => undefined);
+                            }
+                            if (!expanded) throw new Error("展开键在换视口遮蔽期间被丢弃，重试 3 次仍未进入展开");
                             await wait(120);
                             const settled = await settledState("expanded");
                             const border = getComputedStyle(document.querySelector("main.island .island-card"), "::before").borderTopColor;
