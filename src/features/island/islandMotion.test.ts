@@ -20,6 +20,9 @@ import {
 import { islandExpandedColumn, islandFilletPatches, islandGeometry } from "./islandGeometry.ts";
 import { parseIslandStateRequest, type IslandStateRequest } from "../../contracts/island.ts";
 
+/** 读取被测源码：CI 的 Windows 检出是 CRLF，逐行定位与片段切分统一归一为 LF 再做。 */
+const 读源码 = (relative: string) => readFileSync(new URL(relative, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+
 const work = { left: 0, top: 40, width: 1000, height: 800 };
 const collapsed = [{ left: 0, top: 0, width: 160, height: 44 }];
 const expanded = [
@@ -348,7 +351,7 @@ test("过渡帧保持旧坐标系：旧原点与新原点下屏幕位置都不�
             for (const card of frame.cards) assert.ok(card.rect.left >= 0, "过渡帧不得出现负局部坐标");
         }
     }
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     const paintIndex = source.indexOf("paint(from, 0, attachedCorner");
     const commitIndex = source.indexOf("await commit(unionFirst)");
     assert.ok(paintIndex > 0 && commitIndex > paintIndex);
@@ -521,7 +524,7 @@ test("遮蔽租约：取消即恢复、新任务接管旧回包不解除、连�
     assert.equal(unmaskIslandTransition(lease, two), true);
     assert.equal(releaseIslandMask(lease, two), true); // 连续两次后最终可见、可交互。
 
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     assert.match(source, /if \(!active \|\| !mounted\.current\) \{ settleMaskRelease\(maskToken\); return; \}/); // 队列前取消走唯一结算。
     assert.match(source, /settleMaskRelease\(maskLease\.current\.owner, \{ resynced: nativeSwap\.appliedToken !== null, alreadySynced: true \}\)/);
     assert.match(source, /if \(!active \|\| !ownsMask\(maskToken\)\) return; \/\/ 旧回包不得绘制或解除新遮蔽/);
@@ -536,7 +539,7 @@ test("回包先验权、终态先于释放，前置/在途取消时序正确", (
     assert.equal(releaseIslandMask(lease, a), false); // A 的释放幂等丢弃，不影响 B。
     assert.deepEqual(lease, { seq: 2, owner: b, masked: true });
 
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     const awaitAt = source.indexOf("await setIslandState(value);");
     const guardAt = source.indexOf("if (!active || !ownsMask(maskToken))", awaitAt);
     const writeAt = source.indexOf("currentGeometry.current = value;", awaitAt);
@@ -581,7 +584,7 @@ test("共享原生物理状态：A 在途时 B 取消不提前揭开，回包重
     assert.equal(rejected.appliedToken, null);
     assert.equal(canReleaseIslandMask(rejected, "stale", false), false); // 过期 reject 不构成解除依据。
 
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     assert.match(source, /const nativeSwap: IslandNativeSwap = \{ pending: 0, appliedToken: null, appliedGeometry: undefined \};/); // 跨 effect 共享。
     assert.match(source, /beginIslandNativeSwap\(nativeSwap\);/);
     assert.match(source, /finishIslandNativeSwap\(nativeSwap, String\(maskToken\), response\);/);
@@ -619,7 +622,7 @@ test("遮蔽释放唯一入口：三条时序与 800ms 失败兜底", () => {
     assert.equal(canReleaseIslandMask(rejected, String(stale), false), false);
     assert.equal(canReleaseIslandMask(rejected, String(stale), true), true);
 
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     assert.match(source, /const settleMaskRelease = \(token: number, options:/); // 唯一入口。
     assert.match(source, /if \(nativeSwap\.pending > 0\) \{ deferIslandMaskRelease\(deferredMaskReleases, token, \{ keepOwner, alreadySynced \}\); return; \}/);
     assert.match(source, /setTimeout\(\(\) => \{[\s\S]*?settleMaskRelease\(token, \{ keepOwner, resynced: true, alreadySynced \}\);/);
@@ -652,7 +655,7 @@ test("reject 必 drain、有界补偿重提交、失败 800ms 只解除 CSS", ()
     assert.equal(canReleaseIslandMask(failed, String(token), true), true); // 800ms 兜底只解除 CSS。
     assert.equal(failed.pending, 0);
 
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     const finallyAt = source.indexOf("finishIslandNativeSwap(nativeSwap, String(maskToken), response); // 任何返回路径都成对归零 pending。");
     const drainAt = source.indexOf("drainMaskReleases(response, !response); // reject 也一定会 drain。", finallyAt);
     assert.ok(finallyAt > 0 && drainAt > finallyAt); // reject 的 finally 仍然 drain。
@@ -664,7 +667,7 @@ test("reject 必 drain、有界补偿重提交、失败 800ms 只解除 CSS", ()
 });
 
 test("fail-closed 后同一窗口盒只由外部状态变化重提一次，成功后恢复去重", () => {
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     assert.match(source, /let failClosedResubmit = islandNativeFailClosed; \/\/ 仅在本次外部状态变化后的首个测量允许绕过一次去重/);
     assert.match(source, /const deduped = key === geometryKey\.current && \(!expanded \|\| \(from && islandWindowKey\(from\) === key\)\);/);
     assert.match(source, /if \(deduped && !failClosedResubmit\) \{/); // 只有标记允许绕过。
@@ -711,7 +714,7 @@ test("展开揭幕改为视口条件等待：inner 到位后再等一帧才解�
     assert.equal(超时到位, false);
     assert.equal(次数, 2); // 一次超时帧 + 一次收口帧。
     // 源码：并集与终态都走视口条件；双 rAF 时间屏障已退役。
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     const 并集 = source.slice(source.indexOf("paint(unionFirst, 0, startAttached, staggerMs);"), source.indexOf("settleMaskRelease(maskToken, { keepOwner: true, alreadySynced: true })"));
     assert.match(并集, /await awaitViewport\(request\.viewport\)/);
     assert.match(并集, /islandTrace\("frame-barrier", \{ where: "union", matched: 已到位 \}\)/);
@@ -743,7 +746,7 @@ test("挂起提交→同几何替换实例→旧回包：只结算租约、不�
     assert.equal(canResyncIslandGeometry({ active: true, applied: true, alreadySynced: false }), true); // 同一实例正常重同步仍保留。
     assert.equal(canResyncIslandGeometry({ active: true, applied: false, alreadySynced: false }), false); // 原生未落地不画。
 
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     assert.match(source, /const deferredMaskReleases = new Map<number, IslandDeferredRelease>\(\)/);
     assert.match(source, /resyncPaint = \(value\) => \{ if \(!active \|\| !root\.current\) return; paint\(value, 0\); \}/);
 });
@@ -777,7 +780,7 @@ test("IPC 重试耗尽：有界重试返回 false，下一次提交按无可信�
     });
     assert.equal(islandGeometryCommitDecision(reset.geometry, next, reset.seat, { edge: "", form: "capsule" }).mask, true); // 无可信基准 → 重新遮蔽。
 
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     assert.match(source, /const baseline = resetIslandGeometryBaseline\(\);/);
     assert.match(source, /currentGeometry\.current = baseline\.geometry;/);
     assert.match(source, /seatBaseline\.current = baseline\.seat;/);
@@ -794,7 +797,7 @@ test("展开终帧先写最终列：恢复相对流之前补 --island-expanded-c
     const 右贴 = parseIslandStateRequest({ ...request, windowBox: { ...request.windowBox, left: 1578 } });
     assert.equal(islandExpandedColumn(右贴), 1578);
 
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     const 展开分支 = source.slice(source.indexOf('if (request.state === "expanded") {'), source.indexOf("} else if (!animate && grows) {"));
     const 列下标 = 展开分支.indexOf("--island-expanded-column");
     const 恢复下标 = 展开分支.indexOf("restoreStyles();");
@@ -824,7 +827,7 @@ test("持续拒绝不无限重试：失败后同几何不再重发，只有外�
     // 成功提交会清空失败门：同一几何之后还能正常提交。
     assert.equal(islandFailedGeometryGate({ failedKey: "", key: "k2", resubmit: false }), false);
 
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     assert.match(source, /if \(islandFailedGeometryGate\(\{ failedKey: failedGeometry\.current, key, resubmit: failClosedResubmit \}\)\) return;/);
     assert.match(source, /failedGeometry\.current = islandGeometryKey\(request\);/); // 失败时记录未落地几何。
     assert.match(source, /failedGeometry\.current = "";/); // 成功时清门。
@@ -865,7 +868,7 @@ test("并集揭幕等待可被 cleanup/finishMotion 唤醒，submission 必定�
     await 正常.done;
     assert.equal(正常收口, true);
 
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     assert.match(source, /const reveal = islandWakingFrame\(/); // 揭幕等待本身可唤醒（并带无帧超时）。
     assert.match(source, /wakeReveal = reveal\.wake;/);
     const 取消处 = source.match(/cancelAnimationFrame\(motionFrame\);\s*wakeMotion\?\.\(\);\s*wakeReveal\?\.\(\);/g) ?? [];
@@ -873,7 +876,7 @@ test("并集揭幕等待可被 cleanup/finishMotion 唤醒，submission 必定�
 });
 
 test("终态视口屏障按需触发：同视口或已揭幕不等，trace 关闭不读布局", () => {
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     // 终态屏障只在「仍要揭幕 + 换了视口」时触发，覆盖无动效展开与紧凑态跨视口。
     assert.match(source, /if \(transitionMasked\.current && islandViewportChanged\(from, request\)\) \{/);
     const 终态块 = source.slice(source.indexOf("if (transitionMasked.current && islandViewportChanged(from, request)) {"), source.indexOf("settled = true;"));
@@ -913,7 +916,7 @@ test("失败门用外层最终目标 key：展开失败的并集不会多打一�
     // 旧做法（登记中间帧 key）拦不住最终目标：这条断言保证测试能抓住该回归。
     assert.equal(islandFailedGeometryGate({ failedKey: islandGeometryKey(并集), key: islandGeometryKey(展开), resubmit: false }), false);
 
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     assert.match(source, /failedGeometry\.current = islandGeometryKey\(request\);/); // 记外层最终目标。
     assert.doesNotMatch(source, /failedGeometry\.current = islandGeometryKey\(value\);/); // 不记动画中间帧。
 });
@@ -971,7 +974,7 @@ test("隐藏页无帧：解除遮蔽与揭幕等待都能被计时器推进收�
     assert.equal(收口, true);
 
     // 源码：settleMaskRelease 的解除与动画的揭幕/帧等待都走计时器兜底。
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     const 结算起 = source.indexOf("const settleMaskRelease = ");
     const 解除 = source.slice(结算起, source.indexOf("const observer = new ResizeObserver", 结算起));
     assert.ok(解除.length > 0, "解除遮蔽必须用帧/超时竞速");
@@ -1010,7 +1013,7 @@ test("中间帧失败不再提交最终目标：用可拒绝的 setIslandState �
 });
 
 test("带遮蔽的视口切换：隐藏帧先提交一帧，再发首次原生提交", () => {
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     const 提交起 = source.indexOf("const commit = async (value: IslandStateRequest)");
     const 提交 = source.slice(提交起, source.indexOf("currentGeometry.current = value; // 只在持有当前显示租约时写共享几何。", 提交起));
     assert.ok(提交.length > 0);
@@ -1038,7 +1041,7 @@ test("带遮蔽的视口切换：隐藏帧先提交一帧，再发首次原生�
 });
 
 test("收起不淡出内容：只有展开相位 2 的其他卡做淡入，终帧清空内联值", () => {
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     const 绘制 = source.slice(source.indexOf("// 内容只在展开相位 2 的其他卡上淡入"), source.indexOf("paintAttached(attached, value, elapsed < ISLAND_MOTION_MS);"));
     assert.ok(绘制.length > 0);
     assert.match(绘制, /const 相位淡入 = staggerMs > 0 && index > 0;/); // 只有相位 2 的其他卡淡入。
@@ -1103,7 +1106,7 @@ test("隐藏帧等两次渲染机会：帧收口/超时收口/取消唤醒三种
     assert.equal(await 丁.门.done, "frame");
 
     // 源码：commit 用两次渲染机会，cleanup 取消时先唤醒。
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     const 提交 = source.slice(source.indexOf("const commit = async (value: IslandStateRequest)"), source.indexOf("currentGeometry.current = value;"));
     assert.match(提交, /count: 1, \/\/ 一帧 \+ 帧后宏任务/);
     assert.match(提交, /timeoutMs: ISLAND_NO_FRAME_TIMEOUT_MS, \/\/ 两次机会共享同一个总超时。/);
@@ -1148,7 +1151,7 @@ test("同边同 key 接管：未首发的预留随 cleanup 撤销，继任 effec
     assert.equal(revokeIslandReservation({ key: "k", token: 7, submitted: false, submittedFinal: false }, 7, "k"), "k");
 
     // 源码：cleanup 用身份撤销；maskPainted 在 owner/active 校验之后；submitted 在首发前标记。
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     assert.match(source, /const 撤销键 = revokeIslandReservation\(pendingSubmit\.current, maskLease\.current\.owner \?\? -1, geometryKey\.current\);/);
     assert.match(source, /pendingSubmit\.current = \{ key, token: maskToken, submitted: false, submittedFinal: false \};/);
     assert.match(source, /if \(value === request\) pendingSubmit\.current\.submittedFinal = true;/);
@@ -1201,7 +1204,7 @@ test("过渡帧已发、最终请求未发：cleanup 撤销后继任 effect 恰�
     assert.equal(最终已发.filter((项) => 项 === "collapsed").length, 1);
 
     // 源码：键与预留在隐藏帧等待之后登记；submittedFinal 只在最终 request 发出时置真。
-    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const source = 读源码("./island.tsx");
     const 等帧位 = source.indexOf("if (!隐藏帧已等) {");
     const 登记位 = source.indexOf("if (!pendingSubmit.current || pendingSubmit.current.token !== maskToken) {");
     const 首发位 = source.indexOf("beginIslandNativeSwap(nativeSwap);", 登记位);

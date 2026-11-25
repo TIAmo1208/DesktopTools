@@ -111,10 +111,9 @@ test("DSH hover 进度条用正文色填充并留出文本/动作间距", () => 
     const trackStart = css.indexOf(".plugin-dsh-status-hover__track {");
     const track = css.slice(trackStart, css.indexOf("}", trackStart));
     assert.match(track, /background: transparent;/); // 透明轨由描边定义范围。
-    assert.match(track, /border: 1px solid color-mix\(in srgb, var\(--fence-text\) 45%, transparent\);/);
+    assert.match(track, /box-shadow: inset 0 0 0 1px var\(--fence-border\);/); // 1px 描边用 inset 环，不占内容高度。
+    assert.doesNotMatch(track, /border: 1px/); // 不再用实边框撑高 4px 轨。
     assert.match(track, /height: 4px;/);
-    assert.match(track, /margin-block: 2px;/); // 4px 轨在 16px 行内垂直居中。
-    assert.match(track, /align-self: center;/);
     const fillStart = css.indexOf(".plugin-dsh-status-hover__fill {");
     const fill = css.slice(fillStart, css.indexOf("}", fillStart));
     assert.match(fill, /background: var\(--fence-text\);/); // 浅/深主题正文色对比 4.54/5.79:1。

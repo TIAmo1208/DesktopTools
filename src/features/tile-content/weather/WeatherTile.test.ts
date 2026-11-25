@@ -7,7 +7,7 @@ import { runInNewContext } from "node:vm";
 test("城市弹窗动作串行，卸载后拒绝城市列表迟到结果", async () => {
     const source = await readFile(new URL("./WeatherTile.tsx", import.meta.url), "utf8");
     // 城市弹窗整体迁到置顶弹层后，提交门槛由弹层自己持有。
-    const popup = await readFile(new URL("../../popup-layer/PopupWeather.tsx", import.meta.url), "utf8");
+    const popup = (await readFile(new URL("../../popup-layer/PopupWeather.tsx", import.meta.url), "utf8")).replace(/\r\n/g, "\n"); // CI 检出为 CRLF：片段切分按 LF 做。
     const gate = popup.slice(popup.indexOf("    const run = async"), popup.indexOf("\n    return ("));
     assert.ok(gate.includes("const run = async")); // 提交门槛随弹窗一起进入置顶弹层。
     const busy = { current: false };

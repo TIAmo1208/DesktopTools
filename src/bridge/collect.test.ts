@@ -25,7 +25,7 @@ test("应用内重命名清除所有格子的旧身份，监听先行、迟到�
     const payload = event ? JSON.parse(event[1].replace(/\bold_name\b/g, JSON.stringify(old.name))) : null; // 重放后端事件内容。
     const bridge = await readFile(new URL("./collect.ts", import.meta.url), "utf8"); // 真实事件适配器。
     const listener = bridge.slice(bridge.indexOf("export const listenCollectChanges")).replace("export const", "const"); // 只执行订阅入口。
-    const source = await readFile(new URL("../features/tile-content/collect-box/CollectBox.tsx", import.meta.url), "utf8"); // 真实刷新与版本校验。
+    const source = (await readFile(new URL("../features/tile-content/collect-box/CollectBox.tsx", import.meta.url), "utf8")).replace(/\r\n/g, "\n"); // 真实刷新与版本校验；CI 检出为 CRLF，切分按 LF 做。
     const reload = source.match(/const reload = \(deletedName\?: string\) => \{[\s\S]*?\n    \};/)?.[0]; // 刷新不含 JSX。
     assert.ok(reload);
     for (const watcherFirst of [false, true]) {
@@ -81,7 +81,7 @@ test("GIF 仅悬停读取原图，关闭拒绝迟到图像", async () => {
     const { readFile } = await import("node:fs/promises");
     const { runInNewContext } = await import("node:vm");
     const { stripTypeScriptTypes } = await import("node:module");
-    const source = await readFile(new URL("../features/tile-content/collect-box/CollectBox.tsx", import.meta.url), "utf8");
+    const source = (await readFile(new URL("../features/tile-content/collect-box/CollectBox.tsx", import.meta.url), "utf8")).replace(/\r\n/g, "\n"); // CI 检出为 CRLF：片段切分按 LF 做。
     const effect = source.slice(source.indexOf("    useEffect(() => {"), source.indexOf("\n    return (", source.indexOf("const CollectImage =")));
     for (const [path, enlarged, expected] of [
         ["image.GIF", true, undefined],
