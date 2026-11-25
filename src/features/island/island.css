@@ -15,7 +15,7 @@ html[data-island="true"] #root {
     display: grid;
     grid-auto-rows: max-content;
     inline-size: max-content;
-    max-inline-size: 360px;
+    max-inline-size: var(--island-expanded-column-width, 400px);
     gap: 8px;
     margin: 0;
     padding: 0;
@@ -34,10 +34,13 @@ html[data-island="true"] #root {
     scrollbar-width: none;
     /* 根窗口容纳完整工作区高度，多卡仍共用自然内容列。 */
     max-inline-size: none;
+    box-sizing: border-box;
     grid-template-columns: max-content;
     align-content: start;
     inline-size: var(--island-expanded-inline, max-content);
     block-size: var(--island-expanded-block, var(--island-work-block, max-content));
+    /* 根铺满工作区接收指针，内容列按贴边偏移；滚动条槽再叠加。 */
+    padding-inline-start: var(--island-expanded-column, 0px);
 }
 /* 安全对齐在放不下时回到顶部，保住超高内容首行及原生滚动路径。 */
 .island[data-state="expanded"][data-edge="bottom"] {
@@ -47,40 +50,43 @@ html[data-island="true"] #root {
 .island[data-state="expanded"]:is([data-edge="left"], [data-edge="right"]) {
     align-content: safe center;
 }
+/* 展开态所有卡片统一固定列宽：内容变化只改高度，列偏移与窗口盒不随文字宽变化（t73/t74）。 */
+.island[data-state="expanded"] .island-card {
+    inline-size: var(--island-expanded-column-width, 400px);
+    max-inline-size: none;
+}
 /* 展开态滚动条在卡片外：贴右边时槽在左侧，其余在右侧；槽宽 16 与几何一致。 */
 .island[data-state="expanded"][data-scrollbar="end"] {
     padding-inline-end: 16px;
 }
 .island[data-state="expanded"][data-scrollbar="start"] {
-    padding-inline-start: 16px;
+    padding-inline-start: calc(var(--island-expanded-column, 0px) + 16px);
 }
 /* 刘海的窗口在非展开态沿边各留 12 DIP；padding 让自然布局与提交几何一致，重测时不会丢掉卡片内缩。 */
 .island[data-form="notch"][data-fillets="true"][data-edge="top"],
 .island[data-form="notch"][data-fillets="true"][data-edge="bottom"] {
     padding-inline: var(--island-notch);
-    max-inline-size: calc(360px + var(--island-notch) * 2);
+    max-inline-size: calc(var(--island-expanded-column-width, 400px) + var(--island-notch) * 2);
 }
 .island[data-form="notch"][data-fillets="true"][data-edge="left"],
 .island[data-form="notch"][data-fillets="true"][data-edge="right"] {
     padding-block: var(--island-notch);
 }
-/* 三态表面不透明度：常态最透，hover 居中，展开最实；正文、图标与描边不受影响。
-   注册成可插值属性，过渡只作用于透明度本身；补面层与卡片背景的显隐切换保持瞬时，不叠加出错误表面。 */
+/* 表面不透明度：胶囊 98%、hover 94%、展开 90%；只影响卡面和补面，切态不做透明度过渡。 */
 @property --island-surface-alpha {
     syntax: "<percentage>";
     inherits: true;
-    initial-value: 60%;
+    initial-value: 98%;
 }
 .island {
-    --island-surface-alpha: 60%;
+    --island-surface-alpha: 98%;
 }
 .island[data-state="hover"] {
-    --island-surface-alpha: 75%;
+    --island-surface-alpha: 94%;
 }
 .island[data-state="expanded"] {
     --island-surface-alpha: 90%;
 }
-/* 三态透明度直接切换：注册属性过渡在透明窗口重新合成时会留下可见跳变，改为瞬时切换。 */
 .island > .island__palette {
     position: absolute;
     display: none;
@@ -107,7 +113,7 @@ html[data-island="true"] #root {
     align-items: stretch;
     gap: 8px;
     min-inline-size: 0;
-    max-inline-size: 360px;
+    max-inline-size: var(--island-expanded-column-width, 400px);
     padding: 16px;
     border: 0;
     border-radius: var(--island-radius, 12px);
@@ -162,36 +168,99 @@ html[data-island="true"] #root {
     line-height: 20px;
 }
 .island-card__content [data-plugin-container] {
-    block-size: 88px;
+    /* 插件根按自身内容增高；固定 88 会把分组展开后的高度裁掉，宿主也收不到尺寸变化。 */
+    block-size: auto;
+    min-block-size: 88px;
     min-inline-size: 180px;
-    overflow: clip;
+    overflow: visible;
 }
 .island-card__content p {
     white-space: nowrap;
     overflow: clip;
     text-overflow: ellipsis;
 }
-/* 卡片右上角的收起/展开按钮：沿用桌面格子的 28×28 命中区与 16 图标，悬停或聚焦时出现。 */
-.island[data-state="expanded"] .island-card__toggle {
+/* 展开卡统一卡头：28 DIP 工具轨，居中拖卡句柄与末边动作保持原命中区。 */
+.island[data-state="expanded"] .island-card {
+    flex-direction: column;
+    align-items: stretch;
+}
+.island-card__toolbar {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    min-block-size: 28px;
+    margin-block-end: 8px;
+}
+/* 长条句柄在卡头水平居中，命中区不参与右侧动作区的排布。 */
+.island-card__handle {
     position: absolute;
-    inset-block-start: 6px;
-    inset-inline-end: 6px;
-    z-index: 2;
+    inset-inline-start: 50%;
+    inset-block-start: 50%;
+    transform: translate(-50%, -50%);
     display: grid;
     place-items: center;
-    inline-size: 28px;
+    flex: none;
+    inline-size: 56px;
+    block-size: 28px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: grab;
+    touch-action: none;
+}
+.island-card__handle span {
+    inline-size: 36px;
+    block-size: 4px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--fence-text) 35%, transparent);
+}
+.island-card__handle:hover span,
+.island-card__handle:focus-visible span {
+    background: color-mix(in srgb, var(--fence-text) 65%, transparent);
+}
+.island-card__handle:active span,
+.island-card__handle[data-sorting="true"] span {
+    background: color-mix(in srgb, var(--fence-text) 85%, transparent);
+}
+.island-card__handle:active,
+.island-card__handle[data-sorting="true"] {
+    cursor: grabbing;
+}
+.island-card__actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-inline-start: auto;
+}
+.island-card__action,
+.island-card__toggle {
+    display: grid;
+    place-items: center;
+    flex: none;
     block-size: 28px;
     padding: 0;
     border: 0;
     border-radius: 6px;
     color: var(--fence-text);
-    background: color-mix(in srgb, var(--fence-text) 12%, transparent);
-    opacity: 0;
+    background: color-mix(in srgb, var(--fence-text) 8%, transparent);
     cursor: pointer;
 }
-.island-card:hover .island-card__toggle,
-.island-card__toggle:focus-visible {
-    opacity: 1;
+.island-card__action {
+    padding-inline: 8px;
+    font-size: 11px;
+}
+.island-card__action:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+.island-card__toggle {
+    inline-size: 28px;
+}
+.island-card__action:hover,
+.island-card__toggle:hover {
+    background: color-mix(in srgb, var(--fence-text) 14%, transparent);
 }
 .island-card__toggle span {
     display: block;
@@ -231,6 +300,7 @@ html[data-island="true"] #root {
 .island[data-state="hover"] .island-card {
     --island-hover-padding: 12px;
     min-inline-size: min(360px, var(--island-hover-inline, 0px));
+    max-inline-size: var(--island-compact-max-width, 392px); /* 卡宽上限 392，窗口 416 与展开窗同宽（t123）。 */
     padding: var(--island-hover-padding);
     border-radius: 16px;
 }
@@ -507,7 +577,23 @@ button.island-anchor:active {
     padding-inline: var(--island-hover-padding);
 }
 
-.island-anchor-detail__lines { flex: 1 1 auto; min-inline-size: 0; }
+/* 各类详情的正文用剩余宽度，不用内在文本宽度挤走同排的状态位。测宽样本仍量自然宽。 */
+:is(.island-anchor-detail, .island-hover-width__sample) > :is(.island-anchor-detail__lines, .island-plugin-hover, .island-notification-list, .island-music-hover) {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+}
+.island-anchor-detail > :is(.island-anchor-detail__lines, .island-plugin-hover, .island-notification-list, .island-music-hover) {
+    flex-basis: 0;
+}
+
+/* hover 的自绘挂载盒只跟随详情正文；展开插件卡的最小尺寸不适用于它。 */
+.island-anchor-detail .island-plugin-hover > [data-plugin-container] {
+    min-inline-size: 0;
+    min-block-size: 0;
+}
+/* 导航失败提示占用详情整行，排在内容行之后，不挤走身份与详情。 */
+.island-anchor-detail { flex-wrap: wrap; }
+.island-anchor-detail > .island-navigation-feedback { flex-basis: 100%; order: 10; }
 
 /* hover 内容行左侧的状态符号：功能身份在顶部图标，状态在内容行左侧；用 20 视觉层，避免两行文本被 28 圆顶住而不再长高。 */
 .island-anchor--detail { flex: none; inline-size: 20px; block-size: 20px; }
@@ -517,10 +603,6 @@ button.island-anchor:active {
     line-height: 14px;
     opacity: 0.78;
 }
-
-/* 插件自绘与通知列表都可缩到可用内容宽，列表仍由最长一行参与测宽。 */
-.island-plugin-hover,
-.island-notification-list { flex: 1 1 auto; min-inline-size: 0; }
 
 /* 消息共享文本、时间和关闭三轨；至少一行需要图标时才启用固定 16px 前轨。 */
 .island-notification-list {
@@ -634,11 +716,6 @@ button.island-anchor:active {
     gap: 12px;
     min-inline-size: 0;
 }
-/* Penpot 07 UI 三态：hover 正文用横排媒体、三行信息、右侧操作；整体仍由浮岛自然测宽。 */
-.island-music-hover {
-    flex: 1 1 auto;
-}
-
 /* 卡片的 12px 内边距仍由 hover 外壳提供；媒体图单独沿用设计稿的 48px 和 16px 圆角。 */
 .island-music-hover > .island-music-hover__artwork {
     flex: none;
@@ -1141,43 +1218,6 @@ button.island-anchor:active {
     font-size: 11px;
     line-height: 18px;
 }
-.island-message-panel__toggle {
-    display: grid;
-    place-items: center;
-    flex: none;
-    inline-size: 28px;
-    block-size: 28px;
-    padding: 0;
-    border: 0;
-    border-radius: 4px;
-    color: var(--fence-text);
-    background: transparent;
-    cursor: pointer;
-}
-.island-message-panel__toggle svg {
-    inline-size: 16px;
-    block-size: 16px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.5;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    transform: rotate(90deg);
-}
-.island[data-animations="true"] .island-message-panel__toggle svg {
-    transition: transform 140ms ease-out;
-}
-.island-message-panel__toggle[data-open="true"] svg {
-    transform: rotate(-90deg);
-}
-.island-message-panel__toggle:active {
-    background: color-mix(in srgb, var(--fence-text) 18%, transparent);
-}
-@media (hover: hover) and (pointer: fine) {
-    .island-message-panel__toggle:hover {
-        background: color-mix(in srgb, var(--fence-text) 12%, transparent);
-    }
-}
 /* 分隔线及其两侧留白由后一条统一提供，首末不额外加外边距。 */
 .island-message-panel__list {
     display: grid;
@@ -1202,4 +1242,76 @@ button.island-anchor:active {
     font-size: 13px;
     line-height: var(--island-anchor-size);
     font-variant-numeric: tabular-nums;
+}
+
+/* 常态与 hover 的插件常驻宿主：移出视口但保持布局与定时器运行，不用 display:none。 */
+.island-plugin-runtime {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: -10000px;
+    inline-size: 240px;
+    block-size: 120px;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.island-plugin-runtime__host {
+    inline-size: 100%;
+    block-size: 100%;
+}
+
+/* 插件身份图标：官方原色 <img>，透明背景，只缩放到身份位尺寸。 */
+.island-plugin-identity {
+    display: block;
+    inline-size: 20px;
+    block-size: 20px;
+    object-fit: contain;
+    background: transparent;
+}
+
+.island-plugin-identity[data-size="16"] {
+    inline-size: 16px;
+    block-size: 16px;
+}
+
+/* 展开插件卡的标题行身份位：16 图标与标题行同高，正文整体右移 24。 */
+.island-plugin-card {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    min-inline-size: 0;
+}
+
+.island-card__plugin-identity {
+    flex: none;
+    display: grid;
+    place-items: center;
+    inline-size: 16px;
+    block-size: 28px;
+}
+
+.island-plugin-card__body {
+    flex: 1;
+    min-inline-size: 0;
+}
+
+/* 声明式导航：可点击锚点/消息条目保留指针与键盘焦点反馈，失败行复用页内状态语义。 */
+.island-anchor[role="button"],
+.island-notification-row__copy[role="button"] {
+    cursor: pointer;
+}
+
+.island-anchor[role="button"]:focus-visible,
+.island-notification-row__copy[role="button"]:focus-visible {
+    outline: 2px solid var(--fence-focus-border);
+    outline-offset: 2px;
+}
+
+.island-navigation-feedback {
+    margin: 0;
+    padding: 0 2px;
+    color: var(--fence-warning);
+    font-size: 11px;
+    line-height: 16px;
 }

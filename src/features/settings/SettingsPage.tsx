@@ -384,10 +384,10 @@ export const SettingsPage = () => {
                     </div>
                 )}
                 {page === "general" && (
-                    <div className="settings__rows">
+                    <div className="settings__rows settings__groups">
                         <section className="settings__group" aria-labelledby="general-startup-title">
                             <h2 className="settings__group-title" id="general-startup-title">
-                                启动与窗口
+                                启动与交互
                             </h2>
                             <div className="settings__row">
                             <span className="settings__icon settings__icon--svg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: settingsPowerIcon }} />
@@ -407,11 +407,6 @@ export const SettingsPage = () => {
                                 }}
                             />
                         </div>
-                        </section>
-                        <section className="settings__group" aria-labelledby="general-interaction-title">
-                            <h2 className="settings__group-title" id="general-interaction-title">
-                                交互
-                            </h2>
                             <div className="settings__row">
                             <span
                                 className="settings__icon settings__icon--svg"
@@ -504,7 +499,7 @@ export const SettingsPage = () => {
                     </div>
                 )}
                 {page === "appearance" && !gridDetail && (
-                    <div className="settings__rows">
+                    <div className="settings__rows settings__groups">
                         <AppearanceSettings
                             preferences={preferences}
                             disabled={busy}
@@ -561,11 +556,8 @@ export const SettingsPage = () => {
                 {page === "island" && <IslandSettings preferences={preferences} disabled={busy || !preferences} onPreferences={handlePreferences} />}
                 {page === "plugins" && <PluginSettingsPage preferences={preferences} disabled={busy || !preferences} onPreferences={handlePreferences} />}
                 {page === "performance" && (
-                    <div className="settings__rows">
-                        <section className="settings__group" aria-labelledby="performance-refresh-title">
-                            <h2 className="settings__group-title" id="performance-refresh-title">
-                                刷新策略
-                            </h2>
+                    <div className="settings__rows settings__groups">
+                        <div className="settings__group" role="group" aria-label="刷新">
                             {(
                                 [
                                     ["pauseOnFullscreen", "有应用全屏、最大化时暂停刷新", "仅暂停被前台窗口完全覆盖的显示器"],
@@ -586,11 +578,8 @@ export const SettingsPage = () => {
                                     />
                                 </div>
                             ))}
-                        </section>
-                        <section className="settings__group" aria-labelledby="performance-motion-title">
-                            <h2 className="settings__group-title" id="performance-motion-title">
-                                动效
-                            </h2>
+                        </div>
+                        <div className="settings__group" role="group" aria-label="动画">
                             <p className="settings__status">
                                 只决定布局切换与状态过渡是否播放；圆角、字体、字号和强调色在「外观」里改。
                             </p>
@@ -625,7 +614,7 @@ export const SettingsPage = () => {
                                     系统已启用减少动态效果，当前动画已关闭
                                 </p>
                             )}
-                        </section>
+                        </div>
                     </div>
                 )}
                 {page === "diagnostics" && (

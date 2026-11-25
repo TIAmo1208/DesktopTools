@@ -17,7 +17,7 @@ status: accepted
 ### 能力与声明
 
 - 新增宿主能力 `loopback-channel`，写入插件槽能力白名单，与 `read-host-time`、`read-current-media`、`probe-service-status` 并存。
-- 插件槽仍**只放行单元素声明**：清单 `required_capabilities` 一次声明其中一个能力，组合声明整份清单不注册。需要探活又想开通道的插件，按需在两者中择一并自行取舍。
+- 插件槽**允许声明能力集合**：清单 `required_capabilities` 用逗号分隔列出所需能力，去重后非空即可；未知能力、重复能力仍让整份清单不注册。该条由 [ADR-0051](0051-DSH接入改为插件与通用能力.md) 放宽，原「只放行单元素声明」作废。
 - AstrBot 插件只声明 `loopback-channel`，不再声明 `probe-service-status`；六类格子全部走通道，不保留探活旧路径。
 
 ### 通道模型

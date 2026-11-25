@@ -440,7 +440,14 @@ pub fn read_current_session(force_properties: bool) -> windows::core::Result<Opt
         let updated = properties.LastUpdatedTime()?.UniversalTime;
         let min = properties.MinSeekTime()?.Duration as f64 / 10_000.0;
         let max = properties.MaxSeekTime()?.Duration as f64 / 10_000.0;
-        let seek_range = if max.is_finite() && min.is_finite() && max > min.max(0.0) { Some((min.max(0.0), max)) } else { None };
+        let seek_range = if max.is_finite() && min.is_finite() && max > min.max(0.0)
+        {
+            Some((min.max(0.0), max))
+        }
+        else
+        {
+            None
+        };
         let now_ms = chrono::Utc::now().timestamp_millis();
         let (advancing, duration_ms, position_ms) = project_timeline(status == PlaybackStatus::Playing, position, end, updated, now_ms);
         Ok((details::Timeline { session_id: session_id.clone(), title: title.clone(), artist: artist.clone(), position_ticks: position.to_string(), end_time_ticks: end.to_string(), last_updated_time_ticks: updated.to_string(), playback_status: status.0, position_ms, duration_ms, advancing }, seek_range))

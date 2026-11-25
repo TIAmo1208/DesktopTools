@@ -88,7 +88,7 @@
             const 全文 = () => document.querySelector(".island-message__body");
             const 元信息 = () => document.querySelector(".island-message__meta");
             const 关闭按钮 = () => document.querySelector(".island-message__close");
-            const 切换按钮 = () => document.querySelector(".island-message-panel__toggle");
+            const 切换按钮 = () => document.querySelector('.island-card[data-island-message="true"] .island-card__toggle'); // 消息卡收起/展开走卡片外壳统一卡头。
             const 消息行 = () => [...document.querySelectorAll(".island-message-panel__list .island-message")];
             const 按键 = (键) => 根().dispatchEvent(new KeyboardEvent("keydown", { key: 键, bubbles: true }));
             const 悬停 = () => 根().dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", relatedTarget: null }));
@@ -290,8 +290,9 @@
                 const 单条 = 消息行()[0];
                 const 正文样式 = getComputedStyle(全文());
                 const 副行样式 = getComputedStyle(元信息());
-                断言(消息卡头().offsetHeight === 28 && !切换按钮(), "单条卡头仍占 28px，没有按钮或幽灵焦点");
-                断言(单条.offsetHeight === 34 && 消息面板().offsetHeight === 68 && 卡()[0].offsetHeight === 100, `单条正文区块实测 ${单条.offsetHeight}px，面板 ${消息面板().offsetHeight}px，外壳 ${卡()[0].offsetHeight}px，目标分别 34/68/100`);
+                const 统一卡头 = () => 卡()[0].querySelector(".island-card__toolbar");
+                断言(消息卡头().offsetHeight === 28 && 统一卡头().offsetHeight === 28 && Boolean(切换按钮()), "消息面板头与外壳统一卡头同为 28px，并提供收起按钮");
+                断言(单条.offsetHeight === 34 && 消息面板().offsetHeight === 68 && 卡()[0].offsetHeight === 144, `单条正文区块实测 ${单条.offsetHeight}px，面板 ${消息面板().offsetHeight}px，外壳 ${卡()[0].offsetHeight}px，目标分别 34/68/144`);
                 断言(正文样式.margin === "0px" && 副行样式.margin === "0px" && 正文样式.fontSize === "12px" && 正文样式.lineHeight === "18px" && 副行样式.fontSize === "11px" && 副行样式.lineHeight === "14px", "短正文与副行无 UA 外边距，字级保持 12/18 与 11/14");
                 断言(近似(全文().getBoundingClientRect().top - 消息卡头().getBoundingClientRect().bottom, 6) && 近似(元信息().getBoundingClientRect().top - 全文().getBoundingClientRect().bottom, 2), "卡头距正文 6px，正文距副行 2px");
 

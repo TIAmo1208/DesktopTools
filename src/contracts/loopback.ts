@@ -10,6 +10,7 @@ export interface LoopbackChannelRegistration {
     baseUrl?: string; // request：对端本机地址，不带路径。
     credentialRef?: string; // Windows Credential Manager 目标名。
     headerName?: string; // 注入或校验的请求头名。
+    credentialPrefix?: string; // 仅允许 `Bearer `；宿主拼接，凭据槽存原始秘密。
 }
 
 /** 注册成功后宿主给出的通道句柄。 */

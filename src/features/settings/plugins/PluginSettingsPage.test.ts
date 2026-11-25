@@ -12,6 +12,7 @@ const page = await server.ssrLoadModule("/src/features/settings/plugins/PluginSe
 const pluginContract = await server.ssrLoadModule("/src/contracts/plugin.ts");
 const scripts = await server.ssrLoadModule("/src/bridge/pluginScripts.ts");
 const installTasks = await server.ssrLoadModule("/src/features/settings/plugins/pluginInstallTasks.ts");
+const model = await server.ssrLoadModule("/src/features/settings/plugins/pluginSettingsModel.ts");
 test.after(async () => {
     await server.close();
 });
@@ -30,12 +31,20 @@ test("插件行展示元素穿透整行按钮，卸载与开关保留独立命�
     assert.match(rules.find(({ selector }) => selector === ".plugin-settings__row--link > .plugin-settings__hit")?.body ?? "", /position:\s*absolute/);
 });
 
-test("设置条目上下文带上桌面实例与主动拉取入口", () => {
+test("设置条目上下文带上实例、声明能力与主动拉取入口", () => {
     const source = readFileSync(new URL("./PluginSettingsPage.tsx", import.meta.url), "utf8");
-    assert.match(source, /const desktopInstanceId = components\?\.find\(\(item\) => item\.componentId === selected\.id\)\?\.instanceId/);
-    assert.match(source, /instanceId=\{desktopInstanceId\}/);
-    assert.match(source, /requestLoopback: instanceId \?/);
-    assert.match(source, /requestLoopback\(instanceId, channelId, method, path\)/);
+    assert.match(source, /const workspaceInstanceId = registrations\?\.find\(\(item\) => item\.componentId === selected\.id && item\.status === "ready"\)\?\.instanceId/); // 工作区已就绪实例。
+    assert.match(source, /const islandActive = pluginIslandCardActive\(selected\.id, selected\.island, preferences\)/); // 浮岛卡启用后才占用岛实例。
+    assert.match(source, /const capabilityInstanceId = pluginCapabilityInstanceId\(workspaceInstanceId, selected\.id, islandActive\)/); // 两处都没有时为空串。
+    assert.match(source, /instanceId=\{capabilityInstanceId\}/);
+    assert.match(source, /capabilities=\{selected\.requiredCapabilities\}/);
+    assert.doesNotMatch(source, /requestLoopback:/); // loopback 三件由能力上下文统一提供，不再手写。
+    assert.match(source, /\.\.\.pluginCapabilityContext\(instanceId, capabilities\)/); // 通用能力按实例授权裁剪。
+    const host = readFileSync(new URL("../../../bridge/pluginCapabilityHost.ts", import.meta.url), "utf8"); // 生产上下文组合。
+    assert.match(host, /exchangeCredential: exchangePluginCredential/);
+    assert.match(host, /registerLoopback: \(registration\) => registerLoopbackChannel\(registration\)/);
+    assert.match(host, /readLoopback: readLoopbackChannel/);
+    assert.match(host, /requestLoopback,/);
     assert.doesNotMatch(source, /peek/i);
 });
 
@@ -426,5 +435,54 @@ test("描述小字不留自身外边距，功能格子二级页行距由容器 g
     const 功能提示 = 清单(readFileSync(new URL("../features/FeatureSettings.css", import.meta.url), "utf8")).find(({ selector }) => selector === ".feature-settings__hint");
     assert.match(功能提示?.body ?? "", /margin:\s*0;/);
     const 功能页 = readFileSync(new URL("../features/FeatureSettings.tsx", import.meta.url), "utf8");
-    assert.ok((功能页.match(/<div className="settings__rows">/g) ?? []).length >= 4); // 时钟/音乐/收集/文件夹四个二级分支的行放进 gap 容器。
+    assert.ok((功能页.match(/<div className="settings__rows(?: settings__groups)?">/g) ?? []).length >= 4); // 四个二级分支仍用设置行容器，音乐额外使用分组。
+});
+
+test("没有可用实例时不暴露需要授权的设置条目", () => {
+    const source = readFileSync(new URL("./PluginSettingsPage.tsx", import.meta.url), "utf8");
+    const preferences = { islandEnabled: false, islandCardOrder: [], disabledPlugins: [] }; // 浮岛关闭、没有卡片。
+    assert.equal(model.pluginIslandCardActive("plugin.dsh", true, preferences), false);
+    assert.equal(model.pluginIslandCardActive("plugin.dsh", false, { islandEnabled: true, islandCardOrder: ["plugin.dsh"], disabledPlugins: [] }), false); // 清单没声明 island。
+    assert.equal(model.pluginIslandCardActive("plugin.dsh", true, { islandEnabled: true, islandCardOrder: [], disabledPlugins: [] }), false); // 卡没启用。
+    assert.equal(model.pluginIslandCardActive("plugin.dsh", true, { islandEnabled: true, islandCardOrder: ["plugin.dsh"], disabledPlugins: [] }), true);
+    assert.equal(model.pluginIslandCardActive("plugin.dsh", true, { islandEnabled: true, islandCardOrder: ["plugin.dsh"], disabledPlugins: ["plugin.dsh"] }), false); // 插件停用。
+
+    assert.equal(model.pluginCapabilityInstanceId("", "plugin.dsh", false), ""); // 工作区与浮岛都没有实例。
+    assert.equal(model.pluginCapabilityInstanceId("", "plugin.dsh", true), "island.plugin.dsh");
+    assert.equal(model.pluginCapabilityInstanceId("tile-1", "plugin.dsh", true), "tile-1"); // 工作区实例优先。
+
+    // 设置条目不再依赖实例（t109）：只看有没有注册内容与是否停用。
+    assert.equal(model.pluginShowsSettingsEntries(false, false), false); // 没有条目就不渲染内容区。
+    assert.equal(model.pluginShowsSettingsEntries(true, false), true); // 无实例也渲染，作者只读/本地保存即可用。
+    assert.equal(model.pluginShowsSettingsEntries(true, true), false); // 停用后不运行作者内容。
+    assert.equal(model.pluginSettingsInstanceHint("", true, false), true); // 无实例且有条目时给出「先存本地」提示。
+    assert.equal(model.pluginSettingsInstanceHint("tile-1", true, false), false);
+    assert.equal(model.pluginSettingsInstanceHint("island.plugin.dsh", true, false), false);
+
+    assert.match(source, /设置先保存在本地，添加该格子或启用浮岛卡后自动应用。/); // 无实例时的非阻断提示。
+    assert.match(source, /pluginShowsSettingsEntries\(hasEntries, pluginDisabled\)/); // 内容区只看条目与停用状态。
+    assert.doesNotMatch(source, /settingsAuthorized \? \(/); // 不再按实例门槛挡条目。
+});
+
+test("设置条目直接排在二级页内容区，不再用下拉展开包裹", () => {
+    const source = readFileSync(new URL("./PluginSettingsPage.tsx", import.meta.url), "utf8");
+    const css = readFileSync(new URL("./PluginSettingsPage.css", import.meta.url), "utf8");
+    assert.match(source, /const PluginEntryBlock = \(\{/); // 直接渲染的条目块。
+    assert.doesNotMatch(source, /openEntryIds|setOpenEntryIds/); // 不再维护展开状态。
+    assert.doesNotMatch(source, /plugin-settings__entry-head/); // 不渲染下拉标题按钮。
+    assert.doesNotMatch(source, /className="plugin-settings__entries">\s*<h3>设置条目<\/h3>/); // 标题走共享组标题样式。
+    assert.match(source, /<h3 className="settings__group-title">设置条目<\/h3>/);
+    assert.match(source, /<h4 className="settings__row-title plugin-settings__entry-title">\{entry\.name\}<\/h4>/);
+    assert.match(source, /<div className="plugin-settings__entry-body">/);
+    assert.match(css, /\.plugin-settings__entry-title \{[^}]*font-weight: 600;/); // 与其它设置页标题同字号、同字重。
+    assert.doesNotMatch(css, /\.plugin-settings__entry-head/); // 旧展开头样式一并移除。
+});
+
+test("清单不允许创建格子或没有可创建类型时不渲染「添加到桌面」", () => {
+    const source = readFileSync(new URL("./PluginSettingsPage.tsx", import.meta.url), "utf8");
+    assert.equal(model.pluginShowsAddTile(true), true);
+    assert.equal(model.pluginShowsAddTile(false), false); // creatable = 0。
+    assert.equal(model.pluginShowsAddTile(true, "theme"), false); // 主题没有可创建类型。
+    assert.match(source, /\{pluginShowsAddTile\(selected\.creatable, selected\.role\) \? \(/); // 条件渲染而不是禁用。
+    assert.doesNotMatch(source, /disabled=\{!showCreatePlugin\(selected\.creatable\)/); // 不再靠禁用态占位。
 });

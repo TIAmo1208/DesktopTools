@@ -270,7 +270,8 @@ export const FeatureSettings = ({
                     </div>
                 </div>
             ) : detail === "music" ? (
-                <div className="settings__rows">
+                <div className="settings__rows settings__groups">
+                    <div className="settings__group" role="group" aria-label="内容显示">
                     <div className="feature-settings__row">
                         <span>显示媒体来源</span>
                         <SettingsSwitch
@@ -280,6 +281,10 @@ export const FeatureSettings = ({
                             onChange={(checked) => onPreferences({ musicShowSource: checked })}
                         />
                     </div>
+                        <MusicLyricsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
+                        <MusicSpectrumRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
+                    </div>
+                    <div className="settings__group" role="group" aria-label="上浮岛显示">
                     <div className="feature-settings__row">
                         <span>音乐上浮岛显示</span>
                         <SettingsSwitch
@@ -290,8 +295,8 @@ export const FeatureSettings = ({
                             onChange={(checked) => onPreferences({ islandAnchorVisible: { ...(preferences?.islandAnchorVisible ?? {}), music: checked } })}
                         />
                     </div>
-                    <MusicLyricsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
-                    <MusicSpectrumRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
+                    </div>
+                    <div className="settings__group" role="group" aria-label="频谱采集">
                     <label className="feature-settings__row">
                         <span id="music-spectrum-device-label">频谱采集设备</span>
                         <select
@@ -314,6 +319,7 @@ export const FeatureSettings = ({
                     </label>
                     <MusicSpectrumBarsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
                     <MusicSpectrumFpsRow className="feature-settings__row" preferences={preferences} disabled={unavailable} onPreferences={onPreferences} />
+                    </div>
                 </div>
             ) : detail === "collect" ? (
                 <div className="settings__rows">

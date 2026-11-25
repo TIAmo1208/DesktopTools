@@ -1,5 +1,5 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { parseIslandDropFact, parseIslandMessages, parseIslandSnapshot, parseIslandStateRequest, parseIslandDragResult, type IslandDropFact, type IslandMessage, type IslandSnapshot, type IslandStateRequest } from "../contracts/island";
+import { ISLAND_PLUGIN_MESSAGE_EVENT, parseIslandDropFact, parseIslandMessages, parseIslandPluginMessage, parseIslandSnapshot, parseIslandStateRequest, parseIslandDragResult, type IslandDropFact, type IslandMessage, type IslandPluginMessage, type IslandSnapshot, type IslandStateRequest } from "../contracts/island";
 import { parsePreferences } from "../contracts/settings";
 import { COMPONENT_RUNTIME_SNAPSHOT_CHANGED_EVENT } from "./components";
 import { invokeRuntime, listenRuntime } from "./runtime";
@@ -103,3 +103,13 @@ export const listenIslandMessages = async (onMessages: (messages: IslandMessage[
         stop();
     };
 };
+
+/** 订阅插件投递到浮岛消息锚点的本地条目；坏载荷只报告，不打断订阅。 */
+export const listenIslandPluginMessages = (onMessage: (message: IslandPluginMessage) => void, onError: (error: unknown) => void): Promise<UnlistenFn> =>
+    listenRuntime<unknown>(ISLAND_PLUGIN_MESSAGE_EVENT, (payload) => {
+        try {
+            onMessage(parseIslandPluginMessage(payload));
+        } catch (error: unknown) {
+            onError(error);
+        }
+    });

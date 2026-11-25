@@ -1,4 +1,5 @@
-import type { IslandMessage, IslandStateRequest } from "../../contracts/island.ts";
+import type { IslandMessage, IslandPluginMessageKind, IslandStateRequest } from "../../contracts/island.ts";
+import { islandPluginMessageKey } from "./islandPluginCard.ts";
 import type { WeatherOutlookFacts } from "./islandWeatherOutlook.ts";
 import { ISLAND_MESSAGE_ANCHOR_MS, ISLAND_MESSAGE_CONTENT_MS, islandAnchorId, type IslandAnchor, type IslandStatus } from "./islandContent.ts";
 
@@ -29,15 +30,51 @@ export interface IslandNotification {
     iconUrl?: string; // 应用 Logo 数据 URL；系统通知条目才有。
     weatherCode?: string;
     weatherOutlookFacts?: WeatherOutlookFacts; // 只在本地天气条目保存到达时的同城预报。
+    uri?: string; // 声明式导航去向；有值时条目不只读。
+    componentId?: string; // 插件来源组件标识；打开时据此取岛实例。
 }
 
-/** 浮岛由实际天气变化与新增收录产生的本地事实。 */
-export type IslandLocalNotification = { content: string } & ({ source: "weather"; weatherCode?: string; weatherOutlookFacts?: WeatherOutlookFacts } | { source: "collect" });
+/** 浮岛由实际天气变化、新增收录与插件投递产生的本地事实。 */
+export type IslandLocalNotification = { content: string } & (
+    | { source: "weather"; weatherCode?: string; weatherOutlookFacts?: WeatherOutlookFacts }
+    | { source: "collect" }
+    | { source: "plugin"; pluginSource: string; pluginKey: string; pluginKind: IslandPluginMessageKind; pluginUri?: string }
+);
 
-/** 天气与收录共用消息锚点的到达和期限，不创建原生 Toast 身份。 */
-export const islandLocalNotificationArrival = (id: number, notice: IslandLocalNotification, receivedAtMs: number): IslandNotification => ({
-    key: `local:${id}`, ...notice, receivedAtMs, status: "pending",
-});
+/** 插件条目的语气到既有状态的映射；不新增状态，也不占用原生类型。 */
+const islandPluginNoticeFace = (kind: IslandPluginMessageKind): { status: IslandStatus; type: IslandMessage["type"] } => {
+    switch (kind) {
+        case "waiting":
+            return { status: "awaiting", type: "warning" };
+        case "done":
+            return { status: "completed", type: "success" };
+        case "error":
+            return { status: "failed", type: "error" };
+        case "info":
+            return { status: "pending", type: "info" };
+    }
+};
+
+/**
+ * 本地条目到达：天气与收录按递增序号给本地身份，插件条目按插件 key 给稳定身份，
+ * 因此同一 key 的重复投递只保留最新一条，不同 key 的条目按到达时间排序。
+ */
+export const islandLocalNotificationArrival = (id: number, notice: IslandLocalNotification, receivedAtMs: number): IslandNotification => {
+    if (notice.source === "plugin") {
+        const face = islandPluginNoticeFace(notice.pluginKind);
+        return {
+            key: islandPluginMessageKey(notice.pluginSource, notice.pluginKey),
+            source: "plugin",
+            content: notice.content,
+            receivedAtMs,
+            status: face.status,
+            type: face.type,
+            componentId: notice.pluginSource,
+            ...(notice.pluginUri === undefined ? {} : { uri: notice.pluginUri }),
+        };
+    }
+    return { key: `local:${id}`, ...notice, receivedAtMs, status: "pending" };
+};
 
 /** 原生通知的语义投影；原生队列仍独立负责 Toast，可选通道参数只在存在时带出。 */
 export const islandMessageArrival = (message: IslandMessage): IslandNotification => ({

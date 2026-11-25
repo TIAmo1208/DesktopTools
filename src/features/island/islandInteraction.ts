@@ -96,30 +96,81 @@ export const islandExtraBands = (window: IslandRect, target: IslandRect, edge: s
     const from = vertical ? target.top : target.left, to = from + (vertical ? target.height : target.width);
     return [[start, Math.max(0, Math.min(start + length, from) - start)], [Math.max(start, to), Math.max(0, start + length - Math.max(start, to))]].filter(([, size]) => size! > 0).map(([position, size]) => vertical ? { ...window, top: position!, height: size! } : { ...window, left: position!, width: size! });
 };
+/** 展开态铺满工作区时的透明带：内容列左右两侧整列，加上内容列上下的余量；滚动条槽另行扣除。 */
+export const islandTransparentBands = (window: IslandRect, content: IslandRect, edge: string): IslandRect[] => {
+    const verticalEdge = edge === "left" || edge === "right"; // 左右贴边保留上下退回带，上下贴边只补左右透明列。
+    const bands: IslandRect[] = [];
+    const left = Math.max(0, Math.min(window.width, content.left - window.left));
+    const right = Math.max(0, Math.min(window.width, window.left + window.width - (content.left + content.width)));
+    const top = Math.max(0, Math.min(window.height, content.top - window.top));
+    const bottom = Math.max(0, Math.min(window.height, window.top + window.height - (content.top + content.height)));
+    if (left > 0) bands.push({ ...window, width: left });
+    if (right > 0) bands.push({ ...window, left: window.left + window.width - right, width: right });
+    if (verticalEdge && top > 0) bands.push({ ...window, height: top });
+    if (verticalEdge && bottom > 0) bands.push({ ...window, top: window.top + window.height - bottom, height: bottom });
+    return bands;
+};
 /** 同一次计算返回退回带/track/thumb；渲染和命中共用，不另读root.right。 */
-export const islandScrollGeometry = (frame: IslandStateRequest, target: IslandStateRequest | undefined, edge: string, metrics: { mode: IslandStateRequest["state"]; settled: boolean; scrollHeight: number; clientHeight: number; scrollTop: number }) => {
-    const client = (rect: IslandRect) => ({ ...rect, left: rect.left - frame.viewport.left, top: rect.top - frame.viewport.top });
-    const window = client(frame.windowBox), content = client(target?.windowBox ?? frame.windowBox);
-    const bands = islandExtraBands(window, content, edge);
-    if (metrics.mode === "expanded" && target?.cards.length) {
+export const islandScrollGeometry = (frame: IslandStateRequest, target: IslandStateRequest | undefined, edge: string, metrics: { mode: IslandStateRequest["state"]; settled: boolean; scrollHeight: number; clientHeight: number; scrollTop: number }, fullViewport?: IslandRect) => {
+    // 展开态整片绘制都在工作区坐标系里；即使调用方还拿着旧窄视口 frame，也强制用工作区原点与列偏移。
+    const expandedMode = metrics.mode === "expanded";
+    const origin = expandedMode ? (fullViewport ?? frame.viewport) : frame.viewport;
+    const client = (rect: IslandRect) => ({ ...rect, left: rect.left - origin.left, top: rect.top - origin.top });
+    const expandedFullViewport = expandedMode; // 展开根铺满工作区，命中窗口永远取工作区矩形。
+    const window = expandedFullViewport ? { ...origin, left: 0, top: 0 } : client(frame.windowBox);
+    const content = expandedFullViewport ? client(frame.windowBox) : client(target?.windowBox ?? frame.windowBox); // 展开展开窗口盒就是内容列。
+    const column = content; // 列使用自己的页面坐标（含 columnX），不再混用窄视口原点。
+    const bands = expandedFullViewport ? islandTransparentBands(window, column, edge) : islandExtraBands(window, content, edge); // 展开同时看左右与上下。
+    if (metrics.mode === "expanded" && !expandedFullViewport && target?.cards.length) { // 铺满工作区后只把内容列以外当透明区。
         // 短卡列贴顶、贴底或居中后，只取朝向空白的一侧；卡间隙与底部 6 DIP 边距不计。
         const start = Math.min(window.top + window.height, content.top + Math.min(...target.cards.map(({ rect }) => rect.top)));
         const bottom = Math.max(window.top, content.top + Math.max(...target.cards.map(({ rect }) => rect.top + rect.height)));
-        if ((edge === "bottom" || edge === "left" || edge === "right") && start > window.top) bands.push({ ...window, height: start - window.top });
-        const height = window.top + window.height - bottom;
-        if (edge !== "bottom" && height > 0) bands.push({ ...window, top: bottom, height });
+        if ((edge === "bottom" || edge === "left" || edge === "right") && start > content.top) bands.push({ ...content, top: content.top, height: start - content.top });
+        const height = content.top + content.height - bottom;
+        if (edge !== "bottom" && height > 0) bands.push({ ...content, top: bottom, height });
     }
     const maxScroll = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
     const visible = metrics.mode === "expanded" && metrics.settled && Number.isFinite(maxScroll) && maxScroll > 0 && window.height > 8;
     // 滚动条在卡片外：贴右边时槽在卡片左侧，其余贴边方向槽在右侧；整条槽都不参与退回判定。
     const gutterAtStart = edge === "right"; // 槽的位置与卡片贴边方向相反，卡片始终贴边。
-    const gutter: IslandRect | undefined = metrics.mode === "expanded" ? { left: gutterAtStart ? window.left : window.left + Math.max(0, window.width - 16), top: window.top, width: 16, height: window.height } : undefined;
-    const track: IslandRect | undefined = visible ? { left: gutterAtStart ? window.left : window.left + Math.max(0, window.width - 12), top: window.top + 4, width: 12, height: window.height - 8 } : undefined;
+    const gutter: IslandRect | undefined = metrics.mode === "expanded" ? { left: gutterAtStart ? column.left : column.left + Math.max(0, column.width - 16), top: column.top, width: 16, height: column.height } : undefined;
+    const track: IslandRect | undefined = visible ? { left: gutterAtStart ? column.left : column.left + Math.max(0, column.width - 12), top: column.top + 4, width: 12, height: column.height - 8 } : undefined;
     const thumbHeight = track ? Math.min(track.height, Math.max(24, track.height * metrics.clientHeight / metrics.scrollHeight)) : 0;
     const travel = track ? track.height - thumbHeight : 0;
     const thumb: IslandRect | undefined = track ? { left: track.left + 3, top: track.top + travel * Math.max(0, Math.min(1, metrics.scrollTop / maxScroll)), width: 6, height: thumbHeight } : undefined;
-    return { window, content, bands, gutter, visible, track, thumb, travel, maxScroll };
+    return { window, content, column, bands, gutter, visible, track, thumb, travel, maxScroll };
 };
+/** 触发展开后的短抑制窗口：只吞掉同一次交互，不改变透明带几何。 */
+export const ISLAND_EXPAND_GRACE_MS = 300;
+export interface IslandExpandedGrace { until: number; x?: number; y?: number }
+export const beginIslandExpandedGrace = (now: number, point?: { x: number; y: number }): IslandExpandedGrace => ({ until: now + ISLAND_EXPAND_GRACE_MS, x: point?.x, y: point?.y });
+export const islandExpandedGraceActive = (grace: IslandExpandedGrace | undefined, now: number, point?: { x: number; y: number }, threshold = 4): boolean => {
+    if (!grace || now >= grace.until) return false;
+    if (point && grace.x !== undefined && grace.y !== undefined && Math.hypot(point.x - grace.x, point.y - grace.y) > threshold) return false;
+    return true;
+};
+/** 假 pointerleave：遮蔽/展开 grace/窗口尺寸刚变/最近坐标仍在窗口或列内时不收。 */
+export const islandLeaveSuppressed = (input: {
+    masked: boolean;
+    graceActive: boolean;
+    resizedAt: number;
+    now: number;
+    point?: IslandPoint;
+    windowRect?: IslandRect;
+    contentRect?: IslandRect;
+}): boolean => {
+    if (input.masked || input.graceActive) return true;
+    if (input.now - input.resizedAt < 300) return true;
+    if (!input.point) return false;
+    if (input.windowRect && islandPointInRect(input.point, input.windowRect)) return true;
+    if (input.contentRect && islandPointInRect(input.point, input.contentRect)) return true;
+    return false;
+};
+/** 拖卡排序或交互忙时禁止启动/结算展开透明区回退。 */
+export const islandExpandedDwellBlocked = (sorting: boolean, busy: boolean): boolean => sorting || busy;
+/** 展开态透明区：内容列和滚动条槽以外、且落在当前退回带内的点。 */
+export const islandExpandedBlank = (layout: ReturnType<typeof islandScrollGeometry>, point: IslandPoint, onCard: boolean): boolean =>
+    !onCard && (!layout.gutter || !islandPointInRect(point, layout.gutter)) && layout.bands.some((band) => islandPointInRect(point, band));
 /** 保留原生矩形命中，只把批准的透明区作为页面侧退回特例。 */
 export const islandHitRegion = (mode: IslandStateRequest["state"], point: IslandPoint, layout: ReturnType<typeof islandScrollGeometry>, contour: IslandContour): IslandHitRegion =>
     !islandPointInRect(point, layout.window) ? "outside" : layout.gutter && islandPointInRect(point, layout.gutter) ? "scrollbar" : mode === "expanded" && layout.bands.some((band) => islandPointInRect(point, band)) ? "extra-band" : islandContourDistance(point, contour) <= 1e-8 ? "content" : "transparent";

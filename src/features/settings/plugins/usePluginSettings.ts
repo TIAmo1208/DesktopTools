@@ -19,7 +19,7 @@ import {
 } from "../../../bridge/pluginScripts";
 import { invokeRuntime } from "../../../bridge/runtime";
 import { applyWorkspaceCommand, getWorkspaceSnapshot, listenWorkspaceSnapshots } from "../../../bridge/workspace";
-import type { ComponentInstanceSnapshot, ComponentManifest, ComponentTileType } from "../../../contracts/component";
+import type { ComponentInstanceSnapshot, ComponentManifest, ComponentRegistrationSnapshot, ComponentTileType } from "../../../contracts/component";
 import type { PluginInstallPlan } from "../../../contracts/plugin";
 import type { ApplicationPreferences } from "../../../contracts/settings";
 import { publishMessage } from "../../notifications/messageNotification";
@@ -45,9 +45,9 @@ export interface PluginSettingsOptions {
 export const usePluginSettings = ({ preferences, onPreferences }: PluginSettingsOptions) => {
     const [manifests, setManifests] = useState<ComponentManifest[]>(); // 未赋值表示清单还没到。
     const [components, setComponents] = useState<ComponentInstanceSnapshot[]>(); // 工作区实例；未到时不判断失效。
+    const [registrations, setRegistrations] = useState<ComponentRegistrationSnapshot[]>(); // 工作区实例的就绪与能力注册结果；岛实例不在这份集合里。
     const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set()); // 本次已卸载、快照尚未刷新的插件。
     const [selectedId, setSelectedId] = useState<string>(); // 当前就地展开的插件；离开本页即丢掉。
-    const [openEntryIds, setOpenEntryIds] = useState<ReadonlySet<string>>(new Set()); // 本插件内展开的条目，互不联动。
     const [, setShellEpoch] = useState(0); // 脚本注册或加载成功后重读条目。
     const [loadedIds, setLoadedIds] = useState<ReadonlySet<string>>(new Set()); // 设置窗口里已经执行成功的脚本。
     const [reloaded, setReloaded] = useState<Readonly<Record<string, string>>>({}); // 重新加载后的结果；ok 表示不再沿用旧失败。
@@ -76,11 +76,19 @@ export const usePluginSettings = ({ preferences, onPreferences }: PluginSettings
     useEffect(() => {
         let alive = true; // 卸载后忽略迟到快照。
         const subscription = listenComponentRuntimeSnapshots(
-            (snapshot) => alive && setManifests(snapshot.manifests),
+            (snapshot) => {
+                if (!alive) return;
+                setManifests(snapshot.manifests);
+                setRegistrations(snapshot.instances);
+            },
             () => undefined,
         );
         void getComponentRuntimeSnapshot()
-            .then((snapshot) => alive && setManifests(snapshot.manifests))
+            .then((snapshot) => {
+                if (!alive) return;
+                setManifests(snapshot.manifests);
+                setRegistrations(snapshot.instances);
+            })
             .catch(() => undefined);
         const stopShell = subscribePluginShell(() => setShellEpoch((value) => value + 1));
         const stopScripts = listenPluginScripts((pluginId) => {
@@ -127,10 +135,6 @@ export const usePluginSettings = ({ preferences, onPreferences }: PluginSettings
     }, []);
 
     useEffect(() => {
-        setOpenEntryIds(new Set());
-    }, [selectedId]);
-
-    useEffect(() => {
         if (!taskMenu) return;
         const menu = document.querySelector(".plugin-settings__task-menu"); // 刚打开的任务菜单。
         const frame = menu?.closest(".settings__content"); // 内容区右内边距就是菜单的右边界。
@@ -165,7 +169,6 @@ export const usePluginSettings = ({ preferences, onPreferences }: PluginSettings
         if (!preferences) return;
         const next = enabled ? preferences.disabledPlugins.filter((id) => id !== pluginId) : [...preferences.disabledPlugins, pluginId];
         onPreferences({ disabledPlugins: next });
-        if (!enabled) setOpenEntryIds(new Set());
     };
 
     useEffect(() => {
@@ -347,9 +350,8 @@ export const usePluginSettings = ({ preferences, onPreferences }: PluginSettings
 
     return {
         components,
+        registrations,
         setSelectedId,
-        openEntryIds,
-        setOpenEntryIds,
         setShellEpoch,
         loadedIds,
         setLoadedIds,

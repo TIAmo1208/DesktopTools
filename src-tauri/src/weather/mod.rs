@@ -649,7 +649,13 @@ impl WeatherState
         let credentials = credentials::load(source, &self.record(source))?; // 只使用本次请求来源的凭据。
         let key = credentials.as_ref().map(credentials::cache_identity).transpose()?;
         let cached = self.read_cached_forecast(&city, key.as_deref())?;
-        Ok(display_forecast(cached.unwrap_or_else(|| serde_json::json!({"city": city})), chrono::Utc::now().timestamp_millis()))
+        let mut value = display_forecast(cached.unwrap_or_else(|| serde_json::json!({"city": city})), chrono::Utc::now().timestamp_millis());
+        // 同步读取与事件广播字段一致：带上本次来源标识，前端按 source+city 过滤才不会被丢弃（否则浮岛卡停在“正在获取”）。
+        if let Some(object) = value.as_object_mut()
+        {
+            object.insert("source".to_string(), serde_json::json!(source.key()));
+        }
+        Ok(value)
     }
 
     /// 调度器按活动状态刷新，网络期间每个模块开始前重新核对活动条件。

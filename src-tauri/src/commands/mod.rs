@@ -6,6 +6,7 @@ mod desktop_host;
 pub mod desktop_item;
 pub mod folder_portal;
 pub mod loopback;
+pub mod plugin;
 pub use desktop_item::get_desktop_item_image;
 pub use desktop_item::{cancel_desktop_item_drag_preparation, prepare_desktop_item_drag};
 pub(crate) mod island;
@@ -361,6 +362,7 @@ pub(crate) fn dispatch_native_command(app: &AppHandle, runtime: &DesktopHostRunt
         .or_else(|| router::route_component(command, app, runtime, &arguments))
         .or_else(|| router::route_popup_layer(command, app, runtime, &arguments))
         .or_else(|| router::route_loopback(command, app, runtime, &arguments))
+        .or_else(|| router::route_plugin(command, app, runtime, &arguments))
         .or_else(|| router::route_desktop_host(command, app, runtime, &arguments))
         .or_else(|| router::route_workspace(command, app, runtime, &arguments))
         .or_else(|| router::route_plugin_settings(command, app, runtime, &arguments))

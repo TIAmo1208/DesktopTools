@@ -178,6 +178,9 @@ pub(crate) fn island_page_url(boot: u64, theme_css: Option<&str>) -> tauri::Url
 }
 
 /// 页面提交的窗口内局部卡片区域，圆角半径也使用 DIP；锚点行复用同一形状，只是必须为圆形。
+///
+/// 坐标原点是页面提交的窗口盒左上角（窄列），不是工作区原点；展开态由原生在提交前
+/// 按工作区原点重基准（见 `rebase_expanded_cards`），页面不需要感知父窗放大。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct IslandCard
@@ -224,6 +227,7 @@ impl IslandStateRequest
             return Err("岛窗口盒超出固定视口".into());
         }
         // 卡片区域数量上限与其他两态共用；常态另有「恰好一个胶囊区域」的门禁。
+        // 这里校验的是页面坐标：cards 相对页面提交的窗口盒；展开态在原生判定前按工作区原点重基准。
         if self.cards.is_empty() || self.cards.len() > 128
         {
             return Err("岛卡片数量无效".into());
@@ -276,16 +280,10 @@ fn accept_normalized_window(requested: IslandRect, normalized: IslandRect, viewp
 }
 
 /// 工作区规范化：窗口左上夹到工作区内；尺寸已先行检查不超过工作区。
-fn clamp_window(window: IslandRect, area: IslandRect) -> IslandRect
-{
-    IslandRect { left: window.left.clamp(area.left, area.left + area.width - window.width), top: window.top.clamp(area.top, area.top + area.height - window.height), width: window.width, height: window.height }
-}
+fn clamp_window(window: IslandRect, area: IslandRect) -> IslandRect { IslandRect { left: window.left.clamp(area.left, area.left + area.width - window.width), top: window.top.clamp(area.top, area.top + area.height - window.height), width: window.width, height: window.height } }
 
 /// 窗口盒必须落在固定视口内（0.5 DIP 容差），页面坐标才不会因落位/夹紧错位。
-fn window_in_viewport(window: IslandRect, viewport: IslandRect) -> bool
-{
-    window.left >= viewport.left - 0.5 && window.top >= viewport.top - 0.5 && window.left + window.width <= viewport.left + viewport.width + 0.5 && window.top + window.height <= viewport.top + viewport.height + 0.5
-}
+fn window_in_viewport(window: IslandRect, viewport: IslandRect) -> bool { window.left >= viewport.left - 0.5 && window.top >= viewport.top - 0.5 && window.left + window.width <= viewport.left + viewport.width + 0.5 && window.top + window.height <= viewport.top + viewport.height + 0.5 }
 
 /// 防止浮点到 Win32 整数转换溢出；实际工作区边界在 UI 线程进一步检查。
 fn valid_rect(rect: IslandRect) -> bool { [rect.left, rect.top, rect.width, rect.height].iter().all(|value| value.is_finite() && value.abs() <= 1_000_000.0) && rect.width > 0.0 && rect.height > 0.0 }
@@ -301,10 +299,7 @@ struct AppliedSurface
 impl AppliedSurface
 {
     /// 计算本次需要下发的窗口/子窗口尺寸并返回下一份已应用快照；重复几何不重复调用原生。
-    fn plan(self, window: (i32, i32, i32, i32), child: (i32, i32, i32, i32)) -> (Self, bool, bool)
-    {
-        (Self { window: Some(window), child: Some(child) }, self.window != Some(window), self.child != Some(child))
-    }
+    fn plan(self, window: (i32, i32, i32, i32), child: (i32, i32, i32, i32)) -> (Self, bool, bool) { (Self { window: Some(window), child: Some(child) }, self.window != Some(window), self.child != Some(child)) }
 
     /// 原生移动循环会改变窗口位置：失效窗口缓存，子窗口在下次提交按固定视口重新计算偏移。
     fn forget_window(&mut self) { self.window = None; }
@@ -328,16 +323,18 @@ fn px_span(start: f64, length: f64, scale: f64) -> (i32, i32)
 /// UI 线程唯一持有的岛资源，不把 WebView 或 HWND 跨线程执行。
 struct IslandWindow
 {
-    hwnd: HWND,                           // 外层不激活工具窗口。
+    hwnd: HWND, // 外层不激活工具窗口。
     #[allow(dead_code)] // 只靠声明顺序在 WebView 之前撤销投放目标，不参与读取。
     drop_targets: Option<super::island_drop::IslandDropTargets>, // 根窗口与 WebView2 后代的 Shell 投放目标；先于 WebView 释放。
-    webview: Rc<WebView>,                 // UI 线程可克隆快照，在借用期外调整 Controller。
-    app: AppHandle,                       // 松手保存偏好所需应用状态。
-    monitor: DesktopHostMonitor,          // 主屏当前工作区与缩放。
+    webview: Rc<WebView>, // UI 线程可克隆快照，在借用期外调整 Controller。
+    app: AppHandle, // 松手保存偏好所需应用状态。
+    monitor: DesktopHostMonitor, // 主屏当前工作区与缩放。
     geometry: Option<IslandStateRequest>, // 首次状态到达前禁止显示。
-    drag: DragProgress,                   // 几何修订使旧移动循环失效。
-    surface: AppliedSurface,              // 最近一次实际下发的原生尺寸，重复帧只更新页面内容。
-    screenshot_hidden: bool,              // 本次隐藏是否因系统截图工具在前台；显示事实直接读 Win32。
+    drag: DragProgress, // 几何修订使旧移动循环失效。
+    surface: AppliedSurface, // 最近一次实际下发的原生尺寸，重复帧只更新页面内容。
+    content_offset: (f64, f64), // 展开态内容列相对工作区原点的偏移；非展开态归零。
+    available_height: f64, // 展开态内容列可用高度（工作区高度），用于确认卡片不被任务栏遮挡。
+    screenshot_hidden: bool, // 本次隐藏是否因系统截图工具在前台；显示事实直接读 Win32。
 }
 
 /// 一个移动循环最多消费一次当前几何修订；切态会取消尚未完成的落点。
@@ -487,6 +484,52 @@ pub(crate) fn reconcile(app: &AppHandle)
 /// 主屏是本期唯一的目标屏，物理 rcWork 转换成同一绝对 DIP 空间。
 fn primary_monitor() -> Result<DesktopHostMonitor, String> { super::enumerate_desktop_monitors()?.into_iter().find(|monitor| monitor.primary).ok_or_else(|| "岛缺少主显示器".into()) }
 fn work_dip(monitor: &DesktopHostMonitor) -> IslandRect { IslandRect { left: f64::from(monitor.work_x) / monitor.scale_factor, top: f64::from(monitor.work_y) / monitor.scale_factor, width: f64::from(monitor.work_width) / monitor.scale_factor, height: f64::from(monitor.work_height) / monitor.scale_factor } }
+
+/// 展开态窗口框架：窗口盒覆盖整个工作区，卡片内容仍按内容列与贴边锚点布局。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ExpandedFrame
+{
+    /// 展开态窗口盒：当前显示器工作区的完整矩形（已排除任务栏）。
+    pub window: IslandRect,
+    /// 内容列左上相对工作区原点的偏移。
+    pub content_offset: (f64, f64),
+    /// 内容列可用高度：工作区高度，卡片不会被任务栏遮挡。
+    pub available_height: f64,
+}
+
+/// 展开态几何：窗口盒=当前显示器工作区（宽高都取工作区）；内容列按贴边偏好停靠。
+///
+/// 锚点沿用用户贴边偏好：上/下水平居中，左/右贴工作区对应边；透明区域只做视觉留白，
+/// 父窗口仍是矩形命中。四边任务栏都不会盖住卡片。
+pub(crate) fn expanded_window_frame(work_area: IslandRect, content_size: (f64, f64), anchor: &str) -> ExpandedFrame
+{
+    let width = content_size.0.clamp(1.0, work_area.width); // 内容列宽：透明留白不改变卡片列宽。
+    let height = content_size.1.clamp(1.0, work_area.height);
+    let left = match anchor
+    {
+        "right" => work_area.left + work_area.width - width, // 贴右时列在工作区右边。
+        "left" => work_area.left,
+        _ => work_area.left + (work_area.width - width) / 2.0, // 上/下与未知值按水平居中。
+    };
+    ExpandedFrame { window: work_area, content_offset: (left - work_area.left, 0.0), available_height: work_area.height.max(height) }
+}
+
+/// 展开态卡片重基准：页面提交的 `cards` 相对窄列窗口盒，原生父窗扩到工作区后按工作区原点平移。
+///
+/// 只平移不缩放；贴边偏移（含 `islandOffset`）已经体现在页面提交的窗口盒里，因此不重复叠加。
+pub(crate) fn rebase_expanded_cards(cards: &mut [IslandCard], submitted_window: IslandRect, work_area: IslandRect)
+{
+    let dx = submitted_window.left - work_area.left; // 窄列窗口盒相对工作区原点的横向偏移。
+    let dy = submitted_window.top - work_area.top; // 展开态通常为 0，保留以覆盖页面偏移。
+    for card in cards
+    {
+        card.rect.left += dx;
+        card.rect.top += dy;
+    }
+}
+
+/// 内矩形是否完全落在外矩形内（0.5 DIP 容差）。
+fn rect_inside(inner: IslandRect, outer: IslandRect) -> bool { inner.left >= outer.left - 0.5 && inner.top >= outer.top - 0.5 && inner.left + inner.width <= outer.left + outer.width + 0.5 && inner.top + inner.height <= outer.top + outer.height + 0.5 }
 fn px(value: f64, scale: f64) -> i32 { (value * scale).round() as i32 }
 
 const WM_ISLAND_RESTORE_FOREGROUND: u32 = WM_APP + 38; // WebView2 绕过鼠标激活消息时的一次性补偿。
@@ -677,7 +720,7 @@ fn create(app: &AppHandle) -> Result<(), String>
             None
         }
     }; // 拖放失败不阻止浮岛出现，设置页仍可开关卡片。
-    ISLAND.with(|slot| *slot.borrow_mut() = Some(IslandWindow { hwnd, drop_targets, webview: Rc::new(webview), app: app.clone(), monitor, geometry: None, drag: DragProgress::default(), surface: AppliedSurface::default(), screenshot_hidden: false }));
+    ISLAND.with(|slot| *slot.borrow_mut() = Some(IslandWindow { hwnd, drop_targets, webview: Rc::new(webview), app: app.clone(), monitor, geometry: None, drag: DragProgress::default(), surface: AppliedSurface::default(), content_offset: (0.0, 0.0), available_height: 0.0, screenshot_hidden: false }));
     ISLAND_HWND.store(hwnd.0 as isize, Ordering::Release);
     Ok(())
 }
@@ -978,6 +1021,8 @@ pub(crate) fn set_state(request: IslandStateRequest) -> Result<(), String>
                 resource.geometry = None;
                 resource.drag.invalidate();
                 resource.surface = AppliedSurface::default();
+                resource.content_offset = (0.0, 0.0);
+                resource.available_height = 0.0;
                 resource.screenshot_hidden = false;
                 resource.hwnd
             })
@@ -1005,7 +1050,7 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
     request.validate()?;
     let monitor = primary_monitor()?; // 枚举窗口环境也在 RefCell 借用期外。
     let requested = request.window_box; // 页面已使用的权威窗口位置；规范化不能静默移动它，否则页面 margin 与父窗口裁剪错位。
-    let (hwnd, webview, revision, state_changed, surface) = ISLAND.with(|slot| {
+    let (hwnd, webview, revision, state_changed, surface, expanded_frame) = ISLAND.with(|slot| {
         let mut slot = slot.borrow_mut(); // 只校验并取出快照，不调用会泵消息的 API。
         let resource = slot.as_mut().ok_or("岛未开启")?;
         if !read_preferences()?.island_enabled
@@ -1033,10 +1078,33 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
         request.window_box = clamp_window(request.window_box, area);
         // 首次落位或工作区夹紧改变了窗口盒时，固定视口可能不再包含它；拒绝而不是让页面坐标错位。
         accept_normalized_window(requested, request.window_box, request.viewport)?;
+        let expanded_frame = if request.state == "expanded"
+        {
+            if !rect_inside(request.viewport, area)
+            {
+                return Err("岛固定视口超出工作区".into()); // 页面视口带必须留在工作区内，避免卡片压到任务栏。
+            }
+            let edge = read_preferences()?.island_edge; // 锚点沿用用户已选的贴边方向。
+            let mut frame = expanded_window_frame(area, (request.viewport.width, request.viewport.height), &edge); // 窗口覆盖整个工作区。
+            frame.content_offset = (request.viewport.left - area.left, request.viewport.top - area.top); // 页面可叠加 islandOffset，记录真实内容锚点。
+            let submitted_window = request.window_box; // 页面提交的窄列窗口盒；cards 相对它，原生判定前必须平移到工作区原点。
+            request.window_box = frame.window; // 展开态窗口盒由工作区决定，不再跟页面提交的窄列走。
+            rebase_expanded_cards(&mut request.cards, submitted_window, area);
+            let local_window = IslandRect { left: 0.0, top: 0.0, width: frame.window.width, height: frame.window.height }; // 重基准后的卡片使用父窗局部坐标（工作区原点为 0）。
+            if request.cards.iter().any(|card| !rect_inside(card.rect, local_window))
+            {
+                return Err("岛展开卡片区域超出工作区".into()); // 重基准后仍越界说明页面几何与工作区不一致。
+            }
+            Some(frame)
+        }
+        else
+        {
+            None
+        };
         let state_changed = resource.geometry.as_ref().is_none_or(|previous| previous.state != request.state); // 动画同态帧不重复记录 INFO。
         resource.drag.invalidate(); // 先使旧拖动失效，再执行可能重入的窗口操作。
         resource.geometry = None; // 提交完成前也拒绝按上一态开始拖动。
-        Ok::<_, String>((resource.hwnd, Rc::clone(&resource.webview), resource.drag.revision, state_changed, resource.surface))
+        Ok::<_, String>((resource.hwnd, Rc::clone(&resource.webview), resource.drag.revision, state_changed, resource.surface, expanded_frame))
     })?; // 从此开始不持有 ISLAND 的任何借用。
     let scale = monitor.scale_factor;
     // 本次提交的真实物理尺寸；窗口盒相同的动画帧不再重复下发。
@@ -1067,6 +1135,10 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
             if state_changed
             {
                 crate::log_debug!("岛：切换状态={}，显示器={}，窗口盒DIP=[{}, {}, {}, {}]，缩放={}", request.state, monitor.id, rect.left, rect.top, rect.width, rect.height, scale);
+                if let Some(frame) = expanded_frame
+                {
+                    crate::log_debug!("岛：展开内容锚点偏移=({:.1}, {:.1})，可用高度={:.1}", frame.content_offset.0, frame.content_offset.1, frame.available_height);
+                }
             }
             stage.set(StateStage::Commit);
             Ok(())
@@ -1084,10 +1156,13 @@ fn apply_state(mut request: IslandStateRequest) -> Result<(), String>
                 {
                     resource.surface = next_surface;
                     resource.monitor = monitor.clone();
+                    (resource.content_offset, resource.available_height) = expanded_frame.map(|frame| (frame.content_offset, frame.available_height)).unwrap_or(((0.0, 0.0), 0.0)); // 展开态记录真实内容锚点与可用高度。
                 }
                 else
                 {
                     resource.surface = AppliedSurface::default(); // 原生操作可能已部分生效，失败后不能沿用缓存尺寸。
+                    resource.content_offset = (0.0, 0.0);
+                    resource.available_height = 0.0;
                 }
                 Ok(())
             })

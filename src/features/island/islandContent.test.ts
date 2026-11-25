@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ISLAND_PLUGIN_LAYOUT_SELECTOR, createIslandContentResizeObserver, islandPluginLayoutTargets, observeIslandPluginLayout } from "./islandContent.ts";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { adoptPluginHover, adoptPluginShellOnce, mountPluginHover } from "../../contracts/plugin.ts";
@@ -272,21 +273,38 @@ test("拖放接收态：松手图标与固定文案，没有匹配插件时显�
     assert.deepEqual(islandDropFace(undefined), { accept: false, icon: "release", primary: "无法接收" });
 });
 
-test("胶囊与 hover 共用显示投影：三种开关独立，选择与方向键跳过已撤下锚点", () => {
+test("胶囊与 hover 共用显示投影：固定开关独立，插件卡按卡撤下且不影响展开事实", () => {
     const music = { ...anchor("event", "music"), kind: "music" } satisfies IslandAnchor;
     const message = anchor("message", "notifications");
-    const plugin = { ...anchor("resident", "plugin"), kind: "plugin" } satisfies IslandAnchor;
+    const plugin = { ...anchor("resident", "plugin.dsh"), kind: "plugin", componentId: "plugin.dsh" } satisfies IslandAnchor;
+    const otherPlugin = { ...anchor("resident", "plugin.other"), kind: "plugin", componentId: "plugin.other" } satisfies IslandAnchor;
     const confirm = anchor("confirm", "confirm");
-    const anchors = [music, message, plugin, confirm];
-    assert.deepEqual(islandDisplayAnchors(anchors, undefined), anchors);
-    for (const [key, removed] of [["music", music], ["message", message], ["plugin", plugin]] as const) {
-        const visible = islandDisplayAnchors(anchors, { islandAnchorVisible: { [key]: false } });
-        assert.deepEqual(visible, anchors.filter((item) => item !== removed));
-        assert.equal(islandHoverSelect(visible, removed.id), visible[0].id);
-        assert.equal(islandHoverStep(visible, visible[0].id, 1), visible[1].id);
-    }
-    assert.deepEqual(islandDisplayAnchors(anchors, { islandAnchorVisible: { music: false, message: false, plugin: false } }), [confirm]);
-    assert.equal(anchors.length, 4, "过滤只生成显示投影，不删除输入事实");
+    const anchors = [music, message, plugin, otherPlugin, confirm];
+    assert.deepEqual(islandDisplayAnchors(anchors, undefined), anchors); // 默认全部显示。
+    assert.deepEqual(islandDisplayAnchors(anchors, { islandPluginAnchorVisible: {} }), anchors); // 映射为空同默认。
+    const musicHidden = islandDisplayAnchors(anchors, { islandAnchorVisible: { music: false } });
+    assert.deepEqual(musicHidden, anchors.filter((item) => item !== music));
+    assert.equal(islandHoverSelect(musicHidden, music.id), message.id);
+    assert.equal(islandHoverStep(musicHidden, musicHidden[0].id, 1), musicHidden[1].id);
+    assert.deepEqual(islandDisplayAnchors(anchors, { islandAnchorVisible: { message: false } }), anchors.filter((item) => item !== message));
+
+    const pluginHidden = islandDisplayAnchors(anchors, { islandPluginAnchorVisible: { "plugin.dsh": false } });
+    assert.deepEqual(pluginHidden, anchors.filter((item) => item !== plugin)); // 只撤下这一张卡。
+    assert.ok(pluginHidden.includes(otherPlugin)); // 其它插件卡不受影响。
+    assert.equal(islandHoverSelect(pluginHidden, plugin.id), music.id);
+    // 未知插件键保留在偏好里，但当前清单没有这张卡，不影响任何锚点。
+    assert.deepEqual(islandDisplayAnchors(anchors, { islandPluginAnchorVisible: { "plugin.not-installed": false } }), anchors);
+    // 旧全局 plugin 键不再作为生效来源。
+    assert.deepEqual(islandDisplayAnchors(anchors, { islandAnchorVisible: { plugin: false } }), anchors);
+    // 固定项与两张插件卡全关，只剩确认锚点。
+    assert.deepEqual(
+        islandDisplayAnchors(anchors, {
+            islandAnchorVisible: { music: false, message: false },
+            islandPluginAnchorVisible: { "plugin.dsh": false, "plugin.other": false },
+        }),
+        [confirm],
+    );
+    assert.equal(anchors.length, 5, "过滤只生成显示投影，不删除输入事实");
 });
 
 test("音乐锚点只在有媒体会话时出现：播放与暂停算会话，停止、无会话或未启用都不产生", () => {
@@ -386,4 +404,46 @@ test("内容模型不依赖 React、不持有定时器，渲染层可直接消�
         const source = readFileSync(new URL(file, import.meta.url), "utf8");
         assert.doesNotMatch(source, /from "react"|setTimeout|setInterval|requestAnimationFrame/);
     }
+});
+
+test("插件容器进入测高链：每个 [data-plugin-container] 都被观察", () => {
+    const nodes = [{ id: "plugin-a" }, { id: "plugin-b" }] as unknown as Element[];
+    const root = {
+        querySelectorAll: (selector: string) => {
+            assert.equal(selector, ISLAND_PLUGIN_LAYOUT_SELECTOR);
+            return nodes;
+        },
+    } as unknown as ParentNode;
+    assert.deepEqual(islandPluginLayoutTargets(root), nodes);
+    const observed: Element[] = [];
+    assert.equal(observeIslandPluginLayout(root, (target) => observed.push(target)), 2); // 分组切换后两个插件卡都能被尺寸观察器看到。
+    assert.deepEqual(observed, nodes);
+});
+
+test("插件根高度变化触发一次强制重测", () => {
+    let callback: ResizeObserverCallback | undefined;
+    class FakeResizeObserver {
+        constructor(handler: ResizeObserverCallback) { callback = handler; }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+    }
+    let measures = 0;
+    createIslandContentResizeObserver(() => { measures += 1; }, FakeResizeObserver as unknown as typeof ResizeObserver);
+    assert.equal(measures, 0);
+    callback?.([], {} as ResizeObserver); // 模拟分组切换后插件容器高度变化。
+    assert.equal(measures, 1); // 只排一次重测，不新增轮询。
+});
+
+test("插件容器不再固定 88 高，靠内容撑开卡片", () => {
+    const css = readFileSync(new URL("./island.css", import.meta.url), "utf8");
+    const start = css.indexOf(".island-card__content [data-plugin-container] {");
+    const rule = css.slice(start, css.indexOf("}", start));
+    assert.match(rule, /block-size: auto;/);
+    assert.match(rule, /min-block-size: 88px;/);
+    assert.match(rule, /overflow: visible;/);
+    assert.doesNotMatch(rule, /\n\s*block-size: 88px;/); // 固定高会把分组展开后的内容裁掉。
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    assert.match(source, /createIslandContentResizeObserver\(\(\) => measure\(true\), ResizeObserver\)/);
+    assert.match(source, /observeIslandPluginLayout\(root\.current/);
 });

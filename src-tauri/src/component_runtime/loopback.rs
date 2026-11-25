@@ -8,7 +8,7 @@ use std::time::Duration;
 use chrono::Utc;
 use zeroize::Zeroizing;
 
-use crate::contracts::{ComponentRuntimeError, LoopbackChannelHandle, LoopbackChannelMode, LoopbackHeader, LoopbackRequest, LoopbackResponse, RegisterLoopbackChannel};
+use crate::contracts::{ComponentRuntimeError, CredentialTarget, LEGACY_CREDENTIAL_TARGET, LoopbackChannelHandle, LoopbackChannelMode, LoopbackHeader, LoopbackRequest, LoopbackResponse, PLUGIN_CREDENTIAL_NAMESPACE, RegisterLoopbackChannel, classify_credential_target};
 
 /// 每个实例最多注册的通道数。
 pub(crate) const CHANNEL_LIMIT: usize = 2;
@@ -37,8 +37,16 @@ pub(crate) struct ChannelCredential
 {
     /// 注入与校验使用的头名，由插件声明。
     header_name: String,
-    /// 密钥明文，Drop 时清零。
+    /// 凭据前缀（当前只允许 `Bearer `），与秘密拼接后作为头值。
+    prefix: Option<String>,
+    /// 密钥明文（不含前缀），Drop 时清零。
     secret: Zeroizing<String>,
+}
+
+impl ChannelCredential
+{
+    /// 实际写入请求头、用于校验入站请求的完整值；临时字符串用完即丢弃。
+    fn header_value(&self) -> Zeroizing<String> { Zeroizing::new(format!("{}{}", self.prefix.as_deref().unwrap_or_default(), self.secret.as_str())) }
 }
 
 /// 监听通道的后台线程与停止标志。
@@ -112,6 +120,8 @@ struct ChannelEntry
     handle: LoopbackChannelHandle,
     /// 凭据声明；未声明时不注入也不校验。
     credential: Option<Arc<ChannelCredential>>,
+    /// 凭据目标名（已归一化），凭据变化时按它让缓存通道失效。
+    credential_ref: Option<String>,
     /// 与监听线程共享的缓冲状态。
     state: Arc<ChannelState>,
     /// 监听通道的后台线程；request 通道为空。持有它只为 Drop 时释放端口。
@@ -138,12 +148,12 @@ impl LoopbackRegistry
     /// 按插件声明注册通道，凭据由 Windows Credential Manager 解析。
     pub(crate) fn register(&self, request: RegisterLoopbackChannel, component_id: &str) -> Result<LoopbackChannelHandle, ComponentRuntimeError>
     {
-        let credential = resolve_credential(&request)?; // 先校验凭据声明，避免建好监听后才失败。
-        self.register_with_credential(request, component_id, credential)
+        let resolved = resolve_credential(&request, component_id)?; // 先校验凭据声明，避免建好监听后才失败。
+        self.register_with_credential(request, component_id, resolved.credential, resolved.target)
     }
 
     /// 实际注册实现；测试用它注入凭据，绕开真实凭据存储。
-    fn register_with_credential(&self, request: RegisterLoopbackChannel, component_id: &str, credential: Option<Arc<ChannelCredential>>) -> Result<LoopbackChannelHandle, ComponentRuntimeError>
+    fn register_with_credential(&self, request: RegisterLoopbackChannel, component_id: &str, credential: Option<Arc<ChannelCredential>>, credential_ref: Option<String>) -> Result<LoopbackChannelHandle, ComponentRuntimeError>
     {
         validate_channel_id(&request.channel_id)?;
         let (port, base_url) = resolve_endpoint(&request)?;
@@ -170,7 +180,7 @@ impl LoopbackRegistry
         let state = Arc::new(ChannelState { buffer: Mutex::new(BufferState { next_sequence: 0, entries: VecDeque::new(), dropped: 0 }), subscribed: AtomicBool::new(false) });
         let notifier = self.notifier.lock().unwrap_or_else(|error| error.into_inner()).clone();
         let server = listener.map(|listener| start_listen_server(listener, Arc::clone(&state), notifier, request.channel_id.clone(), credential.clone()));
-        let entry = ChannelEntry { component_id: component_id.to_string(), handle: handle.clone(), credential, state, _server: server };
+        let entry = ChannelEntry { component_id: component_id.to_string(), handle: handle.clone(), credential: credential.clone(), credential_ref, state, _server: server };
         self.channels.lock().unwrap_or_else(|error| error.into_inner()).entry(request.instance_id.clone()).or_default().insert(request.channel_id.clone(), entry);
         crate::log_info!("loopback：通道已注册，实例={}，通道={}，方向={:?}，端口={:?}", request.instance_id, handle.channel_id, handle.mode, handle.port);
         Ok(handle)
@@ -202,21 +212,28 @@ impl LoopbackRegistry
         };
         validate_method(method)?;
         validate_request_path(path)?;
-        let client = reqwest::blocking::Client::builder().timeout(CONNECTION_TIMEOUT).build().map_err(|_| ComponentRuntimeError::loopback_request_failed("本机请求客户端创建失败"))?;
+        // 回环传输边界：显式禁代理、禁重定向，连接与总超时都设上限。
+        let client = reqwest::blocking::Client::builder().timeout(CONNECTION_TIMEOUT).connect_timeout(CONNECTION_TIMEOUT).no_proxy().redirect(reqwest::redirect::Policy::none()).build().map_err(|_| ComponentRuntimeError::loopback_request_failed("本机请求客户端创建失败"))?;
         let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| ComponentRuntimeError::loopback_address_invalid("请求方法无效"))?;
         let mut builder = client.request(method, format!("{base_url}{path}"));
         if let Some(credential) = credential
         {
-            builder = builder.header(&credential.header_name, credential.secret.as_str()); // 明文只在这个请求头里出现，不写日志。
+            builder = builder.header(&credential.header_name, credential.header_value().as_str()); // 前缀与秘密只在请求头里出现，不写日志。
         }
         if let Some(body) = body
         {
             builder = builder.body(body);
         }
         let response = builder.send().map_err(|_| ComponentRuntimeError::loopback_request_failed("对端未响应或连接失败"))?;
+        // 即使禁用了重定向，也再确认响应仍来自最初的本机端点，不接受地址漂移。
+        if response.url().host_str() != Some("127.0.0.1") || response.url().port_or_known_default() != expected_port(&base_url)
+        {
+            return Err(ComponentRuntimeError::loopback_request_failed("对端响应地址与注册基址不一致"));
+        }
         let status = response.status().as_u16();
         let headers = response.headers().iter().map(|(name, value)| LoopbackHeader { name: name.as_str().to_string(), value: String::from_utf8_lossy(value.as_bytes()).into_owned() }).collect::<Vec<_>>();
-        let bytes = response.bytes().map_err(|_| ComponentRuntimeError::loopback_request_failed("读取对端响应失败"))?;
+        let mut bytes = Vec::new();
+        response.take((RESPONSE_LIMIT + 1) as u64).read_to_end(&mut bytes).map_err(|_| ComponentRuntimeError::loopback_request_failed("读取对端响应失败"))?;
         if bytes.len() > RESPONSE_LIMIT
         {
             return Err(ComponentRuntimeError::loopback_request_failed("对端响应超过 4 MiB 上限"));
@@ -240,6 +257,22 @@ impl LoopbackRegistry
         });
     }
 
+    /// 凭据写入、清除或兑换后，让引用该目标的缓存通道失效；插件需要重新注册再使用。
+    pub(crate) fn invalidate_credential(&self, target: &str)
+    {
+        let mut channels = self.channels.lock().unwrap_or_else(|error| error.into_inner());
+        for (instance, registered) in channels.iter_mut()
+        {
+            let before = registered.len();
+            registered.retain(|_, entry| entry.credential_ref.as_deref().is_none_or(|value| !value.eq_ignore_ascii_case(target)));
+            if registered.len() != before
+            {
+                crate::log_info!("loopback：凭据已变更，释放引用通道，实例={instance}，释放数={}", before - registered.len());
+            }
+        }
+        channels.retain(|_, registered| !registered.is_empty());
+    }
+
     /// 插件卸载时按组件身份释放它名下全部实例的通道。
     pub(crate) fn release_component(&self, component_id: &str)
     {
@@ -257,7 +290,7 @@ impl LoopbackRegistry
 
     /// 测试用：返回实例当前注册的通道数。
     #[cfg(test)]
-    fn channel_count(&self, instance_id: &str) -> usize { self.channels.lock().unwrap_or_else(|error| error.into_inner()).get(instance_id).map(HashMap::len).unwrap_or(0) }
+    pub(crate) fn channel_count(&self, instance_id: &str) -> usize { self.channels.lock().unwrap_or_else(|error| error.into_inner()).get(instance_id).map(HashMap::len).unwrap_or(0) }
 }
 
 /// 与宿主事件层拼出 `component-host-event` 的 kind。
@@ -328,21 +361,52 @@ fn normalize_base_url(value: &str) -> Result<String, ComponentRuntimeError>
     Ok(format!("http://127.0.0.1:{port}"))
 }
 
-/// 解析插件声明的凭据：没有记录名时不做注入与校验。
-fn resolve_credential(request: &RegisterLoopbackChannel) -> Result<Option<Arc<ChannelCredential>>, ComponentRuntimeError>
+/// 一次凭据解析的结果：运行期凭据，以及用于失效判断的规范化目标名。
+///
+/// 生产注册路径必须把 `target` 写进通道记录，否则凭据变更时找不到引用它的通道。
+#[derive(Default)]
+struct ResolvedCredential
 {
-    let Some(target) = request.credential_ref.as_deref().map(str::trim).filter(|value| !value.is_empty())
+    /// 已读取的凭据；未声明时为 `None`。
+    credential: Option<Arc<ChannelCredential>>,
+    /// 规范化后的凭据目标；未声明时为 `None`。
+    target: Option<String>,
+}
+
+/// 解析插件声明的凭据：没有记录名时不做注入与校验。
+///
+/// 只允许引用本插件自己的命名空间或明确保留的旧目标；前缀只允许 `Bearer `，凭据存原始秘密。
+fn resolve_credential(request: &RegisterLoopbackChannel, component_id: &str) -> Result<ResolvedCredential, ComponentRuntimeError>
+{
+    let Some(raw_target) = request.credential_ref.as_deref().map(str::trim).filter(|value| !value.is_empty())
     else
     {
-        return Ok(None);
+        return Ok(ResolvedCredential::default());
+    };
+    let target = match classify_credential_target(raw_target)
+    {
+        CredentialTarget::Plugin { plugin_id, slot } if plugin_id.eq_ignore_ascii_case(component_id) => format!("{PLUGIN_CREDENTIAL_NAMESPACE}{component_id}/{slot}"),
+        CredentialTarget::Plugin { .. } => return Err(ComponentRuntimeError::credential_target_denied("凭据目标只能引用本插件自己的命名空间")),
+        CredentialTarget::Legacy => LEGACY_CREDENTIAL_TARGET.to_string(),
+        CredentialTarget::Reserved => return Err(ComponentRuntimeError::credential_target_denied("凭据目标不在允许的白名单内")),
     };
     let header_name = request.header_name.as_deref().map(str::trim).filter(|value| !value.is_empty()).ok_or_else(|| ComponentRuntimeError::loopback_credential_unavailable("声明了凭据但没有声明头名"))?;
     if !is_valid_header_name(header_name)
     {
         return Err(ComponentRuntimeError::loopback_credential_unavailable("凭据头名无效"));
     }
-    Ok(Some(Arc::new(ChannelCredential { header_name: header_name.to_string(), secret: Zeroizing::new(read_credential(target)?) })))
+    let prefix = match request.credential_prefix.as_deref().map(str::trim).filter(|value| !value.is_empty())
+    {
+        Some(value) if value.eq_ignore_ascii_case("Bearer") => "Bearer ".to_string(),
+        Some(_) => return Err(ComponentRuntimeError::loopback_credential_invalid("凭据前缀只允许 Bearer ")),
+        None => String::new(),
+    };
+    let secret = read_credential(&target)?;
+    Ok(ResolvedCredential { credential: Some(Arc::new(ChannelCredential { header_name: header_name.to_string(), prefix: (!prefix.is_empty()).then_some(prefix), secret: Zeroizing::new(secret) })), target: Some(target) })
 }
+
+/// 从归一化基址里取出端口，用于请求后的地址一致性校验。
+fn expected_port(base_url: &str) -> Option<u16> { base_url.rsplit_once(':').and_then(|(_, port)| port.parse::<u16>().ok()) }
 
 /// 从 Windows Credential Manager 读取明文；缺少记录或内容为空都按不可用处理。
 fn read_credential(target: &str) -> Result<String, ComponentRuntimeError>
@@ -377,8 +441,8 @@ pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool
     difference == 0
 }
 
-/// 请求头里是否存在与声明头名同名且值等于密钥的一项。
-fn header_matches(headers: &[LoopbackHeader], header_name: &str, secret: &[u8]) -> bool { headers.iter().any(|header| header.name.eq_ignore_ascii_case(header_name) && constant_time_eq(header.value.as_bytes(), secret)) }
+/// 请求头里是否存在与声明头名同名且值等于「前缀 + 秘密」的一项。
+fn header_matches(headers: &[LoopbackHeader], header_name: &str, expected: &[u8]) -> bool { headers.iter().any(|header| header.name.eq_ignore_ascii_case(header_name) && constant_time_eq(header.value.as_bytes(), expected)) }
 
 /// 移走已校验的凭据头，避免密钥明文随缓冲交给插件。
 fn strip_credential_header(headers: &mut Vec<LoopbackHeader>, header_name: &str) { headers.retain(|header| !header.name.eq_ignore_ascii_case(header_name)); }
@@ -449,7 +513,7 @@ fn handle_connection(mut stream: TcpStream, state: &ChannelState, notifier: Opti
         Ok(request) =>
         {
             if let Some(credential) = credential
-                && !header_matches(&request.headers, &credential.header_name, credential.secret.as_bytes())
+                && !header_matches(&request.headers, &credential.header_name, credential.header_value().as_bytes())
             {
                 respond(&mut stream, "401 Unauthorized", "unauthorized"); // 校验失败不交给插件。
                 return;

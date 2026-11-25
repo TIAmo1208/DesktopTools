@@ -272,6 +272,26 @@
     padding: 1px;
 }
 
+/* 分组间距由外层网格提供，组内沿用设置行间距。 */
+.settings__groups {
+    --settings-group-gap: 18px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--settings-group-gap);
+}
+
+.settings__groups > .settings__group > .settings__group-title {
+    margin-block-start: 0;
+}
+
+/* 组内短标题用次要文字区分层级，不承担组间留白。 */
+.settings__subgroup-title {
+    margin: 0 2px;
+    color: var(--color-muted);
+    font: inherit;
+    font-weight: 600;
+}
+
 /* 页内语义分组：标题与其下条目成一组，不把不同含义的行平铺在同一无标题区。 */
 .settings__group {
     display: grid;

@@ -12,7 +12,7 @@ use crate::shell::DesktopItemState;
 use crate::workspace::WorkspaceState;
 
 use super::{STARTED_EVENT_SENT, add_weather_city, command_argument, create_collect_box, create_tile_to_desktop, enable_feature, open_settings_window, remove_weather_city, serialize_error, serialize_result};
-use super::{audio, collect, component, desktop_host, desktop_item, folder_portal, island, loopback, music, notifications, weather, workspace};
+use super::{audio, collect, component, desktop_host, desktop_item, folder_portal, island, loopback, music, notifications, plugin, weather, workspace};
 
 /// island 领域命令。
 #[allow(unused_variables)]
@@ -42,13 +42,19 @@ pub(crate) fn route_island(command: &str, app: &AppHandle, runtime: &DesktopHost
         "save_island_card_order" => Some((|| -> Result<Value, Value> {
             let order: Vec<String> = command_argument(&arguments, "islandCardOrder", "岛卡顺序无效").map_err(serialize_error)?;
             let normalized = crate::contracts::settings::normalize_island_card_order(order); // 去重、限定前缀与上限。
-            app.state::<crate::preferences::SettingsState>()
+            let saved = app
+                .state::<crate::preferences::SettingsState>()
                 .update(|preferences| {
                     preferences.island_card_order = normalized;
                     Ok(())
                 })
-                .map_err(serialize_error)
-                .and_then(serialize_result)
+                .map_err(serialize_error)?;
+            // 与整份偏好保存一致：卡片移除后立即释放该岛实例的通道，不等下一次组件快照读取。
+            if let Err(error) = super::component::prune_loopback_for_visibility(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>())
+            {
+                crate::log_warn!("岛卡顺序：保存后释放 loopback 通道失败，错误码={}", error.code);
+            }
+            serialize_result(saved)
         })()),
         _ => None,
     }
@@ -481,13 +487,55 @@ pub(crate) fn route_component(command: &str, app: &AppHandle, runtime: &DesktopH
             ComponentRuntimeState::unsubscribe_time(id);
             serialize_result(())
         })()),
-        "get_component_runtime_snapshot" => Some(component::execute_get_component_runtime_snapshot(app, &app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>()).map_err(serialize_error).and_then(serialize_result)),
-        "get_current_component_runtime_snapshot" => Some(component::component_runtime_snapshot(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>()).map_err(serialize_error).and_then(serialize_result)),
+        "get_component_runtime_snapshot" => Some(component::execute_get_component_runtime_snapshot(app, &app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>()).map_err(serialize_error).and_then(serialize_result)),
+        "get_current_component_runtime_snapshot" => Some(component::component_runtime_snapshot(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>()).map_err(serialize_error).and_then(serialize_result)),
         "get_current_component_host_event" => Some(component::current_component_host_event(&app.state::<ComponentRuntimeState>()).map_err(serialize_error).and_then(serialize_result)),
         "invoke_component_capability" => Some((|| -> Result<Value, Value> {
             let instance_id: String = command_argument(&arguments, "instanceId", "命令参数无效").map_err(serialize_error)?; // 已解码的 instanceId。
             let capability: ComponentCapability = command_argument(&arguments, "capability", "命令参数无效").map_err(serialize_error)?; // 已解码的 capability。
             component::execute_invoke_component_capability(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>(), instance_id, capability).map_err(serialize_error).and_then(serialize_result)
+        })()),
+        _ => None,
+    }
+}
+
+/// plugin 领域命令：插件凭据、浮岛消息与协议白名单打开；三条都按实例能力授权。
+#[allow(unused_variables)]
+pub(crate) fn route_plugin(command: &str, app: &AppHandle, runtime: &DesktopHostRuntime, arguments: &Value) -> Option<Result<Value, Value>>
+{
+    match command
+    {
+        "plugin_credential_set" => Some((|| -> Result<Value, Value> {
+            let instance_id: String = command_argument(&arguments, "instanceId", "插件实例标识无效").map_err(serialize_error)?;
+            let slot: String = command_argument(&arguments, "slot", "凭据槽位无效").map_err(serialize_error)?;
+            let value: String = command_argument(&arguments, "value", "凭据值无效").map_err(serialize_error)?;
+            plugin::execute_plugin_credential_set(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>(), instance_id, slot, value).map_err(serialize_error).and_then(serialize_result)
+        })()),
+        "plugin_credential_clear" => Some((|| -> Result<Value, Value> {
+            let instance_id: String = command_argument(&arguments, "instanceId", "插件实例标识无效").map_err(serialize_error)?;
+            let slot: String = command_argument(&arguments, "slot", "凭据槽位无效").map_err(serialize_error)?;
+            plugin::execute_plugin_credential_clear(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>(), instance_id, slot).map_err(serialize_error).and_then(serialize_result)
+        })()),
+        "plugin_credential_exchange" => Some((|| -> Result<Value, Value> {
+            let instance_id: String = command_argument(&arguments, "instanceId", "插件实例标识无效").map_err(serialize_error)?;
+            let slot: String = command_argument(&arguments, "slot", "凭据槽位无效").map_err(serialize_error)?;
+            let url: String = command_argument(&arguments, "url", "兑换地址无效").map_err(serialize_error)?;
+            let body: Option<serde_json::Value> = arguments.get("body").cloned().filter(|value| !value.is_null()); // 可缺省的 JSON 正文。
+            let extract: String = command_argument(&arguments, "extract", "提取字段无效").map_err(serialize_error)?;
+            plugin::execute_plugin_credential_exchange(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>(), instance_id, slot, url, body, extract).map_err(serialize_error).and_then(serialize_result)
+        })()),
+        "publish_island_message" => Some((|| -> Result<Value, Value> {
+            let instance_id: String = command_argument(&arguments, "instanceId", "插件实例标识无效").map_err(serialize_error)?;
+            let key: String = command_argument(&arguments, "key", "消息键无效").map_err(serialize_error)?;
+            let kind: crate::contracts::IslandMessageKind = command_argument(&arguments, "kind", "消息类别无效").map_err(serialize_error)?;
+            let text: String = command_argument(&arguments, "text", "消息正文无效").map_err(serialize_error)?;
+            let uri: Option<String> = arguments.get("uri").cloned().filter(|value| !value.is_null()).map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("消息跳转地址无效")))?;
+            plugin::execute_publish_island_message(app, &app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>(), instance_id, key, kind, text, uri).map_err(serialize_error).and_then(serialize_result)
+        })()),
+        "open_uri" => Some((|| -> Result<Value, Value> {
+            let instance_id: String = command_argument(&arguments, "instanceId", "插件实例标识无效").map_err(serialize_error)?;
+            let uri: String = command_argument(&arguments, "uri", "链接无效").map_err(serialize_error)?;
+            plugin::execute_open_uri(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>(), instance_id, uri).map_err(serialize_error).and_then(serialize_result)
         })()),
         _ => None,
     }
@@ -531,14 +579,15 @@ pub(crate) fn route_loopback(command: &str, app: &AppHandle, runtime: &DesktopHo
             let base_url: Option<String> = arguments.get("baseUrl").cloned().map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("通道基址参数无效")))?;
             let credential_ref: Option<String> = arguments.get("credentialRef").cloned().map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("通道凭据参数无效")))?;
             let header_name: Option<String> = arguments.get("headerName").cloned().map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("通道头名参数无效")))?;
-            let request = crate::contracts::RegisterLoopbackChannel { instance_id, channel_id, mode, port, base_url, credential_ref, header_name };
-            loopback::execute_register_loopback_channel(app, &app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), request).map_err(serialize_error).and_then(serialize_result)
+            let credential_prefix: Option<String> = arguments.get("credentialPrefix").cloned().filter(|value| !value.is_null()).map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("通道凭据前缀无效")))?;
+            let request = crate::contracts::RegisterLoopbackChannel { instance_id, channel_id, mode, port, base_url, credential_ref, header_name, credential_prefix };
+            loopback::execute_register_loopback_channel(app, &app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>(), request).map_err(serialize_error).and_then(serialize_result)
         })()),
         "read_loopback_channel" => Some((|| -> Result<Value, Value> {
             let instance_id: String = command_argument(&arguments, "instanceId", "通道实例标识无效").map_err(serialize_error)?;
             let channel_id: String = command_argument(&arguments, "channelId", "通道标识无效").map_err(serialize_error)?;
             let after_sequence: Option<u64> = arguments.get("afterSequence").cloned().map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("通道序号参数无效")))?;
-            loopback::execute_read_loopback_channel(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), instance_id, channel_id, after_sequence).map_err(serialize_error).and_then(serialize_result)
+            loopback::execute_read_loopback_channel(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>(), instance_id, channel_id, after_sequence).map_err(serialize_error).and_then(serialize_result)
         })()),
         "request_loopback" => Some((|| -> Result<Value, Value> {
             let instance_id: String = command_argument(&arguments, "instanceId", "通道实例标识无效").map_err(serialize_error)?;
@@ -546,16 +595,16 @@ pub(crate) fn route_loopback(command: &str, app: &AppHandle, runtime: &DesktopHo
             let method: String = command_argument(&arguments, "method", "请求方法无效").map_err(serialize_error)?;
             let path: String = command_argument(&arguments, "path", "请求路径无效").map_err(serialize_error)?;
             let body: Option<String> = arguments.get("body").cloned().filter(|value| !value.is_null()).map(serde_json::from_value).transpose().map_err(|_| serialize_error(DesktopHostError::invalid_readiness("请求体参数无效")))?;
-            loopback::execute_request_loopback(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), instance_id, channel_id, method, path, body).map_err(serialize_error).and_then(serialize_result)
+            loopback::execute_request_loopback(&app.state::<ComponentRuntimeState>(), &app.state::<WorkspaceState>(), &app.state::<crate::preferences::SettingsState>(), instance_id, channel_id, method, path, body).map_err(serialize_error).and_then(serialize_result)
         })()),
         "set_loopback_credential" => Some((|| -> Result<Value, Value> {
             let target: String = command_argument(&arguments, "target", "凭据目标无效").map_err(serialize_error)?;
             let secret: String = command_argument(&arguments, "secret", "共享密钥无效").map_err(serialize_error)?;
-            loopback::execute_set_loopback_credential(target, secret).map_err(serialize_error).and_then(serialize_result)
+            loopback::execute_set_loopback_credential(&app.state::<ComponentRuntimeState>(), target, secret).map_err(serialize_error).and_then(serialize_result)
         })()),
         "clear_loopback_credential" => Some((|| -> Result<Value, Value> {
             let target: String = command_argument(&arguments, "target", "凭据目标无效").map_err(serialize_error)?;
-            loopback::execute_clear_loopback_credential(target).map_err(serialize_error).and_then(serialize_result)
+            loopback::execute_clear_loopback_credential(&app.state::<ComponentRuntimeState>(), target).map_err(serialize_error).and_then(serialize_result)
         })()),
         _ => None,
     }

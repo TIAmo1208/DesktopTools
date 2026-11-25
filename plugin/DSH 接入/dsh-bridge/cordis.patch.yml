@@ -1,0 +1,25 @@
+# dsh-desktop-bridge — 只读回环桥
+#
+# 这个 patch 只插入一条 Host 插件行。插件自己起 node:http 服务，只绑
+# 127.0.0.1，默认 47832；不注册审批应答者、不认领审批、不调用写方法。
+# DesktopTools 的 Rust 适配层按 /health、/pair、/snapshot 三个端点使用它；
+# 配对码只在 DSH 同源页面 /dsh-bridge/pairing 展示（需要窗口身份）。
+#
+# 配置说明：
+#   port              监听端口；0 表示让系统分配（仅供自测/临时使用）。
+#   pairingCodeTtlMs  一次性配对码的有效期，默认 10 分钟。
+#   rotateCheckMs     过期检查间隔，默认 15 秒。
+#   balanceCacheMs    余额结果缓存时长，默认 5 秒。
+#   balanceTimeoutMs  平台余额调用超时，默认 3 秒。
+#
+# 端口被占用时插件会以明确错误失败（不会静默换端口），便于在设置页看到
+# 冲突后改 port。
+- insert:
+    - id: dsh-desktop-bridge
+      name: 'dsh-desktop-bridge'
+      config:
+        port: 47832
+        pairingCodeTtlMs: 600000
+        rotateCheckMs: 15000
+        balanceCacheMs: 5000
+        balanceTimeoutMs: 3000

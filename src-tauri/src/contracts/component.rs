@@ -12,6 +12,109 @@ pub const COMPONENT_HOST_EVENT: &str = "component-host-event";
 /// 插件设置保存成功后的通知；载荷只含 pluginId，读者重新读取命令。
 pub const PLUGIN_SETTINGS_CHANGED_EVENT: &str = "plugin-settings-changed";
 
+/// 插件向浮岛消息锚点投递条目的事件名；载荷是 `IslandPluginMessage`。
+pub const ISLAND_PLUGIN_MESSAGE_EVENT: &str = "island-plugin-message";
+
+/// 插件凭据命名空间前缀；Windows 凭据目标名不区分大小写，全流程比较都忽略 ASCII 大小写。
+pub const PLUGIN_CREDENTIAL_NAMESPACE: &str = "DesktopTools/plugin/";
+
+/// 兼容保留的旧凭据目标：只保留 AstrBot 状态插件使用的那一条。
+pub const LEGACY_CREDENTIAL_TARGET: &str = "DesktopTools/astrbot-status";
+
+/// 凭据目标的归属分类；解析与比较都按 Windows 的不区分大小写语义处理。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialTarget<'a>
+{
+    /// 插件命名空间：`DesktopTools/plugin/<pluginId>/<slot>`。
+    Plugin
+    {
+        plugin_id: &'a str, slot: &'a str
+    },
+    /// 明确保留的旧目标，只供既有插件继续使用。
+    Legacy,
+    /// 其它名称一律视为本程序保留，插件与 loopback 都不得读写。
+    Reserved,
+}
+
+/// 唯一的凭据目标分类点；未知或格式不完整的插件命名空间按保留处理。
+pub fn classify_credential_target(target: &str) -> CredentialTarget<'_>
+{
+    let target = target.trim();
+    if target.eq_ignore_ascii_case(LEGACY_CREDENTIAL_TARGET)
+    {
+        return CredentialTarget::Legacy;
+    }
+    let Some(rest) = strip_prefix_ignore_ascii_case(target, PLUGIN_CREDENTIAL_NAMESPACE)
+    else
+    {
+        return CredentialTarget::Reserved;
+    };
+    let mut parts = rest.split('/');
+    let (Some(plugin_id), Some(slot), None) = (parts.next(), parts.next(), parts.next())
+    else
+    {
+        return CredentialTarget::Reserved;
+    };
+    if !valid_plugin_id(plugin_id) || !valid_credential_slot(slot)
+    {
+        return CredentialTarget::Reserved;
+    }
+    CredentialTarget::Plugin { plugin_id, slot }
+}
+
+/// 按 ASCII 大小写不敏感地去除前缀；命中时返回剩余部分。
+fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> { value.get(..prefix.len()).filter(|head| head.eq_ignore_ascii_case(prefix)).map(|_| &value[prefix.len()..]) }
+
+/// 插件标识沿用清单规则：小写字母、数字、点与连字符。
+fn valid_plugin_id(value: &str) -> bool { !value.is_empty() && value.len() <= 128 && value.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_uppercase() || character.is_ascii_digit() || matches!(character, '.' | '-')) }
+
+/// 凭据槽位：1–32 位小写字母、数字与连字符。
+pub fn valid_credential_slot(value: &str) -> bool { !value.is_empty() && value.len() <= 32 && value.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-') }
+
+/// 宿主兑换命令的脱敏结果：只有是否已落槽，绝不含秘密本身。
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCredentialExchangeResult
+{
+    /// 秘密是否已写入插件凭据槽。
+    pub stored: bool,
+}
+
+/// 插件消息类别；只接受四类，页面不必为未知值做分支。
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IslandMessageKind
+{
+    /// 普通信息。
+    Info,
+    /// 等待用户处理。
+    Waiting,
+    /// 已完成。
+    Done,
+    /// 失败。
+    Error,
+}
+
+/// 插件投递到浮岛消息锚点的一条本地条目；运行时只做投递，不保存队列。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IslandPluginMessage
+{
+    /// 投递来源的组件标识；页面按 `{source, key}` 去重。
+    pub source: String,
+    /// 同一来源内的消息键。
+    pub key: String,
+    /// 条目类别。
+    pub kind: IslandMessageKind,
+    /// 展示文本，已按 200 字符截断。
+    pub text: String,
+    /// 投递时刻的 Unix 毫秒。
+    pub unix_millis: i64,
+    /// 用户点击条目时可打开的跳转地址；只允许 `dsh:` 与 `https:`，未提供时不进入载荷。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+}
+
 /// 官方组件可以声明并由宿主授权的能力。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -25,6 +128,14 @@ pub enum ComponentCapability
     ProbeServiceStatus,
     /// 注册本机 loopback 通道，只收发原始 HTTP。
     LoopbackChannel,
+    /// 在插件自有命名空间写入或清除凭据，宿主永不回读明文。
+    PluginCredential,
+    /// 向浮岛消息锚点投递一条本地条目，不弹原生通知。
+    PublishIslandMessage,
+    /// 打开协议白名单内（`dsh:`、`https:`）的 URI。
+    OpenUri,
+    /// 由宿主向本机回环地址兑换一次并直接落槽，秘密不回到页面。
+    PluginCredentialExchange,
 }
 
 /// 插件呈现角色，未声明时保持格子行为。
@@ -169,6 +280,9 @@ pub struct ComponentManifest
     /// 仅用于主题样式表 URL 缓存失效；由清单版本与文件元数据组成。
     #[serde(default)]
     pub stylesheet_cache_key: String,
+    /// 插件图标的相对路径，形如 `<文件夹>/<图标>.svg`（相对插件根，交给前端拼 `/plugins/` 前缀）；未声明或校验失败时为空。
+    #[serde(default)]
+    pub icon_path: String,
     /// 主题外观覆盖，非主题为空。
     #[serde(default)]
     pub theme_appearance: Option<ThemeAppearance>,
@@ -343,6 +457,9 @@ pub struct RegisterLoopbackChannel
     /// 注入与校验凭据使用的头名，由插件声明。
     #[serde(default)]
     pub header_name: Option<String>,
+    /// 凭据注入时的固定前缀；当前只允许 `Bearer `，凭据本身存原始秘密。
+    #[serde(default)]
+    pub credential_prefix: Option<String>,
 }
 
 /// 注册成功后返回的通道句柄，不进入工作区快照也不落盘。
@@ -480,6 +597,27 @@ impl ComponentRuntimeError
 
     /// 写入或清除 Windows 凭据存储失败；错误信息不包含密钥明文。
     pub fn loopback_credential_store_failed(message: impl Into<String>) -> Self { Self { code: "loopback-credential-store-failed".to_string(), message: message.into() } }
+
+    /// 凭据目标不在本插件可用范围内（跨插件命名空间或未许可的旧目标）。
+    pub fn credential_target_denied(message: impl Into<String>) -> Self { Self { code: "credential-target-denied".to_string(), message: message.into() } }
+
+    /// 宿主兑换的目标地址不合法。
+    pub fn exchange_target_invalid(message: impl Into<String>) -> Self { Self { code: "exchange-target-invalid".to_string(), message: message.into() } }
+
+    /// 宿主兑换请求失败或响应不可用；消息不含秘密与响应正文。
+    pub fn exchange_failed(message: impl Into<String>) -> Self { Self { code: "credential-exchange-failed".to_string(), message: message.into() } }
+
+    /// 插件通用命令的参数不合法。
+    pub fn invalid_input(message: impl Into<String>) -> Self { Self { code: "component-invalid-input".to_string(), message: message.into() } }
+
+    /// 插件凭据命名空间的写入或清除失败；消息不含明文。
+    pub fn plugin_credential_failed(message: impl Into<String>) -> Self { Self { code: "plugin-credential-failed".to_string(), message: message.into() } }
+
+    /// URI 协议不在白名单内；只有 `dsh:` 与 `https:` 允许交给系统。
+    pub fn uri_scheme_rejected() -> Self { Self { code: "uri-scheme-rejected".to_string(), message: "只允许打开 dsh: 或 https: 链接".to_string() } }
+
+    /// 协议合法但系统无法打开。
+    pub fn uri_open_failed(message: impl Into<String>) -> Self { Self { code: "uri-open-failed".to_string(), message: message.into() } }
 }
 
 /// 将组件运行时错误写入标准错误传播链。

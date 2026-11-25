@@ -2,8 +2,28 @@ import type { WorkspaceRect } from "./workspace";
 import { isFontFamilyName } from "./settings.ts";
 import { TILE_MIN_HEIGHT, TILE_MIN_WIDTH } from "./tile.ts";
 
-/** 官方组件可以声明并由宿主授权的能力。 */
-export type ComponentCapability = "read-host-time" | "read-current-media" | "probe-service-status" | "loopback-channel";
+/** 组件可以声明并由宿主授权的能力；插件可声明集合，官方组件仍按各自固定能力授权。 */
+export type ComponentCapability =
+    | "read-host-time"
+    | "read-current-media"
+    | "probe-service-status"
+    | "loopback-channel"
+    | "plugin-credential"
+    | "plugin-credential-exchange"
+    | "publish-island-message"
+    | "open-uri";
+
+/** 全部能力名称；清单与实例授权共用同一集合，未知名称在边界被拒绝。 */
+export const COMPONENT_CAPABILITIES: readonly ComponentCapability[] = [
+    "read-host-time",
+    "read-current-media",
+    "probe-service-status",
+    "loopback-channel",
+    "plugin-credential",
+    "plugin-credential-exchange",
+    "publish-island-message",
+    "open-uri",
+];
 
 /** 插件呈现角色，缺省为格子。 */
 export type ComponentRole = "tile" | "theme";
@@ -49,6 +69,7 @@ export interface ComponentManifest {
     role?: ComponentRole; // 缺省为 tile。
     stylesheet?: string; // 插件根内的主题样式表路径。
     stylesheetCacheKey?: string; // 仅用于主题样式表 URL 缓存失效。
+    iconPath: string; // 插件根内的图标相对路径；未声明为空串。
     themeAppearance?: ThemeAppearance | null; // 非主题为 null。
     themeFonts?: ThemeFont[]; // 主题自带的字体，非主题缺省为空。
     requiredCapabilities: ComponentCapability[];
@@ -178,11 +199,10 @@ export const parseComponentInstanceSnapshot = (value: unknown): ComponentInstanc
     };
 };
 
-/** 校验组件能力名称。 */
+/** 校验组件能力名称；新增的通用能力与原有能力共用同一份白名单。 */
 const parseCapability = (value: unknown): ComponentCapability => {
-    if (value !== "read-host-time" && value !== "read-current-media" && value !== "probe-service-status" && value !== "loopback-channel")
-        throw new ComponentContractError();
-    return value;
+    if (typeof value !== "string" || !(COMPONENT_CAPABILITIES as readonly string[]).includes(value)) throw new ComponentContractError();
+    return value as ComponentCapability;
 };
 
 /** 可缺省的短文本。空串当没写，别的类型拒绝。 */
@@ -308,6 +328,7 @@ export const parseComponentRuntimeSnapshot = (value: unknown): ComponentRuntimeS
             tileTypes: parseTileTypes(item.tileTypes),
             version: parseOptionalText(item.version),
             stylesheetCacheKey: parseOptionalText(item.stylesheetCacheKey),
+            iconPath: parseOptionalText(item.iconPath) ?? "",
             description: parseOptionalText(item.description),
             author: parseOptionalText(item.author),
             repository: parseOptionalText(item.repository),
@@ -376,4 +397,26 @@ const parseProbeServiceStatus = (payload: Record<string, unknown>): ProbeService
     }
     if (payload.startTime !== null) throw new ComponentContractError();
     return { level, startTime: null, checkedAt: payload.checkedAt as number };
+};
+
+/** 宿主兑换请求：宿主向本机地址取回一条秘密并直接落槽，插件只拿存储结果。 */
+export interface PluginCredentialExchange
+{
+    url: string; // 仅本机回环地址，由宿主校验。
+    body: unknown; // 请求 JSON 正文，可缺省。
+    extract: string; // 从响应 JSON 顶层取值的字段名，例如 token。
+}
+
+/** 兑换只报告是否已落槽，永不回传秘密。 */
+export interface PluginCredentialExchangeResult
+{
+    stored: boolean; // true 表示已写入实例自己的凭据槽位。
+}
+
+/** 校验兑换结果；只有明确存储成功才算成功，未知字段或缺失按契约错误处理。 */
+export const parsePluginCredentialExchangeResult = (value: unknown): PluginCredentialExchangeResult => {
+    if (typeof value !== "object" || value === null) throw new ComponentContractError();
+    const item = value as Record<string, unknown>; // 待校验的兑换结果。
+    if (item.stored !== true) throw new ComponentContractError();
+    return { stored: true };
 };

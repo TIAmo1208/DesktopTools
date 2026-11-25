@@ -3,18 +3,24 @@ import type { IslandRect, IslandStateRequest } from "../../contracts/island.ts";
 /** 依实测卡片形成一次提交；透明间隙也命中，不填充可见表面。 */
 export const islandGeometry = (
     state: IslandStateRequest["state"],
-    measured: IslandRect[],
+    measuredInput: IslandRect[],
     radius: number,
     work: IslandRect,
     edge: "" | "top" | "bottom" | "left" | "right",
     offset: number,
     form: "capsule" | "notch" = "capsule",
+    options: { anchorStart?: number } = {},
 ): IslandStateRequest => {
+    let measured = measuredInput; // 展开态在下面统一改写列宽。
     if (!measured.length) throw new Error("岛缺少实测卡片");
+    // 展开态列宽由页面固定：首帧、动画帧、重测与重同步都从这一处取值，
+    // 否则内容自然宽会随写入宽度重排，出现 280→288→314→342 的分次长大与末帧回退（t69–t73）。
+    if (state === "expanded") measured = measured.map((rect) => ({ ...rect, width: ISLAND_EXPANDED_COLUMN_WIDTH }));
     const gutter = state === "expanded" ? ISLAND_SCROLLBAR_GUTTER : 0; // 展开态在卡片外留一条滚动条槽。
     const gutterStart = edge === "right" ? gutter : 0; // 贴右边时槽在卡片左侧，保持卡片贴边。
     const gutterEnd = gutter - gutterStart;
     const contentWidth = Math.ceil(Math.max(...measured.map((rect) => rect.left + rect.width))); // 卡片右边界即内容宽，含贴右边时的起始槽。
+    const columnWidth = contentWidth - gutterStart; // 纯卡片内容宽：贴右边时扣掉起始槽，沿边居中只看它，卡片坐标与槽显隐无关。
     const width = contentWidth + gutterEnd; // 窗口在内容之外补上滚动条槽。
     const height = state === "expanded" ? work.height : Math.ceil(Math.max(...measured.map((rect) => rect.top + rect.height)));
     if (width > work.width || height > work.height) throw new Error("岛内容超过主屏工作区");
@@ -25,11 +31,40 @@ export const islandGeometry = (
     const margin = form === "notch" ? 0 : 6; // 胶囊离工作区边 6px，刘海贴边。
     const notch = form === "notch" && state !== "expanded" ? 12 : 0; // 外凸负圆角只在常态与 hover 生效；展开态不额外扩大窗口。
     const alongSpan = horizontalEdge ? work.height : work.width; // 沿边方向的工作区尺寸。
-    const alongSize = (horizontalEdge ? height : width) + notch * 2; // 沿边居中按窗口宽计算，滚动条槽也留在工作区内。
-    const maxOffset = Math.max(0, (alongSpan - alongSize) / 2); // 以居中为 0 的可偏移半幅。
-    const alongOffset = Math.min(Math.max(offset, -maxOffset), maxOffset); // 空边按顶部同样应用持久偏移，不再强制居中。
-    const alongStart = Math.max(0, alongSpan - alongSize) / 2 + alongOffset; // 居中后再应用持久偏移；尺寸变化时两侧对称扩展。
-    const left = edge === "right" ? work.left + work.width - width - margin : work.left + (horizontalEdge ? margin : alongStart);
+    // 沿边居中按实际窗口宽（列宽加刘海外扩 / 高度加刘海外扩），窄卡因此仍是窗中心对工作区中心（t130）。
+    const alongSize = horizontalEdge ? height + notch * 2 : columnWidth + notch * 2;
+    const alongGutter = horizontalEdge ? 0 : gutter; // 槽只在上/下贴边时占用沿边方向。
+    const 半幅 = Math.max(0, (alongSpan - alongSize) / 2); // 窗口在沿边方向的居中半幅；偏移以居中为 0。
+    const maxOffset = Math.max(0, 半幅 - alongGutter); // 槽占着沿边方向的末端，那一侧可移动范围相应减少。
+    const alongOffset = Math.min(Math.max(offset, -半幅), maxOffset); // 空边按顶部同样应用持久偏移，不再强制居中。
+    const 窗沿宽 = alongSize; // 沿边方向的窗口尺寸：左右贴边是高度，上下贴边是列宽加刘海外扩。
+    const 夹到工作区 = (起点: number, 宽: number) => Math.min(Math.max(起点, 0), Math.max(0, alongSpan - 宽 - alongGutter));
+    // 展开态仍按展开列宽居中、窗口含右侧槽；其余态先按实际窗口宽自然居中，再夹进展开窗区间（t130）。
+    const 展开gutter = horizontalEdge ? 0 : ISLAND_SCROLLBAR_GUTTER; // 展开窗在沿边方向永远带着滚动条槽。
+    const 展开半幅 = Math.max(0, (alongSpan - ISLAND_EXPANDED_COLUMN_WIDTH) / 2);
+    const 展开偏移 = Math.min(Math.max(offset, -展开半幅), Math.max(0, 展开半幅 - 展开gutter));
+    // 左右贴边时展开窗覆盖整条工作区高，区间直接是 0..工作区高，不用列宽求出的 590 当起点（t132）。
+    const 展开起点 = horizontalEdge ? 0 : Math.min(Math.max(展开半幅 + 展开偏移, 0), Math.max(0, alongSpan - ISLAND_EXPANDED_COLUMN_WIDTH - 展开gutter));
+    const 展开沿宽 = horizontalEdge ? alongSpan : ISLAND_EXPANDED_COLUMN_WIDTH + ISLAND_SCROLLBAR_GUTTER; // 上下贴边时展开窗宽 416，左右贴边时覆盖整条工作区高。
+    const 自然起点 = 夹到工作区(半幅 + alongOffset, 窗沿宽);
+    const alongStart = state === "expanded"
+        ? 展开起点
+        : Math.min(Math.max(自然起点, 展开起点), Math.max(展开起点, 展开起点 + 展开沿宽 - 窗沿宽));
+    const centeredLeft = edge === "right" ? work.left + work.width - width - margin : work.left + (horizontalEdge ? margin : alongStart);
+    // 自然宽切换（胶囊/悬停消息切换、relay 逐帧收放）：把窗口左缘锚定在上一帧，宽度向右扩展，
+    // 避免“先按新宽居中、再随原生 margin 回执跳回”的横向抖动。展开态不锚定（列已固定）。
+    // 旧锚点只在展开窗允许区间内生效：先按最终窗尺寸求出该区间的左右界，再夹 anchorStart，旧胶囊位置不得把窗推出（t132）。
+    // hover 才受展开窗区间约束；常态胶囊保留原来的整段工作区锚定语义。上界按最终整窗宽（含刘海外扩）计。
+    const 窗整体宽 = width + (horizontalEdge ? 0 : notch * 2);
+    // 横向侧贴的展开列盒 X 区间：右侧贴边时列盒右缘离工作区右缘还有一个 margin（胶囊 6），旧锚必须按它夹（t134）。
+    const 展开列盒左 = edge === "right" ? work.left + work.width - (ISLAND_EXPANDED_COLUMN_WIDTH + ISLAND_SCROLLBAR_GUTTER) - margin : work.left + margin;
+    const 展开列盒右 = 展开列盒左 + ISLAND_EXPANDED_COLUMN_WIDTH + ISLAND_SCROLLBAR_GUTTER;
+    const 锚点下界 = state === "hover" ? (horizontalEdge ? 展开列盒左 : work.left + 展开起点) : work.left;
+    const 锚点上界 = Math.max(锚点下界, state === "hover" ? (horizontalEdge ? 展开列盒右 : work.left + 展开起点 + 展开沿宽) - 窗整体宽 : work.left + work.width - width);
+    const anchoredLeft = options.anchorStart !== undefined && state !== "expanded"
+        ? Math.min(Math.max(options.anchorStart, 锚点下界), 锚点上界)
+        : undefined;
+    const left = anchoredLeft ?? centeredLeft;
     const top = state === "expanded" ? work.top : edge === "bottom" ? work.top + work.height - height - margin : work.top + (horizontalEdge ? alongStart : margin);
     // 刘海的窗口在沿边方向各向外扩 12px，本体向内让出同样的距离；被让出的角部是新增透明像素。
     const growLeft = horizontalEdge ? 0 : notch; // 上下贴边时在水平方向让出圆弧区。
@@ -55,25 +90,43 @@ export const islandGeometry = (
     return {
         state,
         windowBox,
-        viewport: islandViewport(work, edge, offset),
+        viewport: islandViewport(work, edge, offset, state),
         cards,
     };
 };
 
+/** 内容列相对页面视口的偏移；展开首帧必须先用它定位再提交窗口，避免 (0,0) 中间态。 */
+export const islandContentOffset = ({ windowBox, viewport }: Pick<IslandStateRequest, "windowBox" | "viewport">): { x: number; y: number } => ({
+    x: windowBox.left - viewport.left,
+    y: windowBox.top - viewport.top,
+});
+
 /** 展开态只在窗口盒或固定视口变化时提交，不把列表内部卡片变化当成新窗口。 */
+/** 展开卡片列在满工作区根内的左边距；逐帧绘制与终帧恢复共用同一算式，避免最后一帧跳列。 */
+export const islandExpandedColumn = ({ windowBox, viewport }: Pick<IslandStateRequest, "windowBox" | "viewport">): number => windowBox.left - viewport.left;
+
 export const islandWindowKey = ({ state, windowBox, viewport }: IslandStateRequest): string => JSON.stringify([state, windowBox, viewport]);
 
 /** 展开态卡片外侧的滚动条槽：4 DIP 间距加 12 DIP 轨道。 */
 export const ISLAND_SCROLLBAR_GUTTER = 16;
 
-/** 固定页面视口带宽：覆盖最大窗口宽度（展开卡 360 + 滚动条槽 16 + 刘海 24）并留余量。 */
-export const ISLAND_VIEWPORT_WIDTH = 420;
+/** 展开内容列的固定列宽：切换消息 1/全部只改高度，列偏移与窗口盒不随文字宽变化。 */
+export const ISLAND_EXPANDED_COLUMN_WIDTH = 400;
+
+/** 固定页面视口带宽：覆盖最大窗口宽度（展开卡 400 + 滚动条槽 16 + 刘海 24）并留余量。 */
+export const ISLAND_VIEWPORT_WIDTH = 440;
+
+/** 紧凑态（胶囊/hover）窗口宽度上限：沿用原 420 视口带的可见宽度，带宽扩到 440 只用于容纳展开列。 */
+export const ISLAND_COMPACT_GAP = 12; // hover 卡片左右各留的缺口（与展开窗的槽同宽，窗口宽 = 卡宽 + 2×缺口）。
+export const ISLAND_COMPACT_MAX_WIDTH = ISLAND_EXPANDED_COLUMN_WIDTH + ISLAND_SCROLLBAR_GUTTER - ISLAND_COMPACT_GAP * 2; // hover 卡宽上限 392 = 展开窗 416 − 两端缺口 24，窗口与展开窗同宽，边缘点击稳定落进展开窗（t119/t123）。
 
 /**
- * 固定页面原点：视口按“最大 420 宽窗口”使用与窗口相同的边/偏移落位并同样夹紧，
+ * 固定页面原点：视口按“最大 440 宽窗口”使用与窗口相同的边/偏移落位并同样夹紧，
  * 因此同一偏移下所有状态窗口（含较宽的展开与并集）都落在视口内；状态切换不移动视口。
  */
-export const islandViewport = (work: IslandRect, edge: string, offset: number): IslandRect => {
+export const islandViewport = (work: IslandRect, edge: string, offset: number, state: IslandStateRequest["state"] = "collapsed"): IslandRect => {
+    // 展开态页面铺满工作区，整片透明区都能收到指针事件；紧凑两态仍用 440 视口带。
+    if (state === "expanded") return { ...work };
     const horizontal = edge === "left" || edge === "right"; // 左右贴边时视口贴左右边，窗口沿竖直方向居中。
     if (horizontal)
         return {
@@ -210,6 +263,16 @@ export const moveIslandCard = (order: readonly string[], from: string, to: strin
     if (source < 0 || target < 0 || source === target) return next;
     next.splice(source, 1);
     next.splice(target, 0, from);
+    return next;
+};
+
+/** 交换完整保存顺序里的两张可见卡；未显示的消息槽与其它未参与项保持原位置。 */
+export const moveIslandVisibleCard = (order: readonly string[], from: string, to: string): string[] => {
+    const next = [...order];
+    const source = next.indexOf(from);
+    const target = next.indexOf(to);
+    if (source < 0 || target < 0 || source === target) return next;
+    [next[source], next[target]] = [next[target], next[source]];
     return next;
 };
 

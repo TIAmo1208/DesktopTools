@@ -1,66 +1,75 @@
-use super::{execute_clear_loopback_credential, execute_set_loopback_credential, validate_credential_secret, validate_credential_target};
+use super::{execute_clear_loopback_credential, execute_set_loopback_credential, validate_credential_secret, validate_legacy_credential_target};
+use crate::component_runtime::ComponentRuntimeState;
 use crate::component_runtime::loopback::LoopbackRegistry;
-use crate::contracts::{ComponentRuntimeError, LoopbackChannelHandle, LoopbackChannelMode, RegisterLoopbackChannel};
+use crate::contracts::{CredentialTarget, LoopbackChannelHandle, LoopbackChannelMode, RegisterLoopbackChannel, classify_credential_target};
 
-/// 每个用例独占的目标名，避免与真实凭据或其它测试互相影响。
-fn test_target(suffix: &str) -> String { format!("DesktopTools/Test/LoopbackCredential/{}-{suffix}", std::process::id()) }
-
-/// 按插件声明的 target + headerName 注册一条 request 通道，触发宿主读取凭据。
-fn register_request_channel(target: &str) -> Result<LoopbackChannelHandle, ComponentRuntimeError>
+/// 每个用例独占的临时插件目录，避免读取仓库插件目录。
+fn runtime() -> ComponentRuntimeState
 {
-    let request = RegisterLoopbackChannel { instance_id: "instance-1".to_string(), channel_id: "status".to_string(), mode: LoopbackChannelMode::Request, port: None, base_url: Some("http://127.0.0.1:8766".to_string()), credential_ref: Some(target.to_string()), header_name: Some("X-Status-Token".to_string()) };
-    LoopbackRegistry::new().register(request, "plugin.astrbot")
+    let directory = std::env::temp_dir().join(format!("desktop-tools-loopback-command-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|value| value.as_nanos()).unwrap_or(0)));
+    ComponentRuntimeState::new(&directory)
 }
 
-/// 目标只接受受控前缀，密钥有界且不含控制字符。
-#[test]
-fn credential_inputs_only_accept_the_controlled_prefix()
+/// 按插件声明的 target + headerName 注册一条 request 通道，触发宿主解析凭据。
+fn register_request_channel(target: &str, component_id: &str) -> Result<LoopbackChannelHandle, crate::contracts::ComponentRuntimeError>
 {
-    assert_eq!(validate_credential_target(" DesktopTools/astrbot-status ").unwrap(), "DesktopTools/astrbot-status");
-    for rejected in ["", "Other/x", "desktopTools/x", "DesktopTools", "DesktopTools/", "DesktopTools/a\nb"]
+    let request = RegisterLoopbackChannel { instance_id: "instance-1".to_string(), channel_id: "status".to_string(), mode: LoopbackChannelMode::Request, port: None, base_url: Some("http://127.0.0.1:8766".to_string()), credential_ref: Some(target.to_string()), header_name: Some("X-Status-Token".to_string()), credential_prefix: None };
+    LoopbackRegistry::new().register(request, component_id)
+}
+
+/// 旧写入/清除只保留 AstrBot 的兼容目标；插件命名空间（含大小写变体）在访问凭据存储前就被拒。
+#[test]
+fn legacy_commands_only_accept_the_astrbot_target()
+{
+    assert_eq!(validate_legacy_credential_target(" DesktopTools/astrbot-status ").unwrap(), "DesktopTools/astrbot-status");
+    assert_eq!(validate_legacy_credential_target("desktoptools/AstrBot-Status").unwrap(), "DesktopTools/astrbot-status", "Windows 凭据目标名不区分大小写");
+    for plugin_target in ["DesktopTools/plugin/plugin.alpha/token", "DesktopTools/PLUGIN/plugin.alpha/token", "desktoptools/Plugin/plugin.alpha/token"]
     {
-        assert_eq!(validate_credential_target(rejected).unwrap_err().code, "loopback-credential-invalid", "{rejected:?}");
+        assert_eq!(validate_legacy_credential_target(plugin_target).unwrap_err().code, "credential-target-denied", "{plugin_target}");
     }
-    assert!(validate_credential_target(&format!("DesktopTools/{}", "x".repeat(300))).is_err());
-    assert!(validate_credential_secret("token-123").is_ok());
+    for reserved in ["", "Other/x", "DesktopTools/other", "DesktopTools/Test/LoopbackCredential/x", "DesktopTools/plugin/", "DesktopTools/plugin/plugin.alpha"]
+    {
+        assert_eq!(validate_legacy_credential_target(reserved).unwrap_err().code, "loopback-credential-invalid", "{reserved:?}");
+    }
+    let state = runtime();
+    for plugin_target in ["DesktopTools/plugin/plugin.alpha/token", "desktoptools/Plugin/plugin.alpha/token"]
+    {
+        assert_eq!(execute_set_loopback_credential(&state, plugin_target.to_string(), "token-123".to_string()).unwrap_err().code, "credential-target-denied", "旧写入命令必须拒绝插件命名空间");
+        assert_eq!(execute_clear_loopback_credential(&state, plugin_target.to_string()).unwrap_err().code, "credential-target-denied", "旧清除命令必须拒绝插件命名空间");
+    }
+}
+
+/// 密钥边界只做纯校验，测试不写入真实凭据。
+#[test]
+fn credential_secret_is_bounded_and_control_free()
+{
+    assert!(validate_credential_secret("super-secret-token-value").is_ok());
     assert!(validate_credential_secret("").is_err());
     assert!(validate_credential_secret("bad\ntoken").is_err());
     assert!(validate_credential_secret(&"x".repeat(2561)).is_err());
 }
 
-/// 出错时只回结构化码与中文说明，密钥明文不出现在消息或调试输出里。
+/// 目标分类是唯一判断点：插件命名空间按所有者区分，旧目标只剩 AstrBot 一条，其余一律保留。
 #[test]
-fn credential_errors_never_echo_the_secret()
+fn credential_targets_are_classified_by_one_case_insensitive_rule()
 {
-    let secret = "super-secret-token-value";
-    let target_error = execute_set_loopback_credential("Other/target".to_string(), secret.to_string()).unwrap_err();
-    assert_eq!(target_error.code, "loopback-credential-invalid");
-    assert!(!target_error.message.contains(secret));
-    assert!(!format!("{target_error:?}").contains(secret));
-    let too_long = "y".repeat(3000);
-    let secret_error = execute_set_loopback_credential(test_target("too-long").to_string(), too_long.clone()).unwrap_err();
-    assert_eq!(secret_error.code, "loopback-credential-invalid");
-    assert!(!secret_error.message.contains(&too_long));
-    assert!(!format!("{secret_error:?}").contains(&too_long));
-    let empty_error = execute_set_loopback_credential(test_target("empty").to_string(), String::new()).unwrap_err();
-    assert_eq!(empty_error.code, "loopback-credential-invalid");
+    assert_eq!(classify_credential_target("DesktopTools/astrbot-status"), CredentialTarget::Legacy);
+    assert_eq!(classify_credential_target("DESKTOOPTOOLS/astrbot-status"), CredentialTarget::Reserved);
+    assert!(matches!(classify_credential_target("desktoptools/PLUGIN/plugin.alpha/token"), CredentialTarget::Plugin { plugin_id: "plugin.alpha", slot: "token" }));
+    assert!(matches!(classify_credential_target("DesktopTools/plugin/plugin.alpha/token"), CredentialTarget::Plugin { .. }));
+    assert_eq!(classify_credential_target("DesktopTools/plugin/plugin.beta/token"), CredentialTarget::Plugin { plugin_id: "plugin.beta", slot: "token" });
+    assert_eq!(classify_credential_target("DesktopTools/plugin/plugin.alpha"), CredentialTarget::Reserved);
+    assert_eq!(classify_credential_target("DesktopTools/plugin/plugin.alpha/a/b"), CredentialTarget::Reserved);
+    assert_eq!(classify_credential_target("DesktopTools/other"), CredentialTarget::Reserved);
 }
 
-/// 写入后 loopback 通道能读到同一 target 的凭据；清除后注册回 loopback-credential-unavailable。
+/// 通道注册只接受本插件自己的命名空间或旧白名单；跨插件与保留目标在读取凭据前被拒。
 #[test]
-fn write_read_clear_round_trip_feeds_the_loopback_channel()
+fn channel_credential_refs_reject_cross_plugin_and_reserved_targets()
 {
-    let target = test_target("roundtrip");
-    let secret = "round-trip-secret";
-    let _ = execute_clear_loopback_credential(target.clone()); // 先清掉上次失败留下的记录。
-    assert_eq!(register_request_channel(&target).unwrap_err().code, "loopback-credential-unavailable", "写入前没有凭据");
-    execute_set_loopback_credential(target.clone(), secret.to_string()).unwrap();
-    assert_eq!(crate::platform::windows::credentials::read_secret(&target).unwrap(), Some(secret.as_bytes().to_vec()));
-    let handle = register_request_channel(&target).expect("写入后通道注册应读到凭据"); // 注册成功即证明宿主按同一 target + headerName 读到了密钥。
-    assert_eq!(handle.channel_id, "status");
-    assert_eq!(handle.mode, LoopbackChannelMode::Request);
-    execute_clear_loopback_credential(target.clone()).unwrap();
-    assert_eq!(crate::platform::windows::credentials::read_secret(&target).unwrap(), None);
-    assert_eq!(register_request_channel(&target).unwrap_err().code, "loopback-credential-unavailable", "清除后通道注册应报不可用");
-    execute_clear_loopback_credential(target).unwrap(); // 再次清除不存在的记录视为成功。
+    assert_eq!(register_request_channel("DesktopTools/plugin/plugin.beta/token", "plugin.alpha").unwrap_err().code, "credential-target-denied", "不能引用其它插件命名空间");
+    assert_eq!(register_request_channel("DesktopTools/PLUGIN/plugin.beta/token", "plugin.alpha").unwrap_err().code, "credential-target-denied", "大小写变体同样拒绝");
+    assert_eq!(register_request_channel("DesktopTools/other", "plugin.alpha").unwrap_err().code, "credential-target-denied", "未许可的旧目标同样拒绝");
+    // 自己的命名空间会走到凭据读取；测试目录里没有该记录，因此报不可用而不是越权。
+    assert_eq!(register_request_channel("DesktopTools/plugin/plugin.alpha/token", "plugin.alpha").unwrap_err().code, "loopback-credential-unavailable");
 }

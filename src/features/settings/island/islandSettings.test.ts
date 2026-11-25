@@ -3,6 +3,8 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { parseComponentRuntimeSnapshot } from "../../../contracts/component.ts";
 
+import { islandCardCollapseDefault } from "../../island/islandMessageCard.ts"; // 设置页「默认收起」回显共用同一规则。
+import { ISLAND_MESSAGE_CARD_ID } from "../../../contracts/settings.ts";
 import { islandCardAvailability, moveIslandCard, normalizeIslandCardOrder, sortIslandCardManifests, updateIslandCardOrder } from "./islandSettings.ts";
 
 test("真实官方音乐清单进入岛设置列表，勾选才写入顺序", () => {
@@ -50,7 +52,7 @@ test("行可用性在边界正确禁用排序", () => {
     assert.deepEqual(islandCardAvailability(["official.a"], "plugin.missing"), { enabled: false, canMoveUp: false, canMoveDown: false });
 });
 
-test("锚点显示二级页绑定三枚开关，音乐面板读写同一偏好，卸载入口只对插件卡渲染", () => {
+test("锚点显示二级页绑定音乐、消息与逐插件卡开关，卸载入口只对插件卡渲染", () => {
     const page = readFileSync(new URL("./IslandSettingsPage.tsx", import.meta.url), "utf8");
     const music = readFileSync(new URL("../features/FeatureSettings.tsx", import.meta.url), "utf8");
     // 一级页是二级入口，不再保留全局胶囊消息开关。
@@ -58,13 +60,19 @@ test("锚点显示二级页绑定三枚开关，音乐面板读写同一偏好�
     assert.match(page, /setAnchorPage\(true\)/);
     assert.doesNotMatch(page, /islandCapsuleMessages/);
     assert.doesNotMatch(page, /胶囊消息通知/);
-    // 三枚开关经同一读取函数与同一补丁写入，缺键默认由契约常量决定，并沿用 unavailable 停用。
-    for (const key of ["music", "message", "plugin"]) assert.match(page, new RegExp(`"${key}", "[^"]*上浮岛显示"`));
+    // 固定两枚开关经同一读取函数与同一补丁写入；插件卡改为逐卡，不再有全局 plugin 开关。
+    for (const key of ["music", "message"]) assert.match(page, new RegExp(`"${key}", "[^"]*上浮岛显示"`));
+    assert.doesNotMatch(page, /"plugin", "[^"]*上浮岛显示"/);
     assert.match(page, /id=\{`island-anchor-\$\{key\}`\}/);
     assert.match(page, /checked=\{islandAnchorVisible\(preferences, key\)\}/);
     assert.match(page, /onPreferences\(\{ islandAnchorVisible: \{ \.\.\.\(preferences\?\.islandAnchorVisible \?\? \{\}\), \[key\]: checked \} \}\)/);
+    assert.match(page, /islandAnchorPluginCards\(cards, order\)/); // 只列已启用的插件卡。
+    assert.match(page, /checked=\{islandPluginAnchorVisible\(preferences, card\.id\)\}/);
+    assert.match(page, /islandPluginAnchorVisible: \{ \.\.\.\(preferences\?\.islandPluginAnchorVisible \?\? \{\}\), \[componentId\]: checked \}/);
+    assert.match(page, /暂无可单独控制锚点显示的插件卡/); // 无卡空态。
     assert.match(page, /disabled=\{unavailable\}/);
     assert.match(page, /控制该功能锚点在胶囊与 hover 同时出现或撤下/);
+    assert.match(page, /插件卡按卡控制/);
     assert.match(page, /展开卡仍按卡片开关/);
     // 功能格子音乐二级页与浮岛二级页读同一函数、写同一字段，默认值不在页面里再写一份。
     assert.match(music, /id="feature-music-island-anchor"/);
@@ -106,9 +114,10 @@ test("一级分组标题走共享式样、功能行距交给容器 gap、二级�
     assert.match(卡片标签?.body ?? "", /margin:\s*0;/);
     assert.match(卡片标签?.body ?? "", /font-size:\s*12px/);
     assert.match(卡片标签?.body ?? "", /font-weight:\s*600/);
-    for (const id of ["island-look-title", "island-behavior-title", "island-anchor-entry-title"]) {
-        assert.match(岛页, new RegExp(`<h2 className="settings__group-title" id="${id}"`));
-    }
+    assert.match(岛页, /<section className="island-settings settings__groups">/);
+    assert.match(岛页, /<h2 className="settings__group-title" id="island-look-title">外观与显示<\/h2>/);
+    assert.doesNotMatch(岛页, /island-behavior-title|island-anchor-entry-title/);
+    assert.match(岛页, /recordReturnFocus\('#island-anchor-entry'\)/);
     // 功能格子页：格子标题走共享类且挂在分组容器里；页内没有泛型 h2 覆盖，二级页标题的 18px 规则仅限 detail-title。
     assert.match(功能页, /className="feature-settings__list settings__group"/);
     assert.equal(功能样式.find(({ selector }) => selector === ".feature-settings h2"), undefined);
@@ -123,4 +132,72 @@ test("一级分组标题走共享式样、功能行距交给容器 gap、二级�
         assert.match(源码, /returnFocusSelector/);
         assert.match(源码, /\.focus\(\)/);
     }
+});
+
+test("逐卡锚点：默认显示、按卡关闭、未知或未启用不列、无卡空态", async () => {
+    const { islandAnchorPluginCards } = await import("./islandSettings.ts");
+    const { islandPluginAnchorVisible } = await import("../../../contracts/settings.ts");
+    const cards = [{ id: "plugin.a" }, { id: "plugin.b" }, { id: "official.music-control" }];
+    assert.deepEqual(islandAnchorPluginCards(cards, ["plugin.a"]).map((card) => card.id), ["plugin.a"]); // 只列已启用插件卡。
+    assert.deepEqual(islandAnchorPluginCards(cards, ["plugin.a", "official.music-control"]).map((card) => card.id), ["plugin.a"]); // 官方卡不列。
+    assert.deepEqual(islandAnchorPluginCards(cards, []), []); // 没有启用的插件卡。
+    assert.equal(islandPluginAnchorVisible({ islandPluginAnchorVisible: {} }, "plugin.a"), true); // 缺省显示。
+    assert.equal(islandPluginAnchorVisible({ islandPluginAnchorVisible: { "plugin.a": false } }, "plugin.a"), false); // 按卡关闭。
+    assert.equal(islandPluginAnchorVisible({ islandPluginAnchorVisible: { "plugin.a": false } }, "plugin.b"), true); // 不影响其它卡。
+    assert.equal(islandPluginAnchorVisible({ islandPluginAnchorVisible: { "plugin.not-installed": false } }, "plugin.a"), true); // 未知键忽略。
+    const page = readFileSync(new URL("./IslandSettingsPage.tsx", import.meta.url), "utf8");
+    assert.match(page, /pluginCards\.length > 0 \?/); // 无卡时走空态而不是残留总开关。
+    assert.match(page, /暂无可单独控制锚点显示的插件卡；启用插件卡后在这里逐卡开关。/);
+});
+
+test("卡片列表把消息通知并入同一排序链，开关写展开显示偏好", async () => {
+    const { sortIslandCardRows } = await import("./islandSettings.ts");
+    const { ISLAND_MESSAGE_CARD_ID } = await import("../../../contracts/settings.ts");
+    const rows = [
+        { id: "plugin.a", name: "甲" },
+        { id: "official.weather", name: "天气" },
+        { id: ISLAND_MESSAGE_CARD_ID, name: "消息通知" },
+    ];
+    assert.deepEqual(
+        sortIslandCardRows(rows, ["official.weather", ISLAND_MESSAGE_CARD_ID, "plugin.a"]).map((row) => row.id),
+        ["official.weather", ISLAND_MESSAGE_CARD_ID, "plugin.a"],
+    ); // 与清单卡共用同一份顺序。
+    const page = readFileSync(new URL("./IslandSettingsPage.tsx", import.meta.url), "utf8");
+    assert.match(page, /sortIslandCardRows\(/);
+    assert.match(page, /消息通知卡在展开态显示/); // 消息卡开关的可访问名。
+    assert.match(page, /onPreferences\(\{ islandMessageCardVisible: checked \}\)/); // 写展开显示偏好。
+    assert.match(page, /islandMessageCardInitialization\(preferences\)/); // 首次插入一次。
+    assert.match(page, /const detail = cardRows\.find\(\(card\) => card\.id === detailId\)/); // 合成消息行与清单卡共用二级页。
+    assert.match(page, /detail\?\.isMessage \? islandMessageCardEnabled\(preferences\)/); // 页头回显仍跟随展开显示偏好。
+    assert.match(page, /islandCardCollapseMemory: \{[^\n]*\[detail\.id\]: checked/); // 共用逐卡记忆开关。
+});
+
+test("设置页「默认收起」回显与实际初始收起一致：逐卡键优先，收集箱回退旧默认、消息卡收起、普通卡展开", () => {
+    // 与 IslandSettingsPage 的 checked 调用完全一致：islandCardCollapseDefault(id, collectDefault, map)。
+    const 回显 = (id: string, collectDefault: boolean, map: Record<string, boolean>) => islandCardCollapseDefault(id, collectDefault, map);
+    const 收集箱 = "official.collect-box";
+    const 消息卡 = ISLAND_MESSAGE_CARD_ID;
+    const 普通卡 = "official.music-control";
+    // 缺键：收集箱跟随旧 collectDefault，消息卡收起，普通卡展开。
+    assert.equal(回显(收集箱, true, {}), true);
+    assert.equal(回显(收集箱, false, {}), false);
+    assert.equal(回显(消息卡, false, {}), true);
+    assert.equal(回显(普通卡, true, {}), false);
+    // 显式 false：三张卡都回显关。
+    assert.equal(回显(收集箱, true, { [收集箱]: false }), false);
+    assert.equal(回显(消息卡, true, { [消息卡]: false }), false);
+    assert.equal(回显(普通卡, true, { [普通卡]: false }), false);
+    // 显式 true：三张卡都回显开（普通卡也能被打开）。
+    assert.equal(回显(收集箱, false, { [收集箱]: true }), true);
+    assert.equal(回显(消息卡, false, { [消息卡]: true }), true);
+    assert.equal(回显(普通卡, false, { [普通卡]: true }), true);
+    const page = readFileSync(new URL("./IslandSettingsPage.tsx", import.meta.url), "utf8");
+    assert.match(page, /checked=\{islandCardCollapseDefault\(detail\.id, preferences\?\.islandCollectCollapsedDefault/, "回显走岛侧规则，不再直接读原始 map");
+    assert.match(page, /onPreferences\(\{ islandCardDefaultCollapsed:/, "写入仍写逐卡 map");
+});
+
+test("消息槽满额时不静默挤掉既有卡，设置页给出满额说明", () => {
+    const page = readFileSync(new URL("./IslandSettingsPage.tsx", import.meta.url), "utf8");
+    assert.match(page, /卡片顺序已满 \{ISLAND_CARD_ORDER_LIMIT\} 项，消息通知暂未加入/); // 满额反馈。
+    assert.match(page, /preferences\.islandCardOrder\.length >= ISLAND_CARD_ORDER_LIMIT/);
 });

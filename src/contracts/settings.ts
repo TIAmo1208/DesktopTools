@@ -80,8 +80,11 @@ export const parseThemeBaseline = (value: unknown): ThemeBaseline => {
     };
 };
 
-/** 可单独上浮岛的功能锚点。胶囊与 hover 共用同一枚开关。 */
-export const ISLAND_ANCHOR_KEYS = ["music", "message", "plugin"] as const;
+/** 可单独上浮岛的功能锚点。胶囊与 hover 共用同一枚开关；插件卡改为逐卡控制，这里只剩固定两项。 */
+export const ISLAND_ANCHOR_KEYS = ["music", "message"] as const;
+
+/** 旧配置仍可能带 `plugin` 键；解析时接受并原样保留，但不再有开关写它，也不参与生效判定。 */
+export const ISLAND_LEGACY_ANCHOR_KEYS = ["music", "message", "plugin"] as const;
 
 /** 上浮岛锚点键。 */
 export type IslandAnchorKey = (typeof ISLAND_ANCHOR_KEYS)[number];
@@ -92,15 +95,23 @@ export const ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT = true;
 /** 消息通知锚点默认显示。可单独调整，不连动其它功能。 */
 export const ISLAND_ANCHOR_MESSAGE_VISIBLE_DEFAULT = true;
 
-/** 插件卡锚点默认显示。可单独调整，不连动其它功能。 */
-export const ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT = true;
-
 /** 逐项默认值。缺失键按这里读取，不把默认写回已保存映射。 */
 export const ISLAND_ANCHOR_VISIBLE_DEFAULTS: Record<IslandAnchorKey, boolean> = {
     music: ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT,
     message: ISLAND_ANCHOR_MESSAGE_VISIBLE_DEFAULT,
-    plugin: ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT,
 };
+
+/** 逐插件卡锚点开关上限；与 Rust `ISLAND_PLUGIN_ANCHOR_LIMIT` 同值。 */
+export const ISLAND_PLUGIN_ANCHOR_LIMIT = 64;
+
+/** 插件组件标识：`plugin.` 前缀 + 小写字母、数字、点与连字符，总长不超过 128。 */
+export const isPluginComponentId = (value: string): boolean => /^plugin\.[a-z0-9.-]+$/.test(value) && value.length <= 128;
+
+/** 单张插件卡的锚点是否显示：逐卡映射缺项按显示；旧全局 `plugin` 键不再参与判定。 */
+export const islandPluginAnchorVisible = (
+    preferences: { islandPluginAnchorVisible?: Record<string, boolean> } | undefined,
+    componentId: string,
+): boolean => preferences?.islandPluginAnchorVisible?.[componentId] ?? true;
 
 /** 读取某一功能锚点是否在胶囊与 hover 显示；缺偏好、缺映射或缺少该键时用该项默认值。 */
 export const islandAnchorVisible = (preferences: { islandAnchorVisible?: Record<string, boolean> } | undefined, key: IslandAnchorKey): boolean =>
@@ -149,12 +160,16 @@ export interface ApplicationPreferences {
     islandEdge: "" | "top" | "bottom" | "left" | "right"; // 空串按顶部处理，偏移为 0 时居中。
     islandOffset: number; // 沿贴边方向的有限 DIP 偏移。
     islandHideOnFullscreen: boolean; // 前台全屏时隐藏岛。
-    islandAnchorVisible: Record<string, boolean>; // 逐功能「上浮岛显示」：键只允许 music、message、plugin，缺键按各项默认值。
-    islandCardOrder: string[]; // 已启用岛卡及展开顺序，最多 32 条。
+    islandAnchorVisible: Record<string, boolean>; // 逐功能「上浮岛显示」：固定项只读 music、message；旧 plugin 键仅保留兼容。
+    islandPluginAnchorVisible: Record<string, boolean>; // 逐插件卡锚点显示：键为 plugin.<componentId>，缺省显示。
+    islandCardOrder: string[]; // 已启用岛卡及展开顺序，最多 32 条；消息通知卡也在同一条链上。
+    islandMessageCardVisible: boolean; // 消息通知卡的展开态是否显示，缺省显示。
+    islandMessageCardInitialized: boolean; // 消息通知卡是否已完成首次排序插入，缺省未初始化。
     islandWeatherSource: "" | "qweather" | "foreca"; // 浮岛天气卡选择的来源，空串表示尚未选择。
     islandWeatherCityId: string; // 浮岛天气卡选择的城市标识，空串表示尚未选择。
     islandCardCollapsed: Record<string, boolean>; // 处于收起态的岛卡；只在记忆开启的卡片上写入。
     islandCardCollapseMemory: Record<string, boolean>; // 逐卡「记忆收起状态」开关，缺失视为开启。
+    islandCardDefaultCollapsed: Record<string, boolean>; // 逐卡「默认收起」开关：没有记忆状态时以此为准，缺省不收起。
     islandCollectCollapsedCount: number; // 收集箱收起时显示的最近条目数。
     islandCollectCollapsedDefault: boolean; // 收集箱默认收起。
     islandRadius: number; // 岛展开卡圆角，独立于界面圆角。
@@ -270,8 +285,14 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         throw new Error("浮岛天气城市标识无效");
     if (islandWeatherCityId && !islandWeatherSource) throw new Error("浮岛天气城市必须同时选择来源");
     const anchorVisible = parseIslandAnchorVisible(candidate.islandAnchorVisible); // 缺字段为空映射；未知键与非布尔值拒绝整份配置。
+    const pluginAnchorVisible = parseIslandPluginAnchorVisible(candidate.islandPluginAnchorVisible); // 逐卡锚点显示；与 Rust 同一条键与上限规则。
     const islandCardCollapsed = parseIslandCardFlags(candidate.islandCardCollapsed); // 缺失或非法项按未收起的空表处理。
+    const islandMessageCardVisible = candidate.islandMessageCardVisible === undefined ? true : candidate.islandMessageCardVisible; // 消息卡缺省显示。
+    if (typeof islandMessageCardVisible !== "boolean") throw new Error("消息通知卡显示开关无效");
+    const islandMessageCardInitialized = candidate.islandMessageCardInitialized === undefined ? false : candidate.islandMessageCardInitialized; // 缺省未初始化，避免把旧配置误当用户关闭。
+    if (typeof islandMessageCardInitialized !== "boolean") throw new Error("消息通知卡初始化标记无效");
     const islandCardCollapseMemory = parseIslandCardFlags(candidate.islandCardCollapseMemory); // 缺失视为逐卡记忆开启。
+    const islandCardDefaultCollapsed = parseIslandCardFlags(candidate.islandCardDefaultCollapsed); // 缺失视为逐卡不默认收起。
     const islandCollectCollapsedCount = candidate.islandCollectCollapsedCount === undefined ? 3 : candidate.islandCollectCollapsedCount; // 收起时默认显示三条。
     if (typeof islandCollectCollapsedCount !== "number" || !Number.isInteger(islandCollectCollapsedCount) || islandCollectCollapsedCount < 1 || islandCollectCollapsedCount > 10)
         throw new Error("收集箱收起条数无效");
@@ -311,11 +332,15 @@ export const parsePreferences = (value: unknown): ApplicationPreferences => {
         islandRadius,
         islandForm,
         islandCardOrder,
+        islandMessageCardVisible,
+        islandMessageCardInitialized,
         islandAnchorVisible: anchorVisible,
+        islandPluginAnchorVisible: pluginAnchorVisible,
         islandWeatherSource,
         islandWeatherCityId,
         islandCardCollapsed,
         islandCardCollapseMemory,
+        islandCardDefaultCollapsed,
         islandCollectCollapsedCount,
         islandCollectCollapsedDefault,
         disabledPlugins,
@@ -328,8 +353,23 @@ const parseIslandAnchorVisible = (value: unknown): Record<string, boolean> => {
     if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("浮岛锚点显隐数据无效");
     const visible: Record<string, boolean> = {}; // 已通过键与布尔校验的显隐。
     for (const [key, flag] of Object.entries(value)) {
-        if (!(ISLAND_ANCHOR_KEYS as readonly string[]).includes(key)) throw new Error("浮岛锚点显隐键无效");
+        if (!(ISLAND_LEGACY_ANCHOR_KEYS as readonly string[]).includes(key)) throw new Error("浮岛锚点显隐键无效");
         if (typeof flag !== "boolean") throw new Error("浮岛锚点显隐数据无效");
+        visible[key] = flag; // 旧 plugin 键原样保留，保存时不丢旧配置。
+    }
+    return visible;
+};
+
+/** 逐插件卡锚点显示：键必须是合法插件标识、值必须是布尔，最多 64 项；非法项拒绝整份配置。 */
+const parseIslandPluginAnchorVisible = (value: unknown): Record<string, boolean> => {
+    if (value === undefined) return {};
+    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("浮岛插件锚点显隐数据无效");
+    const entries = Object.entries(value);
+    if (entries.length > ISLAND_PLUGIN_ANCHOR_LIMIT) throw new Error("浮岛插件锚点显隐项数超限");
+    const visible: Record<string, boolean> = {};
+    for (const [key, flag] of entries) {
+        if (!isPluginComponentId(key)) throw new Error("浮岛插件锚点显隐键无效");
+        if (typeof flag !== "boolean") throw new Error("浮岛插件锚点显隐数据无效");
         visible[key] = flag;
     }
     return visible;
@@ -376,4 +416,34 @@ export const parseSettingsSnapshot = (value: unknown): SettingsSnapshot => {
         version: candidate.version,
         debugBuild: candidate.debugBuild,
     };
+};
+
+/** 已启用岛卡顺序上限；与 Rust 规范化一致。 */
+export const ISLAND_CARD_ORDER_LIMIT = 32;
+
+/** 消息通知卡的宿主身份；与插件卡共用 islandCardOrder 排序链，但不是插件格子。 */
+export const ISLAND_MESSAGE_CARD_ID = "official.island-messages";
+
+/** 消息通知卡是否在展开态渲染；缺省显示，与 bell 锚点开关互不影响。 */
+export const islandMessageCardEnabled = (preferences: { islandMessageCardVisible?: boolean } | undefined): boolean => preferences?.islandMessageCardVisible !== false;
+
+/** 消息通知卡的默认插入位置：天气之后；无天气时第一个插件卡之前；无插件则末尾。已在顺序里时不重复插。 */
+export const insertIslandMessageCard = (order: readonly string[]): string[] => {
+    if (order.includes(ISLAND_MESSAGE_CARD_ID)) return [...order];
+    if (order.length >= ISLAND_CARD_ORDER_LIMIT) return [...order]; // 满额不插，避免挤掉既有卡。
+    const weather = order.indexOf("official.weather");
+    if (weather >= 0) return [...order.slice(0, weather + 1), ISLAND_MESSAGE_CARD_ID, ...order.slice(weather + 1)];
+    const plugin = order.findIndex((id) => id.startsWith("plugin."));
+    if (plugin >= 0) return [...order.slice(0, plugin), ISLAND_MESSAGE_CARD_ID, ...order.slice(plugin)];
+    return [...order, ISLAND_MESSAGE_CARD_ID];
+};
+
+/** 首次采用的保存补丁：只插一次并置初始化标记；已初始化或没有偏好时不写。 */
+export const islandMessageCardInitialization = (
+    preferences: Pick<ApplicationPreferences, "islandCardOrder" | "islandMessageCardInitialized"> | undefined,
+): { islandCardOrder: string[]; islandMessageCardInitialized: true } | undefined => {
+    if (!preferences || preferences.islandMessageCardInitialized) return undefined;
+    // 顺序已满且还没有消息槽时不写、不置标记，等腾出位置后重试，避免静默挤掉既有卡。
+    if (!preferences.islandCardOrder.includes(ISLAND_MESSAGE_CARD_ID) && preferences.islandCardOrder.length >= ISLAND_CARD_ORDER_LIMIT) return undefined;
+    return { islandCardOrder: insertIslandMessageCard(preferences.islandCardOrder), islandMessageCardInitialized: true };
 };

@@ -51,3 +51,18 @@ fn island_message_event_is_forwarded_and_mapped_to_the_read_command()
     let script = super::native_bridge_script("http://desktop-tools-island.localhost");
     assert!(script.contains(r#""island-messages-changed": "get_island_messages""#), "注入桥必须把事件映射到只读投影命令");
 }
+
+/// 插件消息是一次性真事件：进转发白名单与真投递分支，不借原生消息快照恢复。
+#[test]
+fn plugin_message_event_uses_the_true_delivery_path()
+{
+    assert!(super::FORWARDED_EVENTS.contains(&crate::contracts::ISLAND_PLUGIN_MESSAGE_EVENT), "插件消息事件必须由宿主转发");
+    let script = super::native_bridge_script("http://desktop-tools-island.localhost");
+    assert!(script.contains(r#""island-plugin-message""#), "注入桥必须认识该事件");
+    assert!(!script.contains(r#""island-plugin-message": "get_island_messages""#), "插件消息不得走快照恢复命令");
+    assert!(script.contains(r#"eventName === "island-plugin-message""#), "必须进入一次性真事件分支");
+    // 真事件分支按暂停策略投递：它不在 always 白名单里，暂停时由通用过滤丢弃。
+    assert!(script.contains("if (!refreshPaused || always || payload?.error || payload?.deletedName) handler(payload)"), "真事件必须经过统一的暂停过滤");
+    assert!(!script.contains(r#"always = eventName === "island-plugin-message""#), "插件消息不应绕过暂停策略");
+    assert!(!script.contains("dsh_get_status"), "原生 DSH 事件已随领域删除");
+}

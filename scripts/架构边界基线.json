@@ -34,6 +34,10 @@
         },
         {
             "from": "settings",
+            "to": "island"
+        },
+        {
+            "from": "settings",
             "to": "notifications"
         },
         {

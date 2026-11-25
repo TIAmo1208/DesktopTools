@@ -4,15 +4,18 @@ import { createHash } from "node:crypto";
 import { connect } from "node:net"; // 探测 127.0.0.1:1420 是否监听。
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"; // 临时 user-data-dir、日志与清理。
 import { existsSync } from "node:fs"; // 探测 Edge 可执行文件与端口文件。
-import { tmpdir } from "node:os"; // 系统临时目录。
+import { fileURLToPath } from "node:url"; // 由模块地址推导仓库根，避免依赖启动目录。
 import { join, resolve } from "node:path"; // 路径拼接与绝对路径归一。
 import { request } from "node:http"; // 直连本机 CDP 端点，不受系统代理影响。
 import { expectedPixelFrames, validatePixelFrame, summarizePixelFrames } from "./浮岛像素门禁.mjs";
 import { 断言页, 真机专用页, 检查页 } from "./断言页目录.mjs"; // 断言页、真机专用页与只核对加载的检查页清单。
 
 const 开发服务器地址 = "http://127.0.0.1:1420"; // 由 npm run dev 提供的断言页服务地址。
+const 仓库根 = resolve(fileURLToPath(new URL(".", import.meta.url)), ".."); // scripts/ 的上级目录即仓库根。
+const 浏览器临时根 = join(仓库根, "build", "tmp"); // 浏览器配置目录放在构建产物域内，不写系统 %TEMP%。
+const 浏览器临时前缀 = "edge-run-"; // 每个实例一个独立目录，便于识别与清理。
 const 轮询间隔毫秒 = 100; // 每页读取 #result 的固定间隔，不引入常驻轮询。
-const 默认超时毫秒 = 30000; // 单页从打开到出现结论的上限；islandContent 全量断言实测约 21 秒，留足慢机器余量。
+const 默认超时毫秒 = 60000; // 单页从打开到出现结论的上限；islandContent 全量断言本机约 43 秒，留足慢机器与 CI 余量。
 const 端点超时毫秒 = 30000; // 等待 Edge 写出调试端点的上限；实测首次启动 1 秒内即可写出，留足慢机器余量。
 
 // 退出码语义：0 全部通过，1 存在失败页，2 环境问题。
@@ -169,13 +172,71 @@ async function 检查开发服务器() {
     }
 }
 
+// 判断 pid 是否仍在运行：tasklist 只查本机，不引入额外依赖。
+function 进程存活(pid) {
+    try {
+        const 输出 = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], { encoding: "utf8", timeout: 10000, windowsHide: true }); // 单进程查询结果。
+        return new RegExp(`\\s${pid}\\s`).test(输出);
+    } catch {
+        return false;
+    }
+}
+
+// 让浏览器自己退出：CDP Browser.close 走正常销毁流程，窗口与子进程都由 Edge 回收。
+// 直接 taskkill 强杀不销毁窗口，shell 的 Alt+Tab 列表会留下点不开的幽灵条目。
+async function 优雅关闭浏览器(实例) {
+    if (!实例.端点地址) return false;
+    let 浏览器地址 = ""; // 浏览器级 CDP 地址。
+    try {
+        const 版本 = JSON.parse(await 取文本(`http://${实例.端点地址}/json/version`, 1500)); // 浏览器级 CDP 信息。
+        浏览器地址 = 版本.webSocketDebuggerUrl ?? "";
+    } catch {
+        return false; // 端点已不可达：交给强杀兜底。
+    }
+    if (!浏览器地址) return false;
+    let 已发送 = false; // 关闭命令是否已送出；未送出时不必等进程退出。
+    await new Promise((完成) => {
+        const 套接字 = new WebSocket(浏览器地址); // 浏览器级 CDP 连接。
+        const 定时器 = setTimeout(() => {
+            try {
+                套接字.close();
+            } catch {}
+            完成();
+        }, 2000); // 只等握手与发送，不等关闭应答。
+        套接字.addEventListener("open", () => {
+            clearTimeout(定时器);
+            套接字.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+            已发送 = true;
+            完成();
+        });
+        // 浏览器退出会让连接异常断开，这是关闭成功的正常表现，不当失败处理。
+        套接字.addEventListener("error", () => {
+            clearTimeout(定时器);
+            完成();
+        });
+    });
+    if (!已发送) return false;
+    // 判据取进程是否真的退出：连接断开时机不稳定，不看 websocket 的关闭原因。
+    for (let 尝试 = 0; 尝试 < 20; 尝试 += 1) {
+        if (!进程存活(实例.pid)) return true;
+        await 等待(150);
+    }
+    return false;
+}
+
 // 结束一个实例的浏览器进程树并删除它的临时目录；失败不改变判定。
 async function 结束实例(实例) {
     if (实例.pid) {
-        try {
-            // 按 pid 结束本实例的进程树（Edge 有大量子进程），不触碰使用者日常打开的 Edge 与其他实例。
-            execFileSync("taskkill", ["/PID", String(实例.pid), "/T", "/F"], { stdio: "ignore" });
-        } catch {}
+        const 原pid = 实例.pid; // 回收前的进程号，供 verbose 记录。
+        const 已退出 = await 优雅关闭浏览器(实例); // 优先优雅关闭，避免留下 Alt+Tab 幽灵条目。
+        if (选项.详细) console.error(`[收尾] ${已退出 ? "Browser.close" : "taskkill"} pid=${原pid}`);
+        if (!已退出) {
+            try {
+                // 兜底按 pid 结束本实例的进程树（Edge 有大量子进程），不触碰使用者日常打开的 Edge 与其他实例。
+                execFileSync("taskkill", ["/PID", String(实例.pid), "/T", "/F"], { stdio: "ignore" });
+            } catch {}
+            await 等待(200); // 给 Windows 释放窗口句柄留出余量。
+        }
         实例.pid = 0;
     }
     // Windows 下文件句柄释放稍慢，有限次数重试删除，仍在 2 秒内收敛。
@@ -191,7 +252,8 @@ async function 结束实例(实例) {
 
 // 启动一个新的无头 Edge 实例并等待 CDP 端点应答；每页一个实例，返回本次实例的句柄。
 async function 启动浏览器(可执行文件) {
-    const 临时目录 = await mkdtemp(join(tmpdir(), "desktop-tools-browser-")); // 本次实例独立 user-data-dir，避免影响日常 Edge 与其他页。
+    await mkdir(浏览器临时根, { recursive: true }); // 构建产物域随项目清理，不让配置目录落进系统 %TEMP%。
+    const 临时目录 = await mkdtemp(join(浏览器临时根, 浏览器临时前缀)); // 本次实例独立 user-data-dir，避免影响日常 Edge 与其他页。
     const 端点文件 = join(临时目录, "DevToolsActivePort"); // Edge 写给自己的调试端口文件。
     const 日志路径 = join(临时目录, "edge.log"); // stderr 日志，仅用于失败时给出证据。
     // detached 启动是实测必需：同一脚本里普通 spawn 时 Edge 只建立 Crashpad 就退出，detached 则稳定写出端点文件。

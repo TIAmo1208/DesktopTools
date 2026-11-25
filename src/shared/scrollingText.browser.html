@@ -92,15 +92,21 @@
                 const overflowTrack = track("overflow");
                 if (!overflowBox || !overflowTrack) throw new Error("溢出用例没有渲染出滚动外壳");
                 if (overflowBox.dataset.overflow !== "true") throw new Error("超长文本必须判定为溢出");
-                const distance = Number.parseFloat(overflowTrack.style.getPropertyValue("--overflow-distance"));
-                if (!(distance > 0)) throw new Error(`溢出距离必须为正，实际 ${overflowTrack.style.getPropertyValue("--overflow-distance")}`);
-                const duration = Number.parseFloat(overflowTrack.style.getPropertyValue("--overflow-duration"));
-                if (!(duration >= 4000)) throw new Error(`往返周期不短于 4s，实际 ${duration}`);
-                if (减少动效) 跳过.push("滚动动画条数与动画名");
+                // 距离取真实测量值：滚动由 JS 精确关键帧推进，不再写 CSS 变量。
+                const distance = Math.round(overflowTrack.scrollWidth - overflowBox.clientWidth);
+                if (!(distance > 0)) throw new Error(`溢出距离必须为正，实际 ${distance}`);
+                if (减少动效) 跳过.push("滚动关键帧、时长与两端停顿");
                 else {
                     const running = animation("overflow");
                     if (running.length !== 1) throw new Error(`溢出用例应只有一条滚动动画，实际 ${running.length}`);
-                    if (running[0].animationName !== "scrolling-text-loop") throw new Error(`动画名应为 scrolling-text-loop，实际 ${running[0].animationName}`);
+                    const timing = running[0].effect.getTiming(); // Web Animations 计时信息。
+                    if (!(Number(timing.duration) >= 4000)) throw new Error(`往返周期不短于 4s，实际 ${timing.duration}`);
+                    if (timing.iterations !== Infinity) throw new Error(`滚动必须无限循环，实际 ${timing.iterations}`);
+                    const 关键帧 = running[0].effect.getKeyframes();
+                    const 位移 = 关键帧.map((帧) => Number.parseFloat(String(帧.transform).replace(/^translate3d\((-?[\d.]+)px.*$/, "$1")) || 0);
+                    if (Math.max(...位移.map(Math.abs)) !== distance) throw new Error(`关键帧位移跨度应等于测量距离 ${distance}，实际 ${JSON.stringify(位移)}`);
+                    if (!(Number(关键帧[1].offset) > 0 && 关键帧.at(-1).offset === 1)) throw new Error(`两端停顿必须落在周期内，实际 ${JSON.stringify(关键帧.map((帧) => 帧.offset))}`);
+                    if (Math.abs(位移.at(-1)) > 0.01) throw new Error(`周期末必须回到起点，实际 ${位移.at(-1)}`);
                 }
 
                 if (box("short")?.dataset.overflow !== "false") throw new Error("短文本不得判定为溢出");
@@ -115,8 +121,8 @@
                 if (animation("overflow").length !== 0) throw new Error("列宽足够后不得保留滚动动画");
 
                 document.getElementById("result").textContent = 跳过.length
-                    ? `SKIP：系统开启减少动效，跳过 ${跳过.join("、")}；溢出判定、时长变量、截断与重新测量通过`
-                    : "PASS：溢出判定、动画名与时长、重新测量与关闭动效都符合约定";
+                    ? `SKIP：系统开启减少动效，跳过 ${跳过.join("、")}；溢出判定、关键帧与时长、截断与重新测量通过`
+                    : "PASS：溢出判定、关键帧与时长、重新测量与关闭动效都符合约定";
                 root.unmount();
             } catch (error) {
                 document.getElementById("result").textContent = "FAIL：" + (error?.stack ?? error);

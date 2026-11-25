@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getPluginSettings, listenPluginSettings, savePluginSettings } from "../../bridge/pluginSettings";
+import { pluginCapabilityContext } from "../../bridge/pluginCapabilityHost";
 import { clearPluginMenuItems, setPluginMenuItems } from "../../bridge/pluginMenu";
 import {
     adoptPluginManifests,
@@ -9,13 +10,14 @@ import {
     subscribePluginShell,
     type PluginShellContext,
 } from "../../bridge/pluginScripts";
-import type { ComponentManifest } from "../../contracts/component";
+import { beginPluginMountSession, createPluginMountSessions, endPluginMountSession } from "./pluginMountSession.ts";
+import type { ComponentCapability, ComponentManifest } from "../../contracts/component";
 import { mountPluginHover } from "../../contracts/plugin";
 
 const attempted = new Set<string>(); // 已尝试插入脚本的标识，失败也不重试。
 
 const renderFailed = new Set<string>(); // renderTile 抛错的实例。
-const tileCleanups = new Map<string, () => void>(); // 每个实例最近一次 renderTile 的清理函数。
+const tileCleanups = new Map<string, { session: number; cleanup: void | (() => void) }>(); // 每个实例最近一次 renderTile 的清理函数与会话。
 const revisions = new Map<string, number>(); // 该插件外壳变化后的重绘代数。
 const hostListeners = new Set<(pluginId: string) => void>(); // 宿主重绘订阅。
 let stopShell: (() => void) | undefined; // 同一页面只监听一次外壳注册。
@@ -71,15 +73,51 @@ const markPluginRenderFailed = (pluginId: string, instanceId: string) => {
 };
 
 /** 调用最近一次 renderTile 留下的清理函数，并撤下该实例的插件菜单项。 */
-const releasePluginTile = (instanceId: string) => {
-    const cleanup = tileCleanups.get(instanceId); // 上一轮作者返回的清理函数。
-    tileCleanups.delete(instanceId);
+const hoverCleanups = new Map<string, { session: number; cleanup: void | (() => void) }>(); // hover 只读视图的清理函数与所属会话，与 renderTile 分开。
+const tileSessions = createPluginMountSessions(); // renderTile 会话；旧清理不能释放新实例。
+const hoverSessions = createPluginMountSessions(); // hover 只读视图会话。
+
+/** 释放指定会话的 hover 视图；旧会话的迟到清理不影响新会话。 */
+const releasePluginHover = (instanceId: string, session: number) => {
+    if (!endPluginMountSession(hoverSessions, instanceId, session)) return;
+    const entry = hoverCleanups.get(instanceId);
+    if (!entry || entry.session !== session) return;
+    hoverCleanups.delete(instanceId);
     try {
-        cleanup?.();
+        entry.cleanup?.();
     } catch (error) {
-        console.warn(`组件清理失败：${instanceId}`, error);
+        console.warn(`组件 hover 视图清理失败：${instanceId}`, error);
     }
-    clearPluginMenuItems(instanceId); // 菜单与清理函数同一生命周期。
+};
+
+/** 同步释放该实例当前的 hover 视图；换挂载位前先结束旧会话。 */
+const releasePluginHoverNow = (instanceId: string) => {
+    const session = hoverSessions.current.get(instanceId);
+    if (session !== undefined) releasePluginHover(instanceId, session);
+};
+
+/** 释放指定会话的 renderTile；旧会话的迟到清理不能释放新实例。 */
+const releasePluginTileSession = (instanceId: string, session: number) => {
+    if (!endPluginMountSession(tileSessions, instanceId, session)) return;
+    const entry = tileCleanups.get(instanceId);
+    if (entry?.session === session) {
+        tileCleanups.delete(instanceId);
+        try {
+            entry.cleanup?.();
+        } catch (error) {
+            console.warn(`组件清理失败：${instanceId}`, error);
+        }
+    }
+    clearPluginMenuItems(instanceId); // 菜单与清理函数同一生命周期；没有清理函数时也要撤下菜单。
+};
+
+/** 按实例释放当前 renderTile；供宿主与测试使用的稳定入口，内部换位仍用带会话版本。 */
+export const releasePluginTile = (instanceId: string) => releasePluginTileNow(instanceId);
+
+/** 同步释放该实例当前的 renderTile；先结束旧会话，再挂新会话。 */
+const releasePluginTileNow = (instanceId: string) => {
+    const session = tileSessions.current.get(instanceId);
+    if (session !== undefined) releasePluginTileSession(instanceId, session);
 };
 
 /** 重读插件设置再交给格子。读失败时按空设置重绘。 */
@@ -95,14 +133,17 @@ const syncPluginTileSettings = async (pluginId: string, paint: (settings: unknow
 /** 先清理该实例上一轮内容，再把作者内容挂进容器。 */
 const mountPluginTile = (container: HTMLElement, context: PluginShellContext, hover = false) => {
     const renderTile = hover ? readPluginApi(context.pluginId)?.renderIslandHover : readPluginApi(context.pluginId)?.renderTile; // 多个实例共用这一份。
-    if (typeof renderTile !== "function") return;
-    releasePluginTile(context.instanceId);
+    if (typeof renderTile !== "function") return undefined;
+    if (hover) releasePluginHoverNow(context.instanceId); // 同一实例任一时刻只保留一个 hover 视图会话。
+    else releasePluginTileNow(context.instanceId); // 先同步结束旧 renderTile，再创建新会话。
     container.replaceChildren(); // 重挂前清掉上一轮的 DOM，否则作者用 append 就会叠出两份内容。
     if (hover) {
+        const session = beginPluginMountSession(hoverSessions, context.instanceId);
         const cleanup = mountPluginHover(renderTile, container, context, () => markPluginRenderFailed(context.pluginId, context.instanceId));
-        tileCleanups.set(context.instanceId, cleanup);
-        return;
+        hoverCleanups.set(context.instanceId, { session, cleanup });
+        return session;
     }
+    const session = beginPluginMountSession(tileSessions, context.instanceId);
     const cleanup = renderTile(container, {
         ...context,
         menu: {
@@ -112,7 +153,8 @@ const mountPluginTile = (container: HTMLElement, context: PluginShellContext, ho
             },
         },
     }); // 作者自行决定容器里的 DOM。
-    if (typeof cleanup === "function") tileCleanups.set(context.instanceId, cleanup);
+    if (typeof cleanup === "function") tileCleanups.set(context.instanceId, { session, cleanup });
+    return session;
 };
 
 /** 有实例的插件按标识导入一次模块。 */
@@ -139,6 +181,8 @@ export const PluginTileBody = ({
     tileType,
     collapsed,
     revision,
+    capabilities,
+    onIslandSummary,
     hover = false,
 }: {
     pluginId: string;
@@ -146,11 +190,18 @@ export const PluginTileBody = ({
     tileType: string;
     collapsed: boolean;
     revision: number;
+    capabilities?: readonly ComponentCapability[]; // 实例已授权能力；通用能力只按它暴露。
+    onIslandSummary?: (text: string | null, status?: string, navigation?: { uri: string }) => void; // 浮岛摘要/状态/导航；null 显式隐藏锚点，桌面格子不提供。
     hover?: boolean; // hover 与完整格子共用设置、加载和清理，不共用作者 DOM。
 }) => {
     const containerRef = useRef<HTMLDivElement>(null); // 作者内容的挂载点。
+    const sessionRef = useRef<number | undefined>(undefined); // 本组件最近一次创建的挂载会话。
     const collapsedRef = useRef(collapsed); // 读取返回时使用当前折叠状态。
     const settingsRef = useRef<{ ready: boolean; value: unknown }>({ ready: false, value: null }); // 已读过的设置，折叠时不再等命令。
+    // 作者上下文里的通用能力按实例授权裁剪；未声明的能力保持 undefined。
+    const capabilityContext = useMemo(() => pluginCapabilityContext(instanceId, capabilities ?? []), [instanceId, capabilities]);
+    // 浮岛卡额外提供一行摘要入口；桌面格子保持 undefined。
+    const islandContext = useMemo(() => (onIslandSummary ? { setIslandSummary: onIslandSummary } : {}), [onIslandSummary]);
     collapsedRef.current = collapsed;
 
     useEffect(() => {
@@ -162,14 +213,16 @@ export const PluginTileBody = ({
             if (!alive || mine !== ticket || !containerRef.current) return;
             settingsRef.current = { ready: true, value: settings };
             try {
-                mountPluginTile(containerRef.current, {
+                sessionRef.current = mountPluginTile(containerRef.current, {
                     pluginId,
                     instanceId,
                     tileType,
                     collapsed: collapsedRef.current,
                     settings,
                     saveSettings: (value) => savePluginSettings(pluginId, value),
-                }, hover);
+                    ...capabilityContext,
+                    ...islandContext,
+                }, hover) ?? sessionRef.current;
             } catch (error) {
                 console.error(`组件渲染失败：${instanceId}`, error);
                 markPluginRenderFailed(pluginId, instanceId);
@@ -195,34 +248,57 @@ export const PluginTileBody = ({
             alive = false;
             settingsRef.current = { ready: false, value: null };
             window.removeEventListener("desktop-refresh-changed", handleRefresh);
-            releasePluginTile(instanceId);
+            if (sessionRef.current !== undefined) {
+                if (hover) releasePluginHover(instanceId, sessionRef.current);
+                else releasePluginTileSession(instanceId, sessionRef.current); // 会话已被新视图接管时这里自动无操作。
+            }
             void subscription.then((unlisten) => unlisten()).catch(() => undefined);
         };
-    }, [pluginId, instanceId, revision, hover, tileType]);
+    }, [pluginId, instanceId, revision, hover, tileType, capabilityContext, islandContext]);
 
     useEffect(() => {
         const container = containerRef.current;
         if (!container || !settingsRef.current.ready) return;
         try {
-            mountPluginTile(container, {
+            sessionRef.current = mountPluginTile(container, {
                 pluginId,
                 instanceId,
                 tileType,
                 collapsed,
                 settings: settingsRef.current.value,
                 saveSettings: (value) => savePluginSettings(pluginId, value),
-            }, hover);
+                ...capabilityContext,
+                ...islandContext,
+            }, hover) ?? sessionRef.current;
         } catch (error) {
             console.error(`组件渲染失败：${instanceId}`, error);
             markPluginRenderFailed(pluginId, instanceId);
         }
-    }, [collapsed, pluginId, instanceId, hover]);
+    }, [collapsed, pluginId, instanceId, hover, capabilityContext, islandContext]);
 
     return <div ref={containerRef} data-plugin-container={instanceId} />;
 };
 
 /** 无格子外壳的 plugin:slot，岛与桌面复用同一加载、设置与失败隔离。 */
-export const PluginSlot = ({ manifest, instanceId, tileType = "", collapsed, hover = false, fallback }: { manifest: ComponentManifest; instanceId: string; tileType?: string; collapsed: boolean; hover?: boolean; fallback?: import("react").ReactNode }) => {
+export const PluginSlot = ({
+    manifest,
+    instanceId,
+    tileType = "",
+    collapsed,
+    capabilities,
+    onIslandSummary,
+    hover = false,
+    fallback,
+}: {
+    manifest: ComponentManifest;
+    instanceId: string;
+    tileType?: string;
+    collapsed: boolean;
+    capabilities?: readonly ComponentCapability[];
+    onIslandSummary?: (text: string | null, status?: string, navigation?: { uri: string }) => void;
+    hover?: boolean;
+    fallback?: import("react").ReactNode;
+}) => {
     const [, setEpoch] = useState(0); // 注册与失败变化触发重绘。
     useEffect(() => {
         const stop = subscribePluginHost((id) => {
@@ -237,6 +313,6 @@ export const PluginSlot = ({ manifest, instanceId, tileType = "", collapsed, hov
     return broken ? (
         <p role="status">组件渲染失败</p>
     ) : (
-        <PluginTileBody pluginId={manifest.id} instanceId={instanceId} tileType={tileType} collapsed={collapsed} hover={hover} revision={pluginRevision(manifest.id)} />
+        <PluginTileBody pluginId={manifest.id} instanceId={instanceId} tileType={tileType} collapsed={collapsed} capabilities={capabilities} onIslandSummary={onIslandSummary} hover={hover} revision={pluginRevision(manifest.id)} />
     );
 };

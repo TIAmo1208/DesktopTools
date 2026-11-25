@@ -56,24 +56,36 @@ test("岛偏好默认值、整份保存往返与 Rust 一致的边界", () => {
     });
     assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify({ ...selected, fontSize: 14 }))), { ...selected, fontSize: 14 });
     // 上浮岛显示：缺字段为空映射，缺键按各自默认值读取；显式布尔往返，未知键与非布尔值拒绝。旧字段不迁移。
+    // 收起记忆与默认收起：都按逐卡映射解析，缺字段为空表（记忆缺失视为开启、默认收起缺失视为不收起，t98）。
+    assert.deepEqual(defaults.islandCardCollapseMemory, {});
+    assert.deepEqual(defaults.islandCardDefaultCollapsed, {});
+    const collapsed = parsePreferences({ ...defaults, islandCardDefaultCollapsed: { "official.collect-box": true }, islandCardCollapseMemory: { "official.music-control": false } });
+    assert.equal(collapsed.islandCardDefaultCollapsed["official.collect-box"], true);
+    assert.equal(collapsed.islandCardCollapseMemory["official.music-control"], false);
+    assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify(collapsed))).islandCardDefaultCollapsed, collapsed.islandCardDefaultCollapsed);
+    // 该映射按「保留合法布尔项」解析：非法类型/未知键被丢弃，不是抛错（与 collapseMemory 的既有口径一致）。
+    assert.deepEqual(parsePreferences({ ...defaults, islandCardDefaultCollapsed: null }).islandCardDefaultCollapsed, {});
+    assert.deepEqual(parsePreferences({ ...defaults, islandCardDefaultCollapsed: { "official.collect-box": "yes", unknown: true } }).islandCardDefaultCollapsed, {});
     assert.deepEqual(defaults.islandAnchorVisible, {});
+    assert.deepEqual(defaults.islandPluginAnchorVisible, {}); // 逐插件卡映射缺省为空，全部显示。
     assert.equal(ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT, true);
     assert.equal(ISLAND_ANCHOR_MESSAGE_VISIBLE_DEFAULT, true);
-    assert.equal(ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT, true);
-    for (const key of ["music", "message", "plugin"] as const) assert.equal(islandAnchorVisible(defaults, key), true);
+    for (const key of ["music", "message"] as const) assert.equal(islandAnchorVisible(defaults, key), true);
     assert.equal(islandAnchorVisible(undefined, "music"), ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT); // 偏好尚未加载时也不抛。
-    assert.equal(islandAnchorVisible({}, "plugin"), ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT); // 旧对象缺映射时按该项默认。
     const anchors = parsePreferences({ ...defaults, islandAnchorVisible: { music: false, message: true } });
     assert.deepEqual(anchors.islandAnchorVisible, { music: false, message: true });
     assert.equal(islandAnchorVisible(anchors, "music"), false);
     assert.equal(islandAnchorVisible(anchors, "message"), true);
-    assert.equal(islandAnchorVisible(anchors, "plugin"), ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT); // 缺键不连动已写键。
     assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify(anchors))).islandAnchorVisible, anchors.islandAnchorVisible);
     assert.deepEqual(parsePreferences({ ...defaults, islandAnchorVisible: {} }).islandAnchorVisible, {});
     const legacyAnchor = parsePreferences({ ...defaults, islandCapsuleMessages: false }); // 旧开关不迁移，也不再作为字段存在。
     assert.equal("islandCapsuleMessages" in legacyAnchor, false);
     assert.deepEqual(legacyAnchor.islandAnchorVisible, {});
     assert.equal(islandAnchorVisible(legacyAnchor, "message"), true);
+    // 旧配置里的全局 plugin 键仍可解析并原样保留，但没有任何读取方再按它生效。
+    const legacyPluginKey = parsePreferences({ ...defaults, islandAnchorVisible: { plugin: false } });
+    assert.deepEqual(legacyPluginKey.islandAnchorVisible, { plugin: false });
+    assert.equal(islandPluginAnchorVisible(legacyPluginKey, "plugin.demo"), true); // 旧全局键不再作为生效来源。
     for (const islandAnchorVisible of [null, 0, 1, "true", [], { music: "true" }, { music: 1 }, { weather: true }, { music: true, extra: false }])
         assert.throws(() => parsePreferences({ ...defaults, islandAnchorVisible }));
     for (const islandEdge of ["", "top", "bottom", "left", "right"]) assert.equal(parsePreferences({ ...defaults, islandEdge }).islandEdge, islandEdge);
@@ -117,10 +129,16 @@ test("图片预览宽度使用默认值并验证整数边界", () => {
 });
 
 import {
+    insertIslandMessageCard,
+    ISLAND_MESSAGE_CARD_ID,
     ISLAND_ANCHOR_MESSAGE_VISIBLE_DEFAULT,
+    islandMessageCardEnabled,
+    islandMessageCardInitialization,
     ISLAND_ANCHOR_MUSIC_VISIBLE_DEFAULT,
-    ISLAND_ANCHOR_PLUGIN_VISIBLE_DEFAULT,
     islandAnchorVisible,
+    islandPluginAnchorVisible,
+    isPluginComponentId,
+    ISLAND_PLUGIN_ANCHOR_LIMIT,
     parsePreferences,
     parseSettingsSnapshot,
     resolveAnimationsEnabled,
@@ -272,4 +290,78 @@ test("音乐显示歌词默认开启并严格校验布尔设置", () => {
     assert.equal(parsePreferences(base).musicLyricsEnabled, true);
     assert.equal(parsePreferences({ ...base, musicLyricsEnabled: false }).musicLyricsEnabled, false);
     for (const musicLyricsEnabled of [null, 1, "false"]) assert.throws(() => parsePreferences({ ...base, musicLyricsEnabled }));
+});
+
+test("逐插件卡锚点：缺省显示、按卡关闭、未知键保留但不生效、非法键与超限拒绝", () => {
+    const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true });
+    assert.equal(islandPluginAnchorVisible(undefined, "plugin.demo"), true); // 偏好未加载也按显示。
+    assert.equal(islandPluginAnchorVisible(defaults, "plugin.demo"), true); // 缺键显示。
+    const selected = parsePreferences({ ...defaults, islandPluginAnchorVisible: { "plugin.demo": false, "plugin.not-installed": true } });
+    assert.equal(islandPluginAnchorVisible(selected, "plugin.demo"), false); // 按卡关闭。
+    assert.equal(islandPluginAnchorVisible(selected, "plugin.other"), true); // 映射里没有的卡按缺省。
+    assert.equal(islandPluginAnchorVisible(selected, "plugin.not-installed"), true); // 未知键保留但渲染侧忽略。
+    assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify(selected))).islandPluginAnchorVisible, {
+        "plugin.demo": false,
+        "plugin.not-installed": true,
+    }); // 保存往返不丢映射。
+    assert.equal(isPluginComponentId("plugin.dsh-status"), true);
+    for (const key of ["dsh-status", "official.clock", "plugin.", "plugin.DSH", "plugin.a b", `plugin.${"x".repeat(130)}`])
+        assert.equal(isPluginComponentId(key), false);
+    for (const islandPluginAnchorVisible of [null, 0, 1, "true", [], { "plugin.demo": "false" }, { "plugin.demo": 1 }, { "official.clock": true }, { "plugin.": true }, { "plugin.DSH": true }])
+        assert.throws(() => parsePreferences({ ...defaults, islandPluginAnchorVisible }));
+    const full = Object.fromEntries(Array.from({ length: ISLAND_PLUGIN_ANCHOR_LIMIT }, (_, index) => [`plugin.card-${index}`, true]));
+    assert.equal(Object.keys(parsePreferences({ ...defaults, islandPluginAnchorVisible: full }).islandPluginAnchorVisible).length, ISLAND_PLUGIN_ANCHOR_LIMIT);
+    assert.throws(() => parsePreferences({ ...defaults, islandPluginAnchorVisible: { ...full, "plugin.one-more": true } }));
+});
+
+test("消息通知卡偏好：缺省显示、初始化未完成，保存往返不丢", () => {
+    const defaults = parsePreferences({ theme: "system", doubleClickToOpen: true });
+    assert.equal(defaults.islandMessageCardVisible, true);
+    assert.equal(defaults.islandMessageCardInitialized, false);
+    assert.equal(islandMessageCardEnabled(defaults), true);
+    const saved = parsePreferences({ ...defaults, islandMessageCardVisible: false, islandMessageCardInitialized: true });
+    assert.equal(saved.islandMessageCardVisible, false);
+    assert.equal(saved.islandMessageCardInitialized, true);
+    assert.equal(islandMessageCardEnabled(saved), false);
+    assert.deepEqual(parsePreferences(JSON.parse(JSON.stringify(saved))), saved);
+    for (const islandMessageCardVisible of ["true", 1, null])
+        assert.throws(() => parsePreferences({ ...defaults, islandMessageCardVisible }));
+    for (const islandMessageCardInitialized of ["false", 0, null])
+        assert.throws(() => parsePreferences({ ...defaults, islandMessageCardInitialized }));
+});
+
+test("消息通知卡默认插入位置：天气后、无天气时首个插件前、无插件则末尾，只插一次", () => {
+    assert.deepEqual(insertIslandMessageCard(["official.music-control", "official.weather", "plugin.clock"]), [
+        "official.music-control",
+        "official.weather",
+        ISLAND_MESSAGE_CARD_ID,
+        "plugin.clock",
+    ]); // 天气之后。
+    assert.deepEqual(insertIslandMessageCard(["official.weather", "official.collect-box"]), [
+        "official.weather",
+        ISLAND_MESSAGE_CARD_ID,
+        "official.collect-box",
+    ]); // 无插件时紧跟天气。
+    assert.deepEqual(insertIslandMessageCard(["official.music-control", "plugin.clock"]), [
+        "official.music-control",
+        ISLAND_MESSAGE_CARD_ID,
+        "plugin.clock",
+    ]); // 无天气时首个插件之前。
+    assert.deepEqual(insertIslandMessageCard(["official.music-control"]), ["official.music-control", ISLAND_MESSAGE_CARD_ID]); // 无插件末尾。
+    assert.deepEqual(insertIslandMessageCard([]), [ISLAND_MESSAGE_CARD_ID]);
+    assert.deepEqual(insertIslandMessageCard(["official.weather", ISLAND_MESSAGE_CARD_ID]), ["official.weather", ISLAND_MESSAGE_CARD_ID]); // 已有不重复插。
+    assert.equal(islandMessageCardInitialization(undefined), undefined);
+    assert.equal(islandMessageCardInitialization({ islandCardOrder: [], islandMessageCardInitialized: true }), undefined); // 已初始化不再插。
+    assert.deepEqual(islandMessageCardInitialization({ islandCardOrder: ["official.weather"], islandMessageCardInitialized: false }), {
+        islandCardOrder: ["official.weather", ISLAND_MESSAGE_CARD_ID],
+        islandMessageCardInitialized: true,
+    }); // 只写一次补丁。
+    const full = Array.from({ length: 32 }, (_, index) => `plugin.card-${index}`);
+    assert.deepEqual(insertIslandMessageCard(full), full); // 满额不插，不挤掉既有卡。
+    assert.equal(islandMessageCardInitialization({ islandCardOrder: full, islandMessageCardInitialized: false }), undefined); // 满额不置初始化标记，腾出位置后重试。
+    const fullWithSlot = [...full.slice(0, 31), ISLAND_MESSAGE_CARD_ID];
+    assert.deepEqual(islandMessageCardInitialization({ islandCardOrder: fullWithSlot, islandMessageCardInitialized: false }), {
+        islandCardOrder: fullWithSlot,
+        islandMessageCardInitialized: true,
+    }); // 已存在的槽位不因满额丢失。
 });

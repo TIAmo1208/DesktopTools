@@ -102,7 +102,8 @@ pub(crate) fn register(hwnd: HWND, port: Arc<dyn crate::drop_bridge::IslandDropP
                         {
                             (Some(kind), _) => handler_port.island_drop_fact(IslandDropFact { active: true, kind }),
                             (None, Some(kind)) => handler_port.island_drop_fact(IslandDropFact { active: false, kind }),
-                            (None, None) => {}
+                            (None, None) =>
+                            {}
                         }
                         handler_engaged.set(next);
                     }
@@ -193,17 +194,7 @@ pub(crate) fn register(hwnd: HWND, port: Arc<dyn crate::drop_bridge::IslandDropP
 }
 
 /// 收集箱收纳不删除源内容，只协商复制效果。
-fn collect_effect(allowed: DROPEFFECT) -> DROPEFFECT
-{
-    if (allowed & DROPEFFECT_COPY).0 != 0
-    {
-        DROPEFFECT_COPY
-    }
-    else
-    {
-        DROPEFFECT_NONE
-    }
-}
+fn collect_effect(allowed: DROPEFFECT) -> DROPEFFECT { if (allowed & DROPEFFECT_COPY).0 != 0 { DROPEFFECT_COPY } else { DROPEFFECT_NONE } }
 
 /// 不可接收时回给源的有效效果：Enter 不能返回 NONE，否则 OS 不进入 Over/Drop/Leave，页面收不到事实。
 fn reject_effect(allowed: DROPEFFECT) -> DROPEFFECT
@@ -276,10 +267,7 @@ pub(crate) fn island_drop_decision(engaged: Option<IslandDropKind>, has_session:
 }
 
 /// 离开或放下时补发的 inactive 事实：类型沿用本次进入，未进入接收路径（右键）不发事件。
-pub(crate) fn island_leave_decision(engaged: Option<IslandDropKind>) -> Option<IslandDropFact>
-{
-    engaged.map(|kind| IslandDropFact { active: false, kind })
-}
+pub(crate) fn island_leave_decision(engaged: Option<IslandDropKind>) -> Option<IslandDropFact> { engaged.map(|kind| IslandDropFact { active: false, kind }) }
 
 /// 已初始化的 UI 线程不重复初始化，避免销毁时误减宿主 OLE 引用。
 fn initialize_ole() -> Result<bool, String>

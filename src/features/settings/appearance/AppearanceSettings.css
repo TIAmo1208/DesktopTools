@@ -1,31 +1,16 @@
-/* 外观条目采用与设置页相同的无框纵向列表。 */
+/* 外观字段集沿用外层分组间距，不引入额外边框或内距。 */
 .appearance-settings {
-    display: grid;
-    gap: 4px;
     min-width: 0;
     margin: 0;
     padding: 0;
     border: 0;
 }
 
-/* 两组主题沿用纵向设置行，各自拥有可访问标题。 */
-.appearance-settings__group {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-    padding: 1px;
-    margin-bottom: 12px;
-}
-
-/* 分组标题保持现有字号，以字重区分信息层级；滚动时吸顶，作用域信息不滚出视口。 */
+/* 主题作用域的小标题仍可吸顶，留白由外层网格提供。 */
 .appearance-settings__heading {
     position: sticky;
-    top: -24px; /* 吸顶时把上内距推到内容区边缘，盖住滚动中的旧内容。 */
+    inset-block-start: 0;
     z-index: 2;
-    margin: -12px 0 8px; /* 抵消新增的上内距，正文位置与不吸顶时一致。 */
-    padding: 28px 2px 8px;
-    font: inherit;
-    font-weight: 600;
     background: var(--color-background);
 }
 
