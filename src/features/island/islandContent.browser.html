@@ -1325,8 +1325,10 @@
                 // 用窗口相对固定视口的坐标，不将断言容器的 24px 画布内边距误算成真实窗口坐标。
                 const 原生左 = 全高几何.windowBox.left - 全高几何.viewport.left;
                 const 原生顶 = 全高几何.windowBox.top - 全高几何.viewport.top;
-                const 空列点 = { x: 原生左 + 卡列宽 / 2, y: 原生顶 + 全高几何.windowBox.height - 2 };
-                断言(空列点.y - 原生顶 > 卡片们.at(-1).getBoundingClientRect().bottom - 原点.top, "测试点是末张卡片下方透明列而非卡片或窗口外");
+                const 列心 = { x: 原生左 + 卡列宽 / 2 }; // 内容列内的水平参考点。
+                // 展开根铺满工作区，透明区在内容列两侧：贴上下时列居中，贴左右时列贴边、对侧整条透明。
+                const 透明点 = { x: 原生左 > 24 ? 原生左 - 40 : 原生左 + 卡列宽 + 40, y: 原生顶 + 120 };
+                断言(透明点.x < 原生左 || 透明点.x > 原生左 + 卡列宽, "测试点在内容列外的透明区而非卡片");
                 const 移动 = (x, y) => document.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse", clientX: x, clientY: y }));
                 const 原定时 = window.setTimeout;
                 let 空白定时数 = 0;
@@ -1335,18 +1337,18 @@
                     return 原定时.call(window, 回调, 延迟, ...args);
                 };
                 try {
-                    移动(空列点.x, 原生顶 + 10); // 从实际内容侧出发。
-                    移动(空列点.x, 空列点.y);
-                    for (let i = 1; i <= 12; i++) 移动(空列点.x, 空列点.y - i);
+                    移动(列心.x, 原生顶 + 10); // 从实际内容侧出发。
+                    移动(透明点.x, 透明点.y);
+                    for (let i = 1; i <= 12; i++) 移动(透明点.x, 透明点.y - i);
                     断言(当前态() === "expanded" && 空白定时数 === 1, "空白列反复移动只注册一次回退计时");
                     // 回到另一张卡片，尚未到点的回退应立即取消。
                     const 天气框 = 三卡[2].getBoundingClientRect();
-                    移动(空列点.x, 原生顶 + 天气框.top - 原点.top + 10);
+                    移动(列心.x, 原生顶 + 天气框.top - 原点.top + 10);
                     await 等待(140);
                     断言(当前态() === "expanded", "重新进入任一卡片后超过原截止仍保持展开");
                     const 进列时刻 = performance.now();
-                    移动(空列点.x, 空列点.y);
-                    for (let i = 1; i <= 12; i++) 移动(空列点.x, 空列点.y - i);
+                    移动(透明点.x, 透明点.y);
+                    for (let i = 1; i <= 12; i++) 移动(透明点.x, 透明点.y - i);
                     await 直到(() => 当前态() === "collapsed", "连续停留后回落胶囊");
                     const 实测停留 = performance.now() - 进列时刻;
                     断言(空白定时数 === 2 && 实测停留 >= 119, `两个真实离开边界各一笔 120ms 计时，实际 ${空白定时数} 笔/${实测停留}ms`);
@@ -1355,10 +1357,12 @@
                 断言(JSON.stringify(夹具.提交.at(-1).windowBox) === 胶囊盒 && 夹具.提交.length - 退回测量前 === 1, "满 120ms 回落，精确恢复胶囊盒并只提交一次");
                 const 胶囊几何 = 夹具.提交.at(-1);
                 const 胶囊中心 = { x: 胶囊几何.windowBox.left - 胶囊几何.viewport.left + 胶囊几何.windowBox.width / 2, y: 胶囊几何.windowBox.top - 胶囊几何.viewport.top + 胶囊几何.windowBox.height / 2 };
+                // 回胶囊清门闩：同一位置再次悬停按 180ms 进入 hover，不再要求先离开再进入。
                 悬停();
                 移动(胶囊中心.x, 胶囊中心.y);
-                await 等待(210);
-                断言(当前态() === "collapsed", "旧指针在收缩后的胶囊上保持不回弹，必须先离开再进入");
+                await 直到(() => 当前态() === "hover", "回落清门闩后同一位置再次悬停按 180ms 进入");
+                按键("Escape");
+                await 稳定("collapsed");
                 const 再进入前 = 夹具.提交.length;
                 按键("Enter");
                 await 稳定("expanded");
@@ -1502,7 +1506,8 @@
                 await 稳定("collapsed");
                 await 直到(() => !锚点(事件锚点), "清理仅用于测试的普通事件");
                 for (const [类型, 身份] of 功能) {
-                    夹具.pushPreferences({ islandAnchorVisible: { [类型]: false } });
+                    // 插件卡锚点按逐卡映射控制，旧全局 plugin 键不参与判定。
+                    夹具.pushPreferences(类型 === "plugin" ? { islandPluginAnchorVisible: { "plugin.anchor-fixture": false } } : { islandAnchorVisible: { [类型]: false } });
                     await 直到(() => !锚点(身份), `${类型} 胶囊撤下`);
                     断言(功能.filter(([, 值]) => 值 !== 身份).every(([, 值]) => 锚点(值)), `${类型} 不连动另外两种胶囊锚点`);
                     悬停();
@@ -1510,7 +1515,7 @@
                     断言(!锚点(身份) && 悬停按钮().length === 2, `${类型} 同步从 hover 撤下`);
                     按键("Escape");
                     await 稳定("collapsed");
-                    夹具.pushPreferences({ islandAnchorVisible: {} });
+                    夹具.pushPreferences(类型 === "plugin" ? { islandPluginAnchorVisible: {} } : { islandAnchorVisible: {} });
                     await 直到(() => Boolean(锚点(身份)), `${类型} 重新启用后原事实可见`);
                 }
                 悬停();
@@ -1525,11 +1530,11 @@
                 断言(回落 === 待回落[0] && document.activeElement === 回落, `当前项撤下后选中并聚焦首个可用锚点，实际 ${回落?.dataset.anchor} / ${document.activeElement?.dataset.anchor ?? document.activeElement?.tagName}`);
                 回落?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
                 await 直到(() => 待回落[1]?.getAttribute("aria-pressed") === "true", "方向键在仍可见的两项间移动");
-                夹具.pushPreferences({ islandAnchorVisible: { message: false, music: false, plugin: false } });
+                夹具.pushPreferences({ islandAnchorVisible: { message: false, music: false }, islandPluginAnchorVisible: { "plugin.anchor-fixture": false } });
                 await 直到(() => !悬停按钮().length && 锚点("clock"), "全部撤下时回落时钟");
                 按键("Enter");
                 await 稳定("expanded");
-                for (const 名称 of ["消息", "音乐控制", "插件锚点夹具"]) 断言(岛().querySelector(`.island-card[aria-label="${名称}"]`), `${名称}的展开卡不受显示开关影响`);
+                for (const 名称 of ["消息通知", "音乐控制", "插件锚点夹具"]) 断言(岛().querySelector(`.island-card[aria-label="${名称}"]`), `${名称}的展开卡不受显示开关影响`);
 
                 阶段 = "旧演示参数不注册定时器，真实消息仍到达";
                 const 页面地址 = location.href;
@@ -1543,7 +1548,7 @@
                     const 旧地址 = new URL(页面地址);
                     旧地址.searchParams.set("demo", "1");
                     history.replaceState(null, "", 旧地址);
-                    夹具.pushPreferences({ islandAnchorVisible: {} });
+                    夹具.pushPreferences({ islandAnchorVisible: {}, islandPluginAnchorVisible: {} });
                     夹具.pushMessages([样例通知]);
                     重新挂载();
                     await 直到(() => 计数文本() === "1" && 锚点(插件锚点), "旧参数下仍挂载真实通知与插件锚点");

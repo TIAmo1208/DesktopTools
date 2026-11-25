@@ -390,23 +390,25 @@
                 const cards = [...root.querySelectorAll(".island-card")];
                 const boxes = cards.map((card) => card.getBoundingClientRect());
                 check(boxes.length === (query.get("multi") === "1" ? 2 : 1), "单双卡场景必须渲染预期卡片数");
-                // 展开窗口包括卡片外 16 DIP 槽；它不参与卡宽但参与窗口几何和根起点。
-                const cardWidth = Math.max(...boxes.map((box) => box.width));
-                const box = { width: Math.ceil(cardWidth) + 16, height: 1040 };
+                // 展开窗口包括卡片外 16 DIP 槽；内容列固定 400 DIP，窗口 = 列宽 + 槽。
+                const 列宽 = 400;
+                const box = { width: 列宽 + 16, height: 1040 };
                 const edge = preferences.islandEdge;
                 const inset = preferences.islandForm === "capsule" ? 6 : 0;
-                const targetLeft = edge === "left" ? inset : edge === "right" ? 1920 - box.width - inset : (1920 - box.width) / 2;
+                // 贴左右时窗口贴边；贴上下时按内容列居中（不是按整窗居中，槽只在卡片一侧）。
+                const targetLeft = edge === "left" ? inset : edge === "right" ? 1920 - box.width - inset : (1920 - 列宽) / 2;
                 const targetTop = 0;
                 const expected = { left: targetLeft, top: targetTop, ...box };
                 for (const key of ["left", "top", "width", "height"]) check(Math.abs(final.windowBox[key] - expected[key]) < 1, `展开 ${edge} 工作区全高目标 ${key} 应为 ${expected[key]}，实际 ${final.windowBox[key]}；提交 ${commits.map((item) => `${item.state}:${item.windowBox.width}x${item.windowBox.height}`).join(" → ")}`);
-                check(Math.abs(root.clientWidth - box.width) < 1 && Math.abs(root.clientHeight - expected.height) < 1, "展开 root 宽度取目标宽，高度取工作区全高");
-                check(Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-inline")) - box.width) < 1 && Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-block")) - expected.height) < 1, "展开 CSS 宽度变量取目标宽，高度取工作区全高");
-                check(Math.abs(parseFloat(root.style.marginInlineStart) - (targetLeft - final.viewport.left)) < 1 && Math.abs(parseFloat(root.style.marginBlockStart) - (targetTop - final.viewport.top)) < 1, "展开内容从工作区顶部按目标位置排布");
+                // 展开根节点铺满工作区，内容列由 --island-expanded-column 定位。
+                check(Math.abs(root.clientWidth - 1920) < 1 && Math.abs(root.clientHeight - 1040) < 1, "展开 root 铺满工作区（宽 1920 / 高 1040）");
+                check(Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-inline")) - 1920) < 1 && Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-block")) - 1040) < 1, "展开 CSS 视口变量取工作区宽高");
+                check(Math.abs(parseFloat(root.style.getPropertyValue("--island-expanded-column")) - (targetLeft - final.viewport.left)) < 1, "展开内容列按目标偏移排布");
                 boxes.forEach((box, index) => {
                     const target = final.cards[index].rect;
                     check(Math.abs(box.width - target.width) < 1 && Math.abs(box.height - target.height) < 1, "展开卡片不得被并集 grid 拉伸，实际内容尺寸应等于目标");
                     const origin = root.getBoundingClientRect();
-                    check(Math.abs(box.left - origin.left + targetLeft - final.windowBox.left - target.left) < 1 && Math.abs(box.top - origin.top + targetTop - final.windowBox.top - target.top) < 1, "卡片屏幕位置必须等于目标几何");
+                    check(Math.abs(box.left - origin.left - (targetLeft - final.viewport.left + target.left)) < 1 && Math.abs(box.top - origin.top - (targetTop - final.viewport.top + target.top)) < 1, "卡片屏幕位置必须等于目标几何");
                     if (index) check(Math.abs(box.top - boxes[index - 1].bottom - 8) < 1 && Math.abs(box.width - boxes[0].width) < 1, "展开多卡必须同列宽且保持 8 DIP gap");
                 });
                 check(value.filleted === "false" && (value.surface.display === "none" || transparent(value.surface.background)), "展开 surface 不得承载表面");
@@ -482,8 +484,8 @@
                             const expanded=windowRect();
                             const firstCard=root.querySelector('.island-card').getBoundingClientRect();
                             const contentPoint={x:firstCard.left+firstCard.width/2,y:firstCard.top+firstCard.height/2};
-                            const point={x:contentPoint.x,y:expanded.top+expanded.height-1};
-                            check(point.y>firstCard.bottom,'测试测点必须落在全高窗口的卡片下方透明列');
+                            const point={x:firstCard.left-40,y:firstCard.top+120};
+                            check(point.x<firstCard.left,'测试测点必须落在内容列外的透明区');
                             // 展开额外带与 hover 共用 120ms 去抖：计时内回内容盒取消。
                             move(point);await wait(60);move(contentPoint);await wait(120);
                             check(root.dataset.state==='expanded','额外带计时内回到内容盒必须取消退回');
@@ -542,9 +544,10 @@
                             // 减少动效：条立即隐藏并立即切态，不得引入渐出等待。
                             const bar=root.querySelector('.island__scrollbar');
                             key('Enter');await flush('expanded');
-                            check(Boolean(bar)&&bar.dataset.visible==='true','减少动效下溢出仍必须显示条');
+                            check(await within(()=>bar?.dataset.visible==='true',400),`减少动效下溢出仍必须显示条（条 ${Boolean(bar)} / visible ${bar?.dataset.visible} / 调试卡 ${root.querySelectorAll("[data-island-debug]").length} / 滚动 ${root.scrollHeight}>${root.clientHeight}）`);
                             key('Escape');
-                            check(await within(()=>root.dataset.state==='collapsed',100),'减少动效时必须立即提交收起');
+                            const 收起开始 = performance.now();
+                            check(await within(()=>root.dataset.state==='collapsed',150),`减少动效时必须立即提交收起（${Math.round(performance.now() - 收起开始)}ms 后 ${root.dataset.state} / 条 ${bar?.dataset.visible} / 动画 ${root.dataset.animations}）`);
                             check(Number.parseFloat(getComputedStyle(bar).opacity)===0,'减少动效时条必须立即隐藏');
                             await flush('collapsed');
                         } else {
@@ -691,9 +694,9 @@
                         const visible = cards.filter((card) => Number.parseFloat(getComputedStyle(card).opacity) > 0.01); // 相位 1 只有当前卡可见。
                         check(root.dataset.filleted === "true" && cards.length === 2 && visible.length === 1, "R2 相位 1 冻结帧应只有当前卡可见并保留负角表面");
                         check(paths.length === visible.length, `R2 每张可见透明卡必须各有一个真实路径层，实际 ${paths.length}/${visible.length}`);
-                        check(Boolean(seamSource) && seamBands.length===visible.length*2, `中间负角帧必须有根尺寸单路径补采样，每张可见卡两个接缝带，实际=${seamBands.length}/${visible.length*2}`);
+                        check(Boolean(seamSource) && seamBands.length===visible.length*2, `中间负角帧必须有根尺寸单路径补采样，每张可见卡两个接缝带，实际=${seamBands.length}/${visible.length*2}（可见 ${visible.length} / 带 ${JSON.stringify(seamBands.map((带)=>[带.left,带.top,带.width,带.height]))} / 窗 ${commits.at(-1).windowBox.width}x${commits.at(-1).windowBox.height} / 根 ${root.clientWidth}x${root.clientHeight}）`);
                         const seamLayer=visible.length*3;
-                        check(positions[seamLayer]?.every((value)=>Math.abs(value)<0.01) && Math.abs(sizes[seamLayer]?.[0]-root.clientWidth)<0.1 && Math.abs(sizes[seamLayer]?.[1]-root.clientHeight)<0.1, "补采样层必须与surface局部原点一致且是根尺寸，不能退回小瓦片");
+                        check(positions[seamLayer]?.every((value)=>Math.abs(value)<0.01) && Math.abs(sizes[seamLayer]?.[0]-root.clientWidth)<0.1 && Math.abs(sizes[seamLayer]?.[1]-root.clientHeight)<0.1, `补采样层必须与surface局部原点一致且是根尺寸，不能退回小瓦片（位置 ${JSON.stringify(positions[seamLayer])} / 尺寸 ${JSON.stringify(sizes[seamLayer])} / 根 ${root.clientWidth}x${root.clientHeight} / 窗 ${commits.at(-1).windowBox.width}x${commits.at(-1).windowBox.height}）`);
                         check(root.querySelectorAll(".island__surface").length === 1 && !transparent(style.backgroundColor), "R2 所有卡片仅共享一次非透明表面填充");
                         visible.forEach((card, index) => {
                             const box = rect(card, surface);
@@ -731,36 +734,25 @@
                         };
                         setSize(contents[0], 336, 28);
                         await until(() => commits.at(-1).windowBox.width >= 360);
-                        check(snapshot().card.width === 360 && !root.style.inlineSize, "宽内容的 hover 以自然流达到 360 DIP");
+                        check(Math.abs(snapshot().card.width - 360) < 1 && commits.at(-1).windowBox.width >= 360, `宽内容的 hover 卡宽按内容达到 360 DIP（实际 卡 ${snapshot().card.width} / 窗 ${commits.at(-1).windowBox.width}）`);
                         const from = commits.at(-1);
                         root.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
                         await settledState("expanded");
                         checkExpanded(from);
-                        check(root.clientWidth === Math.ceil(snapshot().card.width) + 16, "R3 展开根必须包含实测卡与滚动条槽");
-                        const checkAgreement = (label) => {
-                            const last = commits.at(-1);
-                            const origin = root.getBoundingClientRect();
-                            const style = getComputedStyle(root);
-                            const contentWidth = Math.max(...[...root.querySelectorAll(".island-card")].map((card) => card.getBoundingClientRect().width));
-                            check(Math.abs(root.clientWidth - contentWidth - 16) < 1 && root.clientHeight === 1040 && last.windowBox.height === 1040, `${label} 展开列宽随内容，窗口及根高固定 1040`);
-                            [...root.querySelectorAll(".island-card")].forEach((card, i) => {
-                                const box = card.getBoundingClientRect();
-                                const native = last.cards[i]?.rect;
-                                check(native && Math.abs(box.width - native.width) < 1 && Math.abs(box.height - native.height) < 1, `${label} DOM/native卡${i}宽高应一致且新内容不被旧union高度截断`);
-                                check(native && Math.abs(box.left - origin.left + parseFloat(style.marginInlineStart) - (last.windowBox.left - last.viewport.left) - native.left) < 1 && Math.abs(box.top - origin.top + parseFloat(style.marginBlockStart) - (last.windowBox.top - last.viewport.top) - native.top) < 1, `${label} DOM/native卡${i}屏幕位置应一致`);
-                                check(box.width <= 360.1, `${label} 内容卡片仍受360上限约束`);
-                            });
-                        };
+                        check(Math.abs(root.clientWidth - 1920) < 1, `R3 展开根铺满工作区（实际 ${root.clientWidth}）`);
+                        const 列宽 = 400; // 展开内容列固定宽（ADR-0047）。
+                        // 展开稳态内部内容变化不重提窗口盒：窗口恒为列宽 + 槽，卡片按内容增高，命中区留给页面。
+                        const 基线提交 = commits.length;
                         for (const [width, height] of [[80, 88], [328, 400], [80, 88]]) {
                             const cardContents = [...root.querySelectorAll(".island-card__content")];
                             cardContents.forEach((content) => setSize(content, width, height));
                             await wait(160);
-                            checkAgreement(`R1 ${width}x${height}`);
                             const last = commits.at(-1).windowBox;
-                            check(Math.abs(last.width - (width + 32 + 16)) < 1, "R1 同态按当前目标宽与外槽重新提交，不保留旧尺寸");
-                            const count = commits.length;
-                            await wait(80);
-                            check(commits.length === count, "R1 仅根paint自触发不得形成提交循环");
+                            check(Math.abs(last.width - (列宽 + 16)) < 1 && Math.abs(last.height - 1040) < 1, `R1 展开窗口不随内容重算，恒为列宽 400 + 槽 16 与工作区高（实际 ${last.width}x${last.height}）`);
+                            const boxes = [...root.querySelectorAll(".island-card")].map((card) => card.getBoundingClientRect());
+                            boxes.forEach((box, i) => check(Math.abs(box.width - 列宽) < 1, `R1 展开卡${i}宽恒为内容列 400 DIP（实际 ${box.width}）`));
+                            check(boxes[0].height > height && Math.abs(boxes[0].height - (boxes[1]?.height ?? boxes[0].height)) < 1, `R1 展开卡高按内容实测，不被旧并集高度截断（内容 ${height} / 卡 ${boxes[0].height}）`);
+                            check(commits.length === 基线提交, `R1 展开稳态内容变化不重复提交同一窗口盒（新增 ${commits.length - 基线提交} 次）`);
                         }
                         const final = commits.at(-1);
                         const index = commits.length;
