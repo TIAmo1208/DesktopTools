@@ -763,8 +763,11 @@
                     const 轨道 = () => document.querySelector(".island-anchor-detail .scrolling-text[data-overflow='true'] .scrolling-text__track");
                     await 直到(() => Boolean(轨道()), "长文本应标记为溢出", 4000);
                     const 滚动动画 = 轨道().getAnimations().map((动画) => ({ 时长: 动画.effect.getTiming().duration, 次数: 动画.effect.getTiming().iterations }));
-                    断言(滚动动画.length >= 1, `长文本溢出应有滚动动画，实际 ${滚动动画.length} 条`);
-                    断言(滚动动画.every((动画) => Number(动画.时长) > 0 && 动画.次数 === Infinity), `滚动动画应为无限循环且时长大于 0：${JSON.stringify(滚动动画)}`);
+                    if (减少动效) 跳过.push("hover 长文本往返滚动动画");
+                    else {
+                        断言(滚动动画.length >= 1, `长文本溢出应有滚动动画，实际 ${滚动动画.length} 条`);
+                        断言(滚动动画.every((动画) => Number(动画.时长) > 0 && 动画.次数 === Infinity), `滚动动画应为无限循环且时长大于 0：${JSON.stringify(滚动动画)}`);
+                    }
                     // 同一会话里换成短文本：不再溢出，动画被取消。
                     渲染({ contentFacts: [事实("滚动-短", "pending", "短", "12:30")] });
                     await 直到(() => 详情文本().includes("短"), "换成短文本");
