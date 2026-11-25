@@ -100,7 +100,7 @@
                     islandCardOrder: ["official.music-control", "plugin.sample"],
                 };
                 const 旧偏好 = { ...岛字段, interfaceAnimations: false, followSystemReducedMotion: false }; // 不带锚点显隐字段，关闭切页动画便于独立测量布局。
-                const 显式全开 = { music: true, message: true, plugin: true }; // 三项都给出布尔值，读取 .music 不会落到缺失。
+                const 显式全开 = { music: true, message: true }; // 只保留两枚全局开关；插件卡锚点改由逐卡映射记录。
                 const 全开偏好 = { ...岛字段, islandAnchorVisible: { ...显式全开 } };
                 // 频谱采集设备夹具：两个输出设备，一个标注系统默认，核对设备下拉的选项、后缀与禁用。
                 const 音频设备 = [
@@ -221,7 +221,7 @@
                 const 卡片标题 = document.querySelector("#root .island-settings__label");
                 断言(卡片标题 !== null && ["0px", "0px", "12px", "600"].every((值, 序) => ["marginTop", "marginBottom", "fontSize", "fontWeight"].map((属性) => getComputedStyle(卡片标题)[属性])[序] === 值), "卡片小节标题保持 12px/600、无外边距例外", ["marginTop", "marginBottom", "fontSize", "fontWeight"].map((属性) => getComputedStyle(卡片标题)[属性]).join("/"));
 
-                // 一、一级页进入锚点显示：三枚开关默认开启，说明区分锚点开关与卡片开关。
+                // 一、一级页进入锚点显示：两枚全局开关默认开启、插件卡按卡列出，说明区分锚点开关与卡片开关。
                 const 入口 = await 直到(() => [...document.querySelectorAll("#root button")].find((元素) => 元素.textContent.includes("锚点显示")), "主页出现锚点显示入口");
                 入口.focus();
                 断言(document.activeElement === 入口, "锚点显示入口可获得焦点", `${document.activeElement?.tagName}`);
@@ -235,11 +235,13 @@
                 断言(说明.includes("胶囊") && 说明.includes("hover") && 说明.includes("卡片") && 说明.includes("展开卡"), "说明区分锚点开关与卡片上浮岛", 说明 || "缺少说明");
                 const 音乐开关 = document.getElementById("island-anchor-music");
                 const 消息开关 = document.getElementById("island-anchor-message");
-                const 插件开关 = document.getElementById("island-anchor-plugin");
-                断言(音乐开关?.checked === true && 消息开关?.checked === true && 插件开关?.checked === true, "旧配置下三枚上浮岛显示默认开启", [音乐开关?.checked, 消息开关?.checked, 插件开关?.checked].join(","));
+                const 插件卡开关 = document.getElementById("island-anchor-plugin.sample");
+                断言(音乐开关?.checked === true && 消息开关?.checked === true, "旧配置下音乐与消息两枚上浮岛显示默认开启", [音乐开关?.checked, 消息开关?.checked].join(","));
+                断言(document.getElementById("island-anchor-plugin") === null, "旧的全局插件卡开关已移除");
+                断言(插件卡开关?.checked === true, "插件卡锚点按卡默认开启", String(插件卡开关?.checked));
                 断言(消息开关.disabled === false, "偏好就绪时消息开关可操作", String(消息开关.disabled));
                 断言(消息开关.closest(".settings__row")?.textContent.includes("消息通知上浮岛显示"), "消息开关标签为消息通知上浮岛显示", 消息开关.closest(".settings__row")?.textContent ?? "缺少行");
-                断言(音乐开关.getAttribute("aria-label") === "音乐上浮岛显示" && 插件开关.getAttribute("aria-label") === "插件卡上浮岛显示", "音乐与插件卡标签带上浮岛显示", `${音乐开关.getAttribute("aria-label")}/${插件开关.getAttribute("aria-label")}`);
+                断言(音乐开关.getAttribute("aria-label") === "音乐上浮岛显示" && 插件卡开关.getAttribute("aria-label") === "示例插件上浮岛显示", "音乐与插件卡标签带上浮岛显示", `${音乐开关.getAttribute("aria-label")}/${插件卡开关.getAttribute("aria-label")}`);
                 // 描述小字自身不留外边距：说明贴着开关行，节奏由二级页网格间隔供给；设置行行距为容器 gap 4px。
                 const 岛说明 = await 直到(() => 二级.querySelector(".island-settings__hint"), "锚点页出现范围说明");
                 const 说明样式 = getComputedStyle(岛说明);
@@ -249,18 +251,23 @@
                 const 岛行距 = Math.round((岛行[1].getBoundingClientRect().top - 岛行[0].getBoundingClientRect().bottom) * 10) / 10;
                 断言(Math.abs(岛行距 - 4) <= 1, "锚点页设置行距等于容器 gap 4px", String(岛行距));
 
-                // 显式三项：先给出 message=false，确认夹具已换上，再回到全开后拨动，写入仍带齐三项。
-                const 关闭消息 = { ...岛字段, islandAnchorVisible: { music: true, message: false, plugin: true } };
+                // 插件卡开关写独立映射，不动旧的全局键。
+                插件卡开关.click();
+                await 直到(() => 补丁.at(-1)?.islandPluginAnchorVisible?.["plugin.sample"] === false, "点击插件卡开关写入逐卡映射");
+                断言(!("islandAnchorVisible" in (补丁.at(-1) ?? {})), "插件卡开关不改写旧全局 islandAnchorVisible", JSON.stringify(补丁.at(-1) ?? null));
+
+                // 显式两项：先给出 message=false，确认夹具已换上，再回到全开后拨动，写入仍带齐两项。
+                const 关闭消息 = { ...岛字段, islandAnchorVisible: { music: true, message: false } };
                 渲染(关闭消息);
                 const 消息回显 = await 直到(() => document.getElementById("island-anchor-message")?.checked === false, "显式 message=false 回显为关");
-                断言(消息回显 && document.getElementById("island-anchor-music")?.checked === true && document.getElementById("island-anchor-plugin")?.checked === true, "显式 true 的音乐与插件卡保持开启", [document.getElementById("island-anchor-music")?.checked, document.getElementById("island-anchor-message")?.checked, document.getElementById("island-anchor-plugin")?.checked].join(","));
+                断言(消息回显 && document.getElementById("island-anchor-music")?.checked === true && document.getElementById("island-anchor-plugin.sample")?.checked === true, "显式 true 的音乐与逐卡插件卡开关保持开启", [document.getElementById("island-anchor-music")?.checked, document.getElementById("island-anchor-message")?.checked, document.getElementById("island-anchor-plugin.sample")?.checked].join(","));
                 渲染(全开偏好);
                 await 直到(() => document.getElementById("island-anchor-message")?.checked === true, "显式全开后消息开关回到开");
                 document.getElementById("island-anchor-message").click();
                 await 直到(() => {
                     const 写入 = 补丁.at(-1)?.islandAnchorVisible;
-                    return 写入?.music === true && 写入?.message === false && 写入?.plugin === true;
-                }, "点击消息开关写入三项布尔值且只关闭 message");
+                    return 写入?.music === true && 写入?.message === false && Object.keys(写入).length === 2;
+                }, "点击消息开关写入两项布尔值且只关闭 message");
                 断言(true, "点击消息开关写入 islandAnchorVisible.message=false", JSON.stringify(补丁.at(-1) ?? null));
                 渲染(关闭消息);
 
@@ -299,17 +306,20 @@
                 const 面板开关 = await 直到(() => document.getElementById("feature-music-island-anchor"), "音乐面板出现上浮岛显示开关");
                 断言(面板开关.checked === true && 面板开关.getAttribute("aria-label") === "音乐上浮岛显示", "音乐面板与浮岛二级页对显式 music=true 同为开启", String(面板开关.checked));
                 // 二级面板行距同样由设置行容器 gap 供给（t27 去行 margin 后的间距恢复）。
-                const 面板行 = [...document.querySelectorAll("#features .settings__rows > .feature-settings__row")];
+                // 音乐面板按「内容显示 / 上浮岛显示 / 频谱采集」三组命名 div 分区，行在组内。
+                const 面板组 = [...document.querySelectorAll("#features .settings__group")];
+                断言(面板组.map((组) => 组.getAttribute("aria-label")).join("/") === "内容显示/上浮岛显示/频谱采集", "音乐面板按三组命名分区", 面板组.map((组) => 组.getAttribute("aria-label")).join("/"));
+                const 面板行 = [...(面板组[0]?.querySelectorAll(":scope > .feature-settings__row") ?? [])];
                 断言(面板行.length >= 2, "音乐面板至少两行", String(面板行.length));
                 const 面板行距 = Math.round((面板行[1].getBoundingClientRect().top - 面板行[0].getBoundingClientRect().bottom) * 10) / 10;
                 断言(Math.abs(面板行距 - 4) <= 1, "音乐面板二级行距等于容器 gap 4px", String(面板行距));
                 面板开关.click();
                 await 直到(() => {
                     const 写入 = 功能补丁.at(-1)?.islandAnchorVisible;
-                    return 写入?.music === false && 写入?.message === false && 写入?.plugin === true;
-                }, "音乐面板写入时保留 message=false 与 plugin=true");
+                    return 写入?.music === false && 写入?.message === false && Object.keys(写入).length === 2;
+                }, "音乐面板写入时保留 message=false");
                 断言(true, "音乐面板写入同一 islandAnchorVisible 字段", JSON.stringify(功能补丁.at(-1) ?? null));
-                const 共享 = { ...岛字段, islandAnchorVisible: { music: false, message: false, plugin: true } };
+                const 共享 = { ...岛字段, islandAnchorVisible: { music: false, message: false } };
                 渲染(共享);
                 渲染功能(共享);
                 const 两侧音乐 = await 直到(
