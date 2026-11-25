@@ -1981,7 +1981,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                         }
                     };
                     // 单层背景按真实DOM卡片生成遮罩；native cards包含透明命中gap，不能直接把它当可见表面绘制。
-                    const paintSurface = (attached: number, value: IslandStateRequest, moving: boolean) => {
+                    const paintSurface = (attached: number, moving: boolean) => {
                         const node = surface.current;
                         if (!node || attached >= -0.01 || !cards.length) {
                             if (node) node.style.display = "none";
@@ -1994,6 +1994,9 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                         // 直接以surface为局部原点，滚动容器中它可能不等于根的边框原点。
                         node.style.display = "block";
                         const origin = node.getBoundingClientRect();
+                        // 展开态根铺满工作区、卡片落在内容列；补面余量与补采样瓦片必须按承载表面算，不能用内容列窗口盒，
+                        // 否则贴上下时卡片在窗口盒坐标之外，终点侧补面被误判为没有余量而丢失。
+                        const surfaceBox = { left: 0, top: 0, width: element.clientWidth, height: element.clientHeight };
                         const seamPaths: string[] = [];
                         const seamBands: IslandRect[] = [];
                         for (const card of cards) {
@@ -2007,9 +2010,9 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                             layers.push(`url("data:image/svg+xml,${encodeURIComponent(svg)}")`);
                             positions.push(`${rect.left}px ${rect.top}px`);
                             sizes.push(`${rect.width}px ${rect.height}px`);
-                            const seam = islandSeamMask(rect, corners, value.windowBox, edge, form, attached, window.devicePixelRatio);
+                            const seam = islandSeamMask(rect, corners, surfaceBox, edge, form, attached, window.devicePixelRatio);
                             if (seam) { seamPaths.push(seam.path); seamBands.push(...seam.bands); }
-                            for (const patch of islandFilletPatches(rect, value.windowBox, edge, radius)) {
+                            for (const patch of islandFilletPatches(rect, surfaceBox, edge, radius)) {
                                 const [x, y] = filletMask(patch.slot);
                                 // 原瓦片尺寸/位置不动；中帧圆心与色标取绝对px，缺覆盖由根尺寸单路径补采样。
                                 const centerX = x === "100%" ? patch.rect.width : 0;
@@ -2024,7 +2027,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                         }
                         if (seamPaths.length) {
                             // clipPath位于SVG内部，不是CSS mask层的clip-path；单张根尺寸瓦片没有接缝处的小瓦片边界。
-                            const width = value.windowBox.width, height = value.windowBox.height;
+                            const width = surfaceBox.width, height = surfaceBox.height;
                             const clips = seamBands.map((band) => `<rect x="${band.left}" y="${band.top}" width="${band.width}" height="${band.height}"/>`).join("");
                             const svg = `<svg xmlns="http://www.w3.org/2000/svg" data-island-seam="true" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs><clipPath id="seam-band" clipPathUnits="userSpaceOnUse">${clips}</clipPath></defs><path d="${seamPaths.join(" ")}" clip-path="url(#seam-band)" fill="#fff"/></svg>`;
                             layers.push(`url("data:image/svg+xml,${encodeURIComponent(svg)}")`);
@@ -2045,7 +2048,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                     const paintAttached = (attached: number, value: IslandStateRequest, moving = false) => {
                         attachedCorner.current = attached;
                         element.dataset.filleted = attached < -0.01 ? "true" : "false";
-                        paintSurface(attached, value, moving);
+                        paintSurface(attached, moving);
                     };
                     // 固定视口偏移只定位根节点；展开态不写回卡片内联几何，但仍需要正确 margin。
                     /**
