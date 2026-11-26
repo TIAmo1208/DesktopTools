@@ -515,7 +515,7 @@ test("展开视口铺满工作区：透明区停留/点击回退，内容列与�
     assert.equal(islandMarginStep(entered.state, { ...input, now: 120 }).collapse, true); // 连续停留 120ms 回胶囊。
     const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
     assert.match(source, /islandExpandedBlank\(layout, \{ x: event\.clientX, y: event\.clientY \}, onCard\)/); // 透明区单击直接回退。
-    assert.match(source, /event\.type !== "pointerup" \|\| transitionMasked\.current \|\| modeRef\.current !== "expanded" \|\| cardSorting\.current/); // 拖动中不回退。
+    assert.match(source, /event\.type !== "pointerup" \|\| gate\.state\(\)\.masked \|\| modeRef\.current !== "expanded" \|\| cardSorting\.current/); // 拖动中不回退。
 });
 
 test("展开工作区左右透明列都可回退：左贴边、居中、右贴边", () => {
@@ -652,13 +652,13 @@ test("hover 进入以「几何已就绪」为权威：提交在途时不进入�
     assert.equal(islandHoverTarget("collapsed", true, false, false), "hover");
     // 调用点把 inputReady 并入 busy：不新增门闩状态，避免门闩与解门凭据互相对不上。
     const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
-    const 判据 = source.split("islandHoverTarget(modeRef.current, inside, interactionBusy() || !inputReady.current || motionInFlight.current, hoverLatched())").length - 1;
+    const 判据 = source.split("islandHoverTarget(modeRef.current, inside, interactionBusy() || !gate.state().settled || gate.state().transitioning, hoverLatched())").length - 1;
     assert.equal(判据, 2, "scheduleHover 与消抖复查都必须带几何就绪判据");
     // 形变在途：收起动画期间窗口是两态并集，指针必然在盒内，不能据此判 hover 进入。
     // 形变在途：收起动画期间窗口是两态并集，指针必然在盒内，不能据此判 hover 进入。
-    assert.match(source, /interactionBusy\(\) \|\| !inputReady\.current \|\| motionInFlight\.current/);
-    assert.match(source, /motionInFlight\.current = true;/);
-    assert.match(source, /motionInFlight\.current = false; \/\/ 终帧已结算/);
+    assert.match(source, /interactionBusy\(\) \|\| !gate\.state\(\)\.settled \|\| gate\.state\(\)\.transitioning/);
+    assert.match(source, /gate\.beginTransition\(\);/);
+    assert.match(source, /gate\.endTransition\(\); \/\/ 终帧已结算/);
 });
 
 test("胶囊态透明像素不起 hover：只认内容轮廓，进窗口的 pointerenter 也按卡片判定", () => {
