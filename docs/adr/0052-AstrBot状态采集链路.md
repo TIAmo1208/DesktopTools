@@ -12,7 +12,7 @@ status: accepted
 
 1. AstrBot dashboard REST 的 `system` scope 不在 `ALL_OPEN_API_SCOPES` 里，WebUI 创建 API Key 时没有该选项，所以 `/api/v1/stats`、`/logs/live` 等端点用任何 Key 都是 403。
 2. 仓库里 AstrBot 没有 `CORSMiddleware`，响应没有 `Access-Control-Allow-*`；Desktop Tools 插件页 CSP 又是 `connect-src 'self'`，页内 `fetch` 与 `EventSource` 一律发不出去。
-3. 插件槽一次只能声明一个宿主能力（ADR-0029），已有能力都是「宿主归一化后的最小结构」，没有任何一个能承载一份完整快照；新增能力又必须对数据源保持通用（见 [插件 loopback 通道](0038-插件loopback通道.md)）。
+3. 插件槽已有的宿主能力都是「宿主归一化后的最小结构」，没有任何一个能承载一份完整快照；新增能力又必须对数据源保持通用（见 [插件 loopback 通道](0038-插件loopback通道.md)）。
 
 ## 决策
 

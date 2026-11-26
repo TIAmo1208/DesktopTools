@@ -8,7 +8,7 @@ status: accepted
 
 插件要读的数据源（例如本机 AstrBot）只提供本机 HTTP 数据，而这些数据既不在宿主已知能力里，也不能由页面直连：页面 CSP 是 `connect-src 'self'`，服务端没有 CORS 头，凭据也不允许进入页面。
 
-[AstrBot 状态采集链路](0036-AstrBot状态采集链路.md) 已决定采集在 AstrBot 进程内完成，Desktop Tools 侧只是接收方。只做 AstrBot 专用能力会把「解析、缓存、去重」写进宿主，每加一个数据源就要再开一条能力，两侧都要改代码。
+[AstrBot 状态采集链路](0052-AstrBot状态采集链路.md) 已决定采集在 AstrBot 进程内完成，Desktop Tools 侧只是接收方。只做 AstrBot 专用能力会把「解析、缓存、去重」写进宿主，每加一个数据源就要再开一条能力，两侧都要改代码。
 
 ## 决策
 
