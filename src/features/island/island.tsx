@@ -39,6 +39,7 @@ import {
     islandExpandedColumn,
     ISLAND_EXPANDED_COLUMN_WIDTH,
     ISLAND_COMPACT_MAX_WIDTH,
+    islandFitCardsToBox,
 } from "./islandGeometry";
 import {
     ISLAND_HOVER_DELAY_MS,
@@ -1170,6 +1171,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     const lastMarginInput = useRef<Parameters<typeof islandMarginStep>[1] | undefined>(undefined); // hover 只保留最后一次完整轮廓判定。
     const expandedDwell = useRef<IslandExpandedDwell>("idle"); // 展开只记录是否离开过内容，列内移动不重新计时。
     const pendingEscape = useRef(false); // 遮蔽期间按下的 Esc 不丢：解除遮蔽后立即收起，保留既有交互语义。
+    const motionInFlight = useRef(false); // 切态形变是否在途：动画期间窗口是两态并集，指针必然「在里面」，不能据此判 hover；终帧结算后才置假。
     const expandedGrace = useRef<ReturnType<typeof beginIslandExpandedGrace> | undefined>(undefined); // 触发展开的那一次交互先不吃空白回退。
     const expandedDwellTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const expandedDwellPoint = useRef<{ x: number; y: number } | undefined>(undefined);
@@ -1956,6 +1958,8 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                     if (mode === "hover" && collapsedBox.current) {
                         request = { ...islandUnionFrame(request, collapsedBox.current, 0, edge, work), state: "hover" };
                     }
+                    // 原生要求每张卡落在窗口盒内；切态期间量到的卡片可能比盒子大，先夹紧再提交。
+                    request = islandFitCardsToBox(request);
                     if (mode === "collapsed") {
                         collapsedBox.current = request;
                     }
@@ -2315,6 +2319,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                                 const staggerMs = request.state === "expanded" && animate && request.cards.length > 1 ? ISLAND_EXPAND_STAGGER_MS : 0; // 展开时其他卡延迟弹出。
                                 const motionTotal = staggerMs > 0 ? ISLAND_EXPAND_MOTION_MS : ISLAND_MOTION_MS; // 展开比其余切态多一段重叠。
                                 if (animate && startGeometry) {
+                                    motionInFlight.current = true; // 动画期间不判 hover 进入，终帧结算后由 finally 清掉。
                                     // 先把原生窗口一次放大到两态并集，内容保持原位置；动画只在固定窗口内移动内容。
                                     const startAttached =
                                         attachedCorner.current ?? islandAttachedCorner(startGeometry.state, form, startGeometry.cards[0]?.radius ?? 0); // 从实际绘制值衔接连续切态。
@@ -2444,6 +2449,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
                             } finally {
                                 animating = false;
                                 committing = false;
+                                motionInFlight.current = false; // 终帧已结算：窗口已落到目标盒，hover 可以再判。
                                 // 成功路径先把终态、几何键、滚动与重测做完，最后才释放租约。
                                 if (settled && active && ownsMask(maskToken) && request.state !== "expanded") {
                                     applyViewportMargin(natural);
@@ -2603,7 +2609,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
     const hoverLatched = () => modeRef.current !== "collapsed" && marginState.current.latch !== "open";
     const scheduleHover = (inside: boolean) => {
         if (inside && modeRef.current === "collapsed" && expandedReentryGate.current) return;
-        const target = islandHoverTarget(modeRef.current, inside, interactionBusy(), hoverLatched());
+        const target = islandHoverTarget(modeRef.current, inside, interactionBusy() || !inputReady.current || motionInFlight.current, hoverLatched());
         const kind = inside ? "enter" : "leave";
         if (target && hoverKind.current === kind && hoverTimer.current !== undefined) return;
         stopHoverTimer();
@@ -2613,7 +2619,7 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         hoverTimer.current = setTimeout(() => {
             if (version !== hoverVersion.current || !mounted.current) return;
             hoverTimer.current = undefined; hoverKind.current = undefined;
-            if (pointerInside.current === inside && islandHoverTarget(modeRef.current, inside, interactionBusy(), hoverLatched()) === target) changeMode(target, false);
+            if (pointerInside.current === inside && islandHoverTarget(modeRef.current, inside, interactionBusy() || !inputReady.current || motionInFlight.current, hoverLatched()) === target) changeMode(target, false);
         }, ISLAND_HOVER_DELAY_MS);
     };
     const leaveIsFake = (event?: { screenX: number; screenY: number }): boolean => {
@@ -2664,6 +2670,13 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
         expandedReentryGate.current = false; // 重新进入说明已离开过，解除极短 gate。
         clearTimeout(expandedReentryGateTimer.current);
         expandedReentryGateTimer.current = undefined;
+        // 胶囊态从窗口透明像素进入时不起 hover：交给后续 pointermove 按内容轮廓判定。
+        if (modeRef.current === "collapsed" && event) {
+            const card = root.current?.querySelector<HTMLElement>(".island-card");
+            const box = card?.getBoundingClientRect();
+            const onCard = box && event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
+            if (!onCard) { stopHoverTimer(); return; }
+        }
         scheduleHover(true);
     };
     /** 按下或重新入卡都抢先取消空白回退，包括正在等待滚动条渐出的自动收起。 */
@@ -2738,20 +2751,21 @@ export const IslandPage = ({ contentFacts = EMPTY_CONTENT_FACTS, dropFact, statu
             const layout = islandScrollGeometry(frame, targetGeometry.current, preferences?.islandEdge ?? "", { mode: modeRef.current, settled: layoutSettled.current, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, scrollTop: element.scrollTop }, work);
             if (!islandPointInRect(point, layout.window)) { leaveWindow(); return; }
             pointerInside.current = true;
-            // 常态透明边距不承载本次切态语义：透明判定会与既有 180ms 进入、拖动释放重判冲突，
-            // 因此常态不评估透明判定、不写门闩，只保留既有 180ms 进入；逻辑与单测保留以便恢复。
-            if (modeRef.current === "collapsed") {
-                marginState.current.since = undefined;
-                if (hoverKind.current === "margin") stopHoverTimer();
-                scheduleHover(true);
-                return;
-            }
             const cards = Array.from(element.querySelectorAll<HTMLElement>(".island-card")).map((card) => {
                 const box = card.getBoundingClientRect(), style = getComputedStyle(card);
                 return { rect: { left: box.left, top: box.top, width: box.width, height: box.height }, radii: [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius].map(Number.parseFloat) };
             });
             if (!cards.length) return;
             const contour = islandHitContour(cards, layout.window, preferences?.islandEdge ?? "", preferences?.islandForm ?? "capsule", attachedCorner.current ?? 0);
+            // 胶囊态只认内容轮廓：窗口内的透明像素不再起 hover，代价是这些空白会吞掉鼠标事件。
+            // 常态仍不评估透明边距的退回语义，也不写门闩，既有 180ms 进入消抖不变。
+            if (modeRef.current === "collapsed") {
+                marginState.current.since = undefined;
+                if (hoverKind.current === "margin") stopHoverTimer();
+                if (islandHitRegion("collapsed", point, layout, contour) !== "content") { stopHoverTimer(); return; }
+                scheduleHover(true);
+                return;
+            }
             const region = islandHitRegion(modeRef.current, point, layout, contour);
             const input = { mode: modeRef.current, region, now: performance.now(), busy: false, outlineDistance: islandContourDistance(point, contour), coreDistance: islandCardDistance(point, cards[0]!) };
             lastMarginInput.current = input;
