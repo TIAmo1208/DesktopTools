@@ -23,3 +23,30 @@ fn guardian_wait_blocks_until_setting_event()
         unsafe { CloseHandle(event) }.unwrap();
     }
 }
+
+/// 停止/退出任一到达后只监看等待立即返回；独立的设置事件不会唤醒或重新激活它。
+#[test]
+fn monitor_only_drops_settings_before_and_after_terminal()
+{
+    use super::{GuardianMode, observer_terminal};
+    for mode in [GuardianMode::Takeover, GuardianMode::MonitorOnly]
+    {
+        assert_eq!(GuardianMode::parse(Some(&mode.verb().to_owned())), Ok(mode));
+    }
+    assert!(GuardianMode::parse(Some(&"unknown".into())).is_err());
+    for (index, expected) in [(0, "主进程退出"), (1, "正常停止")]
+    {
+        let make = || unsafe { windows::core::Owned::new(CreateEventW(None, true, false, None).unwrap()) };
+        let events = [make(), make(), make()];
+        let raw = [events[0].0 as isize, events[1].0 as isize];
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || tx.send(observer_terminal(HANDLE(raw[0] as *mut _), HANDLE(raw[1] as *mut _))).unwrap());
+        unsafe { SetEvent(*events[2]) }.unwrap();
+        assert!(matches!(rx.recv_timeout(Duration::from_millis(60)), Err(mpsc::RecvTimeoutError::Timeout)));
+        unsafe { SetEvent(*events[index]) }.unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap(), expected);
+        worker.join().unwrap();
+        unsafe { SetEvent(*events[2]) }.unwrap();
+        assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
+    }
+}

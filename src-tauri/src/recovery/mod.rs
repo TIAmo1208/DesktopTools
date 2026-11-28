@@ -1,5 +1,5 @@
 use std::ffi::c_void;
-use std::os::windows::process::CommandExt;
+use std::os::windows::{io::AsRawHandle, process::CommandExt};
 use std::path::Path;
 use std::process::{Child, Command};
 use std::thread;
@@ -83,6 +83,33 @@ impl Drop for DesktopVisibilityWatch
     }
 }
 
+/// 协议由启动者显式选择。两个子命令不相互回退，旧 guardian 不认识 monitor-only。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum GuardianMode
+{
+    Takeover,
+    MonitorOnly,
+}
+impl GuardianMode
+{
+    fn verb(self) -> &'static str
+    {
+        match self
+        {
+            Self::Takeover => "monitor",
+            Self::MonitorOnly => "monitor-only",
+        }
+    }
+    fn parse(s: Option<&String>) -> Result<Self, String>
+    {
+        match s.map(String::as_str)
+        {
+            Some("monitor") => Ok(Self::Takeover),
+            Some("monitor-only") => Ok(Self::MonitorOnly),
+            _ => Err("guardian 命令无效".into()),
+        }
+    }
+}
 /// 独立 guardian 子进程与正常停止事件。
 pub struct GuardianProcess
 {
@@ -96,10 +123,14 @@ pub struct GuardianProcess
 impl GuardianProcess
 {
     /// 启动 guardian 并等待其完成就绪握手。
-    pub fn start(guardian_path: &Path, main_process_id: u32, shell: ShellDesktopState) -> Result<Self, String>
+    pub(crate) fn start(guardian_path: &Path, main_process_id: u32, shell: ShellDesktopState, mode: GuardianMode) -> Result<Self, String>
     {
         // guardian 就绪事件名称。
-        let ready_name = format!("Local\\DesktopToolsGuardianReady_{main_process_id}");
+        let ready_name = match mode
+        {
+            GuardianMode::Takeover => format!("Local\\DesktopToolsGuardianReady_{main_process_id}"),
+            GuardianMode::MonitorOnly => format!("Local\\DesktopToolsGuardianMonitorOnlyReady_{main_process_id}"),
+        };
         // guardian 正常停止事件名称。
         let shutdown_name = format!("Local\\DesktopToolsGuardianShutdown_{main_process_id}");
         // guardian 就绪事件名称 UTF-16 缓冲区。
@@ -107,25 +138,28 @@ impl GuardianProcess
         // guardian 停止事件名称 UTF-16 缓冲区。
         let shutdown_name_wide = wide(&shutdown_name);
         // 主进程等待的 guardian 就绪事件。
-        let ready_event = unsafe { CreateEventW(None, true, false, PCWSTR(ready_name_wide.as_ptr())).map_err(|error| format!("创建 guardian 就绪事件失败: {error}"))? };
-        // 正常退出时触发的 guardian 停止事件。
-        let shutdown_event = unsafe { CreateEventW(None, true, false, PCWSTR(shutdown_name_wide.as_ptr())).map_err(|error| format!("创建 guardian 停止事件失败: {error}"))? };
-        // 独立 guardian 子进程。
-        let mut child = Command::new(guardian_path).args(["monitor", "--pid", &main_process_id.to_string(), "--def-view", &shell.def_view.to_string(), "--visible", if shell.original_items_visible { "1" } else { "0" }, "--ready-event", &ready_name, "--shutdown-event", &shutdown_name]).creation_flags(CREATE_NEW_PROCESS_GROUP.0).spawn().map_err(|error| format!("启动 guardian 失败: {error}"))?;
-        // guardian 就绪握手等待结果。
-        let wait_result = unsafe { WaitForSingleObject(ready_event, 5000) };
-        unsafe {
-            let _ = CloseHandle(ready_event);
-        }
-        if wait_result != WAIT_OBJECT_0
+        // 创建失败/子进程拒绝握手均自动释放事件句柄。
+        let make_event = |name: &[u16]| unsafe { CreateEventW(None, true, false, PCWSTR(name.as_ptr())).map(|h| windows::core::Owned::new(h)).map_err(|e| format!("创建 guardian 事件失败：{e}")) };
+        let ready_event = make_event(&ready_name_wide)?;
+        let mut shutdown_event = make_event(&shutdown_name_wide)?;
+        let mut command = Command::new(guardian_path);
+        command.arg(mode.verb()).args(["--pid", &main_process_id.to_string(), "--ready-event", &ready_name, "--shutdown-event", &shutdown_name]);
+        if mode == GuardianMode::Takeover
         {
-            let _ = child.kill();
-            unsafe {
-                let _ = CloseHandle(shutdown_event);
-            }
-            return Err(format!("guardian 就绪握手超时，等待结果：{wait_result:?}"));
+            command.args(["--def-view", &shell.def_view.to_string(), "--visible", if shell.original_items_visible { "1" } else { "0" }]);
         }
-
+        let mut child = command.creation_flags(CREATE_NEW_PROCESS_GROUP.0).spawn().map_err(|error| format!("启动 guardian 失败：{error}"))?;
+        let result = unsafe { WaitForMultipleObjects(&[HANDLE(child.as_raw_handle()), *ready_event], false, 5000) };
+        if result.0 != WAIT_OBJECT_0.0 + 1
+        {
+            if result != WAIT_OBJECT_0
+            {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+            return Err(format!("guardian {} 握手失败（协议不受支持、初始化失败或超时），拒绝启动；等待结果：{result:?}", mode.verb()));
+        }
+        let shutdown_event = std::mem::take(&mut *shutdown_event);
         crate::log_info!("恢复：guardian 已就绪，进程标识：{}", child.id());
         Ok(Self { child: Some(child), shutdown_event: shutdown_event.0 as isize })
     }
@@ -190,14 +224,50 @@ pub fn run_guardian() -> Result<(), String>
 {
     // guardian 收到的全部命令行参数。
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if arguments.first().map(String::as_str) != Some("monitor")
+    match GuardianMode::parse(arguments.first())?
     {
-        return Err("guardian 命令无效".to_string());
+        GuardianMode::Takeover => monitor_main_process(&arguments),
+        GuardianMode::MonitorOnly => observe_main_process(&arguments),
     }
-
-    monitor_main_process(&arguments)
 }
 
+/// 保护态没有可见性写权限：只等待两个终止事件，无注册表订阅、待处理设置值或恢复分支。
+fn observe_main_process(arguments: &[String]) -> Result<(), String>
+{
+    let pid: u32 = argument_value(arguments, "--pid").ok_or("缺少 --pid")?.parse().map_err(|_| "无效 --pid")?;
+    let open_event = |key: &str, access| -> Result<_, String> {
+        let name = argument_value(arguments, key).ok_or_else(|| format!("缺少 {key}"))?;
+        unsafe { OpenEventW(access, false, &HSTRING::from(name)).map(|h| windows::core::Owned::new(h)).map_err(|e| e.to_string()) }
+    };
+    let main = unsafe { windows::core::Owned::new(OpenProcess(PROCESS_SYNCHRONIZE, false, pid).map_err(|e| e.to_string())?) };
+    let shutdown = open_event("--shutdown-event", SYNCHRONIZATION_ACCESS_RIGHTS(0x0010_0000))?;
+    let ready = open_event("--ready-event", EVENT_MODIFY_STATE)?;
+    unsafe { SetEvent(*ready) }.map_err(|e| e.to_string())?;
+    drop(ready);
+    crate::log_info!("保护守护：monitor-only 开始，主进程={pid}，设置订阅=0");
+    // 审计本轮实际收到的等待事件；保护模式的返回值只允许终止，不能分派通知。
+    let reason = observer_terminal(*main, *shutdown)?;
+    crate::log_info!("保护守护：monitor-only 结束，主进程={pid}，唯一等待事件={reason}，未处理设置通知，未写 Explorer");
+    Ok(())
+}
+
+/// 终止是吸收态：退出后没有下一轮分发，迟到的设置事件没有接收句柄。
+fn observer_terminal(main: HANDLE, shutdown: HANDLE) -> Result<&'static str, String>
+{
+    let event = unsafe { WaitForMultipleObjects(&[main, shutdown], false, INFINITE) };
+    if event == WAIT_OBJECT_0
+    {
+        Ok("主进程退出")
+    }
+    else if event.0 == WAIT_OBJECT_0.0 + 1
+    {
+        Ok("正常停止")
+    }
+    else
+    {
+        Err(format!("只监看 guardian 等待失败：{event:?}"))
+    }
+}
 /// 将 Rust 字符串转换为带结尾空字符的 UTF-16 缓冲区。
 fn wide(value: &str) -> Vec<u16> { value.encode_utf16().chain([0]).collect() }
 

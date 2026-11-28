@@ -130,14 +130,7 @@ impl ComponentRuntimeState
         }
         let catalog = self.catalog(); // 只依据已通过注册校验的清单。
         let mut seen = HashSet::new(); // 重复卡片只保留首次出现位置。
-        preferences
-            .island_card_order
-            .iter()
-            .filter(|id| seen.insert(id.as_str()))
-            .filter(|id| !preferences.disabled_plugins.iter().any(|disabled| disabled.eq_ignore_ascii_case(id)))
-            .filter(|id| catalog.manifests.get(id.as_str()).is_some_and(|manifest| manifest.island))
-            .map(|id| island_instance(id))
-            .collect()
+        preferences.island_card_order.iter().filter(|id| seen.insert(id.as_str())).filter(|id| !preferences.disabled_plugins.iter().any(|disabled| disabled.eq_ignore_ascii_case(id))).filter(|id| catalog.manifests.get(id.as_str()).is_some_and(|manifest| manifest.island)).map(|id| island_instance(id)).collect()
     }
 
     /// 按需生成岛注册投影，不修改工作区注册集合或其修订号。
@@ -180,10 +173,10 @@ impl ComponentRuntimeState
             }),
             ComponentCapability::ReadCurrentMedia => crate::platform::windows::music::snapshot().map_err(|message| ComponentRuntimeError { code: "media-read-failed".to_string(), message })?,
             ComponentCapability::ProbeServiceStatus => crate::tools::probe::probe(&json!({ "service": "astrbot" })),
-            ComponentCapability::LoopbackChannel => json!({}), // 通道数据只从三条通道命令交付，能力调用本身没有载荷。
-            ComponentCapability::PluginCredential => json!({}), // 凭据只写不读，能力调用不返回任何明文。
-            ComponentCapability::PublishIslandMessage => json!({}), // 投递结果经事件与消息投影交付。
-            ComponentCapability::OpenUri => json!({}), // 打开结果只报告成功或结构化错误。
+            ComponentCapability::LoopbackChannel => json!({}),          // 通道数据只从三条通道命令交付，能力调用本身没有载荷。
+            ComponentCapability::PluginCredential => json!({}),         // 凭据只写不读，能力调用不返回任何明文。
+            ComponentCapability::PublishIslandMessage => json!({}),     // 投递结果经事件与消息投影交付。
+            ComponentCapability::OpenUri => json!({}),                  // 打开结果只报告成功或结构化错误。
             ComponentCapability::PluginCredentialExchange => json!({}), // 兑换由专用命令完成，秘密不进入能力返回值。
         }; // 当前授权能力的最小结构化结果。
         Ok(ComponentCapabilityResult { instance_id: instance_id.to_string(), capability, payload })
@@ -209,7 +202,7 @@ impl ComponentRuntimeState
     /// 生成一条宿主事件并记为最近事件，由命令层负责外发。
     pub(crate) fn publish_host_event(&self, kind: &str) -> ComponentHostEvent
     {
-        let event = ComponentHostEvent { sequence: self.next_event_sequence.fetch_add(1, Ordering::Relaxed), kind: kind.to_string(), unix_millis: Utc::now().timestamp_millis() };
+        let event = ComponentHostEvent { sequence: self.next_event_sequence.fetch_add(1, Ordering::Relaxed), kind: kind.to_string(), unix_millis: crate::tools::time::host_unix_millis() };
         if let Ok(mut latest) = self.latest_host_event.lock()
         {
             *latest = Some(event.clone()); // 独立 Windowed transport 轮询也能看到这条事件。
@@ -218,7 +211,7 @@ impl ComponentRuntimeState
     }
 
     /// 返回最近一次已发布的插件宿主事件。
-    pub fn current_host_event(&self) -> Result<Option<ComponentHostEvent>, ComponentRuntimeError> { Ok(Some(ComponentHostEvent { sequence: self.next_event_sequence.fetch_add(1, Ordering::Relaxed), kind: "time-tick".to_string(), unix_millis: Utc::now().timestamp_millis() })) }
+    pub fn current_host_event(&self) -> Result<Option<ComponentHostEvent>, ComponentRuntimeError> { Ok(Some(ComponentHostEvent { sequence: self.next_event_sequence.fetch_add(1, Ordering::Relaxed), kind: "time-tick".to_string(), unix_millis: crate::tools::time::host_unix_millis() })) }
 
     /// 登记已经通过命令层实例与能力校验的时间消费者。
     pub(crate) fn subscribe_time(monitor: String) -> u64
@@ -281,7 +274,7 @@ impl ComponentRuntimeState
                 {
                     continue;
                 }
-                let event = ComponentHostEvent { sequence: state.next_event_sequence.fetch_add(1, Ordering::Relaxed), kind: "time-tick".to_string(), unix_millis: Utc::now().timestamp_millis() }; // 已注册时间能力插件共享的宿主事件。
+                let event = ComponentHostEvent { sequence: state.next_event_sequence.fetch_add(1, Ordering::Relaxed), kind: "time-tick".to_string(), unix_millis: crate::tools::time::host_unix_millis() }; // 已注册时间能力插件共享的宿主事件。
                 let Ok(mut latest_event) = state.latest_host_event.lock()
                 else
                 {
@@ -1214,10 +1207,7 @@ fn validate_manifest(manifest: &ComponentManifest) -> Result<(), ComponentRuntim
 }
 
 /// 合成一张浮岛实例：不持有布局、不写工作区注册集合。
-fn island_instance(component_id: &str) -> ComponentInstanceSnapshot
-{
-    ComponentInstanceSnapshot { instance_id: format!("island.{component_id}"), component_id: component_id.to_string(), monitor_id: String::new(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 }, state_version: 1, state: json!({}) }
-}
+fn island_instance(component_id: &str) -> ComponentInstanceSnapshot { ComponentInstanceSnapshot { instance_id: format!("island.{component_id}"), component_id: component_id.to_string(), monitor_id: String::new(), projection_monitor_id: None, projection_bounds: None, bounds: WorkspaceRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 }, state_version: 1, state: json!({}) } }
 
 /// 创建不影响其他实例的插件加载失败快照。
 fn failed_registration(instance: &ComponentInstanceSnapshot, message: &str) -> ComponentRegistrationSnapshot { ComponentRegistrationSnapshot { instance_id: instance.instance_id.clone(), component_id: instance.component_id.clone(), entry: None, authorized_capabilities: Vec::new(), status: ComponentLoadStatus::Failed, error: Some(message.to_string()) } }

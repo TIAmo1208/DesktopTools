@@ -15,6 +15,7 @@ src-tauri/
 │  ├─ shell/              # 桌面项目事实、Shell 身份、菜单、剪贴板和拖放
 │  ├─ collect/            # 文本、图片、文件映射、资源、收入取出与删除恢复
 │  ├─ host/               # 透明宿主、WebView2、DPI、命中图和接管
+│  ├─ render/             # 原生渲染核心：绘制指令、DIP/像素几何、Direct2D 绘制、DirectComposition 宿主
 │  ├─ persistence/        # 布局快照和备份
 │  ├─ command_bridge.rs    # 页面命令处理器类型（平台与命令边界的接缝）
 │  ├─ drop_bridge.rs       # 拖放用例端口与投放输入（平台与布局事务的接缝）
@@ -36,6 +37,11 @@ src-tauri/
 ```
 
 ## 关键边界
+
+- `render/` 是原生渲染路线的内核，与 WebView 宿主并存、互不依赖：`draw.rs` 只定义绘制指令（不含主题与业务语义），`geometry.rs` 是可单测的纯逻辑（DIP ↔ 物理像素、命中判定、工作区钳制），`painter.rs` 把指令落到 Direct2D/DirectWrite，`host.rs` 为每块显示器建一块透明 `WS_POPUP` 宿主（`WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP`）并在 `IDCompositionSurface` 上绘制。绘制目标必须与合成表面同源：由同一 DXGI 设备建出 `ID2D1Device`，再 `CreateBitmapFromDxgiSurface`。`desktop-tools.exe --native-surface-demo` 显示 5 秒绘制样例；`--native-surface-workspace` 只读已保存的工作区，逐屏绘制围栏、空格子外壳和桌面项目占位，约 8 秒后退出。不运行插件或读取缩略图，不接管 Explorer；没有布局文件则明确报错。`--native-surface-content` 在独立的内存投影中显示时钟、展开收集箱并绘制总数、读取已绑定城市的天气缓存；不请求天气、不写偏好。只有单屏、三类目标同属唯一旧屏且局部矩形均完整适配时，诊断才以旧屏作为当前屏别名；不更改正式投影。`--native-content-overflow-example` 只显示合成的省略号样例，不读取真实布局和业务数据。`input.rs` 是命中与焦点的纯逻辑：`workspace_scene::scene_blocks` 是**唯一排序点**（稳定按 `(z, priority)` 升序，焦点块整体移到末尾、内容与边框一起上移），绘制与命中消费同一个块列表，优先级与前端命中图一致（`workspace-background` 1 / 围栏 50 / 门户 60 / 组件本体 60 / `desktop-item` 70）；命中范围是「绘制矩形 ∩ 视口 ∩ 围栏内容框」，背景可命中但不可聚焦，Tab 与方向键只在非背景候选间移动，焦点只存内存。`--native-surface-input` 用脚本驱动这套逻辑，逐步输出光标、命中对象、区域与焦点迁移；`DESKTOP_NATIVE_INPUT_HOLD_MS` 调整每步保持时长。`menu.rs` 是桌面层右键菜单的原生弹层（`WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`，置顶、不抢焦点），度量取视觉规范（宽 232、圆角 6、内距 4、行高 28、图标列 16/24、正文 13），键盘走定向消息、鼠标悬停与点击、Esc/失活/菜单外点击关闭；`--native-surface-menu` 在自包含场景里演示打开、键盘选择、鼠标触发与四种关闭路径。可设置 `DESKTOP_NATIVE_SURFACE_REPORT` 指定诊断 JSON 输出路径。不加参数仍启动原有正式应用。
+- `--native-surface-input-live` 打开可激活的小窗口：居中，最多 900×560 DIP，裁剪显示主屏持久布局右上部分，不跨屏借用、不隐藏 Explorer。Windows 窗口过程接收输入后，沿用同一组命中和焦点函数；只在本窗口前台且有焦点时处理键鼠。Esc 或 60 秒超时退出，失焦清空临时焦点，DPI/显示环境变化则停止而不按旧比例继续命中。手工使用不投递任何探针消息。追加 `--verify-window-messages` 先不激活地显示并待命，300 秒内未激活就退出且零投递。只有演示窗口已是前台焦点且收到开始区点击或 F8，才定向 PostMessage 到本窗口；该测试验证消息链路，不是物理键鼠证据。
+- `--native-surface-input-fixture` 只在内存构建测试围栏、时钟壳与门户，复用上述窗口消息与生产命中/焦点路径，等待 300 秒内的显式开始信号。此模式不打开持久布局、偏好或配置定位文件；不能作为用户实际布局的呈现证据。
+- `desktop-tools.exe --native-desktop` 是显式的常驻**保护态**：与正式桌面共用单实例与 Explorer 层级附着；guardian 使用专有 `monitor-only` 握手，只等主进程退出或停止事件，绝不改 Explorer 图标可见性。不支持此协议的旧 guardian 会使启动失败，不降级到恢复模式；每屏 HWND 在隐藏状态下发布真实布局首帧。不启动 WebView 桌面、设置、浮岛或其他产品表面。没有 Shell 图像与交互命中时绝不隐藏 Explorer 项目，也不显示不可用外壳；不能作为完整桌面的替代。此进程仅接收 `desktop-tools.exe --desktop-menu exit` 正常退出，不注册产品菜单。检测到显示环境或附着父窗失效时安全停止，不热切换默认配置。
 
 - `component_runtime/mod.rs` 读 `manifest.ini` 的 `[plugin]`、`[tiles]` 与 `[tiles.size]` 三节：`[tiles]` 每行 `键 = 显示名`，按序保留、第一节为默认类型，空节、非法键、重复键都让整份清单进 `failures`；`[tiles.size]` 每行 `类型键 = 默认宽x高` 或 `类型键 = 默认宽x高, 最小宽x高`，只对已声明类型生效，未知键、非法尺寸与重复行记 WARN 后忽略，下发为 `tileTypes[].defaultSize` 与 `tileTypes[].minimumSize`。`contracts/component.rs` 的 `tile_type_bucket` 是计数归属的唯一口径：视图按实例 `state.tileType` 分桶，缺失时记到第一节，没有 `[tiles]` 的组件共用一个桶。`workspace/mod.rs` 在创建命令上做数量校验与类型级下限校验，`component_runtime::plugin_tile_limit_reached` 按同一口径逐类计数，`maxTiles` 因此是每类各自的上限；`create_plugin_component` 先校验类型是否在清单里，再把类型写进新实例的 `state`，并按该类型的默认尺寸（未声明时用公共默认尺寸、不低于有效下限）算创建边界。
 - `commands/weather.rs` 把凭据草稿类命令（临时城市搜索、验证城市、把验证通过的城市写入来源列表、保存与清除）保留给设置窗口，桌面 transport 另提供已保存凭据下的来源列表、某来源城市列表读写、按来源城市搜索与天气读取。`weather/source.rs` 定义来源标识与顺序；`weather/credentials.rs` 按来源各保存一条 Windows Credential Manager 记录（和风沿用既有应用级记录名，其他来源在其后追加来源标识）；`weather/mod.rs` 管理草稿、并发互斥、取消、保存门槛、来源列表与运行期可用状态、存活探测与按来源删除，运行期状态按来源索引：凭据记录名与 `weather-cities-<来源>.json` 城市列表文件按来源派生，配置代次、取消标记与退避记录都以来源为键，磁盘预报缓存仍按配置指纹与城市标识保存；`weather/provider.rs` 与 `weather/foreca.rs` 分别校验各自凭据、签发 JWT 或使用 Bearer 令牌、按来源校验城市与天气数据。网络任务只在用户操作时创建，禁止重定向，限制超时与响应大小；城市搜索结果和天气验证响应不落盘。天气格子在拖动缩放期间按实时尺寸切换布局，详情入口由前端公共标题栏提供；`weather/activity.rs` 负责展开实例的共享活动调度，并通过 `weather-forecast-changed` 通知预报更新。天气格子与收集箱一样由组件清单声明可创建、可移除，创建入口写入绑定标识并在同一链路开启天气功能开关。

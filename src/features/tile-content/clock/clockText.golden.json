@@ -1,0 +1,66 @@
+[
+  {
+    "name": "午夜24",
+    "ms": 1767283200000,
+    "hour12": false,
+    "seconds": true,
+    "zone": "Asia/Shanghai",
+    "expected": "00:00:00"
+  },
+  {
+    "name": "午夜12",
+    "ms": 1767283200000,
+    "hour12": true,
+    "seconds": false,
+    "zone": "Asia/Shanghai",
+    "expected": "上午12:00"
+  },
+  {
+    "name": "正午",
+    "ms": 1767326400000,
+    "hour12": true,
+    "seconds": true,
+    "zone": "Asia/Shanghai",
+    "expected": "下午12:00:00"
+  },
+  {
+    "name": "夜间无秒",
+    "ms": 1767359348000,
+    "hour12": false,
+    "seconds": false,
+    "zone": "Asia/Shanghai",
+    "expected": "21:09"
+  },
+  {
+    "name": "缺源null",
+    "ms": null,
+    "hour12": false,
+    "seconds": false,
+    "zone": "Asia/Shanghai",
+    "expected": "--:--:--"
+  },
+  {
+    "name": "缺源0",
+    "ms": 0,
+    "hour12": true,
+    "seconds": true,
+    "zone": "Asia/Shanghai",
+    "expected": "--:--:--"
+  },
+  {
+    "name": "DST跳时前",
+    "ms": 1772953199000,
+    "hour12": true,
+    "seconds": true,
+    "zone": "America/New_York",
+    "expected": "上午01:59:59"
+  },
+  {
+    "name": "DST跳时后",
+    "ms": 1772953200000,
+    "hour12": false,
+    "seconds": true,
+    "zone": "America/New_York",
+    "expected": "03:00:00"
+  }
+]

@@ -1,3 +1,4 @@
+import { clockText } from "./clockText";
 import { useEffect, useState } from "react";
 import { listenComponentHostEvents } from "../../../bridge/components";
 import type { ComponentInstanceSnapshot, ComponentRegistrationSnapshot } from "../../../contracts/component";
@@ -61,14 +62,7 @@ const LocalClock = ({
         };
     }, [instance.instanceId, monitorId, visible, paused, canReadTime]);
 
-    const text = unixMillis
-        ? new Intl.DateTimeFormat("zh-CN", {
-              hour: "2-digit",
-              minute: "2-digit",
-              second: preferences?.clockShowSeconds === false ? undefined : "2-digit",
-              hour12,
-          }).format(new Date(unixMillis))
-        : "--:--:--"; // 当前组件显示的宿主时间文本。
+    const text = clockText(unixMillis, hour12, preferences?.clockShowSeconds !== false);
 
     return (
         <>

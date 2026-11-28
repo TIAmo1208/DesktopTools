@@ -1124,6 +1124,22 @@ fn register_host_class() -> Result<(), String>
     Ok(())
 }
 
+impl ShellDesktopState
+{
+    /// 未就绪的原生子窗只能在隐藏状态下使用与正式宿主相同的附着定位路径。
+    pub(crate) fn attach_hidden(self, hwnd: HWND, monitor: &DesktopHostMonitor) -> Result<(), String>
+    {
+        if self.explorer_host == 0 || self.def_view == 0 || unsafe { GetParent(raw_hwnd(self.def_view)) }.ok() != Some(raw_hwnd(self.explorer_host))
+        {
+            return Err("Explorer 桌面层已失效，拒绝附着".into());
+        }
+        if unsafe { IsWindowVisible(hwnd) }.as_bool()
+        {
+            return Err("未就绪宿主必须隐藏后再附着".into());
+        }
+        attach_host(hwnd.0 as isize, self, monitor)
+    }
+}
 /// 将正式宿主附着到 Explorer 图标宿主并定位到工作区。
 fn attach_host(hwnd: isize, shell: ShellDesktopState, monitor: &DesktopHostMonitor) -> Result<(), String>
 {

@@ -147,22 +147,29 @@ pub struct DesktopHostRuntime
     data: Mutex<DesktopHostRuntimeData>,
 }
 
+/// 两种桌面宿主共用 Explorer 发现及独立 guardian 握手，不满足恢复前提则不开窗。
+pub(crate) fn open_guarded_desktop(mode: crate::recovery::GuardianMode) -> Result<(ShellDesktopState, GuardianProcess), String>
+{
+    // 接管前 Explorer 桌面层状态。
+    let shell = discover_shell_desktop()?;
+    // guardian 可执行文件路径。
+    let guardian_path = std::env::current_exe().map_err(|error| format!("读取主程序路径失败: {error}"))?.parent().ok_or_else(|| "主程序路径缺少父目录".to_string())?.join("desktop-tools-guardian.exe");
+    if !guardian_path.is_file()
+    {
+        return Err(format!("缺少 guardian 可执行文件: {}", guardian_path.display()));
+    }
+    // 已完成握手的独立 guardian。
+    let guardian = GuardianProcess::start(&guardian_path, std::process::id(), shell, mode)?;
+    Ok((shell, guardian))
+}
+
 /// 提供正式宿主启动、命中图发布、接管和恢复能力。
 impl DesktopHostRuntime
 {
     /// 创建正式宿主、启动 guardian 并导航 React 页面。
     pub fn start(app: &AppHandle) -> Result<Arc<Self>, String>
     {
-        // 接管前 Explorer 桌面层状态。
-        let shell = discover_shell_desktop()?;
-        // guardian 可执行文件路径。
-        let guardian_path = std::env::current_exe().map_err(|error| format!("读取主程序路径失败: {error}"))?.parent().ok_or_else(|| "主程序路径缺少父目录".to_string())?.join("desktop-tools-guardian.exe");
-        if !guardian_path.is_file()
-        {
-            return Err(format!("缺少 guardian 可执行文件: {}", guardian_path.display()));
-        }
-        // 已完成握手的独立 guardian。
-        let guardian = GuardianProcess::start(&guardian_path, std::process::id(), shell)?;
+        let (shell, guardian) = open_guarded_desktop(crate::recovery::GuardianMode::Takeover)?;
         // 页面命令处理器等待的正式宿主运行时。
         let runtime_slot = Arc::new(OnceLock::<Arc<Self>>::new());
         // 正式宿主页面调用的命令处理器。
