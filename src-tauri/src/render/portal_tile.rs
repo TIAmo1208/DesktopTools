@@ -610,4 +610,57 @@ mod tests
             }
         }
     }
+
+    /// 提示带只为「真溢出」预留：240×260 下 3 / 6 / 10 条的成对读数（可视数 / 溢出数）。
+    #[test]
+    fn hint_reserved_only_on_real_overflow()
+    {
+        let content = Rect::new(0.0, 0.0, 240.0, 260.0);
+        // (条目数, 可视数, 溢出数)：3 = 装不满、6 = 恰好装满、10 = 真溢出。
+        for (items, visible, overflow) in [(3usize, 6usize, 0usize), (6, 6, 0), (10, 3, 7)]
+        {
+            let layout = layout_for(PortalLayoutKind::Compact, content, PortalState::Ready, items).expect("应放行");
+            assert_eq!((layout.visible, overflow_count(&layout, items)), (visible, overflow), "{items} 条读数不符");
+            assert!(!layout.degraded, "{items} 条不应降级");
+            assert_eq!(layout.hint.height > 0.0, overflow > 0, "{items} 条的提示带预留不符");
+        }
+        // 真溢出：提示带压掉一行，绘制只发可视条目 + 「还有 N 项」。
+        let layout = layout_for(PortalLayoutKind::Compact, content, PortalState::Ready, 10).expect("应放行");
+        let data = view(10, PortalState::Ready);
+        let list = draw(&data, &layout, style());
+        let texts: Vec<&str> = list.commands().iter().filter_map(|command| match command { DrawCommand::Text { text, .. } => Some(text.as_str()), _ => None }).collect();
+        assert_eq!(grid_cells(&layout, data.items.len()).len(), 3, "只画可视的 3 条");
+        assert!(texts.contains(&"还有 7 项"), "缺少溢出标记：{texts:?}");
+    }
+
+    /// 空列表与读取中不预留提示带：即便条目数多于容量。
+    #[test]
+    fn empty_and_loading_never_reserve_hint()
+    {
+        let content = Rect::new(0.0, 0.0, 240.0, 260.0);
+        for state in [PortalState::Empty, PortalState::Loading]
+        {
+            let layout = layout_for(PortalLayoutKind::Compact, content, state, 10).expect("应放行");
+            assert_eq!(layout.hint.height, 0.0, "{state:?} 不应预留提示带");
+            assert_eq!(layout.visible, 6, "{state:?} 保持两行容量");
+            assert!(!layout.degraded);
+        }
+    }
+
+    /// 最小盒（84×162）：单条显式放行；放不下提示带时降级保留整行，而不是拒绝或排 0 行。
+    #[test]
+    fn minimal_box_releases_and_degrades_without_hint()
+    {
+        let content = Rect::new(0.0, 0.0, 84.0, 162.0);
+        let single = layout_for(PortalLayoutKind::Compact, content, PortalState::Ready, 1).expect("84×162 单条应放行");
+        assert_eq!((single.columns, single.rows, single.visible), (1, 1, 1));
+        assert_eq!(single.hint.height, 0.0, "未溢出不留提示带");
+        assert!(!single.degraded);
+        assert!(layout_for(PortalLayoutKind::Compact, Rect::new(0.0, 0.0, 84.0, 146.0), PortalState::Ready, 1).is_err(), "84×146 必须拒绝");
+        // 2 条：整行 + 提示带（需 178.8）放不下 → 降级保留整行。
+        let degraded = layout_for(PortalLayoutKind::Compact, content, PortalState::Ready, 2).expect("放不下提示带应降级放行");
+        assert!(degraded.degraded, "应标记降级");
+        assert_eq!((degraded.rows, degraded.visible), (1, 1), "仍保留一整行");
+        assert_eq!(degraded.hint.height, 0.0, "降级时不留提示带");
+    }
 }
