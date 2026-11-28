@@ -1,7 +1,7 @@
 //! `render_tree::host` 单测：内联 ESM 插件、浏览器能力隔离、上限拒绝与错误传播。
 
 use super::error::RenderTreeError;
-use super::host::{DEFAULT_ENTRY, TileRender, TileRequest, render_tile};
+use super::host::{DEFAULT_ENTRY, TileEvent, TileRender, TileRequest, render_tile};
 use super::node::LimitReason;
 
 /// 一个只读状态格子的最小 ESM 插件。
@@ -221,4 +221,20 @@ export default function render() {
         RenderTreeError::Script { detail } => assert!(detail.contains("不支持的类型"), "{detail}"),
         other => panic!("错误类型不符：{other:?}"),
     }
+}
+
+/// 入口函数能读到宿主回传的交互事件；不再有点击时为空数组。
+#[test]
+fn passes_pending_events_to_entry()
+{
+    const ECHO: &str = r#"
+export default function render(input) {
+    const actions = (input.events || []).map((event) => event.action).join(",");
+    return { type: "text", text: actions || "none", tone: "--fence-text" };
+}
+"#;
+    let quiet = render_tile(ECHO, "echo.js", DEFAULT_ENTRY, &TileRequest::new("tile-1", "echo")).expect("应成功");
+    match quiet { TileRender::Tree { tree, .. } => assert_eq!(tree.text.as_deref(), Some("none")), other => panic!("应渲染：{other:?}") }
+    let clicked = render_tile(ECHO, "echo.js", DEFAULT_ENTRY, &TileRequest::new("tile-1", "echo").with_events(vec![TileEvent::new("refresh"), TileEvent::new("open")])).expect("应成功");
+    match clicked { TileRender::Tree { tree, .. } => assert_eq!(tree.text.as_deref(), Some("refresh,open"), "事件顺序必须保留"), other => panic!("应渲染：{other:?}") }
 }

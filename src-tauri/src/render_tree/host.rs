@@ -22,6 +22,20 @@ const CONVERT_OBJECT_LIMIT: usize = MAX_NODES * 4 + 64;
 /// JS→JSON 转换阶段的嵌套上限（同时兜住循环引用）。
 const CONVERT_DEPTH_LIMIT: usize = 128;
 
+/// 宿主回传给插件的一次交互事件（点击了哪个动作区）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TileEvent
+{
+    /// 被点击节点声明的动作标识（与布局给出的 `ActionHit::action` 同源）。
+    pub action: String,
+}
+
+impl TileEvent
+{
+    /// 构造一次点击事件。
+    pub fn new(action: impl Into<String>) -> Self { Self { action: action.into() } }
+}
+
 /// 调用入口函数时传给插件的实例信息。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TileRequest
@@ -30,12 +44,17 @@ pub struct TileRequest
     pub instance_id: String,
     /// 格子类型（插件自定义，宿主透传）。
     pub tile_type: String,
+    /// 本次渲染前宿主收到、尚未消费的交互事件；插件据此在同一棵树里表达状态变化。
+    pub events: Vec<TileEvent>,
 }
 
 impl TileRequest
 {
-    /// 构造实例信息。
-    pub fn new(instance_id: impl Into<String>, tile_type: impl Into<String>) -> Self { Self { instance_id: instance_id.into(), tile_type: tile_type.into() } }
+    /// 构造实例信息（无待处理事件）。
+    pub fn new(instance_id: impl Into<String>, tile_type: impl Into<String>) -> Self { Self { instance_id: instance_id.into(), tile_type: tile_type.into(), events: Vec::new() } }
+
+    /// 带上待处理的交互事件。
+    pub fn with_events(mut self, events: Vec<TileEvent>) -> Self { self.events = events; self }
 }
 
 /// 一次渲染的结果。
@@ -76,6 +95,15 @@ fn render_in_context<'js>(ctx: &Ctx<'js>, module_source: &str, module_name: &str
     let input = Object::new(ctx.clone()).map_err(|error| describe_js_error(ctx, error))?;
     input.set("instanceId", request.instance_id.as_str()).map_err(|error| describe_js_error(ctx, error))?;
     input.set("tileType", request.tile_type.as_str()).map_err(|error| describe_js_error(ctx, error))?;
+    // 交互事件按数组透传：插件用纯函数表达「收到哪些点击」，不需要宿主回调。
+    let events = Array::new(ctx.clone()).map_err(|error| describe_js_error(ctx, error))?;
+    for (index, event) in request.events.iter().enumerate()
+    {
+        let item = Object::new(ctx.clone()).map_err(|error| describe_js_error(ctx, error))?;
+        item.set("action", event.action.as_str()).map_err(|error| describe_js_error(ctx, error))?;
+        events.set(index, item).map_err(|error| describe_js_error(ctx, error))?;
+    }
+    input.set("events", events).map_err(|error| describe_js_error(ctx, error))?;
     let value: Value<'js> = function.call((input,)).map_err(|error| describe_js_error(ctx, error))?;
     complete_tile_render(ctx, value, module_name, &request.instance_id)
 }

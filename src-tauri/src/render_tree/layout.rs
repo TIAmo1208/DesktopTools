@@ -73,11 +73,34 @@ pub fn layout(tree: &Node, width: f32, height: f32) -> DrawList
 }
 
 /// 按给定矩形与文本度量布局整棵树。
-pub fn layout_in(tree: &Node, bounds: Rect, metrics: TextMetrics) -> DrawList
+pub fn layout_in(tree: &Node, bounds: Rect, metrics: TextMetrics) -> DrawList { layout_detailed(tree, bounds, metrics).draw }
+
+/// 一个可交互区域的命中矩形（节点声明 `action` 后由**同一次布局**给出）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionHit
 {
-    let mut engine = LayoutEngine { metrics, primitives: Vec::new(), paths: Vec::new() }; // 单次布局的累计状态。
+    /// 节点声明的动作标识，原样回传给插件。
+    pub action: String,
+    /// 命中矩形（内容盒局部 DIP）。
+    pub rect: Rect,
+    /// 节点路径（根为 `$`），用于日志与报错定位。
+    pub path: String,
+}
+
+/// 布局结果：绘制列表与可交互区域来自同一次布局，命中不会与绘制漂移。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayoutResult
+{
+    pub draw: DrawList,
+    pub actions: Vec<ActionHit>,
+}
+
+/// 按给定矩形与文本度量布局整棵树，同时收集可交互区域。
+pub fn layout_detailed(tree: &Node, bounds: Rect, metrics: TextMetrics) -> LayoutResult
+{
+    let mut engine = LayoutEngine { metrics, primitives: Vec::new(), paths: Vec::new(), actions: Vec::new() }; // 单次布局的累计状态。
     engine.place(tree, bounds, "$");
-    DrawList::from_entries(engine.primitives, engine.paths)
+    LayoutResult { draw: DrawList::from_entries(engine.primitives, engine.paths), actions: engine.actions }
 }
 
 struct LayoutEngine
@@ -86,6 +109,8 @@ struct LayoutEngine
     primitives: Vec<Primitive>,
     /// 与 `primitives` 一一对应的节点路径（根为 `$`），供适配层报错时定位到节点。
     paths: Vec<String>,
+    /// 可交互区域：声明了 `action` 的可见节点，按绘制顺序排列。
+    actions: Vec<ActionHit>,
 }
 
 /// 单个子节点在父容器里的尺寸与弹性权重。
@@ -266,6 +291,14 @@ impl LayoutEngine
         if !Self::visible(node)
         {
             return;
+        }
+        // 交互命中：与绘制同一次遍历产生，尺寸为 0 的节点不会成为命中区。
+        if let Some(action) = &node.action
+        {
+            if rect.width > 0.0 && rect.height > 0.0
+            {
+                self.actions.push(ActionHit { action: action.clone(), rect, path: path.to_string() });
+            }
         }
         let opacity = node.style.opacity.unwrap_or(1.0); // 1 以外需要包一层透明度栈。
         if opacity < 1.0

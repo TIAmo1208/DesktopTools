@@ -238,3 +238,17 @@ fn fallback_node_is_valid_tree()
     assert_eq!(parsed.stats.nodes, 1);
     assert!(parsed.tree.expect("有树").text.expect("有文本").contains("超出渲染上限"));
 }
+
+/// `action` 是交互动作标识：会被原样带回宿主，必须有界且非空白。
+#[test]
+fn action_identifier_is_bounded_and_non_blank()
+{
+    let ok = json!({ "type": "text", "text": "刷新", "action": "refresh" });
+    let node = parse_tree(&ok).expect("应通过").tree.expect("有树");
+    assert_eq!(node.action.as_deref(), Some("refresh"));
+    for bad in [json!({ "type": "text", "text": "刷新", "action": "   " }), json!({ "type": "text", "text": "刷新", "action": "" }), json!({ "type": "text", "text": "刷新", "action": "x".repeat(65) })]
+    {
+        let error = parse_tree(&bad).expect_err("必须拒绝");
+        assert!(matches!(error, RenderTreeError::InvalidValue { field: "action", .. }), "错误字段应是 action：{error:?}");
+    }
+}

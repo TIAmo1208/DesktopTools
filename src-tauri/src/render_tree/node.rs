@@ -21,6 +21,8 @@ pub const MAX_DEPTH: usize = 32;
 const MAX_TEXT_CHARS: usize = 4096;
 /// 单个节点 key 的最大字符数。
 const MAX_KEY_CHARS: usize = 64;
+/// 单个节点交互动作标识的最大字符数。
+const MAX_ACTION_CHARS: usize = 64;
 /// 单条数值序列（`values`）的最大长度。
 const MAX_VALUES: usize = 256;
 
@@ -301,6 +303,9 @@ pub struct Node
     pub kind: NodeKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// 交互动作标识：宿主把该节点的矩形当作命中区，点击时以事件回传给插件。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -318,10 +323,10 @@ pub struct Node
 impl Node
 {
     /// 构造文本节点（内置内容与单测用）。
-    pub fn text(text: impl Into<String>) -> Self { Self { kind: NodeKind::Text, key: None, text: Some(text.into()), tone: None, value: None, values: Vec::new(), style: Style::default(), children: Vec::new() } }
+    pub fn text(text: impl Into<String>) -> Self { Self { kind: NodeKind::Text, key: None, action: None, text: Some(text.into()), tone: None, value: None, values: Vec::new(), style: Style::default(), children: Vec::new() } }
 
     /// 构造容器节点（内置内容与单测用）。
-    pub fn container(kind: NodeKind, children: Vec<Node>) -> Self { Self { kind, key: None, text: None, tone: None, value: None, values: Vec::new(), style: Style::default(), children } }
+    pub fn container(kind: NodeKind, children: Vec<Node>) -> Self { Self { kind, key: None, action: None, text: None, tone: None, value: None, values: Vec::new(), style: Style::default(), children } }
 
     /// 统计整棵树的节点数与深度（根为 1），用于宿主自检与日志。
     pub fn measure_stats(&self) -> TreeStats
@@ -402,7 +407,7 @@ impl ParsedTree
 }
 
 /// 契约白名单：节点级字段。
-const NODE_FIELDS: &[&str] = &["type", "key", "text", "tone", "value", "values", "children"];
+const NODE_FIELDS: &[&str] = &["type", "key", "action", "text", "tone", "value", "values", "children"];
 
 /// 契约白名单：样式子集字段（扁平写在节点上）。
 const STYLE_FIELDS: &[&str] = &["gap", "padding", "align", "justify", "width", "height", "minWidth", "radius", "background", "border", "borderWidth", "opacity", "size", "weight", "mono", "truncateLines", "textAlign", "columns", "visible"];
@@ -476,6 +481,15 @@ impl Parser
             }
         }
 
+        let action = optional_string(object, "action", path)?;
+        if let Some(action) = &action
+        {
+            if action.trim().is_empty() || action.chars().count() > MAX_ACTION_CHARS
+            {
+                return Err(RenderTreeError::InvalidValue { path: path.to_string(), field: "action", detail: format!("长度必须在 1–{MAX_ACTION_CHARS} 字符之间且不能为空白") });
+            }
+        }
+
         let text = optional_text(object, "text", path)?;
         let tone = optional_token(object, "tone", path)?;
         let value = optional_ratio(object, "value", path)?;
@@ -514,7 +528,7 @@ impl Parser
             }
         }
 
-        Ok(Some(Node { kind, key, text, tone, value, values, style, children }))
+        Ok(Some(Node { kind, key, action, text, tone, value, values, style, children }))
     }
 
     /// 解析并校验 `type` 字段。

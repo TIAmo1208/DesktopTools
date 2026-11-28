@@ -1,7 +1,7 @@
 //! `render_tree::layout` 单测：Column/Row 嵌套、固定与弹性尺寸、gap、padding、截断行数。
 
 use super::draw::{DrawList, Primitive};
-use super::layout::{TextMetrics, layout};
+use super::layout::{TextMetrics, layout, layout_detailed};
 use super::node::{Dimension, FlexWeight, Node, NodeKind};
 use super::tokens::ThemeToken;
 
@@ -193,4 +193,40 @@ fn opacity_and_clip_stacks_are_balanced()
     assert!(list.is_balanced(), "栈应配对：{:?}", list.validate());
     assert!(matches!(list.primitives().first(), Some(Primitive::PushOpacity { .. })));
     assert!(matches!(list.primitives().last(), Some(Primitive::PopOpacity)));
+}
+
+/// 交互命中：声明 `action` 的可见节点按**同一次布局**产出命中矩形；隐藏与零尺寸节点不产出。
+#[test]
+fn action_nodes_produce_hit_rects()
+{
+    let mut button = fixed_text("刷新", Some(120.0), Some(24.0));
+    button.action = Some("refresh".to_string());
+    let mut hidden = fixed_text("隐藏", Some(120.0), Some(24.0));
+    hidden.action = Some("ghost".to_string());
+    hidden.style.visible = Some(false);
+    let mut empty = fixed_text("零高", Some(120.0), Some(0.0));
+    empty.action = Some("empty".to_string());
+    let root = Node::container(NodeKind::Column, vec![button, hidden, empty]);
+    let result = layout_detailed(&root, super::draw::Rect::new(0.0, 0.0, 120.0, 200.0), TextMetrics::default());
+    assert_eq!(result.actions.len(), 1, "只有可见且有高度的节点成为命中区");
+    let hit = &result.actions[0];
+    assert_eq!(hit.action, "refresh", "动作标识原样保留");
+    assert_eq!(hit.path, "$.children[0]", "命中区带节点路径");
+    assert!((hit.rect.width - 120.0).abs() < 0.01 && (hit.rect.height - 24.0).abs() < 0.01, "命中矩形与该节点绘制矩形一致：{:?}", hit.rect);
+    // 命中区与绘制同源：文本图元与命中区矩形重合。
+    let text = text_primitive(&result.draw, "刷新");
+    assert_rect(text, hit.rect.x, hit.rect.y, hit.rect.width, hit.rect.height);
+}
+
+/// 容器同样可以整体作为命中区（列表项整行点击），命中区覆盖容器内容盒。
+#[test]
+fn container_action_covers_its_box()
+{
+    let mut row = Node::container(NodeKind::Row, vec![fixed_text("甲", Some(60.0), Some(20.0)), fixed_text("乙", Some(60.0), Some(20.0))]);
+    row.action = Some("open-item".to_string());
+    let result = layout_detailed(&row, super::draw::Rect::new(10.0, 20.0, 200.0, 40.0), TextMetrics::default());
+    assert_eq!(result.actions.len(), 1);
+    let hit = &result.actions[0];
+    assert_eq!(hit.path, "$", "根节点路径为 $");
+    assert!((hit.rect.x - 10.0).abs() < 0.01 && (hit.rect.y - 20.0).abs() < 0.01 && (hit.rect.width - 200.0).abs() < 0.01 && (hit.rect.height - 40.0).abs() < 0.01, "容器命中区是其盒子：{:?}", hit.rect);
 }
