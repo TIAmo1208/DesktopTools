@@ -56,6 +56,12 @@ const ensureDesktopSettingsDispatch = () => {
 /** 读取一份插件设置；没有文件时为 null。 */
 export const getPluginSettings = (pluginId: string) => invokeRuntime<unknown>("get_plugin_settings", { pluginId });
 
+/** 并发写接口固定插件身份；设置窗不需要实例，桌面与浮岛还要交给宿主核验实例归属。 */
+export const pluginSafeSettings = (pluginId: string, instanceId?: string) => ({
+    readSettings: () => invokeRuntime<unknown>("get_plugin_settings_for_update", { pluginId, instanceId }),
+    compareAndSaveSettings: (expected: unknown, value: unknown) => invokeRuntime<boolean>("compare_and_swap_plugin_settings", { pluginId, instanceId, expected, value }),
+});
+
 /** 保存一份插件设置；成功后由事件通知各屏幕重读。 */
 export const savePluginSettings = (pluginId: string, value: unknown) => invokeRuntime<void>("save_plugin_settings", { pluginId, value });
 

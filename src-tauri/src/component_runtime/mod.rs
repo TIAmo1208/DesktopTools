@@ -82,6 +82,9 @@ impl ComponentRuntimeState
 
     fn catalog(&self) -> std::sync::MutexGuard<'_, ComponentCatalog> { self.catalog.lock().unwrap_or_else(|error| error.into_inner()) }
 
+    /// 单插件查询不改写当前工作区的实例注册集合。
+    pub(crate) fn manifest(&self, id: &str) -> Option<ComponentManifest> { self.catalog().manifests.get(id).cloned() }
+
     /// 返回成功注册清单对应的默认插件实例。
     pub fn default_instances(&self) -> Vec<ComponentInstanceSnapshot>
     {
@@ -184,6 +187,7 @@ impl ComponentRuntimeState
             ComponentCapability::PluginCredential => json!({}), // 凭据只写不读，能力调用不返回任何明文。
             ComponentCapability::PublishIslandMessage => json!({}), // 投递结果经事件与消息投影交付。
             ComponentCapability::OpenUri => json!({}), // 打开结果只报告成功或结构化错误。
+            ComponentCapability::PluginWindow => json!({}), // 窗口操作只走专用的实例门禁。
             ComponentCapability::PluginCredentialExchange => json!({}), // 兑换由专用命令完成，秘密不进入能力返回值。
         }; // 当前授权能力的最小结构化结果。
         Ok(ComponentCapabilityResult { instance_id: instance_id.to_string(), capability, payload })

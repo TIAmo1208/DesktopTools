@@ -1,3 +1,6 @@
+/** 本地插件资源只接受未编码的相对片段，拒绝 URL、反斜杠或能改变解析结果的字符。 */
+export const pluginAssetPath = (path: string) => Boolean(path) && !/[\\:%?#\u0000-\u001f\u007f]/.test(path) && path.split("/").every((part) => part && part !== "." && part !== "..");
+
 /** 目标文件夹已有插件时的版本比较。 */
 export interface PluginInstallConflict {
     installedVersion: string; // 已安装版本。

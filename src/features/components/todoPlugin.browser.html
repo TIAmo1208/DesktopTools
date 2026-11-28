@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+    <meta charset="utf-8" /><title>待办插件浏览器断言</title>
+    <body>
+        <main id="fixture" class="fence-workspace" style="width:380px;height:520px"></main>
+        <pre id="result">RUNNING</pre>
+        <script type="module">
+            import "../../styles/global.css";
+            import "../../styles/fenceTokens.css";
+            import { newTask, newSubtask, readState } from "../../../plugin/待办/model.js";
+
+            const fixture = document.querySelector("#fixture"); // 宿主只提供容器与真实令牌，不给被测行覆盖样式。
+            const result = document.querySelector("#result");
+            const assert = (condition, why) => { if (!condition) throw new Error(why); };
+            const all = (root, selector) => [...root.querySelectorAll(selector)];
+            const must = (root, selector) => { const node = root.querySelector(selector); assert(node, `缺少 ${selector}`); return node; };
+            const box = node => node.getBoundingClientRect();
+            const visible = node => node != null && box(node).width > 0 && box(node).height > 0 && getComputedStyle(node).visibility !== "hidden";
+            /** 等实际回写、CSS 生效或重排；不到预期立即报出当前场景，不以固定延时当作成功。 */
+            async function until(test, why) {
+                const end = performance.now() + 5000;
+                while (!test()) {
+                    assert(performance.now() < end, `等待超时：${why}`);
+                    await new Promise(resolve => setTimeout(resolve, 20));
+                }
+            }
+            /** 12 个逾期父项，其中第一个有子项；每个收起档位都必须可观察到裁切。 */
+            function sample() {
+                const state = readState(null), now = Date.now();
+                state.tags = ["发布", "评审"];
+                state.tasks = Array.from({length:12}, (_, i) => ({ ...newTask(state, now), id:`t${i}`, title:i ? `任务 ${i}` : "交付方案评审", severity:"medium", dueAt:now - (20-i)*60000 }));
+                state.tasks[0].subtasks = [{...newSubtask(state.tasks[0]), id:"s0", title:"核对预算口径", tags:["评审"], dueAt:now + 7200000}];
+                return state;
+            }
+            /** 只模拟有版本条件的持久化、事件与开窗请求；测试页面不持有真实原生桥、偏好或任务。 */
+            function host(initial = sample()) {
+                let state = structuredClone(initial), rejectWrites = false;
+                const changed = new Set(), folded = new Set(), opened = [];
+                const subscribe = (listeners, callback) => { listeners.add(callback); return () => listeners.delete(callback); };
+                const broadcast = () => changed.forEach(f => f(structuredClone(state)));
+                return {
+                    opened, get state() { return state; },
+                    failWrites: on => { rejectWrites = on; },
+                    setCount: n => { state.prefs.collapsedCount = n; broadcast(); },
+                    setFold: foldedState => folded.forEach(f => f(foldedState)),
+                    context: {
+                        pluginId:"plugin.todo", instanceId:"tile.todo", tileType:"list", collapsed:false,
+                        get settings() { return structuredClone(state); }, readSettings:async () => structuredClone(state),
+                        async compareAndSaveSettings(expected, next) {
+                            if (rejectWrites) throw new Error("模拟写入失败");
+                            if (JSON.stringify(expected) !== JSON.stringify(state)) return false;
+                            state = structuredClone(next); broadcast(); return true;
+                        },
+                        onSettingsChanged: f => subscribe(changed, f), onCardCollapsedChanged: f => subscribe(folded, f),
+                        openWindow: async request => { opened.push(request); }, publishIslandMessage:async () => {},
+                        closeWindow:async () => {}, onBeforeClose: () => () => {},
+                    },
+                };
+            }
+            const buttons = (root, text) => all(root,"button").filter(b => (b.textContent.trim()===text || b.getAttribute("aria-label")===text) && visible(b));
+            const parentRow = id => must(fixture, `.todo-row[data-task-id="${id}"]:not([data-child-id])`);
+            const subRow = () => must(fixture, '.todo-row[data-child-id="s0"]');
+            let cleanup, surface = "载入真实待办入口";
+            function clear() { cleanup?.(); cleanup = undefined; fixture.replaceChildren(); }
+            try {
+                // 指向工作树中的生产入口，避免 CI 误读旧 build/target/debug/plugin。CSS 由正式插件的入口装载。
+                const { default: api } = await import("../../../plugin/待办/index.js");
+                surface = "桌面父子列表";
+                let memory = host();
+                cleanup = api.renderTile(fixture, memory.context);
+                await until(() => visible(fixture.querySelector('[data-child-id="s0"] .todo-title')), "任务与子任务挂载");
+                for (const width of [380, 280]) {
+                    fixture.style.width = width + "px";
+                    const child = subRow(), title = must(child,".todo-title"), tags = must(child,".todo-tags"), time = must(child,".todo-time");
+                    await until(() => [title,tags,time].every(visible) && fixture.scrollWidth <= width + 1, `${width} DIP 布局无横溢`);
+                    assert(tags.textContent.includes("评审") && time.textContent.trim(), "不应以隐藏必要字段换取窄版");
+                    assert(visible(must(child,'.todo-dot[aria-label]')) && visible(must(child,'input[type=checkbox]')), "子行缺少可识别的优先级或勾选控件");
+                    if (width===280) await until(() => Math.min(box(tags).top,box(time).top) >= box(title).bottom-1, "窄版标签与时间转到第二行");
+                }
+                const openParent = must(parentRow("t0"),'button[data-button="row-hit"]'); openParent.click();
+                await until(() => memory.opened.length===1,"桌面正文开窗");
+                assert(memory.opened[0].windowKey==="t0" && memory.state.tasks[0].completedAt===null,"点正文不能完成父任务");
+                must(subRow(),'input[type=checkbox]').click();
+                await until(() => memory.state.tasks[0].subtasks[0].done,"子任务完成持久化");
+                assert(memory.state.tasks[0].completedAt===null && memory.opened.length===1,"勾选子任务不能完成父任务或额外开窗");
+                clear();
+
+                surface = "浮岛 hover 独立命中";
+                fixture.style.width="400px";memory = host();
+                const island = {...memory.context,instanceId:"island.plugin.todo",setIslandSummary:()=>{}};
+                cleanup = api.renderIslandHover(fixture,island);
+                const bodyHit = 'button[data-button="row-hit"]';
+                const noChildren=parentRow("t1");
+                assert(!noChildren.textContent.includes("无子任务") && !visible(noChildren.querySelector(".todo-progress")), "无子任务行不可占一行空摘要");
+                assert(all(fixture,bodyHit).length===3 && all(fixture,'input[type=checkbox]').length===3,"hover 应列 3 个父项，各有完成与正文");
+                assert(all(fixture,'button').filter(visible).every(b => b.matches(bodyHit)),"hover 不得额外出现编辑、新建或菜单按钮");
+                must(noChildren,bodyHit).click();
+                await until(()=>memory.opened.length===1,"hover 正文开窗");
+                assert(memory.opened[0].windowKey==="t1" && memory.state.tasks[1].completedAt===null,"hover 正文打开错误任务或同时触发完成");
+                memory.failWrites(true);must(parentRow("t0"),'input[type=checkbox]').click();
+                await until(()=>visible(parentRow("t0").querySelector('[role=alert]')),"写入失败保留行并原位报错");
+                assert(memory.state.tasks[0].completedAt===null,"写入失败不得假完成");
+                memory.failWrites(false);must(parentRow("t0"),'input[type=checkbox]').click();
+                await until(()=> memory.state.tasks[0].completedAt!==null && !fixture.querySelector('.todo-row[data-task-id="t0"]'),"完成成功后移除提醒");
+                assert(memory.opened.length===1,"勾选重试不得开窗");clear();
+
+                surface = "浮岛收起按父任务计数";
+                memory=host();cleanup=api.renderTile(fixture,{...memory.context,instanceId:"island.plugin.todo",setIslandSummary:()=>{},cardCollapsed:true});
+                const parents=()=> all(fixture,'.todo-row[data-task-id]:not([data-child-id])');
+                for (const n of [3,5,10]) {
+                    memory.setCount(n);
+                    await until(()=>parents().length===n && !fixture.querySelector('[data-child-id]'),`收起 ${n} 个父任务，不计子项`);
+                }
+                memory.setFold(false);
+                await until(()=>parents().length===12 && visible(fixture.querySelector('[data-child-id="s0"]')),"展开不能受收起档位限制");
+                assert(!fixture.querySelector('button,input,select,textarea,a[href]'),"展开卡正文应只读，卡头是宿主职责");clear();
+
+                surface = "编辑窗字段及保存重试";
+                fixture.classList.remove("fence-workspace");fixture.style.width="720px";fixture.style.height="720px";
+                memory=host();cleanup=api.renderWindow(fixture,{...memory.context,view:"task",windowKey:"new",data:{}});
+                await until(()=>fixture.querySelector('[aria-label="任务标题"]')===document.activeElement && document.activeElement!==null,"新建标题初始焦点");
+                assert(!buttons(fixture,"删除待办").length,"新建草稿不显示删除命令");clear();
+                cleanup=api.renderWindow(fixture,{...memory.context,view:"task",windowKey:"t0",data:{taskId:"t0"}});
+                const title=must(fixture,'[aria-label="任务标题"]');
+                assert(title.value==="交付方案评审" && must(fixture,'[aria-label="子任务标题"]').value==="核对预算口径","编辑窗载入了错误的任务");
+                assert(must(fixture,'[aria-label="到期时间"]').type==="datetime-local" && must(fixture,'[aria-label="提醒时间"]').type==="datetime-local","任务时间字段必须保留时刻");
+                memory.failWrites(true);title.value="已修改的评审标题";title.dispatchEvent(new Event("input",{bubbles:true}));
+                await until(()=>buttons(fixture,"重试").length>0,"保存失败出现重试");
+                assert(must(fixture,'[aria-label="任务标题"]').value==="已修改的评审标题" && memory.state.tasks[0].title==="交付方案评审","失败后丢稿或错误提交");
+                memory.failWrites(false);buttons(fixture,"重试")[0].click();
+                await until(()=>memory.state.tasks[0].title==="已修改的评审标题","重试未保存原草稿");
+                result.textContent="PASS：桌面宽窄布局、独立命中、收起档位与编辑窗保存恢复";
+            } catch (error) { result.textContent=`FAIL：${surface}：${error.stack ?? error}`; }
+            finally { clear(); }
+        </script>
+    </body>
+</html>

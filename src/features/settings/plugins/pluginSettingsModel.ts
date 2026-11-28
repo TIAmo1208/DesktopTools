@@ -69,7 +69,7 @@ export const taskMenuPlacement = (menu: { top: number; bottom: number; height: n
 export const entriesFor = (pluginId: string) => {
     const api = readPluginApi(pluginId); // 首份外壳对象。
     if (!api) return undefined;
-    return api.settingsEntries ?? [];
+    return (api.settingsEntries ?? []).filter((entry) => entry.scope === undefined || entry.scope === "plugin");
 };
 
 /** 主题只有带入口脚本时才加载脚本。格子即使 script 为空也交给加载函数，由它报路径无效。 */

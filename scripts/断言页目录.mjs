@@ -10,6 +10,7 @@ export const 断言页 = [
     "src/features/tile-content/collect-box/collectBox.browser.html", // 收集箱加载、选择、删除与投放。
     "src/features/tiles/contentDrop.browser.html", // 格子内容拖放。
     "src/features/tiles/tileDragPreview.browser.html", // 跨屏格子拖动预览与围栏尺寸。
+    "src/features/components/todoPlugin.browser.html", // 待办真实插件：父子列表、浮岛命中与收起口径、窗口保存失败恢复。
     "src/features/island/islandContent.browser.html", // 浮岛内容层十态、几何、hover 列表、边界与切换时序。
     "src/features/island/islandFillet.browser.html", // 浮岛切态圆弧补面与描边。
     "src/features/island/islandLyrics.browser.html", // 浮岛歌词常态档位、无词回落、四边与展开跳转对齐。

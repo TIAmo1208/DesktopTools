@@ -34,11 +34,17 @@ pub fn save_plugin_settings(app: AppHandle, state: State<'_, SettingsState>, plu
 {
     let author = plugin_author(&app, &plugin_id)?; // 键里的作者来自当前清单。
     crate::preferences::write_plugin_settings(&state.directory()?, &author, &plugin_id, &value)?;
+    notify_settings_changed(&app, &plugin_id);
+    Ok(())
+}
+
+/// 只有已经落盘的设置才通知全部呈现位重读，不广播内容。
+pub(super) fn notify_settings_changed(app: &AppHandle, plugin_id: &str)
+{
     if let Err(error) = app.emit(crate::contracts::PLUGIN_SETTINGS_CHANGED_EVENT, serde_json::json!({ "pluginId": &plugin_id }))
     {
         crate::log_warn!("插件设置：变更通知失败，插件={plugin_id}，错误：{error}");
     }
-    Ok(())
 }
 
 /// 卸载命令返回实际删除的文件名。清理配置时包含设置文件。

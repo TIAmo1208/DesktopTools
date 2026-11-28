@@ -18,6 +18,7 @@ const createCommands = () => {
             return { stored: true };
         },
         publishIslandMessage: async (instanceId, key, kind, text, uri) => void calls.push(`publish:${instanceId}:${key}:${kind}:${text}:${uri ?? ""}`),
+        openWindow: async (instanceId, request) => void calls.push(`window:${instanceId}:${request.view}:${request.windowKey}`),
         openUri: async (instanceId, uri) => void calls.push(`open:${instanceId}:${uri}`),
         registerLoopback: async (registration) => {
             calls.push(`register:${registration.instanceId}:${registration.channelId}:${registration.mode}`);
@@ -99,6 +100,18 @@ test("命令使用实例身份与契约参数", async () => {
         "read:island.plugin.demo:bridge:3",
         "request:island.plugin.demo:bridge:GET:/health:{}",
     ]);
+});
+
+test("开窗只接受已授权实例和本地视图身份，不接受 URL 或附加脚本字段", async () => {
+    const { calls, commands } = createCommands();
+    const request = { view: "detail", windowKey: "record:1", title: "详情", size: { width: 640, height: 520 } };
+    assert.equal(createPluginCapabilityContext("desk-1", [], commands).openWindow, undefined);
+    const open = createPluginCapabilityContext("desk-1", ["plugin-window"], commands).openWindow!;
+    for (const invalid of [{ ...request, view: "https://example.org" }, { ...request, url: "https://example.org" }, { ...request, minSize: { width: 700, height: 500 } }]) {
+        await assert.rejects(() => open(invalid));
+    }
+    await open(request);
+    assert.deepEqual(calls, ["window:desk-1:detail:record:1"]);
 });
 
 test("删除原生 DSH 后没有残留引用", () => {

@@ -20,6 +20,12 @@ export interface PluginShellContext extends PluginCapabilityContext {
     tileType: string; // 当前实例的格子类型键；没有声明类型或缺失时为空串。
     collapsed: boolean; // 外框实际折叠状态。
     pluginVersion?: string; // 清单版本；设置条目可只读展示，格子不用它。
+    cardCollapsed?: boolean; // 仅展开态中的卡内折叠，不表示隐藏宿主或桌面外框收起。
+    settingsError?: string; // 读取失败，不得把失败当作首次安装。
+    readSettings?: () => Promise<unknown>; // 严格读取当前插件持久化值；损坏时拒绝。
+    compareAndSaveSettings?: (expected: unknown, value: unknown) => Promise<boolean>; // 原子比较并保存，false 要重读并重新合并。
+    onSettingsChanged?: (handler: (settings: unknown, error?: string) => void) => () => void; // 格子可接管增量渲染，避免事件导致整块重挂。
+    onCardCollapsedChanged?: (handler: (collapsed: boolean) => void) => () => void; // 卡头切换只更新条目，无需释放常驻监听。
     settings: unknown; // 读取命令给出的设置，没有文件时为 null。
     saveSettings: (settings: unknown) => Promise<void>; // 调用保存命令。
     menu?: {
@@ -31,12 +37,29 @@ export interface PluginShellContext extends PluginCapabilityContext {
 /** 一个插件自己的设置行。 */
 export interface PluginSettingsEntry {
     id: string; // 插件内唯一。
+    scope?: "plugin" | "island"; // 未指定时沿用两处可见；显式范围只出现在对应设置页。
     name: string; // 行标题。
     render: (container: HTMLElement, context: PluginShellContext) => void | (() => void); // 条目内容，可返回清理函数。
 }
 
+/** 独立窗不继承桌面原生能力；保存只允许比较本插件当前值，关闭由宿主统一仲裁。 */
+export interface PluginWindowContext {
+    pluginId: string;
+    instanceId: string;
+    view: string;
+    windowKey: string;
+    data?: unknown;
+    settings: unknown;
+    settingsError?: string;
+    readSettings: () => Promise<unknown>;
+    compareAndSaveSettings: (expected: unknown, value: unknown) => Promise<boolean>;
+    onBeforeClose: (handler: () => boolean | Promise<boolean>) => () => void;
+    closeWindow: () => Promise<void>;
+}
+
 /** 插件脚本注册的外壳对象。 */
 export interface PluginShellApi {
+    renderWindow?: (container: HTMLElement, context: PluginWindowContext) => void | (() => void); // 本地独立窗，不共享桌面权限、DOM 或草稿。
     renderTile?: (container: HTMLElement, context: PluginShellContext) => void | (() => void); // 格子内容，可返回清理函数。
     renderIslandHover?: PluginHoverRenderer<PluginShellContext>; // 浮岛锚点的 hover 内容，可返回清理函数；未提供时用模型给的主信息行。
     settingsEntries?: PluginSettingsEntry[]; // 没有该字段表示没有设置条目。

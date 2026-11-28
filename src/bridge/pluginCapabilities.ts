@@ -1,5 +1,6 @@
 import type { ComponentCapability, PluginCredentialExchange, PluginCredentialExchangeResult } from "../contracts/component.ts";
 import type { LoopbackChannelHandle, LoopbackChannelRegistration, LoopbackRequestEntry, LoopbackResponse } from "../contracts/loopback.ts";
+import { parsePluginWindowRequest, type PluginWindowRequest } from "../contracts/pluginWindow.ts";
 import type { IslandPluginMessageKind } from "../contracts/island.ts";
 
 /** 插件投递的一条岛内消息；key 在插件内去重。 */
@@ -18,6 +19,7 @@ export interface PluginCapabilityCommands
     clearCredential: (instanceId: string, slot: string) => Promise<void>;
     exchangeCredential: (instanceId: string, slot: string, request: PluginCredentialExchange) => Promise<PluginCredentialExchangeResult>;
     publishIslandMessage: (instanceId: string, key: string, kind: IslandPluginMessageKind, text: string, uri?: string) => Promise<void>;
+    openWindow: (instanceId: string, request: PluginWindowRequest) => Promise<void>;
     openUri: (instanceId: string, uri: string) => Promise<void>;
     registerLoopback: (registration: LoopbackChannelRegistration) => Promise<LoopbackChannelHandle>;
     readLoopback: (instanceId: string, channelId: string, afterSequence?: number) => Promise<LoopbackRequestEntry[]>;
@@ -31,6 +33,7 @@ export interface PluginCapabilityContext
     clearCredential?: (slot: string) => Promise<void>;
     exchangeCredential?: (slot: string, request: PluginCredentialExchange) => Promise<PluginCredentialExchangeResult>;
     publishIslandMessage?: (message: PluginIslandMessage) => Promise<void>;
+    openWindow?: (request: PluginWindowRequest) => Promise<void>;
     openUri?: (uri: string) => Promise<void>;
     registerLoopbackChannel?: (registration: LoopbackChannelRegistration) => Promise<LoopbackChannelHandle>;
     readLoopbackChannel?: (channelId: string, afterSequence?: number) => Promise<LoopbackRequestEntry[]>;
@@ -59,6 +62,7 @@ export const createPluginCapabilityContext = (
     if (granted.has("publish-island-message")) {
         context.publishIslandMessage = (message) => commands.publishIslandMessage(instanceId, message.key, message.kind, message.text, message.uri);
     }
+    if (granted.has("plugin-window")) context.openWindow = async (request) => commands.openWindow(instanceId, parsePluginWindowRequest(request));
     if (granted.has("open-uri")) context.openUri = (uri) => commands.openUri(instanceId, uri);
     if (granted.has("loopback-channel")) {
         // 实例身份由宿主覆盖，插件不能登记到别的实例。

@@ -1,4 +1,5 @@
 import { clearPluginCredential, exchangePluginCredential, openPluginUri, publishIslandMessage, setPluginCredential } from "./components.ts";
+import { invokeRuntime } from "./runtime.ts";
 import { readLoopbackChannel, registerLoopbackChannel, requestLoopback } from "./loopback.ts";
 import { createPluginCapabilityContext, type PluginCapabilityCommands, type PluginCapabilityContext } from "./pluginCapabilities.ts";
 import type { ComponentCapability } from "../contracts/component.ts";
@@ -10,6 +11,7 @@ const commands: PluginCapabilityCommands = {
     exchangeCredential: exchangePluginCredential,
     publishIslandMessage,
     openUri: openPluginUri,
+    openWindow: (instanceId, request) => invokeRuntime<void>("open_plugin_window", { instanceId, request }),
     registerLoopback: (registration) => registerLoopbackChannel(registration),
     readLoopback: readLoopbackChannel,
     requestLoopback,

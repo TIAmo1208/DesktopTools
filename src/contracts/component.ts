@@ -11,7 +11,8 @@ export type ComponentCapability =
     | "plugin-credential"
     | "plugin-credential-exchange"
     | "publish-island-message"
-    | "open-uri";
+    | "open-uri"
+    | "plugin-window";
 
 /** 全部能力名称；清单与实例授权共用同一集合，未知名称在边界被拒绝。 */
 export const COMPONENT_CAPABILITIES: readonly ComponentCapability[] = [
@@ -23,6 +24,7 @@ export const COMPONENT_CAPABILITIES: readonly ComponentCapability[] = [
     "plugin-credential-exchange",
     "publish-island-message",
     "open-uri",
+    "plugin-window",
 ];
 
 /** 插件呈现角色，缺省为格子。 */

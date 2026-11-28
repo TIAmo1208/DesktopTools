@@ -14,6 +14,7 @@
             "../plugin/主题-夜之城/": "plugin/主题-夜之城/",
             "../plugin/主题-封锁橙/": "plugin/主题-封锁橙/",
             "../plugin/AstrBot 状态/": "plugin/AstrBot 状态/",
+            "../plugin/待办/": "plugin/待办/",
             "../resources/许可证/": "许可证/",
             "../resources/Lucide许可证.txt": "许可证/Lucide许可证.txt",
             "../build/licenses/第三方许可证.txt": "许可证/第三方许可证.txt"

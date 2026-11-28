@@ -383,15 +383,20 @@ fn load_plugin_settings_store(path: &Path) -> Result<Option<serde_json::Map<Stri
 /// 读取一个插件的设置；文件缺失或损坏都不改写磁盘。损坏时返回空。
 pub(crate) fn read_plugin_settings(config_directory: &Path, author: &str, plugin_id: &str) -> Result<Option<serde_json::Value>, String>
 {
-    let key = plugin_settings_key(author, plugin_id).inspect_err(|_| crate::log_warn!("插件设置：拒绝非法插件标识，插件={plugin_id}"))?; // 作者@插件ID。
-    let path = plugin_settings_store(config_directory); // 统一设置文件。
-    match load_plugin_settings_store(&path)
+    match read_plugin_settings_for_update(config_directory, author, plugin_id)
     {
-        Ok(None) => Ok(None),
-        Ok(Some(map)) => Ok(map.get(&key).cloned()),
+        Ok(value) => Ok(value),
         Err(error) if error.contains("已损坏") => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+/// 编辑器严格读取基线，损坏、链接或 I/O 失败与空白设置区分。
+pub(crate) fn read_plugin_settings_for_update(directory: &Path, author: &str, plugin_id: &str) -> Result<Option<serde_json::Value>, String>
+{
+    let key = plugin_settings_key(author, plugin_id)?;
+    reject_plugin_settings_link(directory)?;
+    Ok(load_plugin_settings_store(&plugin_settings_store(directory))?.and_then(|mut map| map.remove(&key)))
 }
 
 /// 标识必须带 plugin. 前缀，且只能对应一个 plugin.<名称>.js 文件名。
@@ -490,21 +495,32 @@ fn plugin_folder(directory: &Path, plugin_id: &str) -> Result<Option<PathBuf>, S
 /// 原子保存一个插件的设置；标识非法或文件已损坏时不创建、不覆盖。
 pub(crate) fn write_plugin_settings(config_directory: &Path, author: &str, plugin_id: &str, value: &serde_json::Value) -> Result<(), String>
 {
-    let key = plugin_settings_key(author, plugin_id).inspect_err(|_| crate::log_warn!("插件设置：拒绝非法插件标识，插件={plugin_id}"))?; // 作者@插件ID。
+    update_plugin_settings(config_directory, author, plugin_id, None, value).map(|_| ())
+}
+
+/// 所有插件共享同一份文件；不仅同一插件的比较写，不同插件的读改写和卸载也必须串行。
+static PLUGIN_SETTINGS_WRITE: Mutex<()> = Mutex::new(());
+
+pub(crate) fn update_plugin_settings(config_directory: &Path, author: &str, plugin_id: &str, expected: Option<&serde_json::Value>, value: &serde_json::Value) -> Result<bool, String>
+{
+    let _transaction = PLUGIN_SETTINGS_WRITE.lock().map_err(|_| "插件设置状态不可用")?;
+    let key = plugin_settings_key(author, plugin_id)?;
     reject_plugin_settings_link(config_directory)?;
-    let path = plugin_settings_store(config_directory); // 统一设置文件。
-    let mut map = match load_plugin_settings_store(&path)?
+    let path = plugin_settings_store(config_directory);
+    let mut map = load_plugin_settings_store(&path)?.unwrap_or_default();
+    if expected.is_some_and(|baseline| baseline != map.get(&key).unwrap_or(&serde_json::Value::Null))
     {
-        None => serde_json::Map::new(),
-        Some(map) => map,
-    }; // 损坏的文件在加载时已经返回错误，这里不会覆盖。
+        return Ok(false); // 并发修改后不碰文件，调用方必须重读或向用户呈现冲突。
+    }
     map.insert(key, value.clone());
-    save_json_atomic(&path, &serde_json::Value::Object(map)).map_err(|error| format!("保存插件设置失败：{error}"))
+    save_json_atomic(&path, &serde_json::Value::Object(map)).map_err(|error| format!("保存插件设置失败：{error}"))?;
+    Ok(true)
 }
 
 /// 从统一设置文件删除一个键。文件因此变空时删除文件，并返回真。
 pub(crate) fn remove_plugin_settings(config_directory: &Path, author: &str, plugin_id: &str) -> Result<bool, String>
 {
+    let _transaction = PLUGIN_SETTINGS_WRITE.lock().map_err(|_| "插件设置状态不可用")?;
     let key = plugin_settings_key(author, plugin_id)?; // 作者@插件ID。
     reject_plugin_settings_link(config_directory)?;
     let path = plugin_settings_store(config_directory); // 统一设置文件。

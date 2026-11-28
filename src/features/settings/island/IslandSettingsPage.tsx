@@ -164,7 +164,7 @@ export const IslandSettings = ({
 
     if (detail) {
         void shellEpoch; // 外壳注册时触发本次读取。
-        const entries = detailManifest ? readPluginApi(detailManifest.id)?.settingsEntries ?? [] : [];
+        const entries = detailManifest && preferences && !preferences.disabledPlugins.includes(detail.id) ? (readPluginApi(detailManifest.id)?.settingsEntries ?? []).filter((entry) => entry.scope === undefined || entry.scope === "island") : [];
         return (
             <section className="island-settings island-settings--detail">
                 <div className="island-settings__heading">

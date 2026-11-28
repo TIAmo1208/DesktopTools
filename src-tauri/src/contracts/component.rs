@@ -136,6 +136,8 @@ pub enum ComponentCapability
     OpenUri,
     /// 由宿主向本机回环地址兑换一次并直接落槽，秘密不回到页面。
     PluginCredentialExchange,
+    /// 从已注册的本地插件入口打开独立视图。
+    PluginWindow,
 }
 
 /// 插件呈现角色，未声明时保持格子行为。

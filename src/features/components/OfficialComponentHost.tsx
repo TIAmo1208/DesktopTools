@@ -105,7 +105,7 @@ const PluginTileFrame = ({ tileProps, pluginId, tileType, runtime }: { tileProps
             {broken ? (
                 <p className="official-component__error">组件渲染失败</p>
             ) : (
-                (collapsed) => <PluginTileBody pluginId={pluginId} instanceId={instanceId} tileType={tileType} collapsed={collapsed} capabilities={tileProps.registration?.authorizedCapabilities ?? manifest?.requiredCapabilities ?? []} revision={pluginRevision(pluginId)} />
+                (collapsed) => <PluginTileBody pluginId={pluginId} instanceId={instanceId} tileType={tileType} collapsed={collapsed} capabilities={tileProps.registration?.authorizedCapabilities} revision={pluginRevision(pluginId)} />
             )}
         </ComponentTile>
     );
