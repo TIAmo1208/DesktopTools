@@ -8,7 +8,7 @@ Desktop Tools 是 Windows 桌面内容工作区（Tauri + React）：前端负�
 
 - 使用者文档：根 `README.md` 说明产品定位、当前功能、构建运行与功能边界，不链接内部事实文档。
 - 代码结构：`src/README.md`、`src-tauri/README.md` 说明实际目录、模块职责、入口与依赖方向。
-- 领域事实：`CONTEXT.md` 记录领域语言与不变量；已确认决策见 `docs/adr/`；视觉规范见 `docs/design/视觉规范.md`（设置界面行级细则见 `docs/design/设置界面规范.md`）；验收方法见 `docs/validation/验收流程.md`，本机验收记录写在本机 `build/validation/记录/`（不入库）。
+- 领域事实：`CONTEXT.md` 记录领域语言（按三级标题分节，按小节定位、不整读）与运行不变量；已确认决策见 `docs/adr/`；视觉规范见 `docs/design/视觉规范.md`（设置界面行级细则见 `docs/design/设置界面规范.md`）；验收方法见 `docs/validation/验收流程.md`，本机验收记录写在本机 `build/validation/记录/`（不入库）。
 
 按触发条件读取，不整份套用：
 
@@ -16,7 +16,7 @@ Desktop Tools 是 Windows 桌面内容工作区（Tauri + React）：前端负�
 | -------------------------- | ---------------------------------- |
 | 需求、规格和工单           | `docs/agents/工单系统.md`          |
 | 需求分流标签               | `docs/agents/需求分流标签.md`      |
-| 领域文档布局               | `docs/agents/领域文档.md`          |
+| 文档编写与布局             | `docs/agents/领域文档.md`          |
 | 撰写 ADR、按事实文档改代码 | `docs/agents/事实文档执行.md`      |
 | Rust 格式化                | `docs/agents/Rust格式化.md`        |
 | 构建、命令与环境前提       | `docs/agents/构建运行.md`          |
@@ -37,15 +37,14 @@ Desktop Tools 是 Windows 桌面内容工作区（Tauri + React）：前端负�
 
 ## 构建与门禁
 
-- 类型检查 `npm run typecheck`；受影响测试用 `node --test <测试文件>`；项目全量测试 `npm test`（含前端、组件与 `cargo test --all-targets`）；提交前 `git diff --check`。
+- 改动按影响跑测试；类型检查、受影响单测、全量测试与提交前空白检查的命令见 `docs/agents/构建运行.md`「门禁命令」。
 - 运行前提：设置窗读 `build/frontend`（改前端先 `npm run build`）；改主题/插件后 `npm run sync:plugin`；跑开发版前退出已安装实例；Rust 命令走 npm script（已注入 TMP）。TMP、互斥体、1420、0xC0000142 与后台句柄见 `docs/agents/环境前提.md`。
-- 提交前守卫：`npm run check:commit`（暂存空白检查 + `npm run typecheck`）；CI（`.github/workflows/quality.yml`）跑 `typecheck`、`npm test` 与浏览器断言。本机 git 执行 shell 钩子会被沙箱拒绝，因此不安装 git hook。
+- 提交前守卫：`npm run check:commit`（暂存空白检查 + `npm run typecheck`）；CI（`.github/workflows/quality.yml`）跑 `typecheck`、`npm test` 与浏览器断言（浏览器断言为观察态，暂不阻断）。本机 git 执行 shell 钩子会被沙箱拒绝，因此不安装 git hook。
 
 ## 工具与环境事实
 
 - 读文件用 `ops_read_files` / `ops_inspect_local_file`：官方 `read` 可能被 dsh-ops 替换；`.dsh` 下是 symlink，读取用其真实路径。
-- 进程与端口用 `tasklist`、`netstat -ano`；`wmic` 与 CIM 查询在本机会挂起到超时。
-- 后台任务句柄不跨回合：长任务在同一回合内前台分块，或增量写 JSONL 落盘，不依赖下一回合的后台结果。
+- 进程与端口、`wmic` 挂起、后台句柄不跨回合等本机环境事实见 `docs/agents/环境前提.md`。
 - 修复默认 1 个实现 + 1 个不同模型审核；只有 ≥3 条独立只读流，或文件范围不重叠的并行模块，才开 AgentTeams。
 
 ## 安全边界
@@ -56,7 +55,7 @@ Desktop Tools 是 Windows 桌面内容工作区（Tauri + React）：前端负�
 ## 事实文档
 
 - 修改功能、目录结构、模块职责或入口时，同一任务内同步受影响的 README、`CONTEXT.md`、相关 ADR 与视觉规范；仅更新实际受影响的文档。
-- 改代码前读相关 `CONTEXT.md`、ADR 与视觉规范，只落实已写明的定义、决策和边界；文档未覆盖的新需求先记录，完成未阻塞的工作后汇总询问。
+- 改代码前按三级标题定位相关 `CONTEXT.md` 小节，读相关 ADR 与视觉规范，只落实已写明的定义、决策和边界；文档未覆盖的新需求先记录，完成未阻塞的工作后汇总询问。
 - 写 PR 正文、交付说明或任何描述现状的文本时，现状取 `CONTEXT.md` 与相关 ADR；提交信息只当改动范围的线索。
 - README 只写当前实现与使用者需要的边界，不链接 `CONTEXT.md`、ADR 等内部事实文档；决策原因与内部约束留在事实文档里。
 - 同一行为变更与其文档同步组织在同一提交；修复已定位的回归时注明引入问题的提交或具体改动，无法确定时标为未确认。

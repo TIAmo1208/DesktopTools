@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { islandCardMaskPath, islandContentOffset, islandCornerRadius, islandSeamMask, islandFilletPatches, islandGeometry, islandWindowKey, moveIslandCard, visibleIslandRect, ISLAND_COMPACT_MAX_WIDTH, ISLAND_EXPANDED_COLUMN_WIDTH, ISLAND_SCROLLBAR_GUTTER } from "./islandGeometry.ts";
+import { islandCardMaskPath, islandContentOffset, islandCornerRadius, islandSeamMask, islandFilletPatches, islandGeometry, islandWindowKey, islandFitCardsToBox, moveIslandCard, visibleIslandRect, ISLAND_COMPACT_MAX_WIDTH, ISLAND_EXPANDED_COLUMN_WIDTH, ISLAND_SCROLLBAR_GUTTER } from "./islandGeometry.ts";
 import { parseIslandStateRequest } from "../../contracts/island.ts";
 import { readFileSync } from "node:fs";
 
@@ -415,4 +415,31 @@ test("横向侧贴的旧 anchorStart 按展开列盒 X 边界夹紧（t134）", 
         // 右贴边时右缘必须落在展开盒右缘内（工作区右缘还要让出胶囊 6 DIP）。
         if (edge === "right") assert.ok(h.left + h.width <= work.width - 6 + 0.01, `右贴 hover 右缘 ${h.left + h.width} 越出 1914`);
     }
+});
+
+test("提交前把卡片夹进窗口盒：越界卡片收敛，盒内请求原样返回", () => {
+    const work = { left: 0, top: 0, width: 1920, height: 1080 };
+    const card = { left: 1400, top: 0, width: 360, height: 200 };
+    const request = islandGeometry("collapsed", [card], 22, work, "", 0);
+    const box = request.windowBox;
+
+    // 收起时量到的卡片仍在 CSS 尺寸过渡里，可能比盒子大：原生会整条拒绝，所以提交前夹紧。
+    const oversized = { ...request, cards: [{ rect: { left: 0, top: 0, width: box.width + 120, height: box.height + 40 }, radius: 200 }, ...request.cards] };
+    const fitted = islandFitCardsToBox(oversized);
+    for (const entry of fitted.cards) {
+        assert.ok(entry.rect.left >= 0 && entry.rect.top >= 0, "卡片原点不得为负");
+        assert.ok(entry.rect.left + entry.rect.width <= box.width + 1e-6, "卡片右缘不得越出窗口盒");
+        assert.ok(entry.rect.top + entry.rect.height <= box.height + 1e-6, "卡片下缘不得越出窗口盒");
+        assert.ok(entry.radius <= Math.min(entry.rect.width, entry.rect.height) / 2 + 1e-6, "圆角不得超过半宽半高");
+        assert.ok(entry.rect.width >= 1 && entry.rect.height >= 1, "卡片不得退化成零尺寸");
+    }
+    assert.equal(fitted.windowBox, box, "只收卡片，不撑窗口盒");
+
+    // 已在盒内：原样返回同一对象，不引入无谓的复制。
+    const inside = islandFitCardsToBox(request);
+    assert.equal(inside, request);
+
+    // 负原点与负圆角同样收敛。
+    const negative = islandFitCardsToBox({ ...request, cards: [{ rect: { left: -40, top: -12, width: 100, height: 50 }, radius: -8 }] });
+    assert.deepEqual({ left: negative.cards[0]!.rect.left, top: negative.cards[0]!.rect.top, radius: negative.cards[0]!.radius }, { left: 0, top: 0, radius: 0 });
 });

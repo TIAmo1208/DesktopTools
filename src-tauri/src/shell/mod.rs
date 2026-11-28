@@ -1,5 +1,7 @@
 mod images;
 
+pub(crate) use images::ImageRuntime;
+
 use crate::contracts::{ShellDragPreparation, WorkspacePoint};
 use std::collections::HashMap;
 use std::ffi::c_void;

@@ -56,7 +56,11 @@ windows = { version = "0.61.3", features = [
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Direct2D",
   "Win32_Graphics_Direct2D_Common",
+  "Win32_Graphics_DirectComposition",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D11",
   "Win32_Graphics_DirectWrite",
+  "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dxgi_Common",
   "Win32_Media_Audio",
   "Win32_Security",
@@ -88,6 +92,8 @@ windows-future = "0.2"
 wry = { version = "0.55.1", default-features = false, features = ["protocol"] }
 cpal = "0.18.2"
 realfft = "3.5.0"
+# 插件渲染树宿主：QuickJS（无 JIT）执行插件模块（ADR-0053 阶段 3）。
+rquickjs = { version = "0.14", default-features = false, features = ["std", "loader"] }
 
 [dev-dependencies]
 windows = { version = "0.61.3", features = ["Win32_System_ProcessStatus"] }

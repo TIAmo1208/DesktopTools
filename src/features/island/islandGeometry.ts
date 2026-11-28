@@ -286,3 +286,29 @@ export const islandCardMaskPath = (width: number, height: number, corners: numbe
     const arc = (radius: number, x: number, y: number) => (radius > 0.01 ? `A ${radius} ${radius} 0 0 1 ${x + left} ${y + top}` : line(x, y));
     return `M ${tl + left} ${top} ${line(width - tr, 0)} ${arc(tr, width, tr)} ${line(width, height - br)} ${arc(br, width - br, height)} ${line(bl, height)} ${arc(bl, 0, height - bl)} ${line(0, tl)} ${arc(tl, tl, 0)} Z`;
 };
+
+/**
+ * 把卡片夹进提交的窗口盒。
+ * 原生对每张卡校验「矩形落在窗口盒内」（`island.rs` 的 valid_rect + 包含判定），整条请求因此被拒时，
+ * 窗口停在旧盒子上、页面却已按新布局绘制，浮岛看起来消失。收起与切态瞬间卡片仍在 CSS 尺寸过渡里，
+ * 量到的卡片比盒子更大是常态。这里只收卡片、不撑窗口盒：盒子由布局决定，不该被测量噪声改变。
+ * @param request 页面算好的请求。
+ * @returns 卡片已落在盒内的请求；无需调整时原样返回同一对象。
+ */
+export const islandFitCardsToBox = (request: IslandStateRequest): IslandStateRequest => {
+    const box = request.windowBox;
+    const limitLeft = Math.max(0, box.width - 1);
+    const limitTop = Math.max(0, box.height - 1);
+    let changed = false;
+    const cards = request.cards.map((card) => {
+        const left = Math.min(Math.max(0, card.rect.left), limitLeft);
+        const top = Math.min(Math.max(0, card.rect.top), limitTop);
+        const width = Math.max(1, Math.min(card.rect.width, box.width - left));
+        const height = Math.max(1, Math.min(card.rect.height, box.height - top));
+        const radius = Math.max(0, Math.min(card.radius, width / 2, height / 2));
+        if (left === card.rect.left && top === card.rect.top && width === card.rect.width && height === card.rect.height && radius === card.radius) return card;
+        changed = true;
+        return { ...card, rect: { ...card.rect, left, top, width, height }, radius };
+    });
+    return changed ? { ...request, cards } : request;
+};

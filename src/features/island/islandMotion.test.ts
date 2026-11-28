@@ -22,6 +22,8 @@ import { parseIslandStateRequest, type IslandStateRequest } from "../../contract
 
 /** 读取被测源码：CI 的 Windows 检出是 CRLF，逐行定位与片段切分统一归一为 LF 再做。 */
 const 读源码 = (relative: string) => readFileSync(new URL(relative, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+/** 提交门的源码：租约、在途提交、挂起解除与就绪/形变事实都在那个 module 里。 */
+const 读提交门 = () => 读源码("./islandCommitGate.ts");
 
 const work = { left: 0, top: 40, width: 1000, height: 800 };
 const collapsed = [{ left: 0, top: 0, width: 160, height: 44 }];
@@ -526,9 +528,9 @@ test("遮蔽租约：取消即恢复、新任务接管旧回包不解除、连�
 
     const source = 读源码("./island.tsx");
     assert.match(source, /if \(!active \|\| !mounted\.current\) \{ settleMaskRelease\(maskToken\); return; \}/); // 队列前取消走唯一结算。
-    assert.match(source, /settleMaskRelease\(maskLease\.current\.owner, \{ resynced: nativeSwap\.appliedToken !== null, alreadySynced: true \}\)/);
-    assert.match(source, /if \(!active \|\| !ownsMask\(maskToken\)\) return; \/\/ 旧回包不得绘制或解除新遮蔽/);
-    assert.match(source, /if \(ownsMask\(maskToken\)\) settleMaskRelease\(maskToken, \{ alreadySynced: settled, failed: commitFailed \}\);/);
+    assert.match(source, /settleMaskRelease\(ownerToken, \{ resynced: gate\.state\(\)\.applied, alreadySynced: true \}\)/);
+    assert.match(source, /if \(!active \|\| !gate.owns\(maskToken\)\) return; \/\/ 旧回包不得绘制或解除新遮蔽/);
+    assert.match(source, /if \(gate.owns\(maskToken\)\) settleMaskRelease\(maskToken, \{ alreadySynced: settled, failed: commitFailed \}\);/);
 });
 
 test("回包先验权、终态先于释放，前置/在途取消时序正确", () => {
@@ -541,7 +543,7 @@ test("回包先验权、终态先于释放，前置/在途取消时序正确", (
 
     const source = 读源码("./island.tsx");
     const awaitAt = source.indexOf("await setIslandState(value);");
-    const guardAt = source.indexOf("if (!active || !ownsMask(maskToken))", awaitAt);
+    const guardAt = source.indexOf("if (!active || !gate.owns(maskToken))", awaitAt);
     const writeAt = source.indexOf("currentGeometry.current = value;", awaitAt);
     assert.ok(guardAt > awaitAt && writeAt > guardAt); // 回包后先验权，再写几何/置 inputReady。
     assert.match(source, /settleMaskRelease\(maskToken, \{ resynced: response, failed: !response \}\); \/\/ 回包作废也走唯一结算入口/);
@@ -549,13 +551,13 @@ test("回包先验权、终态先于释放，前置/在途取消时序正确", (
     const finallyAt = source.indexOf("animating = false;\n                                committing = false;");
     const releaseAt = source.indexOf("settleMaskRelease(maskToken, { alreadySynced: settled, failed: commitFailed })", finallyAt);
     const terminal = source.slice(finallyAt, releaseAt);
-    assert.match(terminal, /if \(settled && active && ownsMask\(maskToken\) && request\.state !== "expanded"\)/);
+    assert.match(terminal, /if \(settled && active && gate.owns\(maskToken\) && request\.state !== "expanded"\)/);
     assert.match(terminal, /inputGeometryKey\.current = key;/);
     assert.match(terminal, /remeasure\.current\(true\);/);
     assert.ok(releaseAt > finallyAt); // 成功终态在释放前完成。
 
-    assert.match(source, /if \(nativeSwap\.pending > 0\) \{ deferIslandMaskRelease\(deferredMaskReleases, token, \{ keepOwner, alreadySynced \}\); return; \}/); // pending 时挂续延。
-    assert.match(source, /settleMaskRelease\(maskLease\.current\.owner, \{ resynced: nativeSwap\.appliedToken !== null, alreadySynced: true \}\)/);
+    assert.match(读提交门(), /if \(swap\.pending > 0\) \{/); // pending 时挂续延。
+    assert.match(source, /settleMaskRelease\(ownerToken, \{ resynced: gate\.state\(\)\.applied, alreadySynced: true \}\)/);
 });
 
 test("共享原生物理状态：A 在途时 B 取消不提前揭开，回包重同步后才解除", () => {
@@ -585,13 +587,13 @@ test("共享原生物理状态：A 在途时 B 取消不提前揭开，回包重
     assert.equal(canReleaseIslandMask(rejected, "stale", false), false); // 过期 reject 不构成解除依据。
 
     const source = 读源码("./island.tsx");
-    assert.match(source, /const nativeSwap: IslandNativeSwap = \{ pending: 0, appliedToken: null, appliedGeometry: undefined \};/); // 跨 effect 共享。
-    assert.match(source, /beginIslandNativeSwap\(nativeSwap\);/);
-    assert.match(source, /finishIslandNativeSwap\(nativeSwap, String\(maskToken\), response\);/);
-    assert.match(source, /if \(nativeSwap\.pending > 0\) \{ deferIslandMaskRelease\(deferredMaskReleases, token, \{ keepOwner, alreadySynced \}\); return; \}/); // pending 时挂续延。
-    assert.match(source, /settleMaskRelease\(maskLease\.current\.owner, \{ resynced: nativeSwap\.appliedToken !== null, alreadySynced: true \}\)/); // cleanup 走唯一结算。
-    assert.match(source, /if \(ownsMask\(maskToken\)\) \{\s*currentGeometry\.current = undefined; \/\/ 只有当前租约持有者能清共享几何/);
-    assert.match(source, /canResyncIslandGeometry\(\{ active, applied: actual !== undefined, alreadySynced \}\) && actual && resyncPaint\) resyncPaint\(actual\);/); // 旧实例或已同步的回包不重画。
+    assert.match(读提交门(), /const swap: IslandNativeSwap = \{ pending: 0, appliedToken: null, appliedGeometry: undefined \};/); // 跨 effect 共享。
+    assert.match(source, /gate\.nativeStarted\(\);/);
+    assert.match(source, /gate\.nativeFinished\(maskToken, response, value\);/);
+    assert.match(读提交门(), /if \(swap\.pending > 0\) \{/); // pending 时挂续延。
+    assert.match(source, /settleMaskRelease\(ownerToken, \{ resynced: gate\.state\(\)\.applied, alreadySynced: true \}\)/); // cleanup 走唯一结算。
+    assert.match(source, /if \(gate.owns\(maskToken\)\) \{\s*currentGeometry\.current = undefined; \/\/ 只有当前租约持有者能清共享几何/);
+    assert.match(source, /onResync: \(value\) => \{\s*if \(!active \|\| !root\.current \|\| !resyncPaint\) return false;/); // 旧实例或已同步的回包不重画。
 });
 
 test("遮蔽释放唯一入口：三条时序与 800ms 失败兜底", () => {
@@ -623,11 +625,11 @@ test("遮蔽释放唯一入口：三条时序与 800ms 失败兜底", () => {
     assert.equal(canReleaseIslandMask(rejected, String(stale), true), true);
 
     const source = 读源码("./island.tsx");
-    assert.match(source, /const settleMaskRelease = \(token: number, options:/); // 唯一入口。
-    assert.match(source, /if \(nativeSwap\.pending > 0\) \{ deferIslandMaskRelease\(deferredMaskReleases, token, \{ keepOwner, alreadySynced \}\); return; \}/);
-    assert.match(source, /setTimeout\(\(\) => \{[\s\S]*?settleMaskRelease\(token, \{ keepOwner, resynced: true, alreadySynced \}\);/);
-    assert.match(source, /if \(!alreadySynced && active\) \{\s*restoreStyles\(\);[\s\S]*?resyncPaint\(actual\);/); // 死实例不还原样式；restore 后再重绘。
-    assert.match(source, /requestAnimationFrame\(\(\) => \{[\s\S]*?releaseMask\(token, true\);/); // rAF 生效后解除。
+    assert.match(读提交门(), /const settle = \(token: number, options: IslandMaskSettleOptions = \{\}\): void =>/); // 唯一入口。
+    assert.match(读提交门(), /if \(swap\.pending > 0\) \{/);
+    assert.match(读提交门(), /scheduler\.setTimer\(\(\) => \{[\s\S]*?settle\(token, \{ keepOwner: options\.keepOwner, alreadySynced: options\.alreadySynced, resynced: true \}\);/);
+    assert.match(读提交门(), /if \(!alreadySynced\) \{[\s\S]*?const alive = host\?\.onRestore\(\) === true;[\s\S]*?host\?\.onResync\(actual\);/); // 死实例不还原样式；restore 后再重绘。
+    assert.match(读提交门(), /if \(keepOwner\) unmask\(token, true\);\s*else release\(token, true\);/); // 帧到后按是否保留所有权解除。
     assert.match(source, /drainMaskReleases\(response, !response\)/); // 成功与失败都 drain。
     assert.match(source, /settleMaskRelease\(maskToken, \{ resynced: response, failed: !response \}\)/);
     assert.equal((source.match(/releaseMask\(maskToken/g) ?? []).length, 0); // finally 不再各自解罩。
@@ -656,11 +658,11 @@ test("reject 必 drain、有界补偿重提交、失败 800ms 只解除 CSS", ()
     assert.equal(failed.pending, 0);
 
     const source = 读源码("./island.tsx");
-    const finallyAt = source.indexOf("finishIslandNativeSwap(nativeSwap, String(maskToken), response); // 任何返回路径都成对归零 pending。");
+    const finallyAt = source.indexOf("gate.nativeFinished(maskToken, response, value); // 任何返回路径都成对归零 pending。");
     const drainAt = source.indexOf("drainMaskReleases(response, !response); // reject 也一定会 drain。", finallyAt);
     assert.ok(finallyAt > 0 && drainAt > finallyAt); // reject 的 finally 仍然 drain。
     assert.match(source, /response = await islandRetrySubmit\(\{/); // 有界补偿重提交走可测助手。
-    assert.match(source, /current: \(\) => ownsMask\(maskToken\)/);
+    assert.match(source, /current: \(\) => gate.owns\(maskToken\)/);
     assert.match(source, /islandNativeFailClosed = true;/);
     assert.match(source, /岛原生几何提交失败，已标记 fail-closed/);
     assert.match(source, /settleMaskRelease\(maskToken, \{ alreadySynced: settled, failed: commitFailed \}\)/); // 失败走 800ms。
@@ -720,11 +722,11 @@ test("展开揭幕改为视口条件等待：inner 到位后再等一帧才解�
     assert.match(并集, /islandTrace\("frame-barrier", \{ where: "union", matched: 已到位 \}\)/);
     assert.ok(并集.indexOf("awaitViewport") < 并集.indexOf("frame-barrier"));
     assert.ok(并集.indexOf("frame-barrier") < 并集.indexOf("mask-release-union"));
-    assert.match(source, /if \(transitionMasked\.current && islandViewportChanged\(from, request\)\) \{/); // 终态同样走视口条件。
+    assert.match(source, /if \(gate\.state\(\)\.masked && islandViewportChanged\(from, request\)\) \{/); // 终态同样走视口条件。
     assert.match(source, /islandTrace\("frame-barrier", \{ where: "final", matched: 已到位 \}\)/);
     assert.doesNotMatch(source, /islandCommittedFrame/); // 时间屏障（双 rAF）已退役。
     // 遮蔽窗口拉长后，期间按下的 Esc 不能丢。
-    assert.match(source, /if \(transitionMasked\.current\) \{ if \(event\.key === "Escape"\) pendingEscape\.current = true; return; \}/);
+    assert.match(source, /if \(gate\.state\(\)\.masked\) \{ if \(event\.key === "Escape"\) pendingEscape\.current = true; return; \}/);
     assert.match(source, /if \(pendingEscape\.current\) \{ pendingEscape\.current = false; changeMode\("collapsed", false\); \}/);
 });
 
@@ -747,7 +749,7 @@ test("挂起提交→同几何替换实例→旧回包：只结算租约、不�
     assert.equal(canResyncIslandGeometry({ active: true, applied: false, alreadySynced: false }), false); // 原生未落地不画。
 
     const source = 读源码("./island.tsx");
-    assert.match(source, /const deferredMaskReleases = new Map<number, IslandDeferredRelease>\(\)/);
+    assert.match(读提交门(), /const deferred = new Map<number, /);
     assert.match(source, /resyncPaint = \(value\) => \{ if \(!active \|\| !root\.current\) return; paint\(value, 0\); \}/);
 });
 
@@ -878,8 +880,8 @@ test("并集揭幕等待可被 cleanup/finishMotion 唤醒，submission 必定�
 test("终态视口屏障按需触发：同视口或已揭幕不等，trace 关闭不读布局", () => {
     const source = 读源码("./island.tsx");
     // 终态屏障只在「仍要揭幕 + 换了视口」时触发，覆盖无动效展开与紧凑态跨视口。
-    assert.match(source, /if \(transitionMasked\.current && islandViewportChanged\(from, request\)\) \{/);
-    const 终态块 = source.slice(source.indexOf("if (transitionMasked.current && islandViewportChanged(from, request)) {"), source.indexOf("settled = true;"));
+    assert.match(source, /if \(gate\.state\(\)\.masked && islandViewportChanged\(from, request\)\) \{/);
+    const 终态块 = source.slice(source.indexOf("if (gate.state().masked && islandViewportChanged(from, request)) {"), source.indexOf("settled = true;"));
     assert.ok(终态块.includes("await awaitViewport(request.viewport)"), "终态按视口条件等，不按时间硬等");
     assert.ok(终态块.includes('islandTrace("frame-barrier", { where: "final"'));
     // 并集路径顺序：paint → 视口条件 → 屏障 trace → mask-release。
@@ -978,8 +980,8 @@ test("隐藏页无帧：解除遮蔽与揭幕等待都能被计时器推进收�
     const 结算起 = source.indexOf("const settleMaskRelease = ");
     const 解除 = source.slice(结算起, source.indexOf("const observer = new ResizeObserver", 结算起));
     assert.ok(解除.length > 0, "解除遮蔽必须用帧/超时竞速");
-    assert.match(解除, /if \(keepOwner\) unmaskTransition\(token, true\);/);
-    assert.match(解除, /timeoutMs: ISLAND_NO_FRAME_TIMEOUT_MS/);
+    assert.match(读提交门(), /if \(keepOwner\) unmask\(token, true\);/);
+    assert.match(读提交门(), /timeoutMs: ISLAND_NO_FRAME_TIMEOUT_MS/);
     assert.match(source, /\{ timeoutMs: ISLAND_NO_FRAME_TIMEOUT_MS, setTimer: \(callback\) => setTimeout\(callback, ISLAND_NO_FRAME_TIMEOUT_MS\)/); // 揭幕等待
     assert.match(source, /const 无帧计时 = setTimeout\(\(\) => \{/); // 动画帧等待兜底
     assert.match(source, /if \(!\(await commit\(value\)\)\) return; \/\/ 中间帧重试耗尽/); // 中间帧失败直接进 finally
@@ -1019,7 +1021,7 @@ test("带遮蔽的视口切换：隐藏帧先提交一帧，再发首次原生�
     assert.ok(提交.length > 0);
     // 顺序：租约校验 → （仅遮蔽 + 换视口时）等隐藏帧提交 → 发原生提交。
     assert.match(提交, /if \(!隐藏帧已等\) \{/);
-    assert.match(提交, /if \(from && hadPaintedFrame\.current && transitionMasked\.current && islandViewportChanged\(from, request\) && !maskPainted\.current\) \{/); // 已有画面才等（from 为空时不等，见代码注释）。
+    assert.match(提交, /if \(from && hadPaintedFrame\.current && gate\.state\(\)\.masked && islandViewportChanged\(from, request\) && gate\.state\(\)\.needsPaint\) \{/); // 已有画面才等（from 为空时不等，见代码注释）。
     assert.match(提交, /隐藏帧门 \?\?= islandRenderGate\(/); // 共享隐藏帧门（一帧 + 帧后宏任务 + 总超时）。
     assert.match(提交, /count: 1, \/\/ 一帧 \+ 帧后宏任务/);
     assert.match(提交, /收口 = await 门\.done;/);
@@ -1031,7 +1033,7 @@ test("带遮蔽的视口切换：隐藏帧先提交一帧，再发首次原生�
     // 「已有画面」由绘制标记维护，换边清几何后仍为 true。
     assert.match(source, /const hadPaintedFrame = useRef\(false\);/);
     assert.match(source, /hadPaintedFrame\.current = true;/);
-    assert.ok(提交.indexOf("if (!ownsMask(maskToken)) { settleMaskRelease") < 提交.indexOf("if (!隐藏帧已等)"), "先校验租约再等帧");
+    assert.ok(提交.indexOf("if (!gate.owns(maskToken)) { settleMaskRelease") < 提交.indexOf("if (!隐藏帧已等)"), "先校验租约再等帧");
     // 首次提交才等：同一任务后续提交不重复等。
     assert.match(提交, /隐藏帧已等 = true;/);
     // 同视口/无遮蔽不等待：条件必须同时包含 transitionMasked 与 islandViewportChanged。
@@ -1152,12 +1154,12 @@ test("同边同 key 接管：未首发的预留随 cleanup 撤销，继任 effec
 
     // 源码：cleanup 用身份撤销；maskPainted 在 owner/active 校验之后；submitted 在首发前标记。
     const source = 读源码("./island.tsx");
-    assert.match(source, /const 撤销键 = revokeIslandReservation\(pendingSubmit\.current, maskLease\.current\.owner \?\? -1, geometryKey\.current\);/);
+    assert.match(source, /const 撤销键 = revokeIslandReservation\(pendingSubmit\.current, gate\.state\(\)\.owner \?\? -1, geometryKey\.current\);/);
     assert.match(source, /pendingSubmit\.current = \{ key, token: maskToken, submitted: false, submittedFinal: false \};/);
     assert.match(source, /if \(value === request\) pendingSubmit\.current\.submittedFinal = true;/);
     const 等帧块 = source.slice(source.indexOf('if (!隐藏帧已等) {'), source.indexOf("let response = false;", source.indexOf('if (!隐藏帧已等) {')));
-    const 校验位 = 等帧块.indexOf("if (!active || !ownsMask(maskToken))");
-    const 绘制位 = 等帧块.indexOf("maskPainted.current = true;");
+    const 校验位 = 等帧块.indexOf("if (!active || !gate.owns(maskToken))");
+    const 绘制位 = 等帧块.indexOf("gate.markPainted();");
     assert.ok(校验位 > 0 && 绘制位 > 校验位, "maskPainted 必须记录在 owner/active 校验通过之后");
     assert.ok(等帧块.indexOf("wakeMaskFrame = undefined;") < 绘制位, "wake 路径不得提前记已绘制");
 });
@@ -1207,8 +1209,8 @@ test("过渡帧已发、最终请求未发：cleanup 撤销后继任 effect 恰�
     const source = 读源码("./island.tsx");
     const 等帧位 = source.indexOf("if (!隐藏帧已等) {");
     const 登记位 = source.indexOf("if (!pendingSubmit.current || pendingSubmit.current.token !== maskToken) {");
-    const 首发位 = source.indexOf("beginIslandNativeSwap(nativeSwap);", 登记位);
+    const 首发位 = source.indexOf("gate.nativeStarted();", 登记位);
     assert.ok(等帧位 > 0 && 登记位 > 等帧位 && 首发位 > 登记位, "预留必须落在等帧之后、首发之前");
     assert.match(source, /if \(value === request\) pendingSubmit\.current\.submittedFinal = true;/);
-    assert.match(source, /const 撤销键 = revokeIslandReservation\(pendingSubmit\.current, maskLease\.current\.owner \?\? -1, geometryKey\.current\);/);
+    assert.match(source, /const 撤销键 = revokeIslandReservation\(pendingSubmit\.current, gate\.state\(\)\.owner \?\? -1, geometryKey\.current\);/);
 });

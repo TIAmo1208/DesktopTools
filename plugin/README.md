@@ -34,7 +34,7 @@ Desktop Tools 支持通过本地插件扩展桌面格子、浮岛卡与设置页
 - 该目录没有 `manifest.ini`；宿主只扫描插件根下一层含 `manifest.ini` 的文件夹，因此它不会被注册成 Desktop Tools 插件。
 - 用户手动把整个 `astrbot_plugin_desktop_status` 文件夹复制到 AstrBot 数据目录下的 `data/plugins/`，重启 AstrBot 即可加载。安装步骤、配置项（`push_url` 默认 `127.0.0.1:8765`、`listen_port` 默认 `8766`、共享 `token`）、对外接口与安全边界见该目录内的 `README.md`。
 - 插件在 AstrBot 进程内采集服务、平台、资源、消息、日志与 Token 用量，按快照契约 v2（同目录 `snapshot.schema.json`）推送；拿不到的项一律给 `null`，服务状态分在线、离线、探测被拒、未知四档，判定看 `service.probe.level`。
-- 桌面侧由「AstrBot 状态」格子插件经宿主的 `loopback-channel` 能力接收：一条 `mode=listen` 通道绑 `127.0.0.1:8765` 接推送，一条 `mode=request` 通道指向 `http://127.0.0.1:8766` 做拉取兜底与平台启停；双向共用 `X-Status-Token` 头，密钥存放在 Windows 凭据管理器的 `DesktopTools/astrbot-status` 记录里，插件拿不到明文。解析、缓存与过期判定都在插件内，宿主只做传输。推送端口被占用时只走拉取兜底。决策见 `docs/adr/0036-AstrBot状态采集链路.md` 与 `docs/adr/0038-插件loopback通道.md`。
+- 桌面侧由「AstrBot 状态」格子插件经宿主的 `loopback-channel` 能力接收：一条 `mode=listen` 通道绑 `127.0.0.1:8765` 接推送，一条 `mode=request` 通道指向 `http://127.0.0.1:8766` 做拉取兜底与平台启停；双向共用 `X-Status-Token` 头，密钥存放在 Windows 凭据管理器的 `DesktopTools/astrbot-status` 记录里，插件拿不到明文。解析、缓存与过期判定都在插件内，宿主只做传输。推送端口被占用时只走拉取兜底。决策见 `docs/adr/0052-AstrBot状态采集链路.md` 与 `docs/adr/0038-插件loopback通道.md`。
 - 安装、取共享 token、在「设置 → 功能格子 → AstrBot 状态」配对以及常见故障排查，见 [AstrBot 状态插件安装与配对](./AstrBot 状态/AstrBot状态插件安装与配对.md)。
 
 ## DSH 接入插件（手动安装）

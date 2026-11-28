@@ -515,7 +515,7 @@ test("展开视口铺满工作区：透明区停留/点击回退，内容列与�
     assert.equal(islandMarginStep(entered.state, { ...input, now: 120 }).collapse, true); // 连续停留 120ms 回胶囊。
     const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
     assert.match(source, /islandExpandedBlank\(layout, \{ x: event\.clientX, y: event\.clientY \}, onCard\)/); // 透明区单击直接回退。
-    assert.match(source, /event\.type !== "pointerup" \|\| transitionMasked\.current \|\| modeRef\.current !== "expanded" \|\| cardSorting\.current/); // 拖动中不回退。
+    assert.match(source, /event\.type !== "pointerup" \|\| gate\.state\(\)\.masked \|\| modeRef\.current !== "expanded" \|\| cardSorting\.current/); // 拖动中不回退。
 });
 
 test("展开工作区左右透明列都可回退：左贴边、居中、右贴边", () => {
@@ -644,4 +644,28 @@ test("收起回胶囊后复位 latch/gate，离开再进入可再次 hover", () 
     assert.match(source, /if \(modeRef\.current === "collapsed"\) marginState\.current = \{ latch: "open" \};/);
     assert.match(source, /expandedReentryGate\.current = false; \/\/ 重新进入说明已离开过，解除极短 gate。/);
     assert.match(source, /const hoverLatched = \(\) => modeRef\.current !== "collapsed" && marginState\.current\.latch !== "open";/); // hover 判定仍读同一 latch。
+});
+
+test("hover 进入以「几何已就绪」为权威：提交在途时不进入，落地后才允许", () => {
+    // 纯判据：busy 期间不安排进入。几何未就绪并入 busy，收起动画期间迟到的消抖一律不生效。
+    assert.equal(islandHoverTarget("collapsed", true, true, false), undefined);
+    assert.equal(islandHoverTarget("collapsed", true, false, false), "hover");
+    // 调用点把 inputReady 并入 busy：不新增门闩状态，避免门闩与解门凭据互相对不上。
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    const 判据 = source.split("islandHoverTarget(modeRef.current, inside, interactionBusy() || !gate.state().settled || gate.state().transitioning, hoverLatched())").length - 1;
+    assert.equal(判据, 2, "scheduleHover 与消抖复查都必须带几何就绪判据");
+    // 形变在途：收起动画期间窗口是两态并集，指针必然在盒内，不能据此判 hover 进入。
+    // 形变在途：收起动画期间窗口是两态并集，指针必然在盒内，不能据此判 hover 进入。
+    assert.match(source, /interactionBusy\(\) \|\| !gate\.state\(\)\.settled \|\| gate\.state\(\)\.transitioning/);
+    assert.match(source, /gate\.beginTransition\(\);/);
+    assert.match(source, /gate\.endTransition\(\); \/\/ 终帧已结算/);
+});
+
+test("胶囊态透明像素不起 hover：只认内容轮廓，进窗口的 pointerenter 也按卡片判定", () => {
+    const source = readFileSync(new URL("./island.tsx", import.meta.url), "utf8");
+    // pointermove：胶囊态用同一份轮廓判 region，非 content 直接撤销进入计时。
+    assert.match(source, /if \(islandHitRegion\("collapsed", point, layout, contour\) !== "content"\) \{ stopHoverTimer\(\); return; \}/);
+    // pointerenter：从窗口透明像素进入时同样不安排 hover，交给后续 move 判定。
+    assert.match(source, /if \(modeRef\.current === "collapsed" && event\) \{/);
+    assert.match(source, /const onCard = box && event\.clientX >= box\.left/);
 });

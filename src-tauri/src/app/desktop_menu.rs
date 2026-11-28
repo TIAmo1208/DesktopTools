@@ -18,6 +18,7 @@ const ACTIONS: [(&str, &str, u32); 6] = [("create-fence", "新建围栏", 0x7804
 pub enum Startup
 {
     Exit,
+    Native(Owned<windows::Win32::Foundation::HANDLE>),
     Run(Option<u32>, Owned<windows::Win32::Foundation::HANDLE>),
 }
 
@@ -129,6 +130,7 @@ pub fn prepare_startup() -> Result<Startup, String>
     let action = match arguments.as_slice()
     {
         [] => None,
+        [flag] if flag == "--native-desktop" => None,
         [flag] if flag == "--register-desktop-menu" =>
         {
             let executable = std::env::current_exe().map_err(|error| error.to_string())?;
@@ -152,6 +154,17 @@ pub fn prepare_startup() -> Result<Startup, String>
     let mutex = unsafe { windows::Win32::System::Threading::CreateMutexW(None, false, w!("Local\\DesktopTools.DesktopMenu.Instance")) }.map_err(|error| error.to_string())?; // 防止启动过程中连续点击产生两个宿主。
     let exists = unsafe { windows::Win32::Foundation::GetLastError() } == windows::Win32::Foundation::ERROR_ALREADY_EXISTS; // 紧接创建读取结果。
     let mutex = unsafe { Owned::new(mutex) }; // 主实例持有到退出，辅助进程返回时释放。
+    if arguments.as_slice() == ["--native-desktop"]
+    {
+        return if exists
+        {
+            Err("已有主实例，未切换其桌面宿主".into())
+        }
+        else
+        {
+            Ok(Startup::Native(mutex))
+        };
+    }
     if !exists
     {
         return Ok(Startup::Run(action, mutex));
@@ -204,26 +217,50 @@ unsafe extern "system" fn receiver_proc(hwnd: HWND, message: u32, wparam: WPARAM
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
 }
 
-/// 在主线程创建消息接收窗口，随后更新注册表中的程序路径。
-pub fn install(app: &AppHandle, initial: Option<u32>) -> Result<(), String>
+/// 共享既有消息窗口身份与固定动词协议；保护态不注册 Explorer 菜单、不执行产品命令。
+fn create_receiver(proc: windows::Win32::UI::WindowsAndMessaging::WNDPROC, data: *const std::ffi::c_void) -> Result<HWND, String>
 {
-    let module = unsafe { GetModuleHandleW(None) }.map_err(|error| error.to_string())?; // 当前程序模块。
-    let class = WNDCLASSW { lpfnWndProc: Some(receiver_proc), hInstance: HINSTANCE(module.0), lpszClassName: RECEIVER, ..Default::default() }; // 无可见界面的命令窗口。
+    let module = unsafe { GetModuleHandleW(None) }.map_err(|e| e.to_string())?;
+    let class = WNDCLASSW { lpfnWndProc: proc, hInstance: HINSTANCE(module.0), lpszClassName: RECEIVER, ..Default::default() };
     if unsafe { RegisterClassW(&class) } == 0
     {
         return Err("注册桌面菜单接收窗口失败".into());
     }
-    let pointer = Box::into_raw(Box::new(app.clone())); // 窗口销毁时释放。
-    let created = unsafe { CreateWindowExW(WINDOW_EX_STYLE::default(), RECEIVER, w!(""), WINDOW_STYLE::default(), 0, 0, 0, 0, Some(HWND_MESSAGE), None, Some(HINSTANCE(module.0)), Some(pointer.cast())) };
-    let hwnd = match created
+    unsafe { CreateWindowExW(WINDOW_EX_STYLE::default(), RECEIVER, w!(""), WINDOW_STYLE::default(), 0, 0, 0, 0, Some(HWND_MESSAGE), None, Some(HINSTANCE(module.0)), Some(data)) }.map_err(|e| e.to_string())
+}
+
+/// 只允许正常退出；显式原生保护态没有设置/菜单 WebView。
+pub(crate) struct ExitReceiver(HWND);
+impl ExitReceiver
+{
+    pub fn install() -> Result<Self, String> { create_receiver(Some(exit_only_proc), std::ptr::null()).map(Self) }
+}
+impl Drop for ExitReceiver
+{
+    fn drop(&mut self) { let _ = unsafe { DestroyWindow(self.0) }; }
+}
+unsafe extern "system" fn exit_only_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT
+{
+    if message == MESSAGE && wparam.0 == 0x7809
+    {
+        unsafe { windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0) };
+        return LRESULT(1);
+    }
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+/// 在主线程创建消息接收窗口，随后更新注册表中的程序路径。
+pub fn install(app: &AppHandle, initial: Option<u32>) -> Result<(), String>
+{
+    let pointer = Box::into_raw(Box::new(app.clone()));
+    let hwnd = match create_receiver(Some(receiver_proc), pointer.cast())
     {
         Ok(hwnd) => hwnd,
         Err(error) =>
         {
             drop(unsafe { Box::from_raw(pointer) });
-            return Err(error.to_string());
+            return Err(error);
         }
-    }; // 创建失败不遗留应用引用。
+    };
     OWN_RECEIVER.store(hwnd.0 as isize, std::sync::atomic::Ordering::Relaxed);
     if let Err(error) = register()
     {

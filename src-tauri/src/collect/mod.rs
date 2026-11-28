@@ -102,21 +102,47 @@ pub fn read_image(config: &Path, name: &str, reference: &str) -> io::Result<Stri
 /// 读取当前收集项和置顶表。
 pub fn list(config: &Path) -> io::Result<Vec<CollectItem>>
 {
+    fs::create_dir_all(directory(config))?;
+    list_existing(config)
+}
+
+/// 缺目录即空；从同一遍目录枚举派生 Markdown 和图片，不做检查后创建。
+pub(crate) fn list_existing(config: &Path) -> io::Result<Vec<CollectItem>>
+{
     let root = directory(config);
-    fs::create_dir_all(&root)?;
+    let entries = match fs::read_dir(&root)
+    {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
     let pinned = read_pinned(&root)?;
-    let mut items = fs::read_dir(&root)?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().extension().is_some_and(|value| value == "md"))
-        .filter_map(|entry| {
-            let path = entry.path();
-            let content = fs::read_to_string(&path).ok()?;
-            let metadata = entry.metadata().ok()?;
-            let created_unix_ms = metadata.created().or_else(|_| metadata.modified()).ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
-            let name = path.file_name()?.to_string_lossy().into_owned();
-            Some(CollectItem { kind: CollectKind::Text, display_name: name.trim_end_matches(".md").to_string(), path: Some(path.to_string_lossy().into_owned()), pinned: pinned.iter().any(|item| item == &name), name, content, created_unix_ms, available: true })
-        })
-        .collect::<Vec<_>>();
+    let mut items = Vec::new();
+    for entry in entries.filter_map(Result::ok)
+    {
+        let path = entry.path();
+        if path.extension().is_some_and(|value| value == "md")
+        {
+            let (Ok(content), Ok(metadata)) = (fs::read_to_string(&path), entry.metadata())
+            else
+            {
+                continue;
+            };
+            let Some(created_unix_ms) = metadata.created().or_else(|_| metadata.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64)
+            else
+            {
+                continue;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            items.push(CollectItem { kind: CollectKind::Text, display_name: name.trim_end_matches(".md").to_string(), path: Some(path.to_string_lossy().into_owned()), pinned: pinned.iter().any(|item| item == &name), name, content, created_unix_ms, available: true });
+        }
+        else if items::is_image_path(&path)
+            && let Some(name) = entry.file_name().to_str()
+        {
+            items.push(get_item(config, name)?);
+        }
+    }
+    // 正式扫描原有的映射筛选不变。
     for entry in fs::read_dir(items::items_directory(config)).into_iter().flatten().filter_map(Result::ok)
     {
         if entry.path().is_dir()
@@ -124,14 +150,6 @@ pub fn list(config: &Path) -> io::Result<Vec<CollectItem>>
             && let Ok(item) = items::get_item(config, name)
         {
             items.push(item);
-        }
-    }
-    for entry in fs::read_dir(&root)?.filter_map(Result::ok)
-    {
-        if items::is_image_path(&entry.path())
-            && let Some(name) = entry.file_name().to_str()
-        {
-            items.push(get_item(config, name)?); // 只扫描根目录，不重复列出文档资源。
         }
     }
     items.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.created_unix_ms.cmp(&a.created_unix_ms)).then(a.name.cmp(&b.name)));
@@ -549,6 +567,23 @@ fn read_pinned(root: &Path) -> io::Result<Vec<String>>
 #[cfg(test)]
 mod tests
 {
+    #[test]
+    fn readonly_list_never_creates_and_counts_hidden_valid_items()
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let config = std::env::temp_dir().join(format!("collect-readonly-{}", std::process::id()));
+        let root = directory(&config);
+        assert!(list_existing(&config).unwrap().is_empty());
+        assert!(!root.exists());
+        fs::create_dir_all(root.join("ordinary")).unwrap();
+        fs::write(root.join("ordinary/nested.md"), "nested").unwrap();
+        assert!(list_existing(&config).unwrap().is_empty());
+        let file = fs::OpenOptions::new().write(true).create_new(true).attributes(2).open(root.join("hidden.md")).unwrap();
+        drop(file);
+        assert_eq!(list_existing(&config).unwrap()[0].name, "hidden.md");
+        assert_eq!(list_existing(&config).unwrap().len(), list(&config).unwrap().len());
+        fs::remove_dir_all(config).unwrap();
+    }
     /// 真实本地引用保留中文与空格，拒绝缺失项目和非图片文件。
     #[test]
     fn local_images_preserve_references()

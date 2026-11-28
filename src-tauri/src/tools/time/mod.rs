@@ -2,6 +2,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use chrono::Utc;
 
+/// 宿主 time-tick 与原生首帧共同读取真实 Unix 毫秒，不使用事务单调序号。
+pub(crate) fn host_unix_millis() -> i64 { Utc::now().timestamp_millis() }
+
 /// 进程内最近一次统一时间线完成时间。
 static LAST_TIMELINE_TIMESTAMP: AtomicI64 = AtomicI64::new(0);
 
