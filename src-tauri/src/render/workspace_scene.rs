@@ -1,8 +1,9 @@
 //! 诊断专用的只读布局投影。只恢复并复制现有快照，不执行布局事务、目录迁移或插件内容。
 use super::{
-    draw::{Color, DrawCommand, DrawList, Rect, TextAlign},
+    draw::{Color, DrawCommand, DrawList, ImageRef, Rect, TextAlign, fit_center},
     geometry::HostGeometry,
     host::{DemoReport, run_scene},
+    thumbs::Thumbs,
 };
 use crate::{
     contracts::{
@@ -22,7 +23,85 @@ use windows::{
 };
 
 const HEADER: f32 = 28.;
+/// 平铺图像外框（规范：「未归类桌面项目和围栏平铺使用 48×48px 图像外框」）。
+const ITEM_TILE_ICON: f32 = 48.;
+/// 围栏列表图像外框（规范：「围栏列表使用 36×36px」）。
+const ITEM_LIST_ICON: f32 = 36.;
+/// 名称字号（规范：「桌面项目名称使用 12px、最多两行」）。
+const ITEM_NAME_FONT: f32 = 12.;
+/// 名称最多行数（规范：最多两行）。
+const ITEM_NAME_LINES: u16 = 2;
+/// 图标与名称的间距（自定：规范未规定，取 4 DIP）。
+const ITEM_NAME_GAP: f32 = 4.;
+/// 平铺图像的顶部留白（自定：规范未规定，取 2 DIP）。
+const ITEM_ICON_TOP: f32 = 2.;
+/// 列表模式下图标左侧留白（自定：规范未规定，取 4 DIP）。
+const ITEM_LIST_PAD: f32 = 4.;
+/// 列表模式下图标与名称间距（自定：规范未规定，取 8 DIP，与门户图标名称间距一致）。
+const ITEM_LIST_GAP: f32 = 8.;
+/// 占位圆角（自定：与门户缩略图一致的 4 DIP）。
+const ITEM_RADIUS: f32 = 4.;
 fn fail(e: impl std::fmt::Display) -> Error { Error::new(E_FAIL, e.to_string()) }
+/// 名称文本：引用路径末段。
+///
+/// 自定回退：系统显示名要一次完整的 Shell 枚举，本阶段只读路径，取不到时用引用原文。
+fn item_label(reference: &str) -> String
+{
+    Path::new(reference).file_name().and_then(|name| name.to_str()).map(str::to_string).unwrap_or_else(|| reference.trim_start_matches(r"\\?\").to_string())
+}
+
+/// 一个桌面项目的图标/缩略图 + 名称：平铺图在上、名称在下；列表图在左、名称在右。
+///
+/// 取图不阻塞：命中缓存画真实图像（等比完整显示，不拉伸），未就绪或没有缩略图时先画通用占位，
+/// 结果落定后由宿主重绘。`shadow` 只给壁纸上的未归类项目用（规范要求文字阴影保证可读性）。
+pub(super) fn draw_item(list: &mut DrawList, reference: &str, cell: Rect, list_mode: bool, text: Color, shadow: bool, thumbs: Option<&Thumbs>)
+{
+    let frame = if list_mode { ITEM_LIST_ICON } else { ITEM_TILE_ICON };
+    let icon = if list_mode
+    {
+        Rect::new(cell.x + ITEM_LIST_PAD, cell.y + (cell.height - frame).max(0.) / 2., frame, frame.min(cell.height))
+    }
+    else
+    {
+        Rect::new(cell.x + (cell.width - frame).max(0.) / 2., cell.y + ITEM_ICON_TOP, frame.min(cell.width), frame)
+    };
+    match thumbs.and_then(|thumbs| thumbs.image(reference))
+    {
+        Some(image) =>
+        {
+            let target = fit_center((image.width.max(0) as u32, image.height.max(0) as u32), icon);
+            if target.width > 0.0 && target.height > 0.0
+            {
+                list.push(DrawCommand::Image { rect: target, image: ImageRef::new(image) });
+            }
+        }
+        None =>
+        {
+            list.push(DrawCommand::FillRoundRect { rect: icon, radius: ITEM_RADIUS, color: text.with_alpha(0.10) });
+            list.push(DrawCommand::StrokeRoundRect { rect: Rect::new(icon.x + 0.5, icon.y + 0.5, (icon.width - 1.).max(0.), (icon.height - 1.).max(0.)), radius: ITEM_RADIUS, width: 1., color: text.with_alpha(0.28) });
+        }
+    }
+    let name = thumbs.and_then(|thumbs| thumbs.label(reference)).map(str::to_string).unwrap_or_else(|| item_label(reference));
+    let name_rect = if list_mode
+    {
+        Rect::new(icon.right() + ITEM_LIST_GAP, cell.y, (cell.right() - icon.right() - ITEM_LIST_GAP).max(0.), cell.height)
+    }
+    else
+    {
+        let top = icon.bottom() + ITEM_NAME_GAP;
+        Rect::new(cell.x, top, cell.width, (ITEM_NAME_FONT * 1.25 * f32::from(ITEM_NAME_LINES)).min((cell.bottom() - top).max(0.)))
+    };
+    if name_rect.width <= 0.0 || name_rect.height <= 0.0
+    {
+        return;
+    }
+    let align = if list_mode { TextAlign::Start } else { TextAlign::Center };
+    if shadow
+    {
+        list.push(DrawCommand::Text { rect: Rect::new(name_rect.x + 0.5, name_rect.y + 1., name_rect.width, name_rect.height), text: name.clone(), size: ITEM_NAME_FONT, weight: 400, color: Color::rgba(0x00, 0x00, 0x00, 0x99), align, max_lines: ITEM_NAME_LINES });
+    }
+    list.push(DrawCommand::Text { rect: name_rect, text: name, size: ITEM_NAME_FONT, weight: 400, color: text, align, max_lines: ITEM_NAME_LINES });
+}
 /// 与正式入口读取同一个已生效位置；不使用可能迁移目录的 prepare_config_directory。
 pub(super) fn read_scene() -> Result<(WorkspaceSnapshot, ApplicationPreferences)>
 {
@@ -53,7 +132,17 @@ pub(super) fn read_scene_from(dir: &Path) -> Result<(WorkspaceSnapshot, Applicat
 pub fn run_workspace() -> Result<DemoReport>
 {
     let (scene, settings) = read_scene()?;
-    run_scene(Duration::from_secs(8), |geometry, monitor, _, _| draw_snapshot(&scene, &settings, &monitor.id, geometry))
+    // 系统图标与显示名读既有 Shell 枚举结果（列表图标需要 STA）；失败只画占位，不虚构图标。
+    let facts = {
+        let _apartment = super::host::ComApartment::enter().map_err(fail)?;
+        Thumbs::load_facts().map_err(fail)?
+    };
+    // 取图在既有 Shell 图像 STA 上完成：首帧先画占位，结果落定后由宿主等事件重绘（不轮询）。
+    let thumbs = Thumbs::start(facts).map_err(fail)?;
+    let report = run_scene(Duration::from_secs(8), |geometry, monitor, _, _| draw_snapshot_with(&scene, &settings, &monitor.id, geometry, &thumbs), Some(&thumbs));
+    let stats = thumbs.stats();
+    eprintln!("原生工作区取图：命中={} 未命中={} 排队={} 落定={}", stats.hits, stats.misses, stats.requested, stats.settled);
+    report
 }
 
 /// 源矩形是工作区局部 DIP，不加全局显示器偏移；超宽高先缩到工作区，再将边缘移回。
@@ -88,7 +177,9 @@ fn shell_rects(bounds: WorkspaceRect, g: HostGeometry, appearance: Option<&TileA
     (r, header)
 }
 
-pub(super) fn draw_snapshot(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id: &str, g: HostGeometry) -> DrawList { draw_with_content(s, p, id, g, None) }
+pub(super) fn draw_snapshot(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id: &str, g: HostGeometry) -> DrawList { draw_with_content(s, p, id, g, None, None) }
+/// 带取图来源的绘制：真实项目图标/缩略图由 [`Thumbs`] 只读缓存提供，未就绪先画占位。
+pub(super) fn draw_snapshot_with(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id: &str, g: HostGeometry, thumbs: &Thumbs) -> DrawList { draw_with_content(s, p, id, g, None, Some(thumbs)) }
 /// 绘制与命中共用的块：`order` 只在 [`scene_blocks`] 里算一次，绘制顺序与命中优先级都来自它。
 pub(super) struct Block
 {
@@ -111,7 +202,7 @@ const TILE_Z_BASE: i32 = 1000;
 /// 唯一排序点：`(z, priority)` 稳定升序。绘制按这个 Vec 顺序拼指令，命中按它的**逆序**查找，
 /// 所以「谁画在上面」与「谁先被点到」永远一致（同层门户在组件之后画 ⇒ 门户先命中）。
 /// 焦点块整体移到末尾：内容与边框一起上移，命中也随之最先命中焦点块。
-pub(super) fn scene_blocks(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id: &str, g: HostGeometry, content: Option<&super::content::Content>, focus: Option<&str>) -> Vec<Block>
+pub(super) fn scene_blocks(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id: &str, g: HostGeometry, content: Option<&super::content::Content>, thumbs: Option<&Thumbs>, focus: Option<&str>) -> Vec<Block>
 {
     use super::input::TargetKind;
     let (fill, edge, text) = if p.desktop_appearance.theme == ApplicationTheme::Light
@@ -138,7 +229,6 @@ pub(super) fn scene_blocks(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id
         }
         (l, r, header)
     };
-    let mark = |rect| DrawCommand::StrokeRoundRect { rect, radius: 0., width: 1., color: edge };
     for item in &s.unclassified_items
     {
         if item.projection_monitor_id.as_deref().unwrap_or(&item.monitor_id) != id
@@ -148,7 +238,8 @@ pub(super) fn scene_blocks(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id
         let pt = item.projection_monitor_id.as_ref().and(item.projection_position).unwrap_or(item.position);
         let rect = local_rect(WorkspaceRect { left: pt.left, top: pt.top, width: p.desktop_grid.width.into(), height: p.desktop_grid.height.into() }, g, None);
         let mut l = DrawList::new();
-        l.push(mark(rect));
+        // 未归类项目直接落在壁纸上：图像 + 带阴影的名称（规范要求阴影保证可读性）。
+        draw_item(&mut l, &item.stable_reference, rect, false, text, true, thumbs);
         // 未归类桌面项在前端是 `desktop-item`，优先级 70（比围栏/门户/组件本体都高）。
         blocks.push(Block { id: item.stable_reference.clone(), kind: TargetKind::Item, rect, header: 0., members: Vec::new(), content_clip: None, priority: 70, z: item.z_index as i32, list: l });
     }
@@ -184,7 +275,8 @@ pub(super) fn scene_blocks(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id
                 }
                 if rect.bottom() > clip.y
                 {
-                    l.push(mark(rect));
+                    // 围栏成员：平铺图上文下、列表图左文右（规范：平铺 48×48、列表 36×36）。
+                    draw_item(&mut l, member, rect, f.layout_mode == FenceLayoutMode::List, text, false, thumbs);
                     members.push((member.clone(), rect));
                 }
             }
@@ -239,9 +331,9 @@ pub(super) fn scene_blocks(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id
 }
 
 /// 普通绘制（无焦点态）：把块按绘制顺序拼成一条指令列表。
-pub(super) fn draw_with_content(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id: &str, g: HostGeometry, content: Option<&super::content::Content>) -> DrawList
+pub(super) fn draw_with_content(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id: &str, g: HostGeometry, content: Option<&super::content::Content>, thumbs: Option<&Thumbs>) -> DrawList
 {
-    join(scene_blocks(s, p, id, g, content, None))
+    join(scene_blocks(s, p, id, g, content, thumbs, None))
 }
 
 /// 把块的指令按顺序拼起来。
@@ -267,7 +359,7 @@ pub(super) fn scene_hits(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id: 
     let mut entries: Vec<HitEntry> = Vec::new();
     // 背景：整块表面、最低优先级，对应前端 `workspace-background`（priority 1）。
     entries.push(HitEntry::new("workspace-background", TargetKind::Background, viewport, 0., Vec::new(), 1, i32::MIN, Some(viewport)));
-    for block in scene_blocks(s, p, id, g, None, focus)
+    for block in scene_blocks(s, p, id, g, None, None, focus)
     {
         // 成员与格子的命中范围都要和可见区域（内容框 / 视口）求交，不用未裁剪矩形。
         let members = block
@@ -301,7 +393,7 @@ pub(super) fn intersect(a: Rect, b: Rect) -> Option<Rect>
 /// 带焦点态的场景：同一个块的列表，焦点块已经整体排到最后（内容 + 边框一起上移）。
 pub(super) fn draw_with_focus(s: &WorkspaceSnapshot, p: &ApplicationPreferences, id: &str, g: HostGeometry, focus: Option<&str>) -> DrawList
 {
-    let mut blocks = scene_blocks(s, p, id, g, None, focus);
+    let mut blocks = scene_blocks(s, p, id, g, None, None, focus);
     let accent = super::input::focus_border_color(&p.desktop_appearance.accent_color);
     let radius = p.corner_radius.min(8) as f32;
     if let Some(focus) = focus
@@ -357,7 +449,8 @@ mod tests
         assert!(matches!(list.commands()[1], DrawCommand::StrokeRoundRect { width: 1., .. }));
         assert!(matches!(&list.commands()[2], DrawCommand::Text { text, .. } if text == "资料"));
         assert!(matches!(list.commands()[3], DrawCommand::PushClip { rect } if rect.y == 40. + 2. + 28.));
-        assert!(matches!(list.commands()[4], DrawCommand::StrokeRoundRect { rect, .. } if rect.x == 40. && rect.y == 78.));
+        // 成员格原点 (40, 78)：图标 48 在单元格内水平居中、上留 2 DIP（规范 48×48 外框）。
+        assert!(matches!(list.commands()[4], DrawCommand::FillRoundRect { rect, .. } if rect == Rect::new(50., 80., 48., 48.)));
     }
 
     #[test]
@@ -384,7 +477,7 @@ mod tests
         let p = ApplicationPreferences::default();
         let g = HostGeometry::for_work_area(PixelRect::new(0, 0, 800, 600), DpiScale::new(96));
 
-        let blocks = scene_blocks(&scene, &p, "A", g, None, None);
+        let blocks = scene_blocks(&scene, &p, "A", g, None, None, None);
         let block_ids: Vec<&str> = blocks.iter().map(|block| block.id.as_str()).collect();
         assert_eq!(block_ids, vec!["low", "high"]);
         let hits = scene_hits(&scene, &p, "A", g, None);
@@ -393,7 +486,7 @@ mod tests
         assert_eq!(HitScene::new(hits, None).hit(100.0, 100.0).unwrap().id, "high");
 
         // 焦点 low：块整体移到末尾，命中也是 low 最先，重叠区不再点到 high。
-        let focused_blocks = scene_blocks(&scene, &p, "A", g, None, Some("low"));
+        let focused_blocks = scene_blocks(&scene, &p, "A", g, None, None, Some("low"));
         assert_eq!(focused_blocks.last().map(|block| block.id.as_str()), Some("low"));
         let focused_hits = scene_hits(&scene, &p, "A", g, Some("low"));
         assert_eq!(focused_hits.last().map(|entry| entry.id.as_str()), Some("low"));
@@ -430,5 +523,82 @@ mod tests
             assert!(rect.y >= content.y - 0.01 && rect.bottom() <= content.bottom() + 0.01, "成员 {id} 必须裁到内容框：{rect:?}");
             assert!(rect.y >= viewport.y - 0.01 && rect.bottom() <= viewport.bottom() + 0.01, "成员 {id} 必须裁到视口：{rect:?}");
         }
+    }
+
+    /// 未取到图时先画 48 外框占位，名称 12px 两行并带阴影；列表模式 36 外框、图左文右且不画阴影。
+    #[test]
+    fn item_draws_placeholder_then_name_inside_cell()
+    {
+        let tile = Rect::new(100.0, 50.0, 68.0, 90.0);
+        let text = Color::rgba(0xE8, 0xEF, 0xF0, 0xFF);
+        let mut list = DrawList::new();
+        super::draw_item(&mut list, r"C:\Users\TIAmo\Desktop\设计稿.png", tile, false, text, true, None);
+        let icon = list.commands().iter().find_map(|command| match command {
+            DrawCommand::FillRoundRect { rect, .. } => Some(*rect),
+            _ => None,
+        }).expect("未就绪应有占位");
+        assert_eq!((icon.width, icon.height), (48.0, 48.0), "平铺外框 48×48");
+        assert!((icon.x - (tile.x + 10.0)).abs() < 0.001, "占位水平居中：{icon:?}");
+        let texts: Vec<_> = list.commands().iter().filter_map(|command| match command {
+            DrawCommand::Text { rect, text, size, max_lines, .. } => Some((*rect, text.clone(), *size, *max_lines)),
+            _ => None,
+        }).collect();
+        assert_eq!(texts.len(), 2, "阴影 + 正文");
+        assert_eq!(texts[0].1, "设计稿.png", "名称取引用路径末段");
+        assert_eq!((texts[1].2, texts[1].3), (12.0, 2), "名称 12px、最多两行");
+        assert!((texts[1].0.width - 68.0).abs() < 0.001 && texts[1].0.bottom() <= tile.bottom() + 0.01, "名称在单元格内：{:?}", texts[1].0);
+        assert!(texts[0].0.y > texts[1].0.y, "阴影在正文下方 1 DIP");
+        // 列表模式：36 外框贴左，名称在图标右侧，不画阴影。
+        let row = Rect::new(0.0, 0.0, 200.0, 46.0);
+        let mut list = DrawList::new();
+        super::draw_item(&mut list, r"C:\Users\TIAmo\Desktop\设计稿.png", row, true, text, false, None);
+        let icon = list.commands().iter().find_map(|command| match command {
+            DrawCommand::FillRoundRect { rect, .. } => Some(*rect),
+            _ => None,
+        }).expect("列表占位");
+        assert_eq!((icon.width, icon.height), (36.0, 36.0), "列表外框 36×36");
+        assert!((icon.x - 4.0).abs() < 0.001 && (icon.y - 5.0).abs() < 0.001, "列表图标贴左居中：{icon:?}");
+        let name = list.commands().iter().find_map(|command| match command {
+            DrawCommand::Text { rect, .. } => Some(*rect),
+            _ => None,
+        }).expect("列表名称");
+        assert!((name.x - (icon.right() + 8.0)).abs() < 0.001, "名称在图标右侧 8 DIP：{name:?}");
+        assert_eq!(list.commands().iter().filter(|command| matches!(command, DrawCommand::Text { .. })).count(), 1, "列表不画阴影");
+    }
+
+    /// 真实缩略图落定后按外框等比绘制，不再画占位。
+    #[test]
+    fn item_draws_real_thumbnail_after_it_arrives()
+    {
+        let path = std::env::temp_dir().join(format!("desktop-tools-item-{}.png", std::process::id()));
+        {
+            let file = std::fs::File::create(&path).expect("创建样本");
+            let mut encoder = png::Encoder::new(file, 96, 40); // 宽图：可暴露方形拉伸。
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.write_header().expect("写头").write_image_data(&[0, 90, 200, 255].repeat(96 * 40)).expect("写像素");
+        }
+        let reference = path.to_str().expect("路径可转 UTF-8");
+        let thumbs = Thumbs::start(std::collections::HashMap::new()).expect("图像 STA 应可启动");
+        let tile = Rect::new(0.0, 0.0, 68.0, 90.0);
+        let mut list = DrawList::new();
+        super::draw_item(&mut list, reference, tile, false, Color::TRANSPARENT, false, Some(&thumbs));
+        assert!(!list.commands().iter().any(|command| matches!(command, DrawCommand::Image { .. })), "首帧先画占位");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while thumbs.settled() == 0 && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let mut list = DrawList::new();
+        super::draw_item(&mut list, reference, tile, false, Color::TRANSPARENT, false, Some(&thumbs));
+        let image = list.commands().iter().find_map(|command| match command {
+            DrawCommand::Image { rect, .. } => Some(*rect),
+            _ => None,
+        }).expect("落定后应画真实图像");
+        assert!((image.width - 48.0).abs() < 0.001 && (image.height - 20.0).abs() < 0.001, "等比 48×20：{image:?}");
+        // 外框 (10, 2, 48, 48)：48×20 的图像水平铺满、竖向居中 ⇒ y = 2 + (48-20)/2。
+        assert!((image.x - 10.0).abs() < 0.001 && (image.y - 16.0).abs() < 0.001, "居中于 48 外框：{image:?}");
+        drop(thumbs);
+        std::fs::remove_file(&path).ok();
     }
 }

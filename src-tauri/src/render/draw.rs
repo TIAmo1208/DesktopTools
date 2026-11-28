@@ -112,6 +112,62 @@ pub enum DrawCommand
     },
     /// 出栈透明度。
     PopOpacity,
+    /// 位图按目标矩形绘制（预乘 Alpha）；比例由调用方用 [`fit_center`] 保证，painter 不拉伸。
+    #[serde(skip)]
+    Image
+    {
+        rect: Rect, image: ImageRef
+    },
+}
+
+/// 一张已解码位图的共享引用：像素是预乘 BGRA，跨线程只读。
+///
+/// 判等按**同一份像素**（`Arc` 指针）比较，不逐像素比较：帧间重绘只关心「还是不是那张图」，
+/// painter 也用同一个身份做位图缓存键。
+#[derive(Clone)]
+pub struct ImageRef(std::sync::Arc<crate::platform::windows::shell_image::ShellImage>);
+
+impl ImageRef
+{
+    /// 包装一份 Shell 图像（像素只复制一次，之后共享同一个 `Arc`）。
+    pub fn new(image: std::sync::Arc<crate::platform::windows::shell_image::ShellImage>) -> Self { Self(image) }
+
+    /// 像素宽。
+    pub fn width(&self) -> u32 { self.0.width.max(0) as u32 }
+
+    /// 像素高。
+    pub fn height(&self) -> u32 { self.0.height.max(0) as u32 }
+
+    /// 预乘 BGRA 像素（行优先，行距 = 宽度 × 4）。
+    pub fn pixels(&self) -> &[u8] { &self.0.bgra }
+
+    /// 身份：同一份像素共享同一个值，判等与 painter 位图缓存都用它。
+    pub fn identity(&self) -> usize { std::sync::Arc::as_ptr(&self.0) as usize }
+}
+
+impl PartialEq for ImageRef
+{
+    fn eq(&self, other: &Self) -> bool { self.identity() == other.identity() }
+}
+
+impl std::fmt::Debug for ImageRef
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "ImageRef({}x{})", self.width(), self.height()) }
+}
+
+/// 在 `cell` 内按源图宽高比等比居中完整显示（不拉伸、不裁切）。
+///
+/// 规范：「缩略图等比居中，不拉伸或裁切」。源图尺寸无效（0）时返回零矩形，由调用方跳过。
+pub fn fit_center(image: (u32, u32), cell: Rect) -> Rect
+{
+    let (width, height) = (image.0 as f32, image.1 as f32);
+    if width <= 0.0 || height <= 0.0 || cell.width <= 0.0 || cell.height <= 0.0
+    {
+        return Rect::new(cell.x, cell.y, 0.0, 0.0);
+    }
+    let scale = (cell.width / width).min(cell.height / height);
+    let (w, h) = (width * scale, height * scale);
+    Rect::new(cell.x + (cell.width - w) / 2.0, cell.y + (cell.height - h) / 2.0, w, h)
 }
 
 /// 一帧的绘制指令序列。
@@ -167,6 +223,7 @@ impl DrawList
                 DrawCommand::PopClip => DrawCommand::PopClip,
                 DrawCommand::PushOpacity { opacity } => DrawCommand::PushOpacity { opacity: *opacity },
                 DrawCommand::PopOpacity => DrawCommand::PopOpacity,
+                DrawCommand::Image { rect, image } => DrawCommand::Image { rect: shift(rect), image: image.clone() },
             })
             .collect();
         Self { commands }

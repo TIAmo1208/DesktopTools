@@ -150,7 +150,7 @@ pub fn run_content(example: bool) -> windows::core::Result<DemoReport>
                 l.push(DrawCommand::Caption { rect: Rect::new(r.x + 10., r.y + y, r.width - 20., 24.), text: label.into(), size: 13., weight: 400, color: Color(0xe8eff0ff), align: TextAlign::Start });
             }
             l
-        });
+        }, None);
     }
     let dir = config_dir()?;
     let (mut scene, mut preferences) = read_scene_from(&dir)?;
@@ -174,8 +174,8 @@ pub fn run_content(example: bool) -> windows::core::Result<DemoReport>
     }
     run_scene(Duration::from_secs(8), |g, m, _, _| {
         let id = remap.as_ref().filter(|(_, new)| new == &m.id).map_or(m.id.as_str(), |(old, _)| old.as_str());
-        draw_with_content(&scene, &preferences, id, g, Some(&content))
-    })
+        draw_with_content(&scene, &preferences, id, g, Some(&content), None)
+    }, None)
 }
 
 /// 不推断更换显示器的原因；只有三个目标均存在、同属一个旧屏并且边界可原样绘制时才接受别名。

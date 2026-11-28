@@ -21,6 +21,7 @@ pub use live::run_live;
 pub mod island;
 pub mod music_tile;
 pub mod portal_tile;
+pub mod thumbs;
 pub mod menu;
 pub mod painter;
 pub use content::run_content;

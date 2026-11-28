@@ -1,6 +1,6 @@
 //! `render::draw` 的指令模型单测：序列化往返、栈配对、颜色换算。
 
-use super::draw::{Color, DrawCommand, DrawList, Rect, TextAlign};
+use super::draw::{Color, DrawCommand, DrawList, ImageRef, Rect, TextAlign, fit_center};
 
 /// 混合指令序列经 JSON 往返后必须完全相等（跨进程/跨语言传绘制列表的前提）。
 #[test]
@@ -81,4 +81,35 @@ fn rect_contains_matches_half_open_convention()
     assert_eq!(Rect::new(0.0, 0.0, -5.0, 10.0).normalized(), Rect::new(0.0, 0.0, 0.0, 10.0));
     assert_eq!(rect.right(), 110.0);
     assert_eq!(rect.bottom(), 70.0);
+}
+
+/// 等比完整显示：长边贴满外框、另一个方向居中，不拉伸也不裁切。
+#[test]
+fn image_fit_keeps_aspect_and_centers()
+{
+    let cell = Rect::new(10.0, 20.0, 48.0, 48.0);
+    let wide = fit_center((96, 40), cell);
+    assert!((wide.width - 48.0).abs() < 0.001 && (wide.height - 20.0).abs() < 0.001, "宽图应长边 48：{wide:?}");
+    assert!((wide.y - 34.0).abs() < 0.001, "竖向居中：{wide:?}");
+    let tall = fit_center((20, 60), cell);
+    assert!((tall.height - 48.0).abs() < 0.001 && (tall.width - 16.0).abs() < 0.001, "高图应长边 48：{tall:?}");
+    assert!((tall.x - 26.0).abs() < 0.001, "横向居中：{tall:?}");
+    // 无效源图返回零矩形，由调用方跳过，不发出拉伸指令。
+    assert_eq!(fit_center((0, 10), cell), Rect::new(10.0, 20.0, 0.0, 0.0));
+    assert_eq!(fit_center((10, 10), Rect::new(0.0, 0.0, 0.0, 10.0)), Rect::new(0.0, 0.0, 0.0, 0.0));
+}
+
+/// 图像判等按同一份像素（身份）比较，painter 位图缓存也用它当键。
+#[test]
+fn image_reference_equality_is_identity()
+{
+    use crate::platform::windows::shell_image::ShellImage;
+    let make = || std::sync::Arc::new(ShellImage { width: 2, height: 2, bgra: vec![0; 16], data_url: String::new() });
+    let shared = make();
+    let first = ImageRef::new(std::sync::Arc::clone(&shared));
+    let second = ImageRef::new(std::sync::Arc::clone(&shared));
+    assert_eq!(first, second, "同一份像素必须判等");
+    assert_ne!(first, ImageRef::new(make()), "不同像素不得判等");
+    assert_eq!((first.width(), first.height(), first.pixels().len()), (2, 2, 16));
+    assert_eq!(format!("{first:?}"), "ImageRef(2x2)");
 }

@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use windows::{
     Win32::{
-        Foundation::{E_FAIL, E_INVALIDARG, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, RPC_E_CHANGED_MODE, WPARAM},
+        Foundation::{E_FAIL, E_INVALIDARG, HANDLE, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, RPC_E_CHANGED_MODE, WPARAM},
         Graphics::{
             Direct2D::{Common::*, *},
             Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0},
@@ -554,10 +554,10 @@ pub(crate) fn run_protected_desktop() -> std::result::Result<(), String>
     Ok(())
 }
 /// 跑一次演示：每显示器一块透明宿主，画一帧，保持 `hold` 后退出。
-pub fn run_demo(hold: Duration) -> Result<DemoReport> { run_scene(hold, |geometry, _, index, family| demo_list(geometry, index, family)) }
+pub fn run_demo(hold: Duration) -> Result<DemoReport> { run_scene(hold, |geometry, _, index, family| demo_list(geometry, index, family), None) }
 
 /// 共用的逐屏绘制与消息泵。场景只消费当前屏的局部几何。
-pub(super) fn run_scene(hold: Duration, scene: impl Fn(HostGeometry, &crate::contracts::DesktopHostMonitor, usize, &str) -> DrawList) -> Result<DemoReport>
+pub(super) fn run_scene(hold: Duration, scene: impl Fn(HostGeometry, &crate::contracts::DesktopHostMonitor, usize, &str) -> DrawList, thumbs: Option<&super::thumbs::Thumbs>) -> Result<DemoReport>
 {
     // 公寓 guard 先声明 → 最后析构：所有 COM 资源都比它早释放。
     let apartment = ComApartment::enter()?;
@@ -611,6 +611,8 @@ pub(super) fn run_scene(hold: Duration, scene: impl Fn(HostGeometry, &crate::con
 
     // 保持一段时间，期间泵消息并处理 DPI 变化。
     let deadline = Instant::now() + hold;
+    // 已绘制到的取图代次：0 表示保持阶段还没有一帧反映取图结果，首轮先补一帧。
+    let mut drawn = 0u64;
     let mut message = MSG::default();
     while Instant::now() < deadline
     {
@@ -623,28 +625,32 @@ pub(super) fn run_scene(hold: Duration, scene: impl Fn(HostGeometry, &crate::con
         }
         if take_dpi_event()?
         {
-            for (index, host) in hosts.iter_mut().enumerate()
+            // 先查矩形与 DPI，查询失败就保留旧表面，不拿零矩形重建；成功也只发布完整画好的表面。
+            repaint_scene(&mut hosts, &monitors, &scene, &mut painter, &devices, &family)?;
+        }
+        // 有取图来源：等「结果落定」事件或消息，不轮询；超时只用来守住 hold 截止。
+        let remaining = deadline.saturating_duration_since(Instant::now()).as_millis().min(u32::MAX as u128) as u32;
+        match thumbs
+        {
+            Some(thumbs) =>
             {
-                // 先查矩形与 DPI，查询失败就保留旧表面，不拿零矩形重建。
-                let geometry = match host_geometry(host.hwnd)
+                // 结果可能在创建宿主期间就已落定（事件已置位），先补一帧再等事件，避免漏掉。
+                if thumbs.settled() != drawn
                 {
-                    Ok(geometry) => geometry,
-                    Err(error) =>
-                    {
-                        eprintln!("DPI 变更时查询窗口几何失败，保留旧表面：{error}");
-                        continue;
-                    }
-                };
-                let list = scene(geometry, &monitors[index], index, &family);
-                // 先在新表面上画，成功后再发布；失败则旧内容不动。
-                if let Some((surface, _)) = dpi_candidate(SurfaceHost::prepare(geometry, &mut painter, &devices, &list))?
-                {
-                    host.publish(geometry, surface, &devices)?;
+                    repaint_scene(&mut hosts, &monitors, &scene, &mut painter, &devices, &family)?;
+                    drawn = thumbs.settled();
+                }
+                let wake = HANDLE(thumbs.handle() as *mut _);
+                unsafe {
+                    let _ = MsgWaitForMultipleObjectsEx(Some(&[wake]), remaining.max(1), QS_ALLINPUT, MSG_WAIT_FOR_MULTIPLE_OBJECTS_EX_FLAGS(0));
                 }
             }
-        }
-        unsafe {
-            let _ = MsgWaitForMultipleObjectsEx(None, 50, QS_ALLINPUT, MSG_WAIT_FOR_MULTIPLE_OBJECTS_EX_FLAGS(0));
+            None =>
+            {
+                unsafe {
+                    let _ = MsgWaitForMultipleObjectsEx(None, remaining.min(50).max(1), QS_ALLINPUT, MSG_WAIT_FOR_MULTIPLE_OBJECTS_EX_FLAGS(0));
+                }
+            }
         }
     }
 
@@ -654,6 +660,36 @@ pub(super) fn run_scene(hold: Duration, scene: impl Fn(HostGeometry, &crate::con
     let windows_after_exit = count_own_windows();
 
     Ok(DemoReport { pid: std::process::id(), monitors: monitors.len(), font_family: family, dpi_awareness: format!("{awareness_note} / com:{}", apartment.note()), create_total_ms, hosts: reports, windows_after_exit, exit_code: 0 })
+}
+
+/// 用同一个场景重画所有屏：先在新表面画，成功后再发布；单屏失败保留旧表面，不中止本次会话。
+fn repaint_scene(
+    hosts: &mut [SurfaceHost],
+    monitors: &[crate::contracts::DesktopHostMonitor],
+    scene: &impl Fn(HostGeometry, &crate::contracts::DesktopHostMonitor, usize, &str) -> DrawList,
+    painter: &mut Painter,
+    devices: &Devices,
+    family: &str,
+) -> Result<()>
+{
+    for (index, host) in hosts.iter_mut().enumerate()
+    {
+        let geometry = match host_geometry(host.hwnd)
+        {
+            Ok(geometry) => geometry,
+            Err(error) =>
+            {
+                eprintln!("重画前查询窗口几何失败，保留旧表面：{error}");
+                continue;
+            }
+        };
+        let list = scene(geometry, &monitors[index], index, family);
+        if let Some((surface, _)) = dpi_candidate(SurfaceHost::prepare(geometry, painter, devices, &list))?
+        {
+            host.publish(geometry, surface, devices)?;
+        }
+    }
+    Ok(())
 }
 
 /// 逐帧诊断：按 `steps` 次重建并发布表面，每次由 `frame` 给出该帧绘制列表。

@@ -17,6 +17,7 @@ use windows::{
         Graphics::{
             Direct2D::{Common::*, *},
             DirectWrite::*,
+            Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
         },
     },
     core::{Error, HSTRING, Result, w},
@@ -27,6 +28,8 @@ use super::geometry::DpiScale;
 
 /// 文本格式缓存上限：超出就整体清空（字体档位本来就少，不做 LRU）。
 const MAX_FORMATS: usize = 32;
+/// 位图缓存上限：超出就整体清空（桌面项目数量有限，不做 LRU）。
+const MAX_BITMAPS: usize = 512;
 
 /// 单帧绘制器：持有 DirectWrite 工厂与按需缓存。
 pub struct Painter
@@ -35,6 +38,7 @@ pub struct Painter
     family: String,                                      // 解析后的界面字体族。
     formats: HashMap<(u16, u32, u8), IDWriteTextFormat>, // (字重, 字号×10, 对齐) → 文本格式。
     brushes: HashMap<u32, ID2D1SolidColorBrush>,         // 颜色 → 画刷（每帧清空）。
+    bitmaps: HashMap<usize, ID2D1Bitmap>,                // 图像身份 → 位图（跨帧复用，有上界）。
     layers: Vec<Option<ID2D1Layer>>,                     // 本帧实际压入的栈（None 是裁剪）。
 }
 
@@ -45,7 +49,7 @@ impl Painter
     {
         let write: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let family = resolve_ui_family(&write)?;
-        Ok(Self { write, family, formats: HashMap::new(), brushes: HashMap::new(), layers: Vec::new() })
+        Ok(Self { write, family, formats: HashMap::new(), brushes: HashMap::new(), bitmaps: HashMap::new(), layers: Vec::new() })
     }
 
     /// 实际使用的字体族（诊断与记录用）。
@@ -166,6 +170,16 @@ impl Painter
                     unsafe { target.PopLayer() };
                     self.layers.pop();
                 }
+                DrawCommand::Image { rect, image } =>
+                {
+                    if rect.width <= 0.0 || rect.height <= 0.0
+                    {
+                        continue;
+                    }
+                    let bitmap = self.bitmap(target, image)?;
+                    let destination = to_d2d(*rect);
+                    unsafe { target.DrawBitmap(&bitmap, Some(&destination), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None) };
+                }
             }
         }
         Ok(())
@@ -182,6 +196,32 @@ impl Painter
         let brush = unsafe { target.CreateSolidColorBrush(&D2D1_COLOR_F { r: red, g: green, b: blue, a: alpha }, None)? };
         self.brushes.insert(color.0, brush.clone());
         Ok(brush)
+    }
+
+    /// 取（或创建）图像位图：按图像身份缓存，像素只上传一次。
+    ///
+    /// 缓存有上界（超出整体清空，与文本格式同一策略）；像素长度与宽高不符时拒绝，不上传坏数据。
+    fn bitmap(&mut self, target: &ID2D1RenderTarget, image: &super::draw::ImageRef) -> Result<ID2D1Bitmap>
+    {
+        let identity = image.identity();
+        if let Some(bitmap) = self.bitmaps.get(&identity)
+        {
+            return Ok(bitmap.clone());
+        }
+        let expected = image.width() as usize * image.height() as usize * 4;
+        if image.width() == 0 || image.height() == 0 || image.pixels().len() != expected
+        {
+            return Err(Error::new(E_FAIL, format!("图像像素与尺寸不符：{}x{} / {} 字节", image.width(), image.height(), image.pixels().len())));
+        }
+        let properties = D2D1_BITMAP_PROPERTIES { pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED }, dpiX: 96.0, dpiY: 96.0 };
+        let size = D2D_SIZE_U { width: image.width(), height: image.height() };
+        let bitmap = unsafe { target.CreateBitmap(size, Some(image.pixels().as_ptr().cast()), image.width() * 4, &properties) }?;
+        if self.bitmaps.len() >= MAX_BITMAPS
+        {
+            self.bitmaps.clear();
+        }
+        self.bitmaps.insert(identity, bitmap.clone());
+        Ok(bitmap)
     }
 
     /// 取（或创建）文本格式：键与创建值都用四舍五入到 0.1 DIP 的字号。
